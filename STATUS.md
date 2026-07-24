@@ -1,172 +1,158 @@
 # STATUS
 
 **Last updated:** 2026-07-24
-**Branch:** `claude/mesa-nvk-horizon-audit-q4ysep`
+**Branch:** `claude/mesa-nvk-horizon-phase1-rp61t8`
 
 ---
 
 ## Current phase
 
-**Phase 0 — Audit of the reference ports. COMPLETE.**
+**Phase 1 — `horizon/` standalone GPU layer. CODE COMPLETE; hardware
+verification pending.**
 
-No GPU code has been written. No Mesa tree has been fetched. Nothing in this repository
-builds yet, by design — Phase 0's deliverables are documents.
+All eight implementation items and the ten tests are written and
+cross-compile cleanly. The pure-logic modules pass 78 host-side unit
+checks under ASan/UBSan. **Nothing has run on a Switch yet** — every
+hardware exit criterion below is explicitly unverified.
 
 ---
 
 ## Completed work
 
-### Repository skeleton
-Created the directory structure from the project brief, plus `LICENSES/` content and
-`.gitignore`. Structural clarifications (all documented in `docs/architecture.md` § 4):
-`mesa/` is a pinned checkout rather than a vendored copy; `nvkmd_horizon` and the WSI
-backend live in `mesa-patches/`; `toolchain/` holds declarative inputs and `scripts/`
-holds executables.
+### `horizon_gpu` (all of it Vulkan-, Mesa- and nwindow-free; gate enforced)
 
-### Audit documents
-| File | Contents |
-|---|---|
-| `docs/reference-analysis.md` | Variant diff matrix, file tree, principal functions, init/alloc/submit/present flows, simulated functionality, synchronous operations, disabled NVK code, inconsistencies, reusable material with attribution |
-| `docs/architecture.md` | Five layers, per-layer responsibilities, forbidden-dependency table, object model, error contract |
-| `docs/memory-model.md` | Ten distinct memory concepts, the binding chain, VA layout, alignment/overflow, cache coherency, tiling, ownership, leak accounting |
-| `docs/synchronization.md` | Syncpoints, wraparound, async submission, retirement, cross-channel dependencies, Vulkan mapping, timeouts, debug-synchronous mode |
-| `docs/wsi.md` | The two divergent reference backends, no-global design, slot states, surface-owned registration, zero-copy requirements, acquire/present contracts |
-| `docs/milestones.md` | Phases 0–6 with exit criteria, classified host / cross / hardware |
-| `docs/known-risks.md` | 18 risks, 6 pending decisions |
-| `CLAUDE.md` | Working rules, rejected designs, layer rules, coding and process rules |
-| `LICENSES/README.md` | Licence policy and the copyleft hazard |
-
-### Analysis method
-Five read-only subagents analysed the DRM shim, memory/VM, submit/sync, WSI, and
-toolchain in parallel. **Every finding cited below was re-verified by the main agent
-against the source files**, which mattered: two subagents reached opposite conclusions
-about triple buffering, and resolving it against the code produced the audit's most
-important structural finding (see *Findings* below).
-
----
-
-## Tests executed
-
-| Command | Purpose | Result |
+| Area | Files | Notes |
 |---|---|---|
-| `git status`, `git branch -a`, `git log` | inspect repository state | Empty repo, no commits, already on `claude/mesa-nvk-horizon-audit-q4ysep` |
-| `unzip -q -o <archive> -d <alias>` × 4 | extract references read-only | OK — 88, 81, 88, 84 files |
-| `find … \| xargs md5sum` + Python matrix | cross-variant comparison | 71 of 88 files identical across all four; 17 differ |
-| `diff -rq` between all tree pairs | confirm the matrix | Confirmed |
-| `grep -E '^diff --git' patches/*.patch` | patch scope | 24 files (master/triple-buffer) vs 10 (nvk-wsi/wsi-zero-copy) |
-| Python extraction of the patch-embedded `wsi_common_switch.c` + `diff -u` | resolve the subagent conflict | 640 lines vs 616 tracked; 3 functional deltas |
-| Targeted `sed`/`grep` reads of `drm_shim.c`, `switch_libc_shim.c`, `wsi_common_switch.c`, `wsi_common.c`, build scripts, `LICENSE`, `README.md` | verify subagent claims | All spot-checked claims confirmed |
+| results/logging | `horizon/include/horizon_gpu/result.h`, `horizon/debug/` | `horizon_gpu_result` carries the libnx `Result`; log config lives in the device — zero global mutable state |
+| device | `horizon/device/device.c` | ordered bring-up `nvInitialize→nvFenceInit→nvMapInit→nvGpuInit→GetCharacteristics→nvAddressSpaceCreate→GetVARegions`, reverse unwind on every failure; characteristics query is **required** (no big-page fallback); live-object counters |
+| memory | `horizon/memory/` | NvMap-backed, truthful cacheability (cached heap registered cacheable), id/handle exposed as distinct concepts, range-checked flush (clean) / invalidate (civac), all rounding overflow-checked, 32-bit nvmap limits reject |
+| vm | `horizon/vm/` | reservations first-class (ALLOC_SPACE non-fixed, R8); FIXED maps inside a reservation with the **reservation's** page size (R9); pure interval set rejects overlap pre-kernel; unmap checks its Result and clears the mem's recorded VA (memory-model §2 invariant) |
+| channel | `horizon/channel/` | NvGpuChannel + syncpoint identity, initial value recorded (R5), one-page internal cmdbuf, optional Zcull (queried size, 0x20000 align), explicit SET_OBJECT engine binds with queried classes (R7), retirement list, lost-channel fail-fast with decoded notifier |
+| submit | `horizon/submit/` | request+emit increment indivisible (R4); kickoff surfaced, never retried/slept; **no `nvFenceWait` anywhere in the submit path**; entry flags caller-selectable for the R3 measurement; debug-synchronous mode compiled-in, off by default |
+| sync | `horizon/sync/` | wrap-safe predicate `(int32_t)(cur-thr) >= 0`, 64-bit shadow extension, ns→µs single conversion (round-up, saturating), bounded waits, timeout returned never masked |
 
-**Build/compile status:** nothing was built. No compiler was invoked. No Mesa source was
-fetched. There is nothing in this repository to build yet.
+### Command encodings (facts re-derived, nothing copied)
 
-**Hardware status:** no Nintendo Switch is connected to this environment. **No claim in
-any of these documents has been verified on hardware.**
+Fence increment = WFI + SYNCPOINTA/B (the per-job sequence the Linux
+`nvgpu` kernel driver emits on gk20a/gm20b); method addresses/fields from
+NVIDIA open-gpu-doc `cla06f.h`; pushbuffer header format per envytools.
+GPU-side syncpoint wait (R10) emitted with the same class methods —
+validated only on host so far; `t_submit` proves or disproves it on
+hardware. Every constant carries its citation in
+`horizon/include/horizon_gpu/cmds.h`.
 
----
+### Tests
 
-## Findings summary
+Ten standalone `.nro`s (`tests/`, framework in `tests/common/`, console
+instructions in `tests/README.md`) printing PASS/FAIL summaries to stdout
+and `sdmc:/horizon_gpu_tests/*.log`. Four host-side unit test binaries
+(`tests/host/`) for the pure-logic modules.
 
-1. **The four "variants" are three near-identical snapshots.** 71 of 88 files are
-   byte-identical across all four. `master` and `triple-buffer` differ only in `LICENSE`
-   and `README.md` — not one line of code. Only `nvk-wsi` is a genuinely earlier snapshot.
-2. **The differentiating code is inside the patch, not the tree.** The big patch embeds a
-   640-line WSI backend with `minImageCount = 3` (triple buffering) and a `g_zc_owner`
-   swapchain-recreate fix. The tracked standalone file is a stale 616-line copy with
-   neither — and `apply-wsi-switch.sh:15` copies the stale one over the patched one,
-   silently reverting both. The two build documents give contradictory instructions about
-   whether to run it.
-3. **Submission is synchronous by construction** — a full GPU drain after every submit, a
-   CPU wait on every dependency before submitting, and a global mutex spanning both.
-   Consequence: the reference's own tests must call `vkQueueWaitIdle` twice per frame.
-4. **"Zero-copy" still costs a full-resolution GPU copy per frame**, because the swapchain
-   requests `WSI_IMAGE_TYPE_CPU` and Mesa's common WSI then attaches a
-   `CmdCopyImageToBuffer` into a buffer the zero-copy path never reads.
-5. **Cache coherency is unresolved**: cached heap memory registered as `cacheable = false`,
-   zero CPU cache maintenance in the winsys, and a GPU L2 flush standing in for an ARM
-   D-cache invalidate it cannot perform.
-6. **A concrete memory bug**: VM_BIND unmap does not clear `bo->gpu_va`, so
-   `drmCloseBufferHandle` unmaps the same address a second time — potentially tearing down
-   a live mapping if the VA has been recycled.
-7. **Errors are logged but success is returned** — including after an MMU fault or a drain
-   timeout in the submit path.
-8. **Nothing in the toolchain is pinned** (Mesa by filename, untagged base image, undated
-   Rust nightly), `/work` is hardcoded and non-overridable in 25+ executed sites, and
-   personal Windows paths — two different usernames — leak into the documents and into the
-   Mesa patch itself.
-9. **Licence conflict**: `master` is GPL-2.0, the other three are AGPL-3.0, every README
-   claims GPL-2.0-or-later, and the upstream being patched is MIT.
+### Build & gates
+
+`Makefile` (devkitA64 via `$DEVKITPRO` only), `scripts/build-switch.sh`
+(container fallback `ghcr.io/d3fau4/nx-dev:latest`, override with
+`HORIZON_NX_IMAGE`), `scripts/check-layering.sh` (forbidden includes,
+nwindow/vi symbols, `g_dev` pattern, CPU waits outside sync/channel),
+`scripts/run-host-tests.sh` (host cc + ASan/UBSan).
 
 ---
 
-## Known failures / limitations of this audit
+## Tests executed (in this environment)
 
-- **No hardware verification.** Everything is source analysis. The reference's claims of a
-  working triangle, textures, depth and TV present are recorded as claims, not facts
-  (`docs/reference-analysis.md` § 13).
-- **Numeric `DRM_NOUVEAU_*` / NVIF constants unverified.** The `drm-uapi` headers are not
-  vendored in the snapshots; they come from the Mesa tree fetched at build time. Only the
-  symbolic names could be checked. This does not affect our design, which does not
-  implement that uAPI.
-- **libnx internals unverified.** Which device node each `nv*Init` opens is an inference
-  from the libnx API, not stated in the snapshots. To be confirmed against libnx sources in
-  Phase 1.
-- **`UNDEFINED_SYMBOLS.txt` is of unknown provenance** — byte-identical across all four
-  snapshots and listing symbols the shim now defines, so it reflects a stale link.
+| Command | Class | Result |
+|---|---|---|
+| `scripts/run-host-tests.sh` (gcc 13.3, x86_64, ASan+UBSan) | **host build + run** | `h_align` 20/20, `h_va_space` 21/21, `h_syncpt_math` 19/19, `h_cmds` 18/18 — all PASS |
+| `scripts/check-layering.sh` | **host run** | OK — horizon/ Vulkan-, Mesa- and nwindow-free |
+| `docker run … ghcr.io/d3fau4/nx-dev:latest make clean && make all -j4` | **cross build** | exit 0; 10/10 `.nro` produced with `-Wall -Wextra -Werror`; toolchain: devkitA64 gcc 15.2.0, libnx from the image |
+
+**Hardware status: NOT RUN.** No claim below the host/cross line has been
+verified on a console. The Switch behaviour of bring-up, mapping, submit,
+fences — everything — is untested. Compilation success is not Switch
+behaviour.
+
+---
+
+## Phase 1 exit criteria — verification state
+
+| Criterion | State |
+|---|---|
+| Ten tests cross-compile (X) | ✅ done (see above) |
+| Pure logic builds/runs on host (H) | ✅ done (78 checks) |
+| Layering gate clean | ✅ done |
+| Tests 1–10 pass on hardware (HW) | ⏳ **pending — owner has a console (D4 answered yes); awaiting the run** |
+| ≥2 submits in flight without CPU wait (test 7) | code + test written; ⏳ HW pending |
+
+---
+
+## Known failures / limitations
+
+- **No hardware verification yet** (see above). The `.nro`s and
+  `tests/README.md` are ready; the owner needs to run them and report the
+  logs.
+- **R6 (cache coherency) not yet measurable.** Measuring GPU-write→CPU-read
+  visibility needs a GPU write primitive (inline-to-memory or DMA), which
+  needs engine methods beyond Phase 1's scope. t_map validates mapping
+  mechanics only; the R6 measurement moves to the first GPU write
+  (early Phase 4/5). Recorded as a deliberate deviation from the R6 note.
+- **Kickoff "ring full" is not yet distinguished from other rejections**
+  (synchronization.md §2.1): libnx's queue-full case is prechecked and
+  returns BUSY, but a kernel-side rejection code map needs hardware data;
+  t_submit records the raw `Result` for that.
+- **`nvGpuChannelGetErrorNotification` "no error" detection** assumes a
+  zero timestamp means the notifier never fired; t_channel verifies this
+  on hardware.
+- The two rollback paths in `submit.c` adjust libnx's public
+  `NvGpuChannel` fields (`num_entries`, `fence_incr`) directly; correct
+  against libnx as pinned in the nx-dev image, revisit if libnx changes.
+
+## Measurements the hardware run must produce
+
+1. **R5**: syncpoint value at channel creation (t_channel/t_syncpt notes).
+2. **R3**: entry flags 0 vs `NOT_MAIN|NO_PREFETCH` (t_submit note).
+3. **R10**: GPU-side syncpoint-wait encoding outcome (t_submit note).
+4. **R8**: oversized-reservation error code (t_va_reserve note).
+5. Whether `Generic_16BX2` and big-page maps succeed (t_map notes).
 
 ---
 
 ## Pending decisions
 
-Full detail in `docs/known-risks.md`. Blocking ones first:
-
-| # | Decision | Needed by | Recommendation |
-|---|---|---|---|
-| D1 | Any literal code reuse from the GPL/AGPL reference? | now | **No.** Re-derive facts. Provenance of the WSI backend cannot even be audited. |
-| D4 | Is a Nintendo Switch available to run Phase 1 tests? | Phase 1 exit | Needed — otherwise Phase 1 stops at cross-compilation and every exit criterion stays unverified |
-| D2 | Mesa version to pin: 25.0.7 or current stable? | Phase 2 start | Current stable — better `nvkmd` surface, credible upstreaming; audit line references become approximate |
-| D3 | Mesa as git submodule or script-fetched checkout? | Phase 2 start | Submodule, with `scripts/fetch-mesa.sh` as the fallback for environments without submodule support |
-| D5 | Cache policy per Vulkan memory type | Phase 4 | Blocked on measuring R6 in Phase 1 |
-| D6 | Advertise timeline semaphores, or fix the upload queue? | Phase 4 | Defer |
+| # | Decision | State |
+|---|---|---|
+| D1 | Literal reuse from GPL/AGPL reference | unchanged: **no**; nothing copied in Phase 1 |
+| D4 | Switch available for Phase 1 tests | **answered: yes.** Verification now blocked only on the owner running `build/*.nro` (instructions: `tests/README.md`) |
+| D2/D3 | Mesa pin / submodule vs fetch | unchanged, due at Phase 2 start |
+| D5 | Cache policy per Vulkan memory type | still blocked on R6; R6 itself deferred to first GPU write (see limitations) |
+| D6 | Timeline semaphores vs upload queue | unchanged, Phase 4 |
 
 ---
 
 ## Next concrete task
 
-**Phase 1, item 1 — `horizon/device/`: `nv` bring-up, GM20B query, teardown.**
-
-Specifically:
-
-1. Define the public header `horizon/include/horizon_gpu/device.h`:
-   - `horizon_gpu_result` (carrying the libnx `Result` where one exists)
-   - `horizon_gpu_device_info` — chipset, GPC/TPC counts, big-page size, VA region
-     descriptors, syncpoint availability, arch — all **queried**, none hardcoded
-   - `horizon_gpu_device_create(const horizon_gpu_device_create_info*, horizon_gpu_device**)`
-   - `horizon_gpu_device_get_info`, `horizon_gpu_device_destroy`
-2. Implement `horizon/device/device.c`:
-   - ordered bring-up: `nvInitialize` → `nvFenceInit` → `nvMapInit` → `nvGpuInit` →
-     `nvAddressSpaceCreate`, each result checked, each failure unwinding in reverse
-   - `nvGpuGetCharacteristics()` is **required**; failure is an error, not a fallback to a
-     hardcoded big-page size
-   - live-object counters for the leak accounting in `docs/memory-model.md` § 8
-   - no file-scope mutable state whatsoever
-3. Write `tests/t_init.c` (Phase 1 test 1): create → assert the GM20B fields are plausible
-   → destroy → repeat twice in one process → assert all counters are zero.
-4. Add `scripts/check-layering.sh`: fail if anything under `horizon/` includes a Vulkan,
-   Mesa or `nwindow` header.
-
-This requires **no Mesa and no Rust** — it depends only on devkitA64 and libnx, which is
-what makes Phase 1 independently testable.
-
-**Blocked on:** D4 for hardware validation. The code, the test and the layering gate can be
-written and cross-compiled without it; only the *verification* is blocked.
+1. **Owner:** run the ten `.nro`s on the console per `tests/README.md`,
+   paste the logs; incorporate results here, fix whatever fails.
+2. After a green hardware run: **Phase 2 — toolchain** (`docs/milestones.md`),
+   starting with pinning devkitA64/libnx versions (the nx-dev image
+   currently pins them implicitly) in `toolchain/versions.env` and the
+   Meson cross file.
 
 ---
 
 ## Commit log for this phase
 
-Prepared locally, not pushed (no authorisation to push).
-
 | Commit | Scope |
 |---|---|
-| `docs: analyse reference NVK Horizon ports` | Skeleton, licences, all Phase 0 documents |
+| `horizon/debug: add result plumbing and context-owned logging` | result.h, log, status |
+| `horizon/device: add nv bring-up and GM20B query` | device + align helpers + testfw + t_init |
+| `horizon/memory: add NvMap-backed allocations` | memory + t_alloc + t_nvmap |
+| `horizon/vm: add GPU VA reservations and fixed maps` | vm + t_va_reserve + t_map |
+| `horizon/submit: add GPFIFO command emitters` | cmds (public, pure) |
+| `horizon/sync: add syncpoint fences with wrap-safe waits` | sync |
+| `horizon/channel,submit: add GPFIFO channels and async submission` | channel + submit |
+| `tests: add channel, submit, syncpoint, fence and teardown tests` | tests 6–10 |
+| `build,scripts: add devkitA64 Makefile, layering gate, host tests` | Makefile, scripts, tests/host |
+| `docs: record Phase 1 implementation status` | this file, tests/README.md |
+
+Pushed to `origin/claude/mesa-nvk-horizon-phase1-rp61t8` with the owner's
+authorisation (given at planning time).
