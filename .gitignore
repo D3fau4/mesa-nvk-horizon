@@ -1,0 +1,21 @@
+# Pinned Mesa checkout (populated by scripts/fetch-mesa.sh; see docs/architecture.md §4.1)
+/mesa/*
+!/mesa/.gitkeep
+
+# Build outputs
+/build/
+/build-*/
+*.o
+*.a
+*.elf
+*.nro
+*.nso
+*.nacp
+*.map
+
+# Toolchain caches
+/toolchain/sysroot/
+/toolchain/.cache/
+
+# Logs
+*.log
