@@ -77,19 +77,29 @@ static int full_cycle(test_ctx *t, int cycle)
                                  HORIZON_GPU_SUBMIT_DEFAULT, &f2);
         t_check(t, horizon_gpu_succeeded(res), "cycle %d: submit 2", cycle);
 
-        /* Destroying with work in flight must be refused... */
+        /* Destroying with work in flight must be refused — but whether
+         * the two NOP submits are still in flight when the destroy runs
+         * is a race against the GPU (the first hardware run caught this:
+         * cycle 2 found the work already retired). Both outcomes are
+         * legal; what is checked is that neither leaks nor crashes. */
         res = horizon_gpu_channel_destroy(chan);
-        if (res.status == HORIZON_GPU_ERR_BUSY)
+        if (res.status == HORIZON_GPU_ERR_BUSY) {
             t_note(t, "cycle %d: channel destroy while in flight refused "
                    "(BUSY) as required", cycle);
-        else
-            t_note(t, "cycle %d: in-flight destroy returned %s (work may "
-                   "already have retired)", cycle,
-                   horizon_gpu_status_str(res.status));
-
-        res = horizon_gpu_channel_wait_idle(chan, WAIT_NS);
-        t_check(t, horizon_gpu_succeeded(res), "cycle %d: wait_idle "
-                "(status=%s)", cycle, horizon_gpu_status_str(res.status));
+            res = horizon_gpu_channel_wait_idle(chan, WAIT_NS);
+            t_check(t, horizon_gpu_succeeded(res), "cycle %d: wait_idle "
+                    "(status=%s)", cycle,
+                    horizon_gpu_status_str(res.status));
+        } else if (horizon_gpu_succeeded(res)) {
+            t_note(t, "cycle %d: work already retired at destroy time; "
+                   "channel destroyed (destroy's reap ran the callbacks)",
+                   cycle);
+            chan = NULL;
+        } else {
+            t_check(t, false, "cycle %d: in-flight destroy returned %s "
+                    "(neither BUSY nor success)", cycle,
+                    horizon_gpu_status_str(res.status));
+        }
         t_check(t, retired == 1,
                 "cycle %d: retirement callback ran exactly once (%d)",
                 cycle, retired);
