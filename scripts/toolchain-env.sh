@@ -67,16 +67,16 @@ export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC
 
 # Run a command with the cross toolchain reachable. The image's default
-# PATH omits devkitA64/bin (measured; recorded in versions.env), and the
-# Meson cross file resolves its [binaries] by bare name, so the bin
-# directory is prepended in both modes.
+# PATH omits devkitA64/bin and portlibs/switch/bin (measured; recorded
+# in versions.env), and the Meson cross file resolves its [binaries] by
+# bare name, so all three bin directories are prepended in both modes.
 #
 # In container mode the tree is mounted at the *same* path as on the
 # host, so paths in diagnostics, depfiles and Meson's build.ninja are
 # valid on both sides — and no container workdir is hardcoded
 # (scripts/check-no-abs-paths.sh).
 horizon_run() {
-    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}"
+    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}"
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         # A local install's rustc is already on the developer's PATH.
         PATH="${_hz_bins}:${PATH}" "$@"
