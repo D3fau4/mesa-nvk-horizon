@@ -448,9 +448,16 @@ successfully compiled for Horizon.
 
 Two further items handed to Phase 3, found here rather than later:
 
-- `Checking for size of "void*" : -1`. `needs_exe_wrapper = true` means
-  Meson cannot run a test program, so the size comes back unknown. Mesa
-  will need this answered by a cross property rather than by execution.
+- `Checking for size of "void*" : -1`. **Corrected in Phase 3 (see
+  "Phase 3 — item 3" below): this was recorded here as a consequence of
+  `needs_exe_wrapper = true`, and that was wrong.** Meson's size check
+  is a *compile*-time binary search, not an execution, so an exe wrapper
+  has nothing to do with it. The real cause was this repository's own
+  cross file putting `-Werror` in `c_args`, which Meson also passes to
+  its detection snippets; the snippet tripped `-Werror=unused-variable`.
+  With the warnings moved out, the same configure answers
+  `void* : 8`. `needs_exe_wrapper = true` is unaffected and stays — it
+  is correct, there is no emulator.
 - `WARNING: cannot auto-detect -mtls-dialect when cross-compiling`.
   Directly adjacent to the open `-mtp=soft` sub-risk in R13.
 
