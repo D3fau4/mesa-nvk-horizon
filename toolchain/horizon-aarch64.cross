@@ -1,0 +1,176 @@
+# Meson cross file — Horizon OS / aarch64 (Nintendo Switch, Tegra X1).
+#
+# For horizon/ and the Phase 1 tests today, and for the Mesa build in
+# Phase 3. It contains no path from anybody's machine
+# (scripts/check-no-abs-paths.sh).
+#
+# HOW TO USE IT
+# -------------
+# This file references a `devkitpro` constant that it deliberately does
+# NOT define — defining it would mean writing an absolute path here.
+# Supply it with a second, generated cross file:
+#
+#   scripts/gen-cross-file.sh                 # writes build/toolchain/devkitpro.cross
+#   meson setup --buildtype=plain \
+#       --cross-file build/toolchain/devkitpro.cross \
+#       --cross-file toolchain/horizon-aarch64.cross  build/meson
+#
+# Meson shares [constants] across every --cross-file given on one
+# command line, and the generated file is three lines holding only
+# $DEVKITPRO. scripts/configure-horizon.sh does all of this for you.
+#
+# Also required: $DEVKITPRO/devkitA64/bin must be on PATH, because the
+# [binaries] below are bare names on purpose (an absolute compiler path
+# is exactly what devkitPro's own generator bakes in — see NOTES). The
+# nx-dev image's default PATH does *not* include it; the scripts add it.
+#
+# NOTES ON PROVENANCE
+# -------------------
+# The [host_machine] description matches devkitPro's own generator,
+# $DEVKITPRO/meson-toolchain.sh from dkp-meson-scripts (system=horizon,
+# cpu_family=aarch64, cpu=cortex-a57, endian=little), so a Mesa build
+# configured with this file sees the same machine devkitPro's ecosystem
+# expects.
+#
+# The compiler flags instead match this project's Makefile, which is the
+# build that was verified on real hardware (STATUS.md, ten .nro, 10/10
+# PASS) — not devkitPro's switchvars.sh defaults. The one deliberate
+# divergence: switchvars.sh uses `-fPIC -ftls-model=local-exec`, the
+# Makefile uses `-fPIE`. Keeping -fPIE means the Meson output is
+# comparable to the artefacts that were actually tested on console.
+# Changing it is a hardware-affecting change, not a build cleanup.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+
+[binaries]
+# Bare names, resolved through PATH. gcc-ar rather than plain ar so the
+# build keeps working if LTO is ever enabled; this mirrors the Makefile.
+c         = 'aarch64-none-elf-gcc'
+cpp       = 'aarch64-none-elf-g++'
+ar        = 'aarch64-none-elf-gcc-ar'
+strip     = 'aarch64-none-elf-strip'
+nm        = 'aarch64-none-elf-gcc-nm'
+ranlib    = 'aarch64-none-elf-gcc-ranlib'
+objcopy   = 'aarch64-none-elf-objcopy'
+pkg-config = 'aarch64-none-elf-pkg-config'
+
+# Horizon packaging tools (switch-tools). Needed by the .nro rules and,
+# later, by anything that packages a Mesa-linked binary.
+elf2nro   = 'elf2nro'
+elf2nso   = 'elf2nso'
+nacptool  = 'nacptool'
+
+# Mesa's root meson.build calls add_languages('rust') unconditionally
+# for the nouveau Vulkan driver, and fails at configure time with
+# "'rust' compiler binary not defined in cross file [binaries] section"
+# without this. Found by actually running `meson setup` against the
+# pinned Mesa tree, not by reading.
+#
+# The target is the one rustc already ships (tier 3, os = "horizon");
+# docs/rust-toolchain.md explains why no custom target is defined.
+rust      = ['rustc', '--target', 'aarch64-nintendo-switch-freestanding']
+
+# rust.bindgen() generates NAK's and NIL's C bindings.
+bindgen   = 'bindgen'
+
+[built-in options]
+c_std = 'gnu11'
+
+# Warnings are listed explicitly in c_args instead of being derived from
+# Meson's warning_level/werror. The Makefile is the hardware-verified
+# reference build; this path has to emit the same flags, not Meson's
+# interpretation of an abstraction level. Configure with
+# --buildtype=plain so Meson adds no -O/-g of its own either.
+warning_level = '0'
+werror = false
+
+# Flag groups, in order: Tegra X1 / Cortex-A57 architecture (the
+# Makefile's ARCH), code generation, warnings (see the note above),
+# platform. Meson's machine-file parser does not accept comments inside
+# a multi-line value, hence this preamble rather than inline notes.
+c_args = [
+  '-march=armv8-a+crc+crypto',
+  '-mtune=cortex-a57',
+  '-mtp=soft',
+  '-fPIE',
+  '-g',
+  '-O2',
+  '-ffunction-sections',
+  '-Wall',
+  '-Wextra',
+  '-Werror',
+  '-D__SWITCH__',
+  '-I' + devkitpro + '/libnx/include',
+  ]
+
+# -Wl,--gc-sections is what makes -ffunction-sections above worth
+# anything. -lnx last: devkitPro's own generator likewise appends $LIBS
+# to the link arguments.
+c_link_args = [
+  '-march=armv8-a+crc+crypto',
+  '-mtune=cortex-a57',
+  '-mtp=soft',
+  '-fPIE',
+  '-g',
+  '-specs=' + devkitpro + '/libnx/switch.specs',
+  '-Wl,--gc-sections',
+  '-L' + devkitpro + '/libnx/lib',
+  '-lnx',
+  ]
+
+cpp_args = [
+  '-march=armv8-a+crc+crypto',
+  '-mtune=cortex-a57',
+  '-mtp=soft',
+  '-fPIE',
+  '-g',
+  '-O2',
+  '-ffunction-sections',
+  '-Wall',
+  '-Wextra',
+  '-Werror',
+  '-D__SWITCH__',
+  '-I' + devkitpro + '/libnx/include',
+  ]
+
+cpp_link_args = [
+  '-march=armv8-a+crc+crypto',
+  '-mtune=cortex-a57',
+  '-mtp=soft',
+  '-fPIE',
+  '-g',
+  '-specs=' + devkitpro + '/libnx/switch.specs',
+  '-Wl,--gc-sections',
+  '-L' + devkitpro + '/libnx/lib',
+  '-lnx',
+  ]
+
+[properties]
+# aarch64 Horizon binaries cannot run on the build machine, and there is
+# no emulator wired up: Meson must not try to run compiled test
+# programs. Anything needing a runtime answer is a hardware test
+# (docs/milestones.md HW class), not a configure-time check.
+needs_exe_wrapper = true
+
+# For the Phase 3 Mesa build: where the cross toolchain's sysroot and
+# the devkitPro port libraries live.
+sys_root = devkitpro + '/devkitA64/aarch64-none-elf'
+pkg_config_libdir = devkitpro + '/portlibs/switch/lib/pkgconfig'
+
+# Read by our meson.build (meson.get_external_property) so it does not
+# have to reconstruct these itself.
+libnx_prefix = devkitpro + '/libnx'
+devkitpro_prefix = devkitpro
+
+[host_machine]
+system = 'horizon'
+cpu_family = 'aarch64'
+cpu = 'cortex-a57'
+endian = 'little'
+
+[target_machine]
+system = 'horizon'
+cpu_family = 'aarch64'
+cpu = 'cortex-a57'
+endian = 'little'

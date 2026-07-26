@@ -22,5 +22,9 @@ if ! command -v docker >/dev/null; then
     exit 1
 fi
 
+# The tree is mounted at the *same* path inside the container as outside.
+# Two reasons: it keeps a hardcoded container workdir out of this script
+# (scripts/check-no-abs-paths.sh), and it makes compiler diagnostics and
+# generated depfiles name paths that also resolve on the host.
 exec docker run --rm -e DEVKITPRO=/opt/devkitpro \
-    -v "$PWD":/work -w /work "$IMAGE" make "$@"
+    -v "$PWD":"$PWD" -w "$PWD" "$IMAGE" make "$@"

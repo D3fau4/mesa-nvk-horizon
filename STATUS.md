@@ -1,13 +1,38 @@
 # STATUS
 
 **Last updated:** 2026-07-26
-**Branch:** `claude/mesa-nvk-horizon-phase1-rp61t8`
+**Branch:** `claude/mesa-nvk-horizon-phase2-toolchain-4cbebj`
 
 ---
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. Hardware-verified through
+**Phase 2 — toolchain. Complete for everything verifiable without a
+console; see "Phase 2" below.** The Meson cross file exists and is
+exercised (all ten Phase 1 `.nro` cross-compile through it, identical in
+size to the Makefile's), D2 and D3 are decided, R13 is answered — no
+Rust sysroot is needed — and the absolute-path gate is in place and
+green.
+
+On pinning, the phase ended somewhere different from where
+`docs/milestones.md` pointed it: **the Switch toolchain is deliberately
+not pinned.** libnx, devkitA64 and the portlibs belong to the
+environment (`$DEVKITPRO` or the container image) and are neither frozen
+nor updated from this repository. Only the inputs this project chooses —
+Mesa, Meson, the Rust target — are pinned. What replaces the pin is
+recording, per build, what was actually used. See "What is pinned, and
+what deliberately is not" below.
+
+**Carried over from Phase 1 and still open:** the second review round's
+fixes have not been re-run on real hardware. Phase 2 changed no code in
+`horizon/`, so that item is unchanged, not resolved. See "Second review
+round" below.
+
+---
+
+## Phase 1 (previous phase)
+
+**`horizon/` standalone GPU layer. Hardware-verified through
 the Codex review round (see below); a second, owner-authored review
 round (2026-07-26, same day) found 20 further issues in `horizon/` and
 `tests/`, now fixed (host + cross build green, host tests 81 -> 103) but
@@ -108,12 +133,18 @@ files were reported missing — note the tests write them to
 | Criterion | State |
 |---|---|
 | Ten tests cross-compile (X) | ✅ |
-| Pure logic builds/runs on host (H) | ✅ 78/78 |
+| Pure logic builds/runs on host (H) | ✅ 103/103 |
 | Layering gate clean | ✅ |
-| Tests 1–10 pass on hardware (HW) | ✅ **all ten PASS** (8/10 first run + t_channel 17/17 and t_teardown 28/28 on the confirmation re-run) |
-| ≥2 submits in flight without CPU wait (test 7) | ✅ **verified on hardware** (148 µs for both submits, single wait at the end) |
+| Tests 1–10 pass on hardware (HW) | ⚠️ **all ten PASSED, on code that has since changed** — 8/10 on the first run, plus `t_channel` 17/17 and `t_teardown` 28/28 on the confirmation re-run. Measured at `732b58c`; the second review round (`747b915`) then changed `horizon/`. **Not re-run since.** |
+| ≥2 submits in flight without CPU wait (test 7) | ⚠️ **measured on hardware** (148 µs for both submits, single wait at the end) — same caveat: `submit.c` changed in `747b915` |
 
-**Every Phase 1 exit criterion is met.**
+**Every Phase 1 exit criterion was met at `732b58c`.** Two of them are
+hardware criteria and `horizon/` changed afterwards, so they are
+*stale*, not *failed*: nothing suggests a regression, and the changed
+code builds clean and passes 103/103 host tests. But a ✅ here would
+claim console evidence for code no console has run, which is exactly the
+host / cross / hardware distinction this project refuses to blur
+(CLAUDE.md). They go back to ✅ after the re-run in "Next concrete task".
 
 ---
 
@@ -134,9 +165,48 @@ files were reported missing — note the tests write them to
 |---|---|---|
 | D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
 | D4 | Switch available | **yes — closed.** Full run + confirmation re-run done |
-| D2/D3 | Mesa pin / checkout mechanism | due at Phase 2 start |
+| D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592` |
+| D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
+
+### D2 — Mesa version: `mesa-26.1.5`
+
+Current stable series at Phase 2 start (released 2026-07-15; 26.2 had
+branched but was only at rc2). Chosen over the reference port's 25.0.7
+for a modern `nvkmd` surface — which is exactly the interface Phase 4
+implements — and a credible upstreaming path. This is the
+recommendation `docs/known-risks.md` R14 already carried.
+
+Accepted cost: line references in `docs/reference-analysis.md` describe
+a 25.0.7 tree and are now approximate. They still point at the right
+file and concept.
+
+Pinned as `MESA_TAG` / `MESA_COMMIT` in `toolchain/versions.env`. The
+commit, not just the tag, because tags can be moved;
+`scripts/fetch-mesa.sh` verifies the SHA it actually got.
+
+### D3 — Mesa checkout: script-fetched, not a submodule
+
+`mesa/` stays gitignored and is populated by `scripts/fetch-mesa.sh`.
+Reasons, in order of weight:
+
+1. `docs/milestones.md` Phase 2 item 8 says *every* version is pinned in
+   `toolchain/versions.env`. A submodule splits the Mesa pin between a
+   gitlink and that file — two sources of truth that can disagree.
+2. Phase 3 applies `mesa-patches/` into `mesa/`. A patched submodule is
+   permanently dirty, and its recorded SHA can drift by accident.
+3. A clone with `--recursive` would pull the full Mesa history for
+   everyone, including CI, whether or not they build Mesa.
+
+The fallback the submodule option was meant to provide is kept anyway:
+if git-over-https is blocked, the script downloads GitLab's archive
+addressed by *commit*, so the content is the pinned commit by
+construction.
+
+Measured here: `git ls-remote` and `git fetch` against
+`gitlab.freedesktop.org` both work from this environment, so the git
+path is the one actually exercised (503 MB checked out, SHA verified).
 
 ---
 
@@ -215,24 +285,302 @@ regression from this round). **Not yet re-run on real hardware.**
 
 ---
 
+## Phase 2 — toolchain (2026-07-26)
+
+No code in `horizon/` was touched. This phase is toolchain only.
+
+### Environment facts (measured, not assumed)
+
+| Resource | State |
+|---|---|
+| `pkg.devkitpro.org`, `apt.devkitpro.org` | **403** — devkitPro cannot be installed or queried over the network here |
+| `gitlab.freedesktop.org` | reachable; `git ls-remote`, `git fetch` and `/-/archive/` tarballs all work |
+| `github.com` raw / codeload | **403 / 404** |
+| `pypi.org` | reachable |
+| Containers (`--bridge=none`) | **no network**; anything fetched must be fetched on the host and mounted in |
+
+### What is pinned, and what deliberately is not
+
+**Owner's decision, taken during this phase: the Switch toolchain
+belongs to the environment, not to this repository.** libnx, devkitA64
+and the portlibs are neither pinned nor updated from here — they are
+whatever `$DEVKITPRO` points at, or whatever is inside the container
+image the developer runs. Updating libnx is `dkp-pacman -Syu` or a newer
+image, not an edit to this tree. libnx moves fast and this backend is
+written against exactly the `nv` services it exposes, so following it is
+worth more than freezing it.
+
+`toolchain/versions.env` is split accordingly:
+
+| Half | Contents |
+|---|---|
+| ENVIRONMENT | How to *reach* the toolchain only: image repo/tag, the devkitPro prefix inside it, the `PATH` quirk, the target triple. **No version of anything.** |
+| PINNED | What this project chooses: Mesa (`mesa-26.1.5` @ `6a02618ccf6c`), Meson `1.11.2`, the Rust target name. |
+
+That line is deliberate: inputs this project *chooses* are pinned; the
+environment it *runs in* is not. Mesa stays pinned because
+`mesa-patches/` applies to a specific tree and a Mesa that moved
+underneath would break Phase 3 silently.
+
+**What replaces pinning is recording.** `scripts/package-horizon.sh`
+writes into `build/pkg/MANIFEST.txt`, per build: the resolved image
+digest, the live `dkp-pacman -Q` output, the rustc banner, each
+artefact's sha256, and the exact
+`HORIZON_NX_IMAGE=…@sha256:… scripts/build-horizon.sh` command that
+rebuilds against the same toolchain. **This is what keeps a hardware
+result attributable** when the inputs are not frozen.
+`scripts/print-toolchain-versions.sh` is a read-only reporter feeding
+it; it compares against nothing and updates nothing.
+
+Observed in this environment at the time of writing (recorded as
+evidence, **not** as a pin): devkitA64 `r29.2-1`, gcc `15.2.0-7`
+(`aarch64-none-elf-gcc (devkitA64) 15.2.0`), binutils `2.45.1-2`
+(`GNU ld 2.45.1`), newlib `4.6.0.20260123-4`, switch-tools `1.13.1-1`,
+libnx `4.12.0-1`, deko3d `0.5.0-1`, `rustc 1.99.0-nightly (008fa22ce
+2026-07-25)`, image digest `sha256:61a38fe4…`.
+
+Why a libnx version number would have been misleading even if we had
+pinned it — R15 in concrete form: the image installs the libnx package
+and then builds `switchbrew/libnx` git HEAD over it.
+`dkp-pacman -Qkk libnx` → **`226 total files, 205 altered files`**, with
+`libnx.a` and `libnxd.a` mismatching on size, MD5 *and* SHA256. The
+package version describes 21 of 226 files.
+`print-toolchain-versions.sh` prints that measurement every time, so the
+limitation is visible rather than assumed.
+
+Also recorded because it bites: the image's own `PATH` does **not**
+include `devkitA64/bin`. Anything resolving the cross compiler by bare
+name — which the Meson cross file does deliberately — must prepend it.
+
+### R13 answered — no Rust sysroot is built
+
+Full evidence in `docs/rust-toolchain.md`, taken from the checked-out
+tree at `MESA_COMMIT`. Summary: `std` **is** required as Mesa links
+NAK/NIL today (no `#![no_std]` anywhere in `src/`; both built with
+`rust_abi : 'c'` = `--crate-type staticlib`, which bundles libstd), but
+the dependency is seven sites deep, all with direct replacements, and
+the files using `std::process`/`fs`/`env` are `#[cfg(test)]`-gated and
+never reach the driver. Closing the gap is a small `mesa-patches/` job
+for Phase 3/4.
+
+Milestone items 3–5 (custom target JSON, `rustc` wrapper, std sysroot)
+are therefore **not needed**: rustc already ships
+`aarch64-nintendo-switch-freestanding` (tier 3, `os = "horizon"`,
+`std = false`, `panic = abort`, `+v8a,+neon,+crypto,+crc`, PIE) matching
+devkitA64's flags. `toolchain/aarch64-horizon.json` is committed only as
+a drift snapshot, checked by `scripts/check-rust-target.sh`.
+
+This is a **source-level** conclusion. No Rust has been compiled for
+Horizon yet.
+
+### Meson cross file and build
+
+`toolchain/horizon-aarch64.cross` is committed with **no absolute
+paths**: bare `[binaries]` names resolved through `PATH`, and a
+`devkitpro` constant it deliberately never defines.
+`scripts/gen-cross-file.sh` writes that constant — and only that — into
+a gitignored three-line file. Verified that Meson shares `[constants]`
+across every `--cross-file` on one command line, so the two compose
+without duplication. devkitPro's own generator
+(`$DEVKITPRO/meson-toolchain.sh`) bakes in `which`-resolved absolute
+paths, which is exactly what the gate forbids; its `[host_machine]`
+block is matched exactly (`horizon`/`aarch64`/`cortex-a57`/`little`).
+
+`meson.build` builds `libhorizon_gpu.a` and the ten `.nro`. The
+`Makefile` is untouched and remains the reference path — it produced the
+artefacts verified on console.
+
+**Comparing the two paths found one real divergence.** Meson appends
+`-fPIC` to static-library objects (`b_staticpic` defaults true),
+overriding the cross file's `-fPIE` for those objects but not for the
+executables' own. Measured on `t_alloc`: 48 bytes of `.text`, 32 of
+`.bss`. Fixed with `b_staticpic=false`, plus a hard error in
+`meson.build` if it is ever true — because Meson applies
+`default_options` only on a build directory's *first* configure, so
+reconfiguring an old directory would silently restore it.
+
+After the fix the paths agree:
+
+| Check | Result |
+|---|---|
+| `.nro` size, all ten tests | **identical 10/10** |
+| Symbol sets (`nm`), `t_init` | identical (empty diff) |
+| `.bss` symbols, `t_init` | identical count (149) and summed size (17183 bytes) |
+| TLS region (`__tls_end - __tls_start`) | identical (`0x410`) |
+| Residual | 32 bytes of `.bss` section padding, ≤16 of `.text` — inter-object padding from Meson's `--start-group`/archive ordering vs the Makefile's explicit order |
+
+Also checked rather than assumed: Meson's automatic
+`-D_FILE_OFFSET_BITS=64` is a **no-op** on devkitA64's newlib (`off_t`
+already 8 bytes, `struct stat` `0x68` with and without), so it is left
+alone.
+
+### The cross file's "+ Mesa" half, validated
+
+`docs/milestones.md` item 2 asks for a cross file for `horizon` **and
+Mesa**. The Phase 1 half was exercised by building the ten `.nro`; the
+Mesa half was, at first, `sys_root` and `pkg_config_libdir` written from
+reasoning and never run. Configuring the pinned Mesa tree with it closed
+that gap.
+
+It works further than expected — Mesa accepts the machine description,
+detects `aarch64-none-elf-gcc/g++ 15.2.0` for the host machine and gets
+840 lines into its own `meson.build` — and it found one real defect **in
+the cross file**, not in Mesa:
+
+- Mesa calls `add_languages('rust')` unconditionally for the nouveau
+  Vulkan driver and fails with *"'rust' compiler binary not defined in
+  cross file [binaries] section"*. Fixed: `rust` and `bindgen` are now
+  declared, and `horizon_run` puts the image's rustup on `PATH` (the
+  image keeps it outside the default one).
+
+With that, configuration proceeds to the Rust sanity check and stops
+where R13 predicted:
+
+```
+error[E0463]: can't find crate for `std`
+  = note: the `aarch64-nintendo-switch-freestanding` target may not be installed
+  = help: consider building the standard library from source with `cargo build -Zbuild-std`
+```
+
+**This is R13 confirmed against the toolchain**, not just against the
+source. It is a failure reproduced deliberately — no Rust has been
+successfully compiled for Horizon.
+
+Two further items handed to Phase 3, found here rather than later:
+
+- `Checking for size of "void*" : -1`. `needs_exe_wrapper = true` means
+  Meson cannot run a test program, so the size comes back unknown. Mesa
+  will need this answered by a cross property rather than by execution.
+- `WARNING: cannot auto-detect -mtls-dialect when cross-compiling`.
+  Directly adjacent to the open `-mtp=soft` sub-risk in R13.
+
+The probe wrote nothing and patched nothing; the build directory was
+deleted afterwards.
+
+### How far Mesa's non-driver core gets — the Phase 3 starting line
+
+Phase 3's exit criterion is "Mesa configures for `horizon` and builds
+the non-driver core". Configuring with no drivers at all skips the Rust
+check entirely (no nouveau driver, no `add_languages('rust')`), so that
+criterion is reachable without touching R13. Probed with
+`-Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= -Dopengl=false
+-Dllvm=disabled`:
+
+1. **`Python (3.x) mako module >= 0.8.0 required to build mesa`** —
+   milestone item 6 in concrete form. Mesa's generators are Python and
+   the image ships no mako, no pyyaml, no pip and has no network.
+   **Fixed here**, pinned in `versions.env` and installed on the host by
+   `horizon_ensure_python_deps`.
+2. With that, configure runs deep into real compile-and-link checks
+   against the Horizon toolchain — `strtod` locale support, `Bsymbolic`,
+   version scripts, `-Wl,--build-id=sha1` (milestone Phase 3 item 8,
+   already answered: **supported**) — and stops at:
+
+   ```
+   Checking for function "dlopen" : NO
+   mesa/meson.build:1684:16: ERROR: C shared or static library 'dl' not found
+   ```
+
+**That is where Phase 3 starts**: `libdl` does not exist on
+newlib/libnx, which is Phase 3 item 3 ("newlib/libnx gaps"). Not a
+toolchain problem — the toolchain is answering correctly.
+
+Worth noting for Phase 3's plan: the milestone lists OS detection first,
+but the configure order means the newlib/libnx gaps are what actually
+block first. The list is a set of items to complete, not an order to
+follow.
+
+### Commands run and results
+
+All on this machine. **Host build/run (H)** and **cross build (X)** only
+— nothing in this phase needed a console.
+
+| Command | Class | Result |
+|---|---|---|
+| `rm -rf build && scripts/configure-horizon.sh` | H | installs pinned meson 1.11.2, writes cross constants, configures; host compiler detected as `aarch64-none-elf-gcc (devkitA64) 15.2.0`; 32 build targets |
+| `scripts/build-horizon.sh` | X | **10/10 `.nro`**, `-Wall -Wextra -Werror` clean, zero warnings |
+| `scripts/package-horizon.sh` | H | 10 copied + `MANIFEST.txt` with sha256 per artefact and the toolchain pins |
+| `scripts/build-switch.sh all -j4` (Makefile path) | X | exit 0, 10 `.nro`, no warnings (`-j4` did **not** hit the overlayfs race this time) |
+| `scripts/check-no-abs-paths.sh` | H | **OK** (`toolchain scripts Makefile meson.build`) |
+| `scripts/check-layering.sh` | H | OK |
+| `scripts/check-rust-target.sh` | H | OK — built-in target matches the snapshot (reports drift, exits 0: the environment's nightly is not ours to pin) |
+| `scripts/print-toolchain-versions.sh` | H | reports the live toolchain; feeds the artefact manifest |
+| `scripts/run-host-tests.sh` | H | **103/103 PASS** (6 suites), no regression |
+| `scripts/fetch-mesa.sh` | H | `mesa-26.1.5` checked out, **HEAD verified = `6a02618ccf6c…`**, 503 MB |
+| Every script re-run a second time | H | idempotent: "already installed" / "unchanged" / "0 copied, 10 already current" / "nothing to do" |
+
+### Phase 2 exit criteria
+
+| Criterion (`docs/milestones.md`) | State |
+|---|---|
+| A clean container reproduces the toolchain from `scripts/` alone (H) | ✅ `build/` deleted entirely, then configure → build → package from scripts only. **Read as "reconstructs against the current environment", not "bit-identical forever"** — with the Switch toolchain unpinned by decision, a rebuild months later uses a newer libnx. `build/pkg/MANIFEST.txt` records which one, and the `HORIZON_NX_IMAGE=…@sha256:…` command to go back to it |
+| `grep` for `/home/`, `/work`, `D:\`, `/mnt/` in `toolchain/` and `scripts/` returns nothing | ✅ gate green — and it **caught a real violation on its first run** (`scripts/build-switch.sh` mounted at a hardcoded `/work`; now mounts at `"$PWD"`) |
+| Phase 1 tests cross-compile with the new cross file (X) | ✅ 10/10, identical in size to the Makefile's |
+
+**Every Phase 2 exit criterion is met.**
+
+### Deviations from the milestone item list, with reasons
+
+| Item | Disposition |
+|---|---|
+| 1. devkitA64 / devkitPro pinned by package version | **Deliberately not done** — owner's decision during this phase. The Switch toolchain belongs to the environment; it is read and recorded per build, never pinned. R15's original mitigation is rejected rather than implemented, and R15 now says so. The `resolved from $DEVKITPRO` half of the item *is* done |
+| 3. Rust target JSON for Horizon | **Not created as a target.** rustc ships `aarch64-nintendo-switch-freestanding`; the file is committed only as a drift snapshot (R13) |
+| 4. `rustc` wrapper | **Not needed** — no custom target, so nothing to wrap |
+| 5. Rust `std`/`core` sysroot, pinned nightly | **Not built** — R13's answer removes it. The nightly is the environment's, not pinned here |
+| 6. Mesa host tools (native build for generators) | **Done**, once the probe below showed what the item concretely is: Mesa's generators are Python and need `mako` (and `pyyaml`), which the image ships neither of, along with no pip and no network. Pinned in `versions.env` and provisioned by `horizon_ensure_python_deps`. An earlier revision of this file recorded the item as deferred; that was wrong — it was a Phase 2 gap and it is now closed |
+
+### Is Phase 2 finished?
+
+Yes, for everything verifiable without a console. All three exit
+criteria are met, and the one item that was genuinely outstanding
+(milestone item 6) is closed above.
+
+**One thing is owed and it is not Phase 2's:** the ten `.nro` have not
+been re-run on hardware since Phase 1's second review round. Phase 2
+changed no `horizon/` code, so nothing here made that worse — but the
+longer it waits, the more work sits on an unreconfirmed base. It does
+not block Phase 3, which touches Mesa and not `horizon/`; it does block
+Phase 4, which builds directly on `horizon/`.
+
+### Known gaps at the end of Phase 2
+
+- Nothing Rust has been **compiled** for Horizon. R13's answer is
+  source-level, and the `-mtp=soft` sub-risk stays open until it is.
+- `mesa/` is fetched but **never configured or built**. That is Phase 3.
+- The `.nro` produced by the Meson path are a **cross build**, not
+  hardware-verified. They are identical in size to the Makefile's, whose
+  hardware run is itself still pending re-confirmation (see above).
+
+---
+
 ## Next concrete task
 
 **Re-run the ten `.nro`s on real hardware** to close out the second
-review round above — the changed paths (channel create/destroy, vm_map,
+review round — the changed paths (channel create/destroy, `vm_map`,
 device big-page handling, the GPFIFO command emitters) are exercised by
-every test, not just one. Once confirmed, Phase 1 returns to fully
-verified and:
+every test, not just one. `build/pkg/` now holds the ten `.nro` plus a
+`MANIFEST.txt` recording each artefact's sha256 against the toolchain
+pins, so the result can be attributed to an exact build. Phase 2 changed
+no `horizon/` code, so either build path's artefacts are valid for this.
 
-**Phase 2 — toolchain** (`docs/milestones.md`) is next, pending the
-owner's go-ahead:
+That is the owner's step and does not block **Phase 3 — minimal Horizon
+support in Mesa** (`docs/milestones.md`), which touches Mesa rather than
+`horizon/` and can start now. Its starting line is measured, not
+guessed:
 
-1. Pin devkitA64 / libnx / nx-dev image versions in
-   `toolchain/versions.env` (today they are pinned only implicitly by the
-   image digest).
-2. Meson cross file `toolchain/horizon-aarch64.cross`; decide D2 (Mesa
-   version) and D3 (submodule vs fetched checkout) at phase start.
-3. `scripts/check-no-abs-paths.sh` gate and idempotent fetch/configure/
-   build/package scripts.
+1. **`libdl`** — `dlopen` is absent and `meson.build:1684` requires the
+   library. Phase 3 item 3. This is the first thing configure hits.
+2. Then the rest of item 3's newlib/libnx gaps as they surface, plus
+   `DETECT_OS_HORIZON` (item 1) and the Meson
+   `host_machine.system() == 'horizon'` handling (item 2) for the
+   compile stage that follows.
+3. Item 8 (build ID) is already answered: `-Wl,--build-id=sha1` is
+   supported by this toolchain.
+4. Each as a separate patch in `mesa-patches/`, never as an edited copy
+   of a Mesa file (CLAUDE.md rejected design 7).
+
+Already in place for it: `mesa/` checked out at `MESA_COMMIT`, the cross
+file validated against Mesa, and the generator dependencies provisioned.
 
 ---
 
@@ -256,3 +604,37 @@ owner's go-ahead:
 | `docs: record the first hardware run` | this update |
 | `docs: document the devkitA64 Docker fallback in CLAUDE.md` | CLAUDE.md |
 | `horizon,tests,build: fix Codex review findings` | channel/vm/submit/device fixes, t_submit R10 redesign, Makefile -j race |
+
+## Commit log for Phase 2
+
+| Commit | Scope |
+|---|---|
+| `scripts: add the absolute-path gate and fix its one violation` | `check-no-abs-paths.sh`; `build-switch.sh` `/work` → `"$PWD"` |
+| `toolchain: pin devkitA64, libnx, Mesa and Rust versions` | `versions.env`, `print-toolchain-versions.sh` |
+| `toolchain: add a path-free Meson cross file for Horizon/aarch64` | `horizon-aarch64.cross`, `toolchain-env.sh`, `gen-cross-file.sh` |
+| `build: add a Meson build for horizon_gpu and the ten Phase 1 tests` | `meson.build`, `configure-horizon.sh`, `build-horizon.sh` |
+| `scripts: add idempotent Mesa fetch and .nro packaging` | `fetch-mesa.sh`, `package-horizon.sh` |
+| `docs: answer R13 — no Rust sysroot is needed for Phase 2` | `rust-toolchain.md`, `aarch64-horizon.json`, `check-rust-target.sh`, `known-risks.md` |
+| `docs: record Phase 2 toolchain results` | this update |
+
+### Incident during Phase 2, recorded because it was destructive
+
+The first version of `scripts/fetch-mesa.sh` used
+`git -C mesa rev-parse --git-dir` to decide whether `mesa/` was already
+a repository. `mesa/` sits inside this repository and had no `.git` of
+its own, so that query answered for the **parent**: `git init` was
+skipped, and the following commands ran against `mesa-nvk-horizon`
+itself — `origin` was repointed at Mesa and Mesa's tree was checked out
+over the working tree.
+
+Nothing was lost. The branch ref was never touched; recovery was
+`git checkout` of the branch, `git remote set-url` back to the GitHub
+URL, deleting the fetched Mesa tag and removing `.git/shallow`.
+Verified afterwards: `git diff HEAD` empty, all three commits present,
+remote restored.
+
+The script now tests for the directory rather than asking git, and then
+**asserts** that `mesa/` really is its own repository before running
+anything that writes — aborting instead of falling through to the
+archive path. Its stderr is also no longer swallowed; suppressing it is
+what hid the failure at the time.
