@@ -1,0 +1,68 @@
+From f1411e2d3bd7ab91cb8c2a7b4446e40eeef1e208 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 23:13:16 +0000
+Subject: [PATCH 10/10] util/os_misc: query available memory through sysconf
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+os_get_available_system_memory() reads /proc/meminfo on Linux, sysctl on
+the BSDs, mach on Apple, GlobalMemoryStatusEx on Windows — and returns
+false everywhere else. _SC_AVPHYS_PAGES answers the same question
+portably and is already how os_get_total_physical_memory() and
+os_get_page_size() get theirs a few lines away, so use it as the last
+resort before giving up.
+
+Guarded on HAVE_SYSCONF *and* on _SC_AVPHYS_PAGES being defined: the
+name is a common extension (glibc, Solaris, and others) rather than
+base POSIX, so a C library with sysconf but without it keeps the
+existing "return false". Placed after every existing branch, so no
+platform that answers today changes how it answers.
+
+"Available" is deliberately not "free": _SC_AVPHYS_PAGES is defined as
+the pages currently available to a process, which is the same quantity
+MemAvailable and HW_USERMEM approximate on the branches above.
+
+mesa-nvk-horizon: Phase 3 item 6 (physical memory / page size queries)
+Why: without this the function returns false on Horizon, which is not
+  the harmless "unknown" it looks like. NVK installs it as the sysmem
+  heap's budget callback (nvk_physical_device.c:1556), so heapBudget
+  for that heap comes out 0 — and on a Tegra SoC it is the *only* heap
+  — violating the VK_EXT_memory_budget clause the code itself quotes
+  three lines further down at nvk_physical_device.c:1725, plus a
+  vk_loge on every vkGetPhysicalDeviceMemoryProperties2 call.
+  Allocators such as VMA read heapBudget and conclude there is no
+  allocatable memory.
+Evidence: the pre-existing "#else return false" at the end of the
+  function is the branch Horizon takes; this project's compat/ sysconf
+  answers _SC_AVPHYS_PAGES from svcGetInfo(InfoType_TotalMemorySize)
+  minus svcGetInfo(InfoType_UsedMemorySize).
+Upstream: yes — general, guarded on the macro actually existing, and
+  strictly a new last resort.
+---
+ src/util/os_misc.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/util/os_misc.c b/src/util/os_misc.c
+index 0ef5128..bf56517 100644
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -475,6 +475,15 @@ os_get_available_system_memory(uint64_t *size)
+ 
+    *size = ((uint64_t)vm_stats.free_count + (uint64_t)vm_stats.inactive_count) * PAGE_SIZE;
+    return true;
++#elif HAVE_SYSCONF && defined(_SC_AVPHYS_PAGES)
++   const long avail_pages = sysconf(_SC_AVPHYS_PAGES);
++   const long page_size = sysconf(_SC_PAGESIZE);
++
++   if (avail_pages <= 0 || page_size <= 0)
++      return false;
++
++   *size = (uint64_t)avail_pages * (uint64_t)page_size;
++   return true;
+ #else
+    return false;
+ #endif
+-- 
+2.43.0
+

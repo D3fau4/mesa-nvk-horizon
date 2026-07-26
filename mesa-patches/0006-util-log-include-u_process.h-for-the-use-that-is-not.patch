@@ -1,7 +1,7 @@
-From 393e920c2601448fb4dab0c86a3ae2a438b5f322 Mon Sep 17 00:00:00 2001
+From 732fdc77ba18ae82b9023cf5992fcb803aa7dc3b Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:36:18 +0000
-Subject: [PATCH 6/8] util/log: include u_process.h for the use that is not
+Subject: [PATCH 06/10] util/log: include u_process.h for the use that is not
  POSIX-guarded
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,8 @@
-From a302a64561183520f7bfea006ea26e90298f73be Mon Sep 17 00:00:00 2001
+From e884d5f7c18e70d6574e029adbeabe19d86793a5 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:31:41 +0000
-Subject: [PATCH 4/8] util/u_endian: fall back to the compiler's __BYTE_ORDER__
+Subject: [PATCH 04/10] util/u_endian: fall back to the compiler's
+ __BYTE_ORDER__
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
