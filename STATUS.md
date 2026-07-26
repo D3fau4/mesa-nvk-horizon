@@ -133,12 +133,18 @@ files were reported missing — note the tests write them to
 | Criterion | State |
 |---|---|
 | Ten tests cross-compile (X) | ✅ |
-| Pure logic builds/runs on host (H) | ✅ 78/78 |
+| Pure logic builds/runs on host (H) | ✅ 103/103 |
 | Layering gate clean | ✅ |
-| Tests 1–10 pass on hardware (HW) | ✅ **all ten PASS** (8/10 first run + t_channel 17/17 and t_teardown 28/28 on the confirmation re-run) |
-| ≥2 submits in flight without CPU wait (test 7) | ✅ **verified on hardware** (148 µs for both submits, single wait at the end) |
+| Tests 1–10 pass on hardware (HW) | ⚠️ **all ten PASSED, on code that has since changed** — 8/10 on the first run, plus `t_channel` 17/17 and `t_teardown` 28/28 on the confirmation re-run. Measured at `732b58c`; the second review round (`747b915`) then changed `horizon/`. **Not re-run since.** |
+| ≥2 submits in flight without CPU wait (test 7) | ⚠️ **measured on hardware** (148 µs for both submits, single wait at the end) — same caveat: `submit.c` changed in `747b915` |
 
-**Every Phase 1 exit criterion is met.**
+**Every Phase 1 exit criterion was met at `732b58c`.** Two of them are
+hardware criteria and `horizon/` changed afterwards, so they are
+*stale*, not *failed*: nothing suggests a regression, and the changed
+code builds clean and passes 103/103 host tests. But a ✅ here would
+claim console evidence for code no console has run, which is exactly the
+host / cross / hardware distinction this project refuses to blur
+(CLAUDE.md). They go back to ✅ after the re-run in "Next concrete task".
 
 ---
 
