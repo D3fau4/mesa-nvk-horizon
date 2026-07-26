@@ -160,6 +160,11 @@ horizon_tests = [
   't_syncpt',
   't_fence_wait',
   't_teardown',
+  # Phase 3 item 6: compat/sysconf.c against the real kernel. Uses no
+  # horizon_gpu — the C library and svcGetInfo only — but it is built
+  # and packaged with the others because it is a hardware measurement,
+  # and hardware measurements travel together.
+  't_sysinfo',
 ]
 
 testfw = static_library(
