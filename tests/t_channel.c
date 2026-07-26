@@ -41,8 +41,8 @@ int run_test(test_ctx *t)
     uint32_t err_type = 0xdead;
     const char *desc = NULL;
     res = horizon_gpu_channel_get_error(chan, &err_type, &desc);
-    t_note(t, "fresh channel notifier: status=%s type=%u '%s'",
-           horizon_gpu_status_str(res.status), err_type,
+    t_note(t, "fresh channel notifier: status=%s nv=0x%08x type=%u '%s'",
+           horizon_gpu_status_str(res.status), res.nv, err_type,
            desc ? desc : "?");
     t_check(t, horizon_gpu_succeeded(res) && err_type == 0,
             "fresh channel reports no error notification");

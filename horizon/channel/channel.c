@@ -74,8 +74,18 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
     NvNotification notif;
     memset(&notif, 0, sizeof(notif));
     Result rc = nvGpuChannelGetErrorNotification(&chan->gc, &notif);
-    if (R_FAILED(rc))
-        return horizon_gpu_err_nv(rc);
+    if (R_FAILED(rc)) {
+        /* Measured on hardware (Phase 1 run, t_channel): Horizon fails
+         * this ioctl when no notification is pending, so a failure on a
+         * healthy channel means "no error", not a broken query. */
+        horizon_logf(&chan->dev->log, HORIZON_LOG_DEBUG,
+                     "GetErrorNotification: 0x%08x (treated as none "
+                     "pending)", rc);
+        *out_type = 0;
+        if (out_desc)
+            *out_desc = channel_error_desc(0);
+        return horizon_gpu_ok();
+    }
 
     /* A notification with a zero timestamp has never fired. */
     *out_type = (notif.timestamp != 0) ? notif.info32 : 0;
