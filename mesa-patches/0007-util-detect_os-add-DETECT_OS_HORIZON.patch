@@ -1,0 +1,80 @@
+From e9443c8b8cd57a3685098c888f91b68988b78cbc Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:37:53 +0000
+Subject: [PATCH 7/8] util/detect_os: add DETECT_OS_HORIZON
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Horizon OS (Nintendo Switch), reached through devkitA64 and libnx,
+matched no branch in detect_os.h, so every DETECT_OS_* was 0. Code that
+picks between a POSIX and a Windows path then reaches neither and hits
+its #error, or silently compiles the wrong branch.
+
+__SWITCH__ is the marker devkitPro's toolchain defines for it, and is
+what the whole Switch homebrew ecosystem identifies the platform by.
+
+POSIX_LITE rather than POSIX, which is the distinction the macro exists
+for and matches what newlib actually provides here: <unistd.h>,
+<time.h>, <sys/time.h>, <sched.h> and <errno.h> are present, while
+<syslog.h>, <sys/shm.h> and any dynamic loader are not. Fuchsia is
+declared the same way.
+
+Nothing else changes: this only fills in a case that previously fell
+through, so no existing platform's macros move.
+
+mesa-nvk-horizon: Phase 3 item 1 (OS detection) — a DEVIATION from this
+  session's item 3 scope, kept to the minimum item 5 needed and
+  recorded in STATUS.md. Nothing else from item 1 is included.
+Why: util/os_time.c dispatches on DETECT_OS_*, and with every macro 0
+  it cannot select any implementation.
+Evidence: building src/util for aarch64/horizon fails with
+    os_time.c:52:4: error: #error Unsupported OS
+    os_time.c:99:4: error: #error Unsupported OS
+  Measured for the POSIX_LITE choice: <syslog.h> is absent from
+  devkitA64's newlib, <sys/time.h> and <sched.h> are present, and
+  configure reports Check usable header "sys/shm.h" : NO and
+  "dlfcn.h" : NO.
+Upstream: yes, once a Horizon port exists to justify it — it is
+  additive and cannot change any current platform's detection.
+---
+ src/util/detect_os.h | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/util/detect_os.h b/src/util/detect_os.h
+index 7403724..b59b6ce 100644
+--- a/src/util/detect_os.h
++++ b/src/util/detect_os.h
+@@ -91,6 +91,19 @@
+ #define DETECT_OS_POSIX 1
+ #endif
+ 
++/*
++ * Horizon OS (Nintendo Switch), through devkitA64/libnx. __SWITCH__ is
++ * the marker devkitPro's toolchain adds for it.
++ *
++ * POSIX_LITE, not POSIX: newlib provides <unistd.h>, <time.h>,
++ * <sys/time.h>, <sched.h> and <errno.h>, but there is no <syslog.h>,
++ * no <sys/shm.h> and no dynamic loader.
++ */
++#if defined(__SWITCH__)
++#define DETECT_OS_HORIZON 1
++#define DETECT_OS_POSIX_LITE 1
++#endif
++
+ 
+ /*
+  * Make sure DETECT_OS_* are always defined, so that they can be used with #if
+@@ -119,6 +132,9 @@
+ #ifndef DETECT_OS_FUCHSIA
+ #define DETECT_OS_FUCHSIA 0
+ #endif
++#ifndef DETECT_OS_HORIZON
++#define DETECT_OS_HORIZON 0
++#endif
+ #ifndef DETECT_OS_HURD
+ #define DETECT_OS_HURD 0
+ #endif
+-- 
+2.43.0
+

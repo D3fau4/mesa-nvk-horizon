@@ -141,10 +141,35 @@ horizon_image_digest() {
         grep . || echo unknown
 }
 
+# pip writes the *installing* interpreter's absolute path into the
+# launcher's shebang — here the host's /usr/local/bin/python3, which
+# does not exist inside the toolchain image (it has /usr/bin/python3).
+# horizon_meson sidesteps that by running the launcher through python3
+# explicitly, but Meson's own `--internal exe` wrapper — which every
+# custom_target that captures its output goes through — re-invokes the
+# launcher *by path* from a plain /bin/sh, where the shebang is what
+# runs it. Measured: Mesa's generated sources all failed with
+# "/bin/sh: 1: .../bin/meson: not found".
+#
+# Rewriting it to env python3 makes one install work on both sides. This
+# is the same rule as scripts/check-no-abs-paths.sh enforces on tracked
+# files — an installing machine's path must not decide whether a build
+# works — applied to a generated one the gate cannot see.
+horizon_fix_meson_shebang() {
+    _hz_launcher="$HORIZON_MESON_DIR/bin/meson"
+    [ -f "$_hz_launcher" ] || return 0
+    if [ "$(head -n 1 "$_hz_launcher")" = '#!/usr/bin/env python3' ]; then
+        return 0
+    fi
+    sed -i '1s|^#!.*|#!/usr/bin/env python3|' "$_hz_launcher"
+    echo "meson: rewrote the launcher shebang to /usr/bin/env python3"
+}
+
 # Idempotent: a second call with the pin unchanged does nothing.
 horizon_ensure_meson() {
     if [ -x "$HORIZON_MESON_DIR/bin/meson" ]; then
         echo "meson ${MESON_VERSION}: already installed in $HORIZON_MESON_DIR"
+        horizon_fix_meson_shebang
         return 0
     fi
     echo "installing pinned meson ${MESON_VERSION} into $HORIZON_MESON_DIR"
@@ -153,4 +178,5 @@ horizon_ensure_meson() {
     # has no pip and no outbound connectivity.
     python3 -m pip install --quiet --no-cache-dir \
         --target "$HORIZON_MESON_DIR" "meson==${MESON_VERSION}"
+    horizon_fix_meson_shebang
 }

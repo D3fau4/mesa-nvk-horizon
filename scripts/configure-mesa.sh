@@ -48,6 +48,16 @@ scripts/gen-cross-file.sh
 # cross file states every flag explicitly, and Meson must not add -O/-g
 # of its own on top.
 #
+# -Dshader-cache=disabled is a decision, not a workaround, and is
+# recorded as one in STATUS.md. disk_cache.c and disk_cache_os.c are
+# entirely inside #ifdef ENABLE_SHADER_CACHE and open with
+# `#include <sys/mman.h>`, which newlib does not have; the feature also
+# needs flock, posix_fallocate and memfd_create, all measured absent,
+# and a writable cache directory this project has not designed. It is
+# an optional on-disk cache, not part of the non-driver core, so it is
+# turned off rather than patched into a shape nothing has tested. Making
+# it work on Horizon is its own piece of work, for a later phase.
+#
 # "$@" comes last so a caller can override any of these, and so the
 # options a given measurement was taken with are visible on the command
 # line rather than buried here.
@@ -60,6 +70,7 @@ set -- \
     -Dplatforms= \
     -Dopengl=false \
     -Dllvm=disabled \
+    -Dshader-cache=disabled \
     "$@"
 
 if [ -f "$MESA_BUILD_DIR/meson-info/meson-info.json" ]; then

@@ -1,0 +1,96 @@
+From 4b27f90980f976ede27004d01765409598df3167 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:30:08 +0000
+Subject: [PATCH 3/8] c11/threads_posix: detect pthread_mutex_timedlock instead
+ of listing OSes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mtx_timedlock chose between pthread_mutex_timedlock and its own
+trylock loop with
+
+  #if !defined(__CYGWIN__) && !defined(__APPLE__) && !defined(__NetBSD__)
+  #define EMULATED_THREADS_USE_NATIVE_TIMEDLOCK
+  #endif
+
+which is a hand-maintained list of the platforms then known to lack the
+function. Whether a C library provides pthread_mutex_timedlock is not
+something an OS name can answer: newlib declares it only under
+_POSIX_TIMEOUTS and does not implement it at all, on any OS it is used
+with.
+
+A configure check now decides. It sits beside the existing
+pthread_setaffinity_np check, uses the same form, and defines
+HAVE_PTHREAD_MUTEX_TIMEDLOCK. The three names removed are covered by
+it: Cygwin, macOS and NetBSD do not provide the function, so the check
+answers NO there and they keep the emulated path they had.
+
+No fallback is added. The trylock loop the #else selects has always
+been in the file for precisely this case.
+
+Accepted cost: a system that provides pthread_mutex_timedlock only via
+a separate -lpthread that dependency('threads') does not turn up would
+now take the emulated path. That is slower, not wrong, and it is the
+same exposure every other has_function check in this file carries.
+
+mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
+Why: devkitA64's newlib has no pthread_mutex_timedlock, so Mesa's C11
+  threads implementation does not compile for Horizon. It is a libc
+  gap, but it surfaces in the file milestone item 4 (threads) owns —
+  recorded as a deviation in STATUS.md.
+Evidence: building src/c11/impl for aarch64/horizon fails with
+    threads_posix.c:207:10: error: implicit declaration of function
+    'pthread_mutex_timedlock'; did you mean 'pthread_mutex_trylock'?
+  It is genuinely absent, not merely hidden by a feature-test macro: a
+  probe that declares the prototype by hand still fails to link,
+    undefined reference to `pthread_mutex_timedlock'
+  and the symbol is in none of libc.a, libpthread.a or libnx.a.
+  pthread.h does declare it, but only #if defined(_POSIX_TIMEOUTS),
+  which is not defined here even after including <unistd.h>.
+Upstream: yes — it replaces a platform blocklist with the feature test
+  it stands in for, and reproduces the blocklist's answers exactly.
+---
+ meson.build                  | 7 +++++++
+ src/c11/impl/threads_posix.c | 7 ++++++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index 4cfbd6b..ddec752 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1763,6 +1763,13 @@ if dep_thread.found()
+       args : '-D_GNU_SOURCE')
+     pre_args += '-DHAVE_PTHREAD_SETAFFINITY'
+   endif
++  if cc.has_function(
++      'pthread_mutex_timedlock',
++      dependencies : dep_thread,
++      prefix : '#include <pthread.h>',
++      args : '-D_GNU_SOURCE')
++    pre_args += '-DHAVE_PTHREAD_MUTEX_TIMEDLOCK'
++  endif
+ endif
+ 
+ with_expat = get_option('expat') \
+diff --git a/src/c11/impl/threads_posix.c b/src/c11/impl/threads_posix.c
+index 6db8c42..1476c01 100644
+--- a/src/c11/impl/threads_posix.c
++++ b/src/c11/impl/threads_posix.c
+@@ -19,7 +19,12 @@ Configuration macro:
+     Use pthread_mutex_timedlock() for `mtx_timedlock()'
+     Otherwise use mtx_trylock() + *busy loop* emulation.
+ */
+-#if !defined(__CYGWIN__) && !defined(__APPLE__) && !defined(__NetBSD__)
++/* Whether pthread_mutex_timedlock exists is a property of the C library,
++ * not of the operating system. The list this replaces named the three
++ * platforms then known to lack it; a configure check covers those and
++ * every other C library that does not provide it. The mtx_trylock loop
++ * below is the fallback, and was already written for exactly this. */
++#if defined(HAVE_PTHREAD_MUTEX_TIMEDLOCK)
+ #define EMULATED_THREADS_USE_NATIVE_TIMEDLOCK
+ #endif
+ 
+-- 
+2.43.0
+

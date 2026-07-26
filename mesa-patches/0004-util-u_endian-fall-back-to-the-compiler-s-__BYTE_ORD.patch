@@ -1,0 +1,74 @@
+From a302a64561183520f7bfea006ea26e90298f73be Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:31:41 +0000
+Subject: [PATCH 4/8] util/u_endian: fall back to the compiler's __BYTE_ORDER__
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+u_endian.h decides byte order through a chain of platform branches —
+HAVE_ENDIAN_H, __APPLE__, __sun, the BSDs, _WIN32/__ANDROID__,
+__OPENCL_VERSION__ — and #errors if none matched. Each of those is a
+different way of asking the *C library* a question the compiler already
+answers: GCC and Clang define __BYTE_ORDER__, __ORDER_LITTLE_ENDIAN__
+and __ORDER_BIG_ENDIAN__ for every target, with no header at all.
+
+Adding that as a last resort means a platform whose libc is not on the
+list, or which has no <endian.h>, no longer needs a new branch. The
+block is guarded on neither macro having been set, so every platform
+already handled takes exactly the path it took before and this cannot
+change an existing answer. Nothing is removed: the libc branches stay
+first, so a C library that disagrees with the compiler still wins.
+
+mesa-nvk-horizon: Phase 3 item 7 (endianness) — a DEVIATION from this
+  session's item 3 scope, recorded as such in STATUS.md. It is not a
+  newlib gap, it is an OS-detection gap, and it was the last thing
+  stopping the non-driver core from compiling, so leaving it would have
+  ended the item 3 loop with no result.
+Why: newlib/libnx has no <endian.h> and Horizon is on none of the
+  platform lists, so no branch matched.
+Evidence: building src/util for aarch64/horizon fails with
+    In file included from ../../mesa/src/util/u_math.h:49,
+                     from ../../mesa/src/util/streaming-load-memcpy.c:32:
+    u_endian.h:98:3: error: "UTIL_ARCH_LITTLE_ENDIAN and/or
+                             UTIL_ARCH_BIG_ENDIAN were unset."
+  and the same configure reports: Check usable header "endian.h" : NO.
+Upstream: yes — it is additive, unreachable on every platform that
+  already works, and removes the need to extend the list again.
+---
+ src/util/u_endian.h | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/util/u_endian.h b/src/util/u_endian.h
+index fd78642..8f6158f 100644
+--- a/src/util/u_endian.h
++++ b/src/util/u_endian.h
+@@ -94,6 +94,25 @@
+ 
+ #endif
+ 
++/* Every branch above is a different way of asking the C library which
++ * byte order the target uses, which is why each new platform needed a
++ * new one. GCC and Clang answer the same question directly, for any
++ * target and without a header. Reached only when nothing above matched,
++ * so no platform already handled changes behaviour. */
++#if !defined(UTIL_ARCH_LITTLE_ENDIAN) && !defined(UTIL_ARCH_BIG_ENDIAN) && \
++    defined(__BYTE_ORDER__) && \
++    defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
++
++#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++# define UTIL_ARCH_LITTLE_ENDIAN 1
++# define UTIL_ARCH_BIG_ENDIAN 0
++#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++# define UTIL_ARCH_LITTLE_ENDIAN 0
++# define UTIL_ARCH_BIG_ENDIAN 1
++#endif
++
++#endif
++
+ #if !defined(UTIL_ARCH_LITTLE_ENDIAN) || !defined(UTIL_ARCH_BIG_ENDIAN)
+ # error "UTIL_ARCH_LITTLE_ENDIAN and/or UTIL_ARCH_BIG_ENDIAN were unset."
+ #elif UTIL_ARCH_LITTLE_ENDIAN == UTIL_ARCH_BIG_ENDIAN
+-- 
+2.43.0
+
