@@ -62,6 +62,30 @@ Do not reintroduce them:
 
 `horizon/` must compile and its tests must run **without Mesa present**.
 
+## Toolchain fallback (devkitA64)
+
+Cross-compilation needs devkitA64/devkitPro (`$DEVKITPRO`, providing libnx, elf2nro,
+nacptool). If it is not installed in the current environment:
+
+- **Use the Docker image `ghcr.io/d3fau4/nx-dev:latest`** as the toolchain, not a fresh
+  devkitPro install — package servers (`pkg.devkitpro.org`) and GitHub release tarballs may
+  be unreachable behind a restrictive proxy, while `ghcr.io` typically is not.
+- Prefer `scripts/build-switch.sh` (wraps `make`): it already implements this fallback —
+  runs `make` directly when `$DEVKITPRO` is set, otherwise runs it inside the container.
+  Override the image with `HORIZON_NX_IMAGE` if a different one is needed.
+- Manual invocation, if not going through the script:
+  ```sh
+  # start the daemon first if it is not already running (root, no systemd):
+  dockerd --iptables=false --bridge=none &
+  docker run --rm -e DEVKITPRO=/opt/devkitpro -v "$PWD":/work -w /work \
+      ghcr.io/d3fau4/nx-dev:latest make all -j4
+  ```
+- The image's `/opt/devkitpro` layout matches a normal devkitPro install
+  (`devkitA64/`, `libnx/`, `tools/bin/{elf2nro,nacptool}`); libnx headers can be extracted
+  from it (`docker cp`) if a local copy is useful for reference.
+- This is a cross-compile, not a hardware run. Keep the host / cross / hardware-verified
+  distinction from the Process rules below regardless of which toolchain path was used.
+
 ## Coding rules
 
 - Explicit-width integer types (`uint32_t`, `uint64_t`, `size_t`). No bare `int` for
