@@ -1,0 +1,71 @@
+From b5c1dd0e747b86e7fd621058bcdbe2d27c735d08 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:19:35 +0000
+Subject: [PATCH 1/2] meson: do not require libdl where there is no dynamic
+ loader
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+meson.build hard-failed with "C shared or static library 'dl' not found"
+whenever dlopen was absent from the C library. That treats libdl as the
+only reason dlopen could be missing, which is true of older glibc but
+not of a C library that has no dynamic loader at all — newlib, for
+instance, has neither dlopen nor libdl nor dlfcn.h.
+
+libdl is now looked for but not required, and -DHAVE_DLOPEN is defined
+when dlopen is available from either place, following the naming the
+functions_to_detect loop above already uses. Behaviour is unchanged
+where a loader exists: dlopen in libc gives HAVE_DLOPEN and a null
+dep_dl exactly as before, dlopen in libdl gives the same -ldl link as
+before and now also the define. Only the third case changes, from a
+configure error into a build without dlopen.
+
+The formulation is deliberately about the C library rather than about
+any particular OS: whether dlopen exists is a libc trait, and platforms
+without one keep appearing.
+
+mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
+Why: Mesa assumed dlopen is either in libc or in libdl. On
+  newlib/libnx (devkitA64, Nintendo Switch) it is in neither: there is
+  no dynamic loader, so nothing can be dlopen()ed at all.
+Evidence: configuring mesa-26.1.5 for aarch64/horizon with no drivers
+  (scripts/configure-mesa.sh) stops at
+    Checking for function "dlopen" : NO
+    mesa/meson.build:1684:16: ERROR: C shared or static library 'dl' not found
+  The same configure reports: Check usable header "dlfcn.h" : NO.
+Upstream: yes — it removes an assumption that is not universal and
+  changes nothing on any platform that has a loader.
+---
+ meson.build | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 1eca91f..4cfbd6b 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1679,9 +1679,19 @@ ld_args_build_id = cc.get_supported_link_arguments('-Wl,--build-id=sha1')
+ 
+ # check for dl support
+ dep_dl = null_dep
++with_dlopen = false
+ if host_machine.system() != 'windows'
+-  if not cc.has_function('dlopen')
+-    dep_dl = cc.find_library('dl', required : true)
++  with_dlopen = cc.has_function('dlopen')
++  if not with_dlopen
++    # Older glibc and a few other systems keep dlopen in a separate
++    # libdl. A C library with no dynamic loader at all has neither, and
++    # that is not an error: util/u_dl.c already falls back to reporting
++    # that nothing can be loaded.
++    dep_dl = cc.find_library('dl', required : false)
++    with_dlopen = dep_dl.found()
++  endif
++  if with_dlopen
++    pre_args += '-DHAVE_DLOPEN'
+   endif
+   if cc.has_function('dladdr', dependencies : dep_dl)
+     # This is required for src/util
+-- 
+2.43.0
+
