@@ -7,15 +7,22 @@
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. HARDWARE-VERIFIED except for
-two fixed items awaiting a confirmation re-run.**
+**Phase 1 — `horizon/` standalone GPU layer. COMPLETE — VERIFIED ON REAL
+HARDWARE.**
 
-The owner ran all ten `.nro`s on a real Switch (logs received 2026-07-26).
-**8/10 PASS outright; 214 of 216 checks passed.** The two failures were a
-wrong assumption about `GetErrorNotification` semantics (t_channel, fixed
-in `horizon/channel/channel.c`) and a benign race in the t_teardown test
-itself (fixed in the test). `t_channel` and `t_teardown` need one
-confirmation re-run on the console.
+The owner ran all ten `.nro`s on a real Switch (logs received
+2026-07-26); 8/10 passed outright and the two failures were fixed
+(a wrong assumption about `GetErrorNotification` semantics in
+`channel.c`, and a benign race in the t_teardown test). The
+**confirmation re-run passed both**: `t_channel` PASS 17/17 (notifier
+now reports `status=ok type=0 'none'`; syncpt value at create 58686 —
+further R5 evidence the counter persists across runs) and `t_teardown`
+PASS 28/28 (both cycles landed on the work-already-retired side of the
+race; retirement callbacks ran exactly once; leak refusal and zero
+counters held in both cycles). Evidence: console screenshots from the
+owner (the second run's verdicts were captured on screen; the sdmc log
+files were reported missing — note the tests write them to
+`sdmc:/horizon_gpu_tests/` at the SD root, not next to the `.nro`s).
 
 ---
 
@@ -55,19 +62,15 @@ confirmation re-run on the console.
 
 ---
 
-## Fixes since the run (pending console confirmation)
+## Fixes after the first run — CONFIRMED on console
 
 1. `horizon/channel/channel.c` — `get_error` treats a failed
    GetErrorNotification as "no notification pending" (cites the
-   measurement). `t_channel` now also prints the raw Result for the
-   record.
+   measurement). Confirmed: `t_channel` PASS 17/17 on the re-run.
 2. `tests/t_teardown.c` — the in-flight-destroy probe accepts both legal
    outcomes (BUSY while in flight / success when already retired) without
-   double-destroying.
-
-Re-run needed on console: `t_channel`, `t_teardown` (full 10 welcome but
-not required — no library submit/sync/vm path changed for the others;
-only channel.c's error-query path).
+   double-destroying. Confirmed: `t_teardown` PASS 28/28 on the re-run
+   (both cycles took the already-retired branch).
 
 ---
 
@@ -88,8 +91,10 @@ only channel.c's error-query path).
 | Ten tests cross-compile (X) | ✅ |
 | Pure logic builds/runs on host (H) | ✅ 78/78 |
 | Layering gate clean | ✅ |
-| Tests pass on hardware (HW) | ✅ 8/10 outright; t_channel & t_teardown fixed, **confirmation re-run pending** |
+| Tests 1–10 pass on hardware (HW) | ✅ **all ten PASS** (8/10 first run + t_channel 17/17 and t_teardown 28/28 on the confirmation re-run) |
 | ≥2 submits in flight without CPU wait (test 7) | ✅ **verified on hardware** (148 µs for both submits, single wait at the end) |
+
+**Every Phase 1 exit criterion is met.**
 
 ---
 
@@ -109,7 +114,7 @@ only channel.c's error-query path).
 | # | Decision | State |
 |---|---|---|
 | D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
-| D4 | Switch available | **yes — first run done**; confirmation re-run of 2 tests pending |
+| D4 | Switch available | **yes — closed.** Full run + confirmation re-run done |
 | D2/D3 | Mesa pin / checkout mechanism | due at Phase 2 start |
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
@@ -118,13 +123,16 @@ only channel.c's error-query path).
 
 ## Next concrete task
 
-1. **Owner:** re-run `t_channel.nro` and `t_teardown.nro` (rebuilt zip
-   provided); paste the two logs. Expected: PASS 17/17 and PASS 32/32
-   (the t_teardown check count may vary by one depending on which side of
-   the race the run lands).
-2. Then **Phase 2 — toolchain** (`docs/milestones.md`): pin devkitA64 /
-   libnx / image versions in `toolchain/versions.env`, Meson cross file,
-   fetch/build scripts, no-absolute-paths gate.
+**Phase 2 — toolchain** (`docs/milestones.md`), pending the owner's
+go-ahead:
+
+1. Pin devkitA64 / libnx / nx-dev image versions in
+   `toolchain/versions.env` (today they are pinned only implicitly by the
+   image digest).
+2. Meson cross file `toolchain/horizon-aarch64.cross`; decide D2 (Mesa
+   version) and D3 (submodule vs fetched checkout) at phase start.
+3. `scripts/check-no-abs-paths.sh` gate and idempotent fetch/configure/
+   build/package scripts.
 
 ---
 
