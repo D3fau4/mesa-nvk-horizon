@@ -7,8 +7,15 @@
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. COMPLETE — VERIFIED ON REAL
-HARDWARE, including the post-Codex-review fixes.**
+**Phase 1 — `horizon/` standalone GPU layer. Hardware-verified through
+the Codex review round (see below); a second, owner-authored review
+round (2026-07-26, same day) found 20 further issues in `horizon/` and
+`tests/`, now fixed (host + cross build green, host tests 81 -> 103) but
+NOT yet re-run on hardware — see "Second review round" below. Treat
+Phase 1 as verified-pending-reconfirmation again until that re-run
+happens; the changed paths include channel creation/destroy, vm_map,
+device big-page-size handling and the GPFIFO command emitters, several
+of which are exercised by every other test.**
 
 Following the 9 Codex review fixes in `2dc8513` (see "Codex PR review"
 below), the owner rebuilt and re-ran all ten `.nro`s on a real Switch and
@@ -166,10 +173,58 @@ this round — see "Current phase" above).
 
 ---
 
+## Second review round (2026-07-26) — findings addressed
+
+The owner posted a second, more detailed review (PR #1 comment
+`5085013365`, 20 findings across `horizon/` and `tests/`) after the Codex
+round above and its hardware reconfirmation. Each finding was checked
+against the actual code before acting — 18 were real and are fixed; 2
+were investigated and found not applicable given evidence already
+recorded above.
+
+| Finding | Fix / disposition |
+|---|---|
+| `mem_destroy`/`vm_release`/`vm_unmap`/`channel_destroy` poisoned a field then freed the struct anyway — a second call reads through freed memory, so "double-destroy fails INVALID_ARG, not UAF" was false | Removed the dead poison writes and the false claim; double-destroy is caller UB per the single-owner contract (memory-model § 7), not defended against |
+| `horizon_gpu_submit`'s back-pressure guard could overflow with a large `num_spans`, and the per-span validation loop read `spans[]` out of bounds before any capacity check ran | `num_spans` is now bounded against `GPFIFO_QUEUE_SIZE` before either happens |
+| `horizon_gpu_channel_create`'s error-unwind path discarded every teardown `Result` | Each unwind step's failure is now logged (`channel_create_unwind_step`) |
+| `horizon_gpu_vm_map` never checked `mem` and `range` belong to the same device | Rejected with `HORIZON_GPU_ERR_INVALID_ARG` |
+| `device.c` overwrote the queried, "never defaulted" `info.big_page_size` with the AS-effective size (this was itself finding #8 of the *first* Codex round) | Split into `big_page_size` (hw default, untouched) and a new `as_big_page_size` (what `vm_page_size_valid` validates against) |
+| Every channel reserved/aligned 128 KiB of VA (`CHANNEL_ZCULL_ALIGN`) even without Zcull, for a 4 KiB cmdbuf | Reservation only steps up to `CHANNEL_ZCULL_ALIGN` size/alignment when `bind_zcull` is requested |
+| `horizon_cmds_nop` had no buffer-capacity bound (public entry point, unbounded write) | Added a `buf_dwords` parameter; rejects rather than overruns |
+| `horizon_cmds_set_objects` truncated an out-of-range class number (`& 0xFFFF`) into a different, valid-looking class instead of rejecting it | Rejects (returns 0) instead of truncating |
+| `horizon_cmd_hdr_incr` had no field masks — an out-of-range count/subch/method would bleed into an adjacent bit field | Masked each field |
+| No compile-time check that the cmdbuf's fence-increment and SET_OBJECT lists cannot overlap | Added `_Static_assert` |
+| `device_priv.h`'s atomics comment overstated thread-safety (claimed concurrent create/destroy "keeps counts exact" generally; the structures the counters describe are not synchronized) | Corrected to state the actual guarantee |
+| `t_teardown.c` used `dev` unconditionally after a `device_destroy(dev)` call whose success path (if every child creation had failed) would have freed it | Bail out immediately if that call does not return `HORIZON_GPU_ERR_LEAK` |
+| `t_submit.c`'s "no CPU wait between submits" milestone criterion was only a `t_note`, never asserted | Now `t_check`ed against a 50 ms bound (hardware measured ~148 us) |
+| `t_map.c` never asserted the sibling-mapping VA fallback it exists to prove — only checked the fully-unmapped end state | Added an assertion right after unmapping the newer sibling: `mapped_va` must equal the still-live mapping's VA |
+| `t_va_reserve.c`'s two rejection probes reused the live `r1` out-param, relying on the undocumented fact that `vm_reserve` never touches `*out_range` on failure | Uses a scratch out-param instead |
+| Several `Result`s discarded in tests (`t_submit.c` syncpt_read/mem_flush/get_error, `t_syncpt.c` syncpt_read, `t_teardown.c` mem_flush/add_retirement) | Checked and asserted |
+| `t_init.c`'s comment said GM20B values were "plausibility bounds, not hard requirements" immediately above a hard `strcmp(chipname, "gm20b")` check | Corrected: this project targets GM20B specifically, so chipname/has_syncpoints/page-size-consistency are genuinely hard requirements; GPC/TPC counts and engine class numbers are the actual plausibility bounds |
+| `check-layering.sh` only checked one direction (nothing under `horizon/` includes Vulkan/Mesa/DRM/nwindow) | Added: `horizon/include/` headers themselves stay libnx-free (no `switch.h`, no `Nv*`/`Result` types in code lines), plus greps for rejected designs #1–3 (`/dev/dri`, `-Wl,--wrap`, nouveau uAPI symbols) |
+| `status.c`/`log.c` are documented "pure C11, libnx-free" but had no host coverage | Added `tests/host/h_status.c`, `h_log.c` |
+| `Makefile` used `-ffunction-sections` without the matching `-Wl,--gc-sections` | Added to `LDFLAGS` |
+| **Investigated, not applicable:** the R8 VA-exhaustion probe "never reaches the kernel" | Contradicted by evidence already in this file: the measured `0x275c` nv error (Hardware run results table, test 4) proves the request *did* reach `AllocSpace`; recomputing the probe's actual page count against the measured region size (≈16 GiB + 4 GiB ≈ 5.2M pages) confirms it stays far under the `pages > UINT32_MAX` guard |
+| **Investigated, not applicable:** `submit.c`'s shadow/kernel `fence.value` mismatch check (added in the *first* Codex round, finding #6) could "kill the first submit on every channel" if libnx's fence base and our shadow disagree | Both bases are hardware syncpoint reads at channel creation; the confirmed hardware re-run (all ten `.nro`, including every `t_submit`/`t_channel`/`t_syncpt` submit) never triggered this path, which is the empirical answer to the exact R5 question this check depends on |
+
+Verified here: host tests 81/81 -> 103/103 (2 new suites), layering gate
+clean with the added checks, cross build clean (`-Wall -Wextra -Werror`)
+at `-j1`, all ten `.nro` produced (`-j4` intermittently hits the same
+overlay-filesystem directory race noted above; pre-existing, not a
+regression from this round). **Not yet re-run on real hardware.**
+
+---
+
 ## Next concrete task
 
-**Phase 2 — toolchain** (`docs/milestones.md`), pending the owner's
-go-ahead:
+**Re-run the ten `.nro`s on real hardware** to close out the second
+review round above — the changed paths (channel create/destroy, vm_map,
+device big-page handling, the GPFIFO command emitters) are exercised by
+every test, not just one. Once confirmed, Phase 1 returns to fully
+verified and:
+
+**Phase 2 — toolchain** (`docs/milestones.md`) is next, pending the
+owner's go-ahead:
 
 1. Pin devkitA64 / libnx / nx-dev image versions in
    `toolchain/versions.env` (today they are pinned only implicitly by the
