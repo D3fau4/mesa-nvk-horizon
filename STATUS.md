@@ -7,11 +7,20 @@
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. Hardware-verified as of the
-2026-07-26 confirmation run; a PR review since then (Codex, same date)
-found 9 real issues, now fixed (host + cross build green) but NOT yet
-re-run on hardware — see "Codex PR review" below. Treat Phase 1 as
-verified-pending-reconfirmation until that re-run happens.**
+**Phase 1 — `horizon/` standalone GPU layer. COMPLETE — VERIFIED ON REAL
+HARDWARE, including the post-Codex-review fixes.**
+
+Following the 9 Codex review fixes in `2dc8513` (see "Codex PR review"
+below), the owner rebuilt and re-ran all ten `.nro`s on a real Switch and
+confirmed all ten pass. This round was reported as a verbal confirmation
+("los 10 dan positivo") without captured logs or per-test PASS/FAIL
+counts, unlike the first hardware round below — recorded here as such,
+not padded with numbers that were not actually reported. This closes the
+"verified-pending-reconfirmation" state the Codex fixes had left Phase 1
+in, in particular for the two paths that changed behaviour materially:
+`t_channel`'s notifier handling (now matching `KERNELRESULT(TimedOut)`
+specifically) and `t_submit`'s R10 measurement (rebuilt as a real
+producer/consumer cross-channel wait).
 
 The owner ran all ten `.nro`s on a real Switch (logs received
 2026-07-26); 8/10 passed outright and the two failures were fixed
@@ -151,10 +160,9 @@ directories are now order-only prerequisites created by a single rule.
 Confirmed: `-j4` clean after the fix (previously reproduced the failure
 twice, `-j1` always worked).
 
-**Not yet done:** re-running the ten `.nro`s on real hardware to confirm
-none of the above regress the already-hardware-verified behaviour,
-particularly `t_channel` (finding 7) and `t_submit`'s R10 measurement
-(finding 1, now a materially different test).
+**Re-run on hardware:** owner-confirmed all ten `.nro`s pass after these
+fixes (2026-07-26, verbal confirmation, no logs/per-test counts captured
+this round — see "Current phase" above).
 
 ---
 
