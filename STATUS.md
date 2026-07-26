@@ -449,8 +449,40 @@ Two further items handed to Phase 3, found here rather than later:
   Directly adjacent to the open `-mtp=soft` sub-risk in R13.
 
 The probe wrote nothing and patched nothing; the build directory was
-deleted afterwards. Making Mesa configure to completion needs
-`DETECT_OS_HORIZON` and the rest of Phase 3.
+deleted afterwards.
+
+### How far Mesa's non-driver core gets — the Phase 3 starting line
+
+Phase 3's exit criterion is "Mesa configures for `horizon` and builds
+the non-driver core". Configuring with no drivers at all skips the Rust
+check entirely (no nouveau driver, no `add_languages('rust')`), so that
+criterion is reachable without touching R13. Probed with
+`-Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= -Dopengl=false
+-Dllvm=disabled`:
+
+1. **`Python (3.x) mako module >= 0.8.0 required to build mesa`** —
+   milestone item 6 in concrete form. Mesa's generators are Python and
+   the image ships no mako, no pyyaml, no pip and has no network.
+   **Fixed here**, pinned in `versions.env` and installed on the host by
+   `horizon_ensure_python_deps`.
+2. With that, configure runs deep into real compile-and-link checks
+   against the Horizon toolchain — `strtod` locale support, `Bsymbolic`,
+   version scripts, `-Wl,--build-id=sha1` (milestone Phase 3 item 8,
+   already answered: **supported**) — and stops at:
+
+   ```
+   Checking for function "dlopen" : NO
+   mesa/meson.build:1684:16: ERROR: C shared or static library 'dl' not found
+   ```
+
+**That is where Phase 3 starts**: `libdl` does not exist on
+newlib/libnx, which is Phase 3 item 3 ("newlib/libnx gaps"). Not a
+toolchain problem — the toolchain is answering correctly.
+
+Worth noting for Phase 3's plan: the milestone lists OS detection first,
+but the configure order means the newlib/libnx gaps are what actually
+block first. The list is a set of items to complete, not an order to
+follow.
 
 ### Commands run and results
 
@@ -489,7 +521,20 @@ All on this machine. **Host build/run (H)** and **cross build (X)** only
 | 3. Rust target JSON for Horizon | **Not created as a target.** rustc ships `aarch64-nintendo-switch-freestanding`; the file is committed only as a drift snapshot (R13) |
 | 4. `rustc` wrapper | **Not needed** — no custom target, so nothing to wrap |
 | 5. Rust `std`/`core` sysroot, pinned nightly | **Not built** — R13's answer removes it. The nightly is the environment's, not pinned here |
-| 6. Mesa host tools (native build for generators) | **NOT DONE — the one genuine gap in this phase.** Mesa's configure does not reach its generators: it stops at the Rust sanity check (above), which Phase 3 has to get past first. Building host tools now would be scaffolding against a configure that has never completed. Deferred to Phase 3, but recorded as owed, not as finished |
+| 6. Mesa host tools (native build for generators) | **Done**, once the probe below showed what the item concretely is: Mesa's generators are Python and need `mako` (and `pyyaml`), which the image ships neither of, along with no pip and no network. Pinned in `versions.env` and provisioned by `horizon_ensure_python_deps`. An earlier revision of this file recorded the item as deferred; that was wrong — it was a Phase 2 gap and it is now closed |
+
+### Is Phase 2 finished?
+
+Yes, for everything verifiable without a console. All three exit
+criteria are met, and the one item that was genuinely outstanding
+(milestone item 6) is closed above.
+
+**One thing is owed and it is not Phase 2's:** the ten `.nro` have not
+been re-run on hardware since Phase 1's second review round. Phase 2
+changed no `horizon/` code, so nothing here made that worse — but the
+longer it waits, the more work sits on an unreconfirmed base. It does
+not block Phase 3, which touches Mesa and not `horizon/`; it does block
+Phase 4, which builds directly on `horizon/`.
 
 ### Known gaps at the end of Phase 2
 
@@ -512,12 +557,24 @@ every test, not just one. `build/pkg/` now holds the ten `.nro` plus a
 pins, so the result can be attributed to an exact build. Phase 2 changed
 no `horizon/` code, so either build path's artefacts are valid for this.
 
-Then **Phase 3 — minimal Horizon support in Mesa**
-(`docs/milestones.md`): `DETECT_OS_HORIZON`, Meson
-`host_machine.system() == 'horizon'` handling, newlib/libnx gaps,
-threads, timers, page-size queries, endianness, build ID — each as a
-separate patch in `mesa-patches/`. The pinned tree is already in place
-and the cross file is already written for it.
+That is the owner's step and does not block **Phase 3 — minimal Horizon
+support in Mesa** (`docs/milestones.md`), which touches Mesa rather than
+`horizon/` and can start now. Its starting line is measured, not
+guessed:
+
+1. **`libdl`** — `dlopen` is absent and `meson.build:1684` requires the
+   library. Phase 3 item 3. This is the first thing configure hits.
+2. Then the rest of item 3's newlib/libnx gaps as they surface, plus
+   `DETECT_OS_HORIZON` (item 1) and the Meson
+   `host_machine.system() == 'horizon'` handling (item 2) for the
+   compile stage that follows.
+3. Item 8 (build ID) is already answered: `-Wl,--build-id=sha1` is
+   supported by this toolchain.
+4. Each as a separate patch in `mesa-patches/`, never as an edited copy
+   of a Mesa file (CLAUDE.md rejected design 7).
+
+Already in place for it: `mesa/` checked out at `MESA_COMMIT`, the cross
+file validated against Mesa, and the generator dependencies provisioned.
 
 ---
 

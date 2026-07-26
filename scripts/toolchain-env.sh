@@ -32,6 +32,9 @@ HORIZON_BUILD_DIR="${HORIZON_BUILD_DIR:-build/meson}"
 HORIZON_CROSS_CONST_FILE="${HORIZON_CROSS_CONST_FILE:-build/toolchain/devkitpro.cross}"
 HORIZON_CROSS_FILE="toolchain/horizon-aarch64.cross"
 HORIZON_MESON_DIR="build/toolchain/meson-${MESON_VERSION}"
+# Python modules Mesa's generators need, kept separate from Meson's
+# install so either can be reprovisioned without disturbing the other.
+HORIZON_PYTHON_DIR="build/toolchain/python"
 
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
@@ -93,8 +96,28 @@ horizon_run() {
 # unchanged under the image's python3 (3.11.2). That matters: the image
 # has neither meson nor pip, and containers here have no network.
 horizon_meson() {
-    horizon_run env "PYTHONPATH=$PWD/$HORIZON_MESON_DIR" \
+    horizon_run env \
+        "PYTHONPATH=$PWD/$HORIZON_MESON_DIR:$PWD/$HORIZON_PYTHON_DIR" \
         python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" "$@"
+}
+
+# Mesa's code generators (milestone item 6). Separate from
+# horizon_ensure_meson because horizon/ does not need them and should
+# not pay for them; Mesa cannot configure at all without mako.
+# Idempotent: a second call with the pins unchanged does nothing.
+horizon_ensure_python_deps() {
+    if [ -d "$HORIZON_PYTHON_DIR/mako" ] && [ -d "$HORIZON_PYTHON_DIR/yaml" ]; then
+        echo "mesa generator deps: already installed in $HORIZON_PYTHON_DIR"
+        return 0
+    fi
+    echo "installing mesa generator deps into $HORIZON_PYTHON_DIR"
+    mkdir -p "$HORIZON_PYTHON_DIR"
+    # On the host, where the network is: the image has neither pip nor
+    # outbound connectivity.
+    python3 -m pip install --quiet --no-cache-dir \
+        --target "$HORIZON_PYTHON_DIR" \
+        "mako==${MESA_PYTHON_MAKO_VERSION}" \
+        "pyyaml==${MESA_PYTHON_PYYAML_VERSION}"
 }
 
 # The content digest of the image actually in use. Since the toolchain
