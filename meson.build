@@ -83,6 +83,25 @@ if get_option('b_staticpic')
 endif
 
 # ---------------------------------------------------------------------
+# Warning policy.
+# ---------------------------------------------------------------------
+# The same three flags the Makefile builds with (its CFLAGS), so both
+# paths keep emitting the same set. They live here rather than in
+# toolchain/horizon-aarch64.cross because a cross file's c_args are also
+# handed to Meson's own detection snippets, which are not written to
+# survive -Wextra -Werror — with the flags there, five of Mesa's
+# configure checks returned a *false* answer (see the cross file's
+# [built-in options] note for the measurement). add_project_arguments is
+# not passed to those checks, so the policy applies to this project's
+# targets and to nothing else.
+#
+# language : 'c' only — project() above declares just C, and
+# add_project_arguments rejects a language the project does not have.
+# The cross file's cpp_args exist for the Mesa build, which sets its own
+# warning policy.
+add_project_arguments('-Wall', '-Wextra', '-Werror', language : 'c')
+
+# ---------------------------------------------------------------------
 # horizon_gpu — the Vulkan-free, WSI-free GPU abstraction.
 # ---------------------------------------------------------------------
 # Same translation units, in the same order, as the Makefile's LIB_SRCS.

@@ -77,18 +77,40 @@ bindgen   = 'bindgen'
 [built-in options]
 c_std = 'gnu11'
 
-# Warnings are listed explicitly in c_args instead of being derived from
-# Meson's warning_level/werror. The Makefile is the hardware-verified
-# reference build; this path has to emit the same flags, not Meson's
-# interpretation of an abstraction level. Configure with
-# --buildtype=plain so Meson adds no -O/-g of its own either.
+# warning_level = '0' so Meson contributes no -Wall of its own and the
+# flags below are the whole story.
+#
+# The warnings this project builds with are deliberately NOT here. A
+# cross file describes a toolchain, not a project's warning policy, and
+# Meson feeds [built-in options] c_args/cpp_args to its *detection
+# snippets* as well as to the build. Those snippets are not written to
+# survive -Wextra -Werror. Measured against an otherwise identical
+# configure of the pinned Mesa tree, keeping the warnings here made
+# fourteen checks fail on a warning and five return a FALSE answer:
+#
+#   sizeof(void*)              -1  instead of 8    (unused-variable)
+#   GCC atomic builtins        NO  instead of YES  (uninitialized)
+#   struct timespec            NO  instead of YES  (has_header_symbol
+#                                                   emits `#ifndef struct
+#                                                   timespec` -> extra
+#                                                   tokens)
+#   strtod locale support      NO  instead of YES  (unused-variable)
+#   gc-sections links          NO  instead of YES  (unused-function)
+#
+# Mesa would then have configured "successfully" with
+# USE_GCC_ATOMIC_BUILTINS and HAVE_STRUCT_TIMESPEC off and without
+# --gc-sections. The flags now live in meson.build's
+# add_project_arguments, which Meson does not pass to detection
+# snippets; the Makefile (the hardware-verified reference build) carries
+# the same three flags, so both paths still emit the same set. Configure
+# with --buildtype=plain so Meson adds no -O/-g of its own either.
 warning_level = '0'
 werror = false
 
 # Flag groups, in order: Tegra X1 / Cortex-A57 architecture (the
-# Makefile's ARCH), code generation, warnings (see the note above),
-# platform. Meson's machine-file parser does not accept comments inside
-# a multi-line value, hence this preamble rather than inline notes.
+# Makefile's ARCH), code generation, platform. Meson's machine-file
+# parser does not accept comments inside a multi-line value, hence this
+# preamble rather than inline notes.
 c_args = [
   '-march=armv8-a+crc+crypto',
   '-mtune=cortex-a57',
@@ -97,9 +119,6 @@ c_args = [
   '-g',
   '-O2',
   '-ffunction-sections',
-  '-Wall',
-  '-Wextra',
-  '-Werror',
   '-D__SWITCH__',
   '-I' + devkitpro + '/libnx/include',
   ]
@@ -119,6 +138,9 @@ c_link_args = [
   '-lnx',
   ]
 
+# This project has no C++ of its own; the C++ half exists for the Mesa
+# build, which brings its own warning policy. Nothing re-adds warnings
+# here for the same reason they left c_args above.
 cpp_args = [
   '-march=armv8-a+crc+crypto',
   '-mtune=cortex-a57',
@@ -127,9 +149,6 @@ cpp_args = [
   '-g',
   '-O2',
   '-ffunction-sections',
-  '-Wall',
-  '-Wextra',
-  '-Werror',
   '-D__SWITCH__',
   '-I' + devkitpro + '/libnx/include',
   ]
