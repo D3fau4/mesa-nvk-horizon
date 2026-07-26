@@ -41,6 +41,33 @@ out=$(grep -RInE 'nvFenceWait|nvMultiFenceWait' horizon/ 2>/dev/null |
       grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//|/\*)')
 [ -n "$out" ] && report "CPU wait outside sync/channel" "$out"
 
+# 5. horizon/include/ is the public API surface nvkmd_horizon consumes; the
+#    headers themselves claim to be libnx-free (CLAUDE.md layer rules,
+#    architecture.md § 3) — check that claim in code, not just doc
+#    comments. Comment lines are excluded from the type-usage grep since
+#    several headers cite libnx names (NvKind, Result) descriptively.
+pattern='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]switch'
+out=$(grep -RInE "$pattern" horizon/include/ 2>/dev/null)
+[ -n "$out" ] && report "libnx header included from horizon/include/" "$out"
+out=$(grep -RInE '\bNv[A-Z][A-Za-z]*\b|\bResult\b' horizon/include/ 2>/dev/null |
+      grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//|/\*)')
+[ -n "$out" ] && report "libnx type used in horizon/include/" "$out"
+
+# 6-8. Rejected designs 1-3 (CLAUDE.md): no simulated /dev/dri device, no
+#    libc interposition via -Wl,--wrap, no nouveau DRM uAPI
+#    reimplementation. Scoped to our own code, not docs/ (which names
+#    these patterns to explain why the reference ports are not the model)
+#    or mesa/ (a pinned upstream checkout, not ours to police here).
+GREP_EXCL=(--exclude=check-layering.sh)
+out=$(grep -RInE "${GREP_EXCL[@]}" '/dev/dri' horizon/ tests/ scripts/ Makefile 2>/dev/null)
+[ -n "$out" ] && report "simulated /dev/dri (rejected design 1)" "$out"
+out=$(grep -RInE "${GREP_EXCL[@]}" -- '--wrap' horizon/ tests/ scripts/ Makefile 2>/dev/null)
+[ -n "$out" ] && report "libc --wrap interposition (rejected design 2)" "$out"
+out=$(grep -RInE "${GREP_EXCL[@]}" \
+      'drm_nouveau_(gem_new|exec|vm_bind)|drmSyncobj[A-Za-z]*' \
+      horizon/ tests/ scripts/ Makefile 2>/dev/null)
+[ -n "$out" ] && report "nouveau DRM uAPI symbol (rejected design 3)" "$out"
+
 if [ "$fail" -eq 0 ]; then
     echo "check-layering: OK (horizon/ is Vulkan-, Mesa- and nwindow-free)"
 fi

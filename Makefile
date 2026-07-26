@@ -22,7 +22,7 @@ CFLAGS  := -g -O2 -Wall -Wextra -Werror -std=gnu11 -ffunction-sections \
            -Ihorizon/include -Itests \
            -I$(DEVKITPRO)/libnx/include
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) \
-           -L$(DEVKITPRO)/libnx/lib
+           -Wl,--gc-sections -L$(DEVKITPRO)/libnx/lib
 LIBS    := -lnx
 
 BUILD   := build
