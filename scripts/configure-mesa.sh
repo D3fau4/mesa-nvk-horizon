@@ -43,6 +43,10 @@ horizon_ensure_meson
 # (milestone item 6); the toolchain image ships neither them nor pip.
 horizon_ensure_python_deps
 scripts/gen-cross-file.sh
+# Before meson setup, never after. Mesa decides HAVE_SYSCONF with
+# cc.has_function('sysconf'), which is a link test, and compat/ is what
+# defines that symbol on this platform.
+scripts/build-compat.sh
 
 # --buildtype=plain for the same reason the horizon build uses it: the
 # cross file states every flag explicitly, and Meson must not add -O/-g

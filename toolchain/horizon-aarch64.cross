@@ -126,6 +126,16 @@ c_args = [
 # -Wl,--gc-sections is what makes -ffunction-sections above worth
 # anything. -lnx last: devkitPro's own generator likewise appends $LIBS
 # to the link arguments.
+#
+# -lhorizon_compat completes the C library rather than extending the
+# project: it supplies functions devkitA64's newlib declares and does
+# not define (compat/, CLAUDE.md). That is toolchain description, which
+# is what belongs in a cross file. It has to be here rather than in a
+# build file because Meson's cc.has_function() is a *link* test — Mesa's
+# configure decides HAVE_SYSCONF by linking — and because Meson links a
+# test program during its own sanity check. scripts/build-compat.sh
+# therefore runs before any meson setup; the horizon_compat_libdir
+# constant comes from the generated cross file, like devkitpro.
 c_link_args = [
   '-march=armv8-a+crc+crypto',
   '-mtune=cortex-a57',
@@ -134,7 +144,9 @@ c_link_args = [
   '-g',
   '-specs=' + devkitpro + '/libnx/switch.specs',
   '-Wl,--gc-sections',
+  '-L' + horizon_compat_libdir,
   '-L' + devkitpro + '/libnx/lib',
+  '-lhorizon_compat',
   '-lnx',
   ]
 
@@ -161,7 +173,9 @@ cpp_link_args = [
   '-g',
   '-specs=' + devkitpro + '/libnx/switch.specs',
   '-Wl,--gc-sections',
+  '-L' + horizon_compat_libdir,
   '-L' + devkitpro + '/libnx/lib',
+  '-lhorizon_compat',
   '-lnx',
   ]
 

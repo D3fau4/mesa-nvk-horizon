@@ -20,6 +20,9 @@ echo "toolchain: $HORIZON_TOOLCHAIN_DESC"
 
 horizon_ensure_meson
 scripts/gen-cross-file.sh
+# Before meson setup, never after: the cross file links -lhorizon_compat
+# and Meson links a test program during its compiler sanity check.
+scripts/build-compat.sh
 
 # Cross-file order matters only in that the generated file must be
 # readable; Meson shares [constants] across all of them. Passing the

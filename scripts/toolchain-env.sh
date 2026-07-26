@@ -35,6 +35,11 @@ HORIZON_MESON_DIR="build/toolchain/meson-${MESON_VERSION}"
 # Python modules Mesa's generators need, kept separate from Meson's
 # install so either can be reprovisioned without disturbing the other.
 HORIZON_PYTHON_DIR="build/toolchain/python"
+# Where scripts/build-compat.sh archives libhorizon_compat.a. It sits
+# with the other provisioned inputs rather than in a build directory,
+# because the cross file names it and therefore every build needs it to
+# exist *before* meson setup runs (see build-compat.sh).
+HORIZON_COMPAT_LIBDIR="build/toolchain/lib"
 
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
@@ -64,7 +69,7 @@ fi
 
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
-export HORIZON_TOOLCHAIN_DESC
+export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR
 
 # Run a command with the cross toolchain reachable. The image's default
 # PATH omits devkitA64/bin and portlibs/switch/bin (measured; recorded
