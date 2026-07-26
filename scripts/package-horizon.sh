@@ -31,6 +31,11 @@ if [ -n "$(find "$HORIZON_BUILD_DIR" -maxdepth 1 -name '*.nro' 2>/dev/null)" ]; 
 elif [ -n "$(find build -maxdepth 1 -name '*.nro' 2>/dev/null)" ]; then
     SRC=build
     SRC_DESC="makefile (build)"
+    # Say so. Falling back silently here once packaged stale Makefile
+    # artefacts right after a Meson configure had failed, which reads as
+    # a successful build of something it never built.
+    echo "package-horizon: no .nro in $HORIZON_BUILD_DIR;" >&2
+    echo "                 falling back to the Makefile output in build/" >&2
 else
     echo "error: no .nro found; run scripts/build-horizon.sh or" >&2
     echo "       scripts/build-switch.sh first." >&2
@@ -68,8 +73,18 @@ tmp="$manifest.tmp.$$"
     echo "# with these .nro attributable to a specific build."
     echo "#"
     echo "# Rebuild these exact artefacts against the same toolchain:"
-    echo "#   HORIZON_NX_IMAGE=${HORIZON_NX_IMAGE_REPO}@$(horizon_image_digest) \\"
-    echo "#       scripts/build-horizon.sh"
+    # In local mode there is no image reference to hand back — printing
+    # repo@local would be a command that cannot work, in the one field
+    # whose entire job is attribution.
+    if [ "$(horizon_image_digest)" = "local" ]; then
+        echo "#   (built against the local devkitA64 at \$DEVKITPRO; there is"
+        echo "#    no image reference to reproduce it. The versions below are"
+        echo "#    the whole record — a devkitPro install that has since been"
+        echo "#    updated cannot be recovered from here.)"
+    else
+        echo "#   HORIZON_NX_IMAGE=${HORIZON_NX_IMAGE_REPO}@$(horizon_image_digest) \\"
+        echo "#       scripts/build-horizon.sh"
+    fi
     echo
     scripts/print-toolchain-versions.sh 2>/dev/null | sed 's/^/  /'
     echo

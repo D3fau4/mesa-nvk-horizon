@@ -30,7 +30,16 @@ probe() {
 set -eu
 PATH="${DEVKITPRO}/devkitA64/bin:/opt/cargo/bin:${PATH}"
 
-pkg() { dkp-pacman -Q "$1" 2>/dev/null | awk '{print $2}' || echo unknown; }
+# Test the captured value, not the pipeline's exit status: with
+# dkp-pacman absent the pipeline still succeeds (awk does), so a
+# trailing `|| echo unknown` never fires and the field silently comes
+# out blank. That matters on a local devkitPro install without
+# dkp-pacman, where a blank reads as "nothing installed" rather than
+# "not answerable".
+pkg() {
+    v=$(dkp-pacman -Q "$1" 2>/dev/null | awk '{print $2}')
+    if [ -n "$v" ]; then echo "$v"; else echo unknown; fi
+}
 
 echo "devkitA64          $(pkg devkitA64)"
 echo "  gcc              $(pkg devkita64-gcc)"
