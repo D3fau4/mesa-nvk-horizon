@@ -75,11 +75,15 @@ export HORIZON_TOOLCHAIN_DESC
 horizon_run() {
     _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}"
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
+        # A local install's rustc is already on the developer's PATH.
         PATH="${_hz_bins}:${PATH}" "$@"
     else
+        # The image keeps rustup outside the default PATH; Mesa's build
+        # needs rustc for NAK/NIL, so add it here rather than making
+        # every caller know where it lives.
         docker run --rm \
             -e DEVKITPRO="$HORIZON_DEVKITPRO" \
-            -e "PATH=${_hz_bins}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            -e "PATH=${_hz_bins}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
             -v "$PWD":"$PWD" -w "$PWD" \
             "$HORIZON_IMAGE" "$@"
     fi

@@ -61,6 +61,19 @@ elf2nro   = 'elf2nro'
 elf2nso   = 'elf2nso'
 nacptool  = 'nacptool'
 
+# Mesa's root meson.build calls add_languages('rust') unconditionally
+# for the nouveau Vulkan driver, and fails at configure time with
+# "'rust' compiler binary not defined in cross file [binaries] section"
+# without this. Found by actually running `meson setup` against the
+# pinned Mesa tree, not by reading.
+#
+# The target is the one rustc already ships (tier 3, os = "horizon");
+# docs/rust-toolchain.md explains why no custom target is defined.
+rust      = ['rustc', '--target', 'aarch64-nintendo-switch-freestanding']
+
+# rust.bindgen() generates NAK's and NIL's C bindings.
+bindgen   = 'bindgen'
+
 [built-in options]
 c_std = 'gnu11'
 

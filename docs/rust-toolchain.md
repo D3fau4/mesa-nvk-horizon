@@ -78,8 +78,30 @@ patch set. That work belongs in `mesa-patches/` in Phase 3/4, not here —
 Phase 2's job was to find out, before building anything, whether the
 sysroot was needed. It is not.
 
-This is a source-level conclusion. Nothing Rust has been *compiled* for
-Horizon yet, and this document does not claim otherwise.
+### Confirmed against the toolchain
+
+The analysis above is source-level, but the conclusion was afterwards
+checked against the real thing. Configuring the pinned Mesa tree with
+`toolchain/horizon-aarch64.cross` reaches Mesa's
+`add_languages('rust')` and stops there:
+
+```
+$ rustc --target aarch64-nintendo-switch-freestanding \
+        -C linker=aarch64-none-elf-gcc s.rs
+error[E0463]: can't find crate for `std`
+  = note: the `aarch64-nintendo-switch-freestanding` target may not be installed
+  = help: consider building the standard library from source with `cargo build -Zbuild-std`
+```
+
+That is exactly the predicted shape: the target is a real, built-in,
+tier-3 target; what it lacks is a prebuilt `std`, and rustc itself
+points at `-Zbuild-std` as the way out. It confirms both halves of the
+answer — Mesa does ask for Rust unconditionally, and `std` is the thing
+that is missing.
+
+Still true, and worth keeping straight: **no Rust has been successfully
+compiled for Horizon.** The step above is a failure reproduced on
+purpose, not a build.
 
 ---
 

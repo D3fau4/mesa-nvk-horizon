@@ -408,6 +408,50 @@ Also checked rather than assumed: Meson's automatic
 already 8 bytes, `struct stat` `0x68` with and without), so it is left
 alone.
 
+### The cross file's "+ Mesa" half, validated
+
+`docs/milestones.md` item 2 asks for a cross file for `horizon` **and
+Mesa**. The Phase 1 half was exercised by building the ten `.nro`; the
+Mesa half was, at first, `sys_root` and `pkg_config_libdir` written from
+reasoning and never run. Configuring the pinned Mesa tree with it closed
+that gap.
+
+It works further than expected — Mesa accepts the machine description,
+detects `aarch64-none-elf-gcc/g++ 15.2.0` for the host machine and gets
+840 lines into its own `meson.build` — and it found one real defect **in
+the cross file**, not in Mesa:
+
+- Mesa calls `add_languages('rust')` unconditionally for the nouveau
+  Vulkan driver and fails with *"'rust' compiler binary not defined in
+  cross file [binaries] section"*. Fixed: `rust` and `bindgen` are now
+  declared, and `horizon_run` puts the image's rustup on `PATH` (the
+  image keeps it outside the default one).
+
+With that, configuration proceeds to the Rust sanity check and stops
+where R13 predicted:
+
+```
+error[E0463]: can't find crate for `std`
+  = note: the `aarch64-nintendo-switch-freestanding` target may not be installed
+  = help: consider building the standard library from source with `cargo build -Zbuild-std`
+```
+
+**This is R13 confirmed against the toolchain**, not just against the
+source. It is a failure reproduced deliberately — no Rust has been
+successfully compiled for Horizon.
+
+Two further items handed to Phase 3, found here rather than later:
+
+- `Checking for size of "void*" : -1`. `needs_exe_wrapper = true` means
+  Meson cannot run a test program, so the size comes back unknown. Mesa
+  will need this answered by a cross property rather than by execution.
+- `WARNING: cannot auto-detect -mtls-dialect when cross-compiling`.
+  Directly adjacent to the open `-mtp=soft` sub-risk in R13.
+
+The probe wrote nothing and patched nothing; the build directory was
+deleted afterwards. Making Mesa configure to completion needs
+`DETECT_OS_HORIZON` and the rest of Phase 3.
+
 ### Commands run and results
 
 All on this machine. **Host build/run (H)** and **cross build (X)** only
@@ -445,7 +489,7 @@ All on this machine. **Host build/run (H)** and **cross build (X)** only
 | 3. Rust target JSON for Horizon | **Not created as a target.** rustc ships `aarch64-nintendo-switch-freestanding`; the file is committed only as a drift snapshot (R13) |
 | 4. `rustc` wrapper | **Not needed** — no custom target, so nothing to wrap |
 | 5. Rust `std`/`core` sysroot, pinned nightly | **Not built** — R13's answer removes it. The nightly is the environment's, not pinned here |
-| 6. Mesa host tools (native build for generators) | **Deferred to Phase 3.** Nothing configures Mesa yet, so there is no generator to build; doing it now would be untested scaffolding |
+| 6. Mesa host tools (native build for generators) | **NOT DONE — the one genuine gap in this phase.** Mesa's configure does not reach its generators: it stops at the Rust sanity check (above), which Phase 3 has to get past first. Building host tools now would be scaffolding against a configure that has never completed. Deferred to Phase 3, but recorded as owed, not as finished |
 
 ### Known gaps at the end of Phase 2
 
