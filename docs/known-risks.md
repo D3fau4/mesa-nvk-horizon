@@ -248,6 +248,28 @@ taken substantial effort.
 suffices for NAK/NIL as Mesa links them. Answering this could remove the sysroot build
 entirely. Investigate at the start of Phase 2, before building anything.
 
+**ANSWERED at Phase 2 start (2026-07-26). Impact: high → low.**
+See `docs/rust-toolchain.md` for the evidence, taken from the pinned tree
+(`mesa-26.1.5`, `6a02618ccf6c`).
+
+`std` *is* required as Mesa links NAK/NIL today — there is no `#![no_std]` anywhere in
+`src/`, and both are built with `rust_abi : 'c'` (`--crate-type staticlib`), which bundles
+the target's `libstd`. But the dependency is shallow: seven sites, all with direct
+replacements, and the files using `std::process`/`fs`/`env` are `#[cfg(test)]`-gated and
+never reach the driver. **No Rust sysroot is built in Phase 2**; closing the gap is a small
+patch set for `mesa-patches/` in Phase 3/4.
+
+Also resolved by the same investigation: rustc already ships
+`aarch64-nintendo-switch-freestanding` (tier 3, `os = "horizon"`, `std = false`,
+`panic = abort`), so milestone items 3 and 4 — a custom target JSON and a `rustc` wrapper —
+are not needed. `toolchain/aarch64-horizon.json` is committed only as a drift snapshot of
+that built-in spec, checked by `scripts/check-rust-target.sh`.
+
+**Sub-risk still open:** devkitA64 compiles with `-mtp=soft`; the Rust target cannot express
+that. Under `no_std + alloc` there should be no TLS at all, but that is unmeasured until
+Rust is first built for Horizon in Phase 3/4. `alloc` will also need a global-allocator shim
+over newlib's.
+
 ---
 
 ## R14 — Mesa version choice
@@ -258,11 +280,21 @@ The reference pins Mesa 25.0.7. NVK moves quickly; a newer Mesa has a better `nv
 abstraction (which is exactly the interface we implement) but may have drifted from the
 reference's findings.
 
-**Unresolved.** Decide at the start of Phase 2: pin the same 25.0.7 for maximum
+~~**Unresolved.**~~ Decide at the start of Phase 2: pin the same 25.0.7 for maximum
 applicability of the audit, or pin a current release for a better `nvkmd` surface and a
 credible upstreaming path. Recommendation: a current stable release, accepting that some
 reference line references become approximate. Record the chosen commit hash in
 `toolchain/versions.env`.
+
+**RESOLVED at Phase 2 start (2026-07-26) — decision D2: `mesa-26.1.5`**, commit
+`6a02618ccf6c5651ecb9cccbde571eb61fd73592` (tag object `3c008c397d06`, released
+2026-07-15), i.e. the recommendation above. Pinned as `MESA_TAG`/`MESA_COMMIT` in
+`toolchain/versions.env`; `scripts/fetch-mesa.sh` verifies the SHA rather than trusting the
+tag.
+
+Consequence accepted: line references in `docs/reference-analysis.md`, which describe a
+25.0.7 tree, are now approximate. Treat them as pointers to the right file and concept, not
+to the right line.
 
 ---
 
@@ -276,6 +308,26 @@ in the container image and recording them.
 **Mitigation:** `toolchain/versions.env` records exact package versions;
 `scripts/` resolve everything through `$DEVKITPRO` / `$DEVKITA64` and never hardcode a
 path. A check script enforces the absence of machine-specific absolute paths.
+
+**Implemented at Phase 2, and the risk turned out to be worse than described.**
+`toolchain/versions.env` exists and `scripts/check-no-abs-paths.sh` is the gate (it found
+one real violation on its first run, a hardcoded `/work` in `scripts/build-switch.sh`).
+`scripts/print-toolchain-versions.sh --check` re-derives every pin from the live toolchain,
+so the file is verifiable rather than declarative.
+
+But *package versions are not the pin*, for two of the most important components:
+
+- **libnx.** The `nx-dev` image installs the `libnx 4.12.0-1` package and then builds
+  `switchbrew/libnx` git HEAD over it. Measured: `dkp-pacman -Qkk libnx` reports
+  **226 total files, 205 altered**, with `libnx.a` and `libnxd.a` mismatching on size, MD5
+  and SHA256. The package version describes 21 of 226 files.
+- **Rust.** The image installs rustup's rolling `nightly`; a channel name pins nothing.
+
+For both, the real pin is the **container image digest**, and
+`toolchain/versions.env` says so explicitly rather than implying a version number that does
+not hold. Everything resolves the image by digest
+(`sha256:61a38fe4…`), never by the moving `latest` tag. Upgrading libnx means rebuilding the
+image and re-pinning the digest, not editing a version string.
 
 ---
 
@@ -298,8 +350,8 @@ which are claims.
 | # | Decision | Blocking |
 |---|---|---|
 | D1 | Any literal code reuse from the GPL/AGPL reference? (default: no) | nothing yet |
-| D2 | Mesa version to pin (25.0.7 vs current stable) | Phase 2 start |
-| D3 | Mesa as git submodule vs script-fetched checkout | Phase 2 start |
-| D4 | Does the owner have a Switch available to run Phase 1 tests? | Phase 1 exit |
+| ~~D2~~ | ~~Mesa version to pin (25.0.7 vs current stable)~~ — **closed 2026-07-26: `mesa-26.1.5` @ `6a02618ccf6c`** (R14) | — |
+| ~~D3~~ | ~~Mesa as git submodule vs script-fetched checkout~~ — **closed 2026-07-26: script-fetched**, pin in `toolchain/versions.env`, `scripts/fetch-mesa.sh` verifies the SHA | — |
+| ~~D4~~ | ~~Does the owner have a Switch available to run Phase 1 tests?~~ — **closed: yes**, Phase 1 ran on hardware | — |
 | D5 | Cache policy per Vulkan memory type — after R6 is measured | Phase 4 |
 | D6 | Advertise timeline semaphores, or fix the upload queue instead | Phase 4 |
