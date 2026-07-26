@@ -25,9 +25,14 @@ static int one_cycle(test_ctx *t, int cycle)
     res = horizon_gpu_device_get_info(dev, &info);
     t_check(t, horizon_gpu_succeeded(res), "cycle %d: get_info", cycle);
 
-    /* Expected GM20B values are those documented in libnx's
-     * nvioctl_gpu_characteristics comments; treat them as plausibility
-     * bounds, not hard requirements, and print what we saw. */
+    /* This project's target is GM20B specifically (CLAUDE.md), so the
+     * chipname, has_syncpoints and the two page-size consistency checks
+     * below are hard requirements, not hedges — a different chip, or an
+     * internally inconsistent characteristics query, is a real failure
+     * here. num_gpc/num_tpc_per_gpc and the engine class numbers are
+     * genuine plausibility bounds (nonzero is all that is asserted; their
+     * exact values are recorded, not required). Print what we saw either
+     * way. */
     t_note(t, "chip='%s' arch=0x%x impl=0x%x rev=0x%x", info.chipname,
            info.arch, info.impl, info.rev);
     t_note(t, "gpc=%u tpc/gpc=%u l2=0x%llx va_bits=%u", info.num_gpc,

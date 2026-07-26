@@ -88,7 +88,7 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
 
 horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem)
 {
-    if (!mem || !mem->cpu)
+    if (!mem)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
     uint32_t live = atomic_load(&mem->live_mappings);
@@ -100,9 +100,12 @@ horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem)
         return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
     }
 
+    /* `mem` has exactly one documented owner (memory-model § 7): a second
+     * destroy call on the same pointer is a caller bug, not a case this
+     * layer defends against — `mem` is freed below, so any check reading
+     * back through the pointer afterwards would itself be a use-after-free. */
     nvMapClose(&mem->nvmap);
     free(mem->cpu);
-    mem->cpu = NULL; /* make a double-destroy fail INVALID_ARG, not UAF */
     atomic_fetch_sub(&mem->dev->live_mem, 1);
     free(mem);
     return horizon_gpu_ok();

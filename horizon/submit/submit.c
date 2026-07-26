@@ -32,6 +32,13 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
     if (flags != HORIZON_GPU_SUBMIT_DEFAULT &&
         flags != HORIZON_GPU_SUBMIT_ENTRY_FLAGS_ZERO)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    /* Bound num_spans against the queue capacity before it is used for
+     * anything: unbounded, it would let the validation loop below read
+     * spans[] out of the caller's array, and would let the back-pressure
+     * arithmetic further down wrap silently (CLAUDE.md: overflow-check
+     * every size computation) instead of refusing the submit. */
+    if (num_spans >= GPFIFO_QUEUE_SIZE)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     for (uint32_t i = 0; i < num_spans; i++) {
         if (spans[i].gpu_va == 0 || spans[i].num_dwords == 0)
             return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);

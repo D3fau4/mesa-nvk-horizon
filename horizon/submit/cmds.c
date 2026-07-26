@@ -48,17 +48,31 @@ uint32_t
 horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
                          const uint32_t classes[HORIZON_CMDS_NUM_SUBCHANNELS])
 {
+    /* NVA06F_SET_OBJECT_NVCLASS is bits 15:0 (cla06f.h); a queried class
+     * number that does not fit would otherwise be silently mangled into a
+     * different, valid-looking class and submitted to hardware — reject
+     * instead, matching every other "reject rather than truncate" check
+     * in this layer. */
+    for (uint32_t subch = 0; subch < HORIZON_CMDS_NUM_SUBCHANNELS; subch++) {
+        if (classes[subch] > 0xFFFFu)
+            return 0;
+    }
+
     uint32_t n = 0;
     for (uint32_t subch = 0; subch < HORIZON_CMDS_NUM_SUBCHANNELS; subch++) {
         buf[n++] = horizon_cmd_hdr_incr(subch, HORIZON_NVA06F_SET_OBJECT, 1);
-        /* NVA06F_SET_OBJECT_NVCLASS is bits 15:0 (cla06f.h). */
-        buf[n++] = classes[subch] & 0xFFFF;
+        buf[n++] = classes[subch];
     }
     return n;
 }
 
-uint32_t horizon_cmds_nop(uint32_t *buf, uint32_t pairs)
+uint32_t horizon_cmds_nop(uint32_t *buf, uint32_t buf_dwords, uint32_t pairs)
 {
+    /* Each pair is 2 dwords; refuse rather than overrun the caller's
+     * buffer if it would not fit. */
+    if (pairs > buf_dwords / 2)
+        return 0;
+
     uint32_t n = 0;
     for (uint32_t i = 0; i < pairs; i++) {
         buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_NOP, 1);

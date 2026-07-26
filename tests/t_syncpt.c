@@ -62,9 +62,10 @@ int run_test(test_ctx *t)
                      horizon_gpu_status_str(res.status)))
             break;
         uint32_t now = 0;
-        horizon_gpu_syncpt_read(dev, id, &now);
-        if (!t_check(t, now == prev + 1,
-                     "hardware counter advanced by exactly one (%u -> %u)",
+        horizon_gpu_result read_res = horizon_gpu_syncpt_read(dev, id, &now);
+        if (!t_check(t, horizon_gpu_succeeded(read_res) && now == prev + 1,
+                     "hardware counter advanced by exactly one (status=%s, "
+                     "%u -> %u)", horizon_gpu_status_str(read_res.status),
                      prev, now)) {
             monotonic_by_one = false;
             break;

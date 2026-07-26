@@ -25,7 +25,8 @@ int run_test(test_ctx *t)
         return 1;
 
     horizon_gpu_device_info info;
-    horizon_gpu_device_get_info(dev, &info);
+    res = horizon_gpu_device_get_info(dev, &info);
+    t_check(t, horizon_gpu_succeeded(res), "get_info");
 
     /* Small-page reservation. */
     horizon_gpu_va_range *r1 = NULL;
@@ -70,12 +71,15 @@ int run_test(test_ctx *t)
                 "base inside the queried big-page region");
     }
 
-    /* Rejections. */
-    res = horizon_gpu_vm_reserve(dev, 0x1000, 0x2000, 0, &r1);
+    /* Rejections. A scratch out-param, not &r1: r1 still holds a live
+     * reservation here, and reusing it relies on the undocumented fact
+     * that vm_reserve never touches *out_range on a failure path. */
+    horizon_gpu_va_range *scratch = NULL;
+    res = horizon_gpu_vm_reserve(dev, 0x1000, 0x2000, 0, &scratch);
     t_check(t, res.status == HORIZON_GPU_ERR_INVALID_ARG,
             "page size neither small nor big rejected (%s)",
             horizon_gpu_status_str(res.status));
-    res = horizon_gpu_vm_reserve(dev, 0x1000, 0x1000, 0x1800, &r1);
+    res = horizon_gpu_vm_reserve(dev, 0x1000, 0x1000, 0x1800, &scratch);
     t_check(t, res.status == HORIZON_GPU_ERR_INVALID_ARG,
             "non-pow2 alignment rejected (%s)",
             horizon_gpu_status_str(res.status));
@@ -106,9 +110,9 @@ int run_test(test_ctx *t)
                 "release small range");
 
     horizon_gpu_device_counters c;
-    horizon_gpu_device_get_counters(dev, &c);
-    t_check(t, c.live_va_ranges == 0, "live_va_ranges back to zero (%u)",
-            c.live_va_ranges);
+    res = horizon_gpu_device_get_counters(dev, &c);
+    t_check(t, horizon_gpu_succeeded(res) && c.live_va_ranges == 0,
+            "live_va_ranges back to zero (%u)", c.live_va_ranges);
 
     res = horizon_gpu_device_destroy(dev);
     t_check(t, horizon_gpu_succeeded(res), "device_destroy (status=%s)",

@@ -46,8 +46,10 @@ static int full_cycle(test_ctx *t, int cycle)
     t_check(t, horizon_gpu_succeeded(res), "cycle %d: range", cycle);
     if (mem && range) {
         uint32_t *cmds = horizon_gpu_mem_cpu_ptr(mem);
-        uint32_t n = horizon_cmds_nop(cmds, 8);
-        horizon_gpu_mem_flush(mem, 0, n * 4);
+        uint32_t n = horizon_cmds_nop(cmds, 0x1000 / 4, 8);
+        res = horizon_gpu_mem_flush(mem, 0, n * 4);
+        t_check(t, horizon_gpu_succeeded(res), "cycle %d: flush NOP list",
+                cycle);
         res = horizon_gpu_vm_map(range, 0, mem, 0, 0x1000,
                                  HORIZON_GPU_PTE_KIND_PITCH, true, &map);
         t_check(t, horizon_gpu_succeeded(res), "cycle %d: map", cycle);
@@ -71,8 +73,10 @@ static int full_cycle(test_ctx *t, int cycle)
         res = horizon_gpu_submit(chan, &span, 1,
                                  HORIZON_GPU_SUBMIT_DEFAULT, &f1);
         t_check(t, horizon_gpu_succeeded(res), "cycle %d: submit 1", cycle);
-        horizon_gpu_channel_add_retirement(chan, f1, count_retire,
-                                           &retired);
+        res = horizon_gpu_channel_add_retirement(chan, f1, count_retire,
+                                                  &retired);
+        t_check(t, horizon_gpu_succeeded(res), "cycle %d: add_retirement",
+                cycle);
         res = horizon_gpu_submit(chan, &span, 1,
                                  HORIZON_GPU_SUBMIT_DEFAULT, &f2);
         t_check(t, horizon_gpu_succeeded(res), "cycle %d: submit 2", cycle);
@@ -105,11 +109,16 @@ static int full_cycle(test_ctx *t, int cycle)
                 cycle, retired);
     }
 
-    /* Out-of-order teardown is refused, never silently leaked. */
+    /* Out-of-order teardown is refused, never silently leaked. If every
+     * child creation above actually failed, dev could legitimately have
+     * no live children at all, in which case this call would succeed and
+     * free dev — everything below uses dev, so that must be caught here
+     * rather than walking into a use-after-free. */
     res = horizon_gpu_device_destroy(dev);
-    t_check(t, res.status == HORIZON_GPU_ERR_LEAK,
-            "cycle %d: device destroy with live children refused (%s)",
-            cycle, horizon_gpu_status_str(res.status));
+    if (!t_check(t, res.status == HORIZON_GPU_ERR_LEAK,
+                 "cycle %d: device destroy with live children refused (%s)",
+                 cycle, horizon_gpu_status_str(res.status)))
+        return 1;
 
     /* Reverse-order teardown. */
     if (chan)

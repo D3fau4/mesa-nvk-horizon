@@ -53,12 +53,16 @@ extern "C" {
 
 /* Pushbuffer method header, "increasing methods" opcode (001b in bits
  * 31:29; count 28:16; subchannel 15:13; dword method address 12:0) —
- * envytools gf100+ pushbuffer format. */
+ * envytools gf100+ pushbuffer format. Every call site in this file passes
+ * constants that already fit; the masks below exist so that an
+ * out-of-range field (count > 0x1FFF, subch > 7, method >= 0x8000) is
+ * truncated into its own bit range instead of silently bleeding into and
+ * corrupting an adjacent one. */
 static inline uint32_t horizon_cmd_hdr_incr(uint32_t subch, uint32_t method,
                                             uint32_t count)
 {
-    return (UINT32_C(1) << 29) | (count << 16) | (subch << 13) |
-           (method >> 2);
+    return (UINT32_C(1) << 29) | ((count & 0x1FFFu) << 16) |
+           ((subch & 0x7u) << 13) | ((method >> 2) & 0x1FFFu);
 }
 
 /* WFI + syncpoint increment (the shape Linux nvgpu submits for every job
@@ -81,8 +85,10 @@ uint32_t
 horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
                          const uint32_t classes[HORIZON_CMDS_NUM_SUBCHANNELS]);
 
-/* `pairs` NOP methods (2 dwords each) into buf. Returns the dword count. */
-uint32_t horizon_cmds_nop(uint32_t *buf, uint32_t pairs);
+/* `pairs` NOP methods (2 dwords each) into buf, which holds `buf_dwords`
+ * dwords of capacity. Returns the dword count, or 0 without writing
+ * anything if `pairs` would not fit in that capacity. */
+uint32_t horizon_cmds_nop(uint32_t *buf, uint32_t buf_dwords, uint32_t pairs);
 
 #ifdef __cplusplus
 }

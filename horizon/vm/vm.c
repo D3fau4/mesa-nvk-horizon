@@ -24,7 +24,7 @@ static bool vm_page_size_valid(const horizon_gpu_device *dev,
                                uint32_t page_size)
 {
     return page_size == HORIZON_GPU_SMALL_PAGE_SIZE ||
-           page_size == dev->info.big_page_size;
+           page_size == dev->info.as_big_page_size;
 }
 
 horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
@@ -103,7 +103,7 @@ uint32_t horizon_gpu_va_range_page_size(const horizon_gpu_va_range *range)
 
 horizon_gpu_result horizon_gpu_vm_release(horizon_gpu_va_range *range)
 {
-    if (!range || !range->dev)
+    if (!range)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
     horizon_gpu_device *dev = range->dev;
@@ -126,9 +126,12 @@ horizon_gpu_result horizon_gpu_vm_release(horizon_gpu_va_range *range)
         return horizon_gpu_err_nv(rc);
     }
 
+    /* `range` has exactly one documented owner: a second release call on
+     * the same pointer is a caller bug, not a case this layer defends
+     * against — `range` is freed below, so a check reading back through
+     * the pointer afterwards would itself be a use-after-free. */
     horizon_va_set_fini(&range->live);
     atomic_fetch_sub(&dev->live_va_ranges, 1);
-    range->dev = NULL; /* double-release fails INVALID_ARG, not UAF */
     free(range);
     return horizon_gpu_ok();
 }
@@ -141,6 +144,12 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
                                       horizon_gpu_mapping **out_mapping)
 {
     if (!range || !range->dev || !mem || !out_mapping || size == 0)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    /* Mixing objects from two different devices would issue the ioctl on
+     * the wrong address-space fd and split the leak accounting between
+     * them (mem->live_mappings on its own device, dev->live_mappings on
+     * the reservation's) — reject rather than silently do that. */
+    if (mem->dev != range->dev)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
     horizon_gpu_device *dev = range->dev;
@@ -272,7 +281,7 @@ uint64_t horizon_gpu_mapping_size(const horizon_gpu_mapping *mapping)
 
 horizon_gpu_result horizon_gpu_vm_unmap(horizon_gpu_mapping *mapping)
 {
-    if (!mapping || !mapping->range)
+    if (!mapping)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
     horizon_gpu_va_range *range = mapping->range;
@@ -305,8 +314,11 @@ horizon_gpu_result horizon_gpu_vm_unmap(horizon_gpu_mapping *mapping)
     atomic_fetch_sub(&mem->live_mappings, 1);
     mem->mapped_va = mem->mapping_list_head ? mem->mapping_list_head->va : 0;
 
+    /* `mapping` has exactly one documented owner: a second unmap call on
+     * the same pointer is a caller bug, not a case this layer defends
+     * against — `mapping` is freed below, so a check reading back through
+     * the pointer afterwards would itself be a use-after-free. */
     atomic_fetch_sub(&dev->live_mappings, 1);
-    mapping->range = NULL; /* double-unmap fails INVALID_ARG, not UAF */
     free(mapping);
     return horizon_gpu_ok();
 }

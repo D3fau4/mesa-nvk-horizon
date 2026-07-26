@@ -53,21 +53,38 @@ int main(void)
     };
     n = horizon_cmds_set_objects(sbuf, classes);
     H_CHECK(n == HORIZON_CMDS_SET_OBJECTS_DWORDS, "setobj dword count");
+    /* Hand-derived headers, not the implementation's own formula recomputed
+     * (that would still pass if horizon_cmd_hdr_incr broke): (1<<29) |
+     * (1<<16) | (subch<<13), subch = 0..4. */
+    static const uint32_t setobj_hdrs[HORIZON_CMDS_NUM_SUBCHANNELS] = {
+        0x20010000, 0x20012000, 0x20014000, 0x20016000, 0x20018000,
+    };
     int ok = 1;
     for (uint32_t s = 0; s < HORIZON_CMDS_NUM_SUBCHANNELS; s++) {
-        if (sbuf[2 * s] != ((1u << 29) | (1u << 16) | (s << 13)))
+        if (sbuf[2 * s] != setobj_hdrs[s])
             ok = 0;
         if (sbuf[2 * s + 1] != classes[s])
             ok = 0;
     }
     H_CHECK(ok, "setobj: one SET_OBJECT per subchannel with its class");
 
+    /* A class number that does not fit in NVCLASS's 16 bits is rejected,
+     * not truncated into a different, valid-looking class. */
+    uint32_t bad_classes[HORIZON_CMDS_NUM_SUBCHANNELS] = {
+        0xB197, 0xB1C0, 0x10000, 0x902D, 0xB0B5,
+    };
+    H_CHECK(horizon_cmds_set_objects(sbuf, bad_classes) == 0,
+            "setobj: out-of-range class rejected, not truncated");
+
     /* NOPs. */
     uint32_t nbuf[8];
-    n = horizon_cmds_nop(nbuf, 4);
+    n = horizon_cmds_nop(nbuf, 8, 4);
     H_CHECK(n == 8, "nop dword count");
     H_CHECK(nbuf[0] == 0x20010002 && nbuf[1] == 0,
             "nop: hdr(0, NOP=0x08, 1) + 0");
+    H_CHECK(horizon_cmds_nop(nbuf, 8, 0) == 0, "nop: zero pairs is a no-op");
+    H_CHECK(horizon_cmds_nop(nbuf, 8, 5) == 0,
+            "nop: pairs that would overrun the buffer is rejected");
 
     return h_summary("h_cmds");
 }

@@ -25,7 +25,8 @@ int run_test(test_ctx *t)
         return 1;
 
     horizon_gpu_device_info info;
-    horizon_gpu_device_get_info(dev, &info);
+    res = horizon_gpu_device_get_info(dev, &info);
+    t_check(t, horizon_gpu_succeeded(res), "get_info");
 
     horizon_gpu_mem *mem = NULL;
     horizon_gpu_va_range *range = NULL;
@@ -90,8 +91,23 @@ int run_test(test_ctx *t)
             horizon_gpu_status_str(res.status));
 
     /* Unmap clears the recorded VA and frees the interval for reuse —
-     * the kernel must accept a fresh map at the same fixed VA. */
-    if (map2) {
+     * the kernel must accept a fresh map at the same fixed VA. Unmapping
+     * the more-recently-created sibling (map2) first must restore
+     * mapped_va to the still-live map1, not clear it out from under it —
+     * the exact invariant whose absence causes the reference's
+     * double-unmap bug (memory-model § 2). This is the state the
+     * intrusive mem_next/mem_prev list exists for; check it, not just the
+     * final all-unmapped state below. */
+    if (map2 && map1) {
+        res = horizon_gpu_vm_unmap(map2);
+        t_check(t, horizon_gpu_succeeded(res), "unmap second mapping "
+                "(status=%s nv=0x%08x)",
+                horizon_gpu_status_str(res.status), res.nv);
+        t_check(t, horizon_gpu_mem_mapped_va(mem) == horizon_gpu_mapping_va(map1),
+                "unmapping the newer sibling restores mapped_va to the "
+                "still-live one, not zero (0x%" PRIx64 " vs 0x%" PRIx64 ")",
+                horizon_gpu_mem_mapped_va(mem), horizon_gpu_mapping_va(map1));
+    } else if (map2) {
         res = horizon_gpu_vm_unmap(map2);
         t_check(t, horizon_gpu_succeeded(res), "unmap second mapping "
                 "(status=%s nv=0x%08x)",

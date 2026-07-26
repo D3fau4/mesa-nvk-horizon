@@ -30,6 +30,16 @@
  * aligned 0x20000). */
 #define CHANNEL_ZCULL_ALIGN UINT64_C(0x20000)
 
+/* The fence-increment list and the SET_OBJECT list must not overlap
+ * inside the shared cmdbuf page; catch it at compile time rather than as
+ * a GPU fault the first time either list's size grows. */
+_Static_assert(HORIZON_CMDS_FENCE_INCR_DWORDS * 4 <=
+               CHANNEL_SETOBJ_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET,
+               "fence-increment list would overrun the SET_OBJECT list");
+_Static_assert(CHANNEL_SETOBJ_CMDS_OFFSET +
+               HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
+               "SET_OBJECT list would overrun the cmdbuf page");
+
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
  * re-checked at a useful rate without busy-polling
  * (docs/synchronization.md § 6). */
@@ -117,6 +127,23 @@ static bool channel_check_fault(horizon_gpu_channel *chan)
     return chan->lost;
 }
 
+/* Logs a teardown step's failure during horizon_gpu_channel_create's error
+ * unwind instead of discarding it. A failure here means the corresponding
+ * object (and its live_* counter) cannot be un-wound any further from this
+ * function — chan is never published through *out_chan, so nothing else can
+ * reference it, but the leak must be visible rather than silent
+ * (CLAUDE.md: never discard a Result; never silently leak). */
+static void channel_create_unwind_step(horizon_gpu_device *dev,
+                                       const char *step,
+                                       horizon_gpu_result res)
+{
+    if (horizon_gpu_failed(res))
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "channel_create unwind: %s failed (status=%s "
+                     "nv=0x%08x) — leaking that object", step,
+                     horizon_gpu_status_str(res.status), res.nv);
+}
+
 horizon_gpu_result
 horizon_gpu_channel_create(horizon_gpu_device *dev,
                            const horizon_gpu_channel_create_info *create_info,
@@ -178,11 +205,16 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     if (horizon_gpu_failed(res))
         goto fail_channel;
 
-    /* One reservation holds the cmdbuf slot and (optionally) Zcull:
-     * cmdbuf at base+0, Zcull at base+0x20000, with the base aligned so
-     * the Zcull VA meets CHANNEL_ZCULL_ALIGN. */
+    /* Without Zcull, the reservation only needs to hold the cmdbuf page,
+     * at ordinary small-page alignment. With Zcull, one reservation holds
+     * both: cmdbuf at base+0, Zcull at base+0x20000, with the base
+     * aligned so the Zcull VA meets CHANNEL_ZCULL_ALIGN. Sizing/aligning
+     * every channel's reservation to CHANNEL_ZCULL_ALIGN regardless would
+     * reserve 128 KiB of GPU VA for a 4 KiB cmdbuf in the common
+     * (bind_zcull == false) case. */
     uint64_t zcull_size = 0;
-    uint64_t reserve_size = CHANNEL_ZCULL_ALIGN;
+    uint64_t reserve_size = CHANNEL_CMDBUF_SIZE;
+    uint64_t reserve_align = 0; /* 0 = vm_reserve defaults to page_size */
     if (create_info->bind_zcull) {
         zcull_size = nvGpuGetZcullCtxSize();
         if (zcull_size == 0) {
@@ -199,11 +231,12 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
             res = horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
             goto fail_cmdbuf_mem;
         }
+        reserve_align = CHANNEL_ZCULL_ALIGN;
     }
 
     res = horizon_gpu_vm_reserve(dev, reserve_size,
                                  (uint32_t)HORIZON_GPU_SMALL_PAGE_SIZE,
-                                 CHANNEL_ZCULL_ALIGN, &chan->internal_range);
+                                 reserve_align, &chan->internal_range);
     if (horizon_gpu_failed(res))
         goto fail_cmdbuf_mem;
 
@@ -273,15 +306,20 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     return horizon_gpu_ok();
 
 fail_zcull_map:
-    horizon_gpu_vm_unmap(chan->zcull_map);
+    channel_create_unwind_step(dev, "vm_unmap(zcull_map)",
+                               horizon_gpu_vm_unmap(chan->zcull_map));
 fail_zcull_mem:
-    horizon_gpu_mem_destroy(chan->zcull_mem);
+    channel_create_unwind_step(dev, "mem_destroy(zcull_mem)",
+                               horizon_gpu_mem_destroy(chan->zcull_mem));
 fail_cmdbuf_map:
-    horizon_gpu_vm_unmap(chan->cmdbuf_map);
+    channel_create_unwind_step(dev, "vm_unmap(cmdbuf_map)",
+                               horizon_gpu_vm_unmap(chan->cmdbuf_map));
 fail_range:
-    horizon_gpu_vm_release(chan->internal_range);
+    channel_create_unwind_step(dev, "vm_release(internal_range)",
+                               horizon_gpu_vm_release(chan->internal_range));
 fail_cmdbuf_mem:
-    horizon_gpu_mem_destroy(chan->cmdbuf_mem);
+    channel_create_unwind_step(dev, "mem_destroy(cmdbuf_mem)",
+                               horizon_gpu_mem_destroy(chan->cmdbuf_mem));
 fail_channel:
     nvGpuChannelClose(&chan->gc);
 fail_free:
@@ -489,7 +527,7 @@ horizon_gpu_result horizon_gpu_channel_wait_idle(horizon_gpu_channel *chan,
 
 horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
 {
-    if (!chan || !chan->dev)
+    if (!chan)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
     horizon_gpu_device *dev = chan->dev;
@@ -571,10 +609,13 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
         return res;
     chan->cmdbuf_mem = NULL;
 
+    /* `chan` has exactly one documented owner: a second destroy call on
+     * the same pointer is a caller bug, not a case this layer defends
+     * against — `chan` is freed below, so a check reading back through
+     * the pointer afterwards would itself be a use-after-free. */
     nvGpuChannelClose(&chan->gc);
     free(chan->retire);
     atomic_fetch_sub(&dev->live_channels, 1);
-    chan->dev = NULL;
     free(chan);
     return horizon_gpu_ok();
 }

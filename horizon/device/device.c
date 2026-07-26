@@ -146,11 +146,12 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
         res = horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
         goto fail_gpu;
     }
-    /* device_fill_info() just recorded the characteristics' default
-     * big_page_size; overwrite it with the size actually selected for
-     * this address space so vm_page_size_valid() validates reservations
-     * against the size in effect, not the unused default. */
-    dev->info.big_page_size = as_big_page;
+    /* device_fill_info() recorded the characteristics' queried default in
+     * big_page_size; that stays untouched (the public contract is "never
+     * defaulted"). The size actually selected for this address space —
+     * which may differ — is recorded separately so vm_page_size_valid()
+     * validates reservations against the size in effect. */
+    dev->info.as_big_page_size = as_big_page;
 
     /* Step 5/5: /dev/nvhost-as-gpu with the *queried* big-page size. */
     rc = nvAddressSpaceCreate(&dev->as, as_big_page);
@@ -182,10 +183,11 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
 
     horizon_logf(&dev->log, HORIZON_LOG_INFO,
                  "device up: %s arch=0x%x impl=0x%x rev=0x%x gpc=%u tpc/gpc=%u "
-                 "big_page=0x%x va_bits=%u%s",
+                 "big_page=0x%x as_big_page=0x%x va_bits=%u%s",
                  dev->info.chipname, dev->info.arch, dev->info.impl,
                  dev->info.rev, dev->info.num_gpc, dev->info.num_tpc_per_gpc,
-                 dev->info.big_page_size, dev->info.gpu_va_bit_count,
+                 dev->info.big_page_size, dev->info.as_big_page_size,
+                 dev->info.gpu_va_bit_count,
                  dev->debug_synchronous ? " [debug-synchronous]" : "");
 
     *out_dev = dev;

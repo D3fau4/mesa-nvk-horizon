@@ -47,7 +47,7 @@ static horizon_gpu_result make_nop_list(horizon_gpu_device *dev,
         return res;
 
     uint32_t *cmds = horizon_gpu_mem_cpu_ptr(*out_mem);
-    uint32_t n = horizon_cmds_nop(cmds, NOP_PAIRS);
+    uint32_t n = horizon_cmds_nop(cmds, 0x1000 / 4, NOP_PAIRS);
     res = horizon_gpu_mem_flush(*out_mem, 0, n * 4);
     if (horizon_gpu_failed(res))
         return res;
@@ -127,8 +127,16 @@ int run_test(test_ctx *t)
         t_check(t, fb.threshold == fa.threshold + 1,
                 "fences ordered by submission (%u then %u)", fa.threshold,
                 fb.threshold);
-        t_note(t, "both submits issued in %" PRIu64 " us (no intervening "
-               "CPU wait by construction)", submit_ns / 1000);
+        /* The milestone's exit criterion, actually asserted: a regression
+         * that reintroduced a drain-per-submit wait (CLAUDE.md rejected
+         * design #6) must fail this, not just print a different number in
+         * a note nobody diffs. 50 ms is generous — hardware measured
+         * ~148 us for both submits together (STATUS.md) — while being far
+         * below any realistic full CPU-wait-drain regression. */
+        t_check(t, submit_ns < UINT64_C(50000000),
+                "both submits issued in %" PRIu64 " us, well under a "
+                "drain-per-submit regression threshold (no intervening CPU "
+                "wait)", submit_ns / 1000);
         res = horizon_gpu_channel_wait_fence(chan, fb, WAIT_NS);
         t_check(t, horizon_gpu_succeeded(res), "second fence reached");
         bool first_done = false;
@@ -149,9 +157,11 @@ int run_test(test_ctx *t)
             horizon_gpu_status_str(res.status));
     uint32_t err_type = 0;
     const char *desc = NULL;
-    horizon_gpu_channel_get_error(chan, &err_type, &desc);
-    t_check(t, err_type == 0, "no error notification after engine binds "
-            "(type=%u '%s')", err_type, desc ? desc : "?");
+    res = horizon_gpu_channel_get_error(chan, &err_type, &desc);
+    t_check(t, horizon_gpu_succeeded(res) && err_type == 0,
+            "no error notification after engine binds (status=%s type=%u "
+            "'%s')", horizon_gpu_status_str(res.status), err_type,
+            desc ? desc : "?");
 
     /* 5. R3 measurement, on a dedicated channel so a wedge cannot poison
      * the main one: NVK's upstream default entry flags (0) vs the
@@ -210,40 +220,50 @@ int run_test(test_ctx *t)
                     "R10 wait cmdlist built and mapped")) {
             uint32_t prod_id = horizon_gpu_channel_syncpt_id(r10prod);
             uint32_t cur = 0;
-            horizon_gpu_syncpt_read(dev, prod_id, &cur);
+            res = horizon_gpu_syncpt_read(dev, prod_id, &cur);
             uint32_t future = cur + 1; /* producer has not reached this */
 
             uint32_t *cmds = horizon_gpu_mem_cpu_ptr(wmem);
             uint32_t n = horizon_cmds_syncpt_wait(cmds, prod_id, future);
-            horizon_gpu_mem_flush(wmem, 0, n * 4);
+            horizon_gpu_result flush_res = horizon_gpu_mem_flush(wmem, 0,
+                                                                  n * 4);
             wspan.num_dwords = n;
 
             horizon_gpu_fence fw;
-            res = horizon_gpu_submit(r10cons, &wspan, 1,
-                                     HORIZON_GPU_SUBMIT_DEFAULT, &fw);
-            if (t_check(t, horizon_gpu_succeeded(res),
-                        "R10 cross-channel wait submit accepted")) {
-                res = horizon_gpu_channel_wait_fence(r10cons, fw,
-                                                     R10_SHORT_WAIT_NS);
-                t_check(t, res.status == HORIZON_GPU_ERR_TIMEOUT,
-                        "R10: consumer stays blocked on producer syncpt %u "
-                        "threshold %u not yet reached (status=%s)", prod_id,
-                        future, horizon_gpu_status_str(res.status));
+            if (t_check(t, horizon_gpu_succeeded(res) &&
+                        horizon_gpu_succeeded(flush_res),
+                        "R10 producer syncpt read and wait cmdlist flush "
+                        "(read status=%s, flush status=%s)",
+                        horizon_gpu_status_str(res.status),
+                        horizon_gpu_status_str(flush_res.status))) {
+                res = horizon_gpu_submit(r10cons, &wspan, 1,
+                                         HORIZON_GPU_SUBMIT_DEFAULT, &fw);
+                if (t_check(t, horizon_gpu_succeeded(res),
+                            "R10 cross-channel wait submit accepted")) {
+                    res = horizon_gpu_channel_wait_fence(r10cons, fw,
+                                                         R10_SHORT_WAIT_NS);
+                    t_check(t, res.status == HORIZON_GPU_ERR_TIMEOUT,
+                            "R10: consumer stays blocked on producer syncpt "
+                            "%u threshold %u not yet reached (status=%s)",
+                            prod_id, future,
+                            horizon_gpu_status_str(res.status));
 
-                horizon_gpu_fence pf;
-                res = horizon_gpu_submit(r10prod, NULL, 0,
-                                         HORIZON_GPU_SUBMIT_DEFAULT, &pf);
-                t_check(t, horizon_gpu_succeeded(res) &&
-                        horizon_gpu_syncpt_reached(pf.threshold, future),
-                        "R10: producer submit reaches the awaited "
-                        "threshold (producer now %u, awaited %u)",
-                        pf.threshold, future);
+                    horizon_gpu_fence pf;
+                    res = horizon_gpu_submit(r10prod, NULL, 0,
+                                             HORIZON_GPU_SUBMIT_DEFAULT, &pf);
+                    t_check(t, horizon_gpu_succeeded(res) &&
+                            horizon_gpu_syncpt_reached(pf.threshold, future),
+                            "R10: producer submit reaches the awaited "
+                            "threshold (producer now %u, awaited %u)",
+                            pf.threshold, future);
 
-                res = horizon_gpu_channel_wait_fence(r10cons, fw, WAIT_NS);
-                t_check(t, horizon_gpu_succeeded(res),
-                        "R10: GPU-side cross-channel wait unblocks once "
-                        "the producer reaches the threshold (status=%s)",
-                        horizon_gpu_status_str(res.status));
+                    res = horizon_gpu_channel_wait_fence(r10cons, fw,
+                                                         WAIT_NS);
+                    t_check(t, horizon_gpu_succeeded(res),
+                            "R10: GPU-side cross-channel wait unblocks once "
+                            "the producer reaches the threshold (status=%s)",
+                            horizon_gpu_status_str(res.status));
+                }
             }
         }
         if (wmap)

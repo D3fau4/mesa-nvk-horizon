@@ -47,6 +47,14 @@ typedef struct horizon_gpu_device_info {
     uint32_t big_page_size;          /* bytes; required, never defaulted    */
     uint32_t compression_page_size;
     uint32_t available_big_page_sizes; /* bitmask of supported big-page sizes */
+    /* Big-page size this device's address space was actually created
+     * with: big_page_size unless horizon_gpu_device_create_info::
+     * as_big_page_size overrode it to a different member of
+     * available_big_page_sizes. horizon_gpu_vm_reserve validates its
+     * page_size argument against this field, not against big_page_size,
+     * so the queried hardware default above stays discoverable even when
+     * a non-default address-space granularity is in effect. */
+    uint32_t as_big_page_size;
     uint32_t gpu_va_bit_count;
     /* Engine class numbers, queried rather than assumed (used for the
      * in-stream SET_OBJECT binds, docs/known-risks.md R7). */
