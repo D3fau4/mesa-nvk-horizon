@@ -144,10 +144,11 @@ provides, but it is a thing that must exist and does not today.
 ## 5. What Phase 2 therefore ships
 
 - No Rust sysroot, no `rustc` wrapper, no custom target.
-- `RUST_BUILD_STD=no` recorded in `toolchain/versions.env`, with the
-  Rust version pinned by the image digest (the image installs rustup's
-  rolling `nightly`, so a channel name pins nothing — the same situation
-  as libnx, see R15).
+- `RUST_BUILD_STD=no` recorded in `toolchain/versions.env`. The Rust
+  version itself is **not** recorded or pinned: the image installs
+  rustup's rolling `nightly`, and like libnx the toolchain belongs to
+  the environment rather than to this repository (R15). Which nightly a
+  given build used is recorded in that build's artefact manifest.
 - `toolchain/aarch64-horizon.json` + `scripts/check-rust-target.sh` as a
   drift tripwire.
 - This document, so Phase 3 starts from an answer rather than from the

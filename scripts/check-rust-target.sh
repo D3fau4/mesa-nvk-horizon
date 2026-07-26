@@ -8,8 +8,14 @@
 # to it is noticed here instead of surfacing as a mysterious codegen or
 # link difference later. Tier-3 specs are not stable across nightlies.
 #
-#   scripts/check-rust-target.sh            # compare, exit 1 on drift
-#   scripts/check-rust-target.sh --update   # re-snapshot after a re-pin
+#   scripts/check-rust-target.sh            # compare, report drift, exit 0
+#   scripts/check-rust-target.sh --strict   # exit 1 on drift
+#   scripts/check-rust-target.sh --update   # accept the current spec
+#
+# Drift is reported but does not fail by default: the nightly comes from
+# the environment, which this project does not pin (toolchain/versions.env,
+# ENVIRONMENT section), so it is expected to move. Use --strict where a
+# change is the thing you want to catch.
 #
 # See docs/rust-toolchain.md for why no sysroot is built.
 #
@@ -45,7 +51,7 @@ fi
 
 if [ "${1:-}" = "--update" ]; then
     printf '%s\n' "$actual" > "$SNAPSHOT"
-    echo "check-rust-target: re-snapshotted $SNAPSHOT from $RUST_VERSION"
+    echo "check-rust-target: re-snapshotted $SNAPSHOT from the current environment"
     exit 0
 fi
 
@@ -59,11 +65,17 @@ if printf '%s\n' "$actual" | diff -u "$SNAPSHOT" - > /dev/null; then
     exit 0
 fi
 
-echo "check-rust-target: DRIFT — the built-in $RUST_TARGET spec changed" >&2
-echo "  pinned rustc: $RUST_VERSION ($RUST_COMMIT_HASH $RUST_COMMIT_DATE)" >&2
-printf '%s\n' "$actual" | diff -u "$SNAPSHOT" - >&2 || true
-echo >&2
-echo "Review the diff before accepting it: a changed panic strategy," >&2
-echo "feature set or linker flavour changes how NAK/NIL are built." >&2
-echo "Accept with: scripts/check-rust-target.sh --update" >&2
-exit 1
+echo "check-rust-target: DRIFT — the built-in $RUST_TARGET spec changed"
+printf '%s\n' "$actual" | diff -u "$SNAPSHOT" - || true
+echo
+echo "Review the diff: a changed panic strategy, feature set or linker"
+echo "flavour changes how NAK/NIL get built."
+echo "Accept with: scripts/check-rust-target.sh --update"
+
+if [ "${1:-}" = "--strict" ]; then
+    echo "  --strict: treating that as a failure." >&2
+    exit 1
+fi
+# The environment's nightly is not pinned by this project, so a moved
+# target spec is news, not a broken build.
+exit 0

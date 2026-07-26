@@ -59,13 +59,23 @@ tmp="$manifest.tmp.$$"
     echo
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
+    echo "image      : $(horizon_image_digest)"
     echo
-    echo "# Toolchain pins (toolchain/versions.env)"
-    echo "devkitA64        : $DEVKITA64_VERSION (gcc $DEVKITA64_GCC_VERSION, binutils $DEVKITA64_BINUTILS_VERSION)"
-    echo "newlib           : $DEVKITA64_NEWLIB_VERSION"
-    echo "switch-tools     : $SWITCH_TOOLS_VERSION"
-    echo "libnx            : $LIBNX_PACKAGE_VERSION ($LIBNX_SOURCE; really pinned by the image digest)"
-    echo "nx-dev image     : ${HORIZON_NX_IMAGE_REPO}@${HORIZON_NX_IMAGE_DIGEST}"
+    echo "# Switch toolchain, as READ from the environment at packaging"
+    echo "# time. This project neither pins nor updates it — libnx and"
+    echo "# devkitA64 are whatever \$DEVKITPRO or the image provides."
+    echo "# Recording it here is what makes a hardware result measured"
+    echo "# with these .nro attributable to a specific build."
+    echo "#"
+    echo "# Rebuild these exact artefacts against the same toolchain:"
+    echo "#   HORIZON_NX_IMAGE=${HORIZON_NX_IMAGE_REPO}@$(horizon_image_digest) \\"
+    echo "#       scripts/build-horizon.sh"
+    echo
+    scripts/print-toolchain-versions.sh 2>/dev/null | sed 's/^/  /'
+    echo
+    echo "# Pinned inputs"
+    echo "  mesa    : $MESA_TAG ($MESA_COMMIT)"
+    echo "  meson   : $MESON_VERSION"
     echo
     echo "# Artefacts (sha256)"
     # Sorted so the manifest is stable across runs and diffable.

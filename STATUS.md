@@ -7,13 +7,21 @@
 
 ## Current phase
 
-**Phase 2 — reproducible toolchain. Complete for everything verifiable
-without a console; see "Phase 2" below.** Every version is pinned in
-`toolchain/versions.env` and re-derivable from the live toolchain, the
-Meson cross file exists and is exercised (all ten Phase 1 `.nro`
-cross-compile through it, identical in size to the Makefile's), D2 and
-D3 are decided, R13 is answered — no Rust sysroot is needed — and the
-absolute-path gate is in place and green.
+**Phase 2 — toolchain. Complete for everything verifiable without a
+console; see "Phase 2" below.** The Meson cross file exists and is
+exercised (all ten Phase 1 `.nro` cross-compile through it, identical in
+size to the Makefile's), D2 and D3 are decided, R13 is answered — no
+Rust sysroot is needed — and the absolute-path gate is in place and
+green.
+
+On pinning, the phase ended somewhere different from where
+`docs/milestones.md` pointed it: **the Switch toolchain is deliberately
+not pinned.** libnx, devkitA64 and the portlibs belong to the
+environment (`$DEVKITPRO` or the container image) and are neither frozen
+nor updated from this repository. Only the inputs this project chooses —
+Mesa, Meson, the Rust target — are pinned. What replaces the pin is
+recording, per build, what was actually used. See "What is pinned, and
+what deliberately is not" below.
 
 **Carried over from Phase 1 and still open:** the second review round's
 fixes have not been re-run on real hardware. Phase 2 changed no code in
@@ -285,41 +293,58 @@ No code in `horizon/` was touched. This phase is toolchain only.
 | `pypi.org` | reachable |
 | Containers (`--bridge=none`) | **no network**; anything fetched must be fetched on the host and mounted in |
 
-### The pin, and what it really pins
+### What is pinned, and what deliberately is not
 
-Everything resolves the toolchain image **by digest**, never by the
-moving `latest` tag:
-`ghcr.io/d3fau4/nx-dev@sha256:61a38fe43da645876023783344619bc0ac28adf260de3e251b2ac6f98c751043`
-(linux/amd64 manifest `sha256:04c91da3af9a…`, image created
-2026-07-26T18:44:45Z).
+**Owner's decision, taken during this phase: the Switch toolchain
+belongs to the environment, not to this repository.** libnx, devkitA64
+and the portlibs are neither pinned nor updated from here — they are
+whatever `$DEVKITPRO` points at, or whatever is inside the container
+image the developer runs. Updating libnx is `dkp-pacman -Syu` or a newer
+image, not an edit to this tree. libnx moves fast and this backend is
+written against exactly the `nv` services it exposes, so following it is
+worth more than freezing it.
 
-Package versions read from it with `dkp-pacman -Q`: devkitA64 `r29.2-1`,
-gcc `15.2.0-7` (banner: `aarch64-none-elf-gcc (devkitA64) 15.2.0`),
-binutils `2.45.1-2` (`GNU ld 2.45.1`), newlib `4.6.0.20260123-4`,
-switch-tools `1.13.1-1`, general-tools `1.4.4-1`, dkp-meson-scripts
-`1.1.0-1`, deko3d `0.5.0-1`.
+`toolchain/versions.env` is split accordingly:
 
-**Two components are not pinned by their package version, and
-`versions.env` says so instead of implying otherwise** — this is R15 in
-concrete form:
+| Half | Contents |
+|---|---|
+| ENVIRONMENT | How to *reach* the toolchain only: image repo/tag, the devkitPro prefix inside it, the `PATH` quirk, the target triple. **No version of anything.** |
+| PINNED | What this project chooses: Mesa (`mesa-26.1.5` @ `6a02618ccf6c`), Meson `1.11.2`, the Rust target name. |
 
-- **libnx.** `dkp-pacman -Q` reports `4.12.0-1`, but the image then
-  builds `switchbrew/libnx` git HEAD over it. Measured:
-  `dkp-pacman -Qkk libnx` → **`libnx: 226 total files, 205 altered
-  files`**, with `libnx.a` and `libnxd.a` mismatching on size, MD5 *and*
-  SHA256. The package version describes 21 of 226 files. The real libnx
-  pin is the image digest.
-- **Rust.** The image installs rustup's rolling `nightly`
-  (`rustc 1.99.0-nightly (008fa22ce 2026-07-25)`, with `rust-src`). A
-  channel name pins nothing; again the digest is the pin.
+That line is deliberate: inputs this project *chooses* are pinned; the
+environment it *runs in* is not. Mesa stays pinned because
+`mesa-patches/` applies to a specific tree and a Mesa that moved
+underneath would break Phase 3 silently.
+
+**What replaces pinning is recording.** `scripts/package-horizon.sh`
+writes into `build/pkg/MANIFEST.txt`, per build: the resolved image
+digest, the live `dkp-pacman -Q` output, the rustc banner, each
+artefact's sha256, and the exact
+`HORIZON_NX_IMAGE=…@sha256:… scripts/build-horizon.sh` command that
+rebuilds against the same toolchain. **This is what keeps a hardware
+result attributable** when the inputs are not frozen.
+`scripts/print-toolchain-versions.sh` is a read-only reporter feeding
+it; it compares against nothing and updates nothing.
+
+Observed in this environment at the time of writing (recorded as
+evidence, **not** as a pin): devkitA64 `r29.2-1`, gcc `15.2.0-7`
+(`aarch64-none-elf-gcc (devkitA64) 15.2.0`), binutils `2.45.1-2`
+(`GNU ld 2.45.1`), newlib `4.6.0.20260123-4`, switch-tools `1.13.1-1`,
+libnx `4.12.0-1`, deko3d `0.5.0-1`, `rustc 1.99.0-nightly (008fa22ce
+2026-07-25)`, image digest `sha256:61a38fe4…`.
+
+Why a libnx version number would have been misleading even if we had
+pinned it — R15 in concrete form: the image installs the libnx package
+and then builds `switchbrew/libnx` git HEAD over it.
+`dkp-pacman -Qkk libnx` → **`226 total files, 205 altered files`**, with
+`libnx.a` and `libnxd.a` mismatching on size, MD5 *and* SHA256. The
+package version describes 21 of 226 files.
+`print-toolchain-versions.sh` prints that measurement every time, so the
+limitation is visible rather than assumed.
 
 Also recorded because it bites: the image's own `PATH` does **not**
 include `devkitA64/bin`. Anything resolving the cross compiler by bare
 name — which the Meson cross file does deliberately — must prepend it.
-
-`scripts/print-toolchain-versions.sh --check` re-derives every field
-from the live toolchain and diffs it, so the file is verifiable rather
-than declarative.
 
 ### R13 answered — no Rust sysroot is built
 
@@ -396,8 +421,8 @@ All on this machine. **Host build/run (H)** and **cross build (X)** only
 | `scripts/build-switch.sh all -j4` (Makefile path) | X | exit 0, 10 `.nro`, no warnings (`-j4` did **not** hit the overlayfs race this time) |
 | `scripts/check-no-abs-paths.sh` | H | **OK** (`toolchain scripts Makefile meson.build`) |
 | `scripts/check-layering.sh` | H | OK |
-| `scripts/check-rust-target.sh` | H | OK — built-in target matches the snapshot |
-| `scripts/print-toolchain-versions.sh --check` | H | OK — no drift |
+| `scripts/check-rust-target.sh` | H | OK — built-in target matches the snapshot (reports drift, exits 0: the environment's nightly is not ours to pin) |
+| `scripts/print-toolchain-versions.sh` | H | reports the live toolchain; feeds the artefact manifest |
 | `scripts/run-host-tests.sh` | H | **103/103 PASS** (6 suites), no regression |
 | `scripts/fetch-mesa.sh` | H | `mesa-26.1.5` checked out, **HEAD verified = `6a02618ccf6c…`**, 503 MB |
 | Every script re-run a second time | H | idempotent: "already installed" / "unchanged" / "0 copied, 10 already current" / "nothing to do" |
@@ -406,7 +431,7 @@ All on this machine. **Host build/run (H)** and **cross build (X)** only
 
 | Criterion (`docs/milestones.md`) | State |
 |---|---|
-| A clean container reproduces the toolchain from `scripts/` alone (H) | ✅ `build/` deleted entirely, then configure → build → package from scripts only |
+| A clean container reproduces the toolchain from `scripts/` alone (H) | ✅ `build/` deleted entirely, then configure → build → package from scripts only. **Read as "reconstructs against the current environment", not "bit-identical forever"** — with the Switch toolchain unpinned by decision, a rebuild months later uses a newer libnx. `build/pkg/MANIFEST.txt` records which one, and the `HORIZON_NX_IMAGE=…@sha256:…` command to go back to it |
 | `grep` for `/home/`, `/work`, `D:\`, `/mnt/` in `toolchain/` and `scripts/` returns nothing | ✅ gate green — and it **caught a real violation on its first run** (`scripts/build-switch.sh` mounted at a hardcoded `/work`; now mounts at `"$PWD"`) |
 | Phase 1 tests cross-compile with the new cross file (X) | ✅ 10/10, identical in size to the Makefile's |
 
@@ -416,9 +441,10 @@ All on this machine. **Host build/run (H)** and **cross build (X)** only
 
 | Item | Disposition |
 |---|---|
+| 1. devkitA64 / devkitPro pinned by package version | **Deliberately not done** — owner's decision during this phase. The Switch toolchain belongs to the environment; it is read and recorded per build, never pinned. R15's original mitigation is rejected rather than implemented, and R15 now says so. The `resolved from $DEVKITPRO` half of the item *is* done |
 | 3. Rust target JSON for Horizon | **Not created as a target.** rustc ships `aarch64-nintendo-switch-freestanding`; the file is committed only as a drift snapshot (R13) |
 | 4. `rustc` wrapper | **Not needed** — no custom target, so nothing to wrap |
-| 5. Rust `std`/`core` sysroot, pinned nightly | **Not built** — R13's answer removes it. Nightly is pinned by the image digest |
+| 5. Rust `std`/`core` sysroot, pinned nightly | **Not built** — R13's answer removes it. The nightly is the environment's, not pinned here |
 | 6. Mesa host tools (native build for generators) | **Deferred to Phase 3.** Nothing configures Mesa yet, so there is no generator to build; doing it now would be untested scaffolding |
 
 ### Known gaps at the end of Phase 2

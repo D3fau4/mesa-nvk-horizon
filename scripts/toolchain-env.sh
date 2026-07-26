@@ -46,7 +46,16 @@ else
     HORIZON_IN_CONTAINER=1
     # Inside the image the prefix is the image's, not this machine's.
     HORIZON_DEVKITPRO="$HORIZON_NX_IMAGE_DEVKITPRO"
-    HORIZON_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}@${HORIZON_NX_IMAGE_DIGEST}}"
+
+    # The Switch toolchain belongs to the environment (see the
+    # ENVIRONMENT header in toolchain/versions.env), so the image is
+    # referenced by its tag and whatever that tag currently resolves to
+    # is what gets used. Nothing here pins or updates it.
+    #
+    # HORIZON_NX_IMAGE overrides the reference entirely — including with
+    # a digest, when rebuilding the artefacts behind a recorded hardware
+    # run (build/pkg/MANIFEST.txt prints the exact command).
+    HORIZON_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}:${HORIZON_NX_IMAGE_TAG}}"
     HORIZON_TOOLCHAIN_DESC="$HORIZON_IMAGE"
 fi
 
@@ -82,6 +91,27 @@ horizon_run() {
 horizon_meson() {
     horizon_run env "PYTHONPATH=$PWD/$HORIZON_MESON_DIR" \
         python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" "$@"
+}
+
+# The content digest of the image actually in use. Since the toolchain
+# is taken from the environment rather than pinned, this is the only
+# thing that identifies what a given build ran against, so it goes into
+# the artefact manifest. Recording what was used is what this project
+# does instead of controlling it.
+#
+# Prints "local" when building against a machine-local devkitA64, and
+# "unknown" if the image is not present locally (nothing has pulled it
+# yet, or docker cannot answer).
+horizon_image_digest() {
+    if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
+        echo "local"
+        return 0
+    fi
+    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+        "$HORIZON_IMAGE" 2>/dev/null |
+        grep -m1 "^${HORIZON_NX_IMAGE_REPO}@" |
+        sed 's/.*@//' |
+        grep . || echo unknown
 }
 
 # Idempotent: a second call with the pin unchanged does nothing.

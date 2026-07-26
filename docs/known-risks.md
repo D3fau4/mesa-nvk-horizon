@@ -323,11 +323,40 @@ But *package versions are not the pin*, for two of the most important components
   and SHA256. The package version describes 21 of 226 files.
 - **Rust.** The image installs rustup's rolling `nightly`; a channel name pins nothing.
 
-For both, the real pin is the **container image digest**, and
-`toolchain/versions.env` says so explicitly rather than implying a version number that does
-not hold. Everything resolves the image by digest
-(`sha256:61a38fe4…`), never by the moving `latest` tag. Upgrading libnx means rebuilding the
-image and re-pinning the digest, not editing a version string.
+**Policy decision (owner, 2026-07-26): the Switch toolchain is NOT this project's to pin or
+to update.** libnx, devkitA64 and the portlibs belong to the *environment* — whatever
+`$DEVKITPRO` points at, or whatever is inside the container image the developer runs. This
+repository neither freezes them nor upgrades them. Updating libnx is `dkp-pacman -Syu`, or a
+newer image; it is not an edit here.
+
+The reasoning: libnx gains fixes and new `nv`-service bindings frequently, and this backend
+is written against exactly those services. Any version number recorded in this repository
+could only be a stale copy of a fact that lives elsewhere — and a misleading one, because
+the image builds libnx from git HEAD on top of the package, so `dkp-pacman -Q libnx`
+describes only 21 of its 226 installed files (`dkp-pacman -Qkk libnx` → **226 total, 205
+altered**, with `libnx.a` and `libnxd.a` mismatching on size, MD5 and SHA256).
+
+So the original framing of this risk — "reproducibility depends on pinning package versions
+and recording them" — is **rejected**, not implemented. What the project does instead is
+**read and record, never control**:
+
+- `toolchain/versions.env` has an ENVIRONMENT half that says only how to *reach* the
+  toolchain (image repo/tag, prefix inside it, the `PATH` quirk, the target triple) and
+  records nothing about its contents.
+- `scripts/print-toolchain-versions.sh` is a read-only reporter answering "what am I
+  building against right now?". It does not compare against a stored value, because there
+  is none, and it cannot update anything.
+- `scripts/package-horizon.sh` embeds that report plus the resolved image digest in
+  `build/pkg/MANIFEST.txt`, next to each artefact's sha256 and the exact
+  `HORIZON_NX_IMAGE=…@sha256:…` command that rebuilds against the same toolchain. **This is
+  what keeps a hardware result attributable** when the inputs are not frozen.
+- `scripts/check-rust-target.sh` reports drift in the Rust *target specification* — which
+  decides how NAK/NIL get compiled — but exits 0, since the environment's nightly is
+  expected to move. `--strict` where a change is the thing to catch.
+
+Mesa and Meson stay pinned in the PINNED half: `mesa-patches/` applies to a specific tree,
+and a Mesa that moved underneath would break Phase 3 silently rather than loudly. That is
+the line — inputs this project *chooses* are pinned; the environment it *runs in* is not.
 
 ---
 
