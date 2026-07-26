@@ -1,75 +1,83 @@
 # STATUS
 
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-26
 **Branch:** `claude/mesa-nvk-horizon-phase1-rp61t8`
 
 ---
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. CODE COMPLETE; hardware
-verification pending.**
+**Phase 1 — `horizon/` standalone GPU layer. HARDWARE-VERIFIED except for
+two fixed items awaiting a confirmation re-run.**
 
-All eight implementation items and the ten tests are written and
-cross-compile cleanly. The pure-logic modules pass 78 host-side unit
-checks under ASan/UBSan. **Nothing has run on a Switch yet** — every
-hardware exit criterion below is explicitly unverified.
-
----
-
-## Completed work
-
-### `horizon_gpu` (all of it Vulkan-, Mesa- and nwindow-free; gate enforced)
-
-| Area | Files | Notes |
-|---|---|---|
-| results/logging | `horizon/include/horizon_gpu/result.h`, `horizon/debug/` | `horizon_gpu_result` carries the libnx `Result`; log config lives in the device — zero global mutable state |
-| device | `horizon/device/device.c` | ordered bring-up `nvInitialize→nvFenceInit→nvMapInit→nvGpuInit→GetCharacteristics→nvAddressSpaceCreate→GetVARegions`, reverse unwind on every failure; characteristics query is **required** (no big-page fallback); live-object counters |
-| memory | `horizon/memory/` | NvMap-backed, truthful cacheability (cached heap registered cacheable), id/handle exposed as distinct concepts, range-checked flush (clean) / invalidate (civac), all rounding overflow-checked, 32-bit nvmap limits reject |
-| vm | `horizon/vm/` | reservations first-class (ALLOC_SPACE non-fixed, R8); FIXED maps inside a reservation with the **reservation's** page size (R9); pure interval set rejects overlap pre-kernel; unmap checks its Result and clears the mem's recorded VA (memory-model §2 invariant) |
-| channel | `horizon/channel/` | NvGpuChannel + syncpoint identity, initial value recorded (R5), one-page internal cmdbuf, optional Zcull (queried size, 0x20000 align), explicit SET_OBJECT engine binds with queried classes (R7), retirement list, lost-channel fail-fast with decoded notifier |
-| submit | `horizon/submit/` | request+emit increment indivisible (R4); kickoff surfaced, never retried/slept; **no `nvFenceWait` anywhere in the submit path**; entry flags caller-selectable for the R3 measurement; debug-synchronous mode compiled-in, off by default |
-| sync | `horizon/sync/` | wrap-safe predicate `(int32_t)(cur-thr) >= 0`, 64-bit shadow extension, ns→µs single conversion (round-up, saturating), bounded waits, timeout returned never masked |
-
-### Command encodings (facts re-derived, nothing copied)
-
-Fence increment = WFI + SYNCPOINTA/B (the per-job sequence the Linux
-`nvgpu` kernel driver emits on gk20a/gm20b); method addresses/fields from
-NVIDIA open-gpu-doc `cla06f.h`; pushbuffer header format per envytools.
-GPU-side syncpoint wait (R10) emitted with the same class methods —
-validated only on host so far; `t_submit` proves or disproves it on
-hardware. Every constant carries its citation in
-`horizon/include/horizon_gpu/cmds.h`.
-
-### Tests
-
-Ten standalone `.nro`s (`tests/`, framework in `tests/common/`, console
-instructions in `tests/README.md`) printing PASS/FAIL summaries to stdout
-and `sdmc:/horizon_gpu_tests/*.log`. Four host-side unit test binaries
-(`tests/host/`) for the pure-logic modules.
-
-### Build & gates
-
-`Makefile` (devkitA64 via `$DEVKITPRO` only), `scripts/build-switch.sh`
-(container fallback `ghcr.io/d3fau4/nx-dev:latest`, override with
-`HORIZON_NX_IMAGE`), `scripts/check-layering.sh` (forbidden includes,
-nwindow/vi symbols, `g_dev` pattern, CPU waits outside sync/channel),
-`scripts/run-host-tests.sh` (host cc + ASan/UBSan).
+The owner ran all ten `.nro`s on a real Switch (logs received 2026-07-26).
+**8/10 PASS outright; 214 of 216 checks passed.** The two failures were a
+wrong assumption about `GetErrorNotification` semantics (t_channel, fixed
+in `horizon/channel/channel.c`) and a benign race in the t_teardown test
+itself (fixed in the test). `t_channel` and `t_teardown` need one
+confirmation re-run on the console.
 
 ---
 
-## Tests executed (in this environment)
+## Hardware run results (real Switch, owner-executed, 2026-07-26)
+
+| # | Test | Result | Key output |
+|---|------|--------|-----------|
+| 1 | t_init | **PASS 22/22** | gm20b arch=0x120 impl=0xb rev=0xa1, 1 GPC × 2 TPC, L2 0x40000, va_bits=40, big_page=0x20000 (avail 0x30000), classes 3d=0xb197 compute=0xb1c0 2d=0x902d gpfifo=0xb06f i2m=0xa140 copy=0xb0b5; small region base=0x8000000 pages=0x3f7fff; big region base=0x400000000 pages=0xdffff |
+| 2 | t_alloc | **PASS 21/21** | rounding, alignment, every overflow rejection |
+| 3 | t_nvmap | **PASS 16/16** | ids/handles valid and distinct, close path healthy |
+| 4 | t_va_reserve | **PASS 17/17** | small base=0x8000000; big base=0x400000000 inside queried region; oversized reservation → clean nv error **0x275c** (R8 exhaustion behaviour) |
+| 5 | t_map | **PASS 26/26** | fixed VA honoured, cleared-VA invariant holds, remap after unmap works, **Generic_16BX2 kind OK**, **big-page (0x20000) map OK** (R9) |
+| 6 | t_channel | FAIL 16/17 → **fixed** | syncpt id=26, **value at create=14064** (R5: counters NOT reset at channel creation — shadow-from-read design is required and correct). The one FAIL: `GetErrorNotification` returns a failed Result on a healthy channel — Horizon semantics are "error when nothing pending"; get_error now treats that as "none" |
+| 7 | t_submit | **PASS 23/23** | fence-only submit executes (validates the WFI+SYNCPOINTA/B increment encoding, R4); NOP list executes; **2 submits in flight, both issued in 148 µs, no CPU wait**; SET_OBJECT binds complete without fault (R7); **R3: entry flags 0 accepted and completed**; **R10: GPU-side syncpoint wait completed — encoding VALIDATED** |
+| 8 | t_syncpt | **PASS 48/48** | exactly +1 per submit across 10 submits (initial value 26545); shadow agrees with hardware |
+| 9 | t_fence_wait | **PASS 14/14** | wait-after-completion, prompt signalled return, 200 ms timeout honoured without unit inflation, zero-timeout poll |
+| 10 | t_teardown | FAIL 31/32 → **test fixed** | cycle 1: in-flight destroy refused (BUSY) as required; cycle 2: the NOP work had already retired so the probe destroy legitimately succeeded and the test then double-destroyed. Both outcomes are legal; the test now handles the race. All leak accounting held in both cycles |
+
+### Measurements recorded (design consequences)
+
+- **R5 answered:** syncpoints are NOT reset at channel creation (14064 /
+  26545 observed). Initialising the 64-bit shadow from a hardware read is
+  mandatory, and is what the code does.
+- **R10 answered:** the SYNCPOINTA/B GPU-side wait encoding works on the
+  Horizon nv path. Cross-channel GPU dependencies (Phase 4) are unblocked.
+- **R3 revised:** GPFIFO entry flags 0 **work** through our submit path —
+  the reference's NOT_MAIN|NO_PREFETCH folklore is not reproducible on
+  this code. Default stays NOT_MAIN|NO_PREFETCH (matches the only
+  hardware-proven full stack) until Phase 4 retests with real engine
+  workloads; recorded as measured, not inherited.
+- **R4 validated:** one increment requested = one increment observed,
+  48/48.
+- **R8 data:** oversized ALLOC_SPACE fails cleanly with nv Result 0x275c.
+- **Horizon semantics finding:** `NVGPU_IOCTL_CHANNEL_GET_ERROR_NOTIFICATION`
+  fails when no notification is pending (fresh-channel measurement);
+  `horizon_gpu_channel_get_error` treats that failure as "none".
+
+---
+
+## Fixes since the run (pending console confirmation)
+
+1. `horizon/channel/channel.c` — `get_error` treats a failed
+   GetErrorNotification as "no notification pending" (cites the
+   measurement). `t_channel` now also prints the raw Result for the
+   record.
+2. `tests/t_teardown.c` — the in-flight-destroy probe accepts both legal
+   outcomes (BUSY while in flight / success when already retired) without
+   double-destroying.
+
+Re-run needed on console: `t_channel`, `t_teardown` (full 10 welcome but
+not required — no library submit/sync/vm path changed for the others;
+only channel.c's error-query path).
+
+---
+
+## Tests executed in this environment (unchanged classes)
 
 | Command | Class | Result |
 |---|---|---|
-| `scripts/run-host-tests.sh` (gcc 13.3, x86_64, ASan+UBSan) | **host build + run** | `h_align` 20/20, `h_va_space` 21/21, `h_syncpt_math` 19/19, `h_cmds` 18/18 — all PASS |
-| `scripts/check-layering.sh` | **host run** | OK — horizon/ Vulkan-, Mesa- and nwindow-free |
-| `docker run … ghcr.io/d3fau4/nx-dev:latest make clean && make all -j4` | **cross build** | exit 0; 10/10 `.nro` produced with `-Wall -Wextra -Werror`; toolchain: devkitA64 gcc 15.2.0, libnx from the image |
-
-**Hardware status: NOT RUN.** No claim below the host/cross line has been
-verified on a console. The Switch behaviour of bring-up, mapping, submit,
-fences — everything — is untested. Compilation success is not Switch
-behaviour.
+| `scripts/run-host-tests.sh` (gcc 13.3, x86_64, ASan+UBSan) | host build+run | 78/78 PASS (h_align 20, h_va_space 21, h_syncpt_math 19, h_cmds 18) |
+| `scripts/check-layering.sh` | host run | OK |
+| `docker run … nx-dev make all -j4` (post-fix) | cross build | exit 0, 10/10 `.nro`, `-Wall -Wextra -Werror` clean |
 
 ---
 
@@ -77,65 +85,46 @@ behaviour.
 
 | Criterion | State |
 |---|---|
-| Ten tests cross-compile (X) | ✅ done (see above) |
-| Pure logic builds/runs on host (H) | ✅ done (78 checks) |
-| Layering gate clean | ✅ done |
-| Tests 1–10 pass on hardware (HW) | ⏳ **pending — owner has a console (D4 answered yes); awaiting the run** |
-| ≥2 submits in flight without CPU wait (test 7) | code + test written; ⏳ HW pending |
+| Ten tests cross-compile (X) | ✅ |
+| Pure logic builds/runs on host (H) | ✅ 78/78 |
+| Layering gate clean | ✅ |
+| Tests pass on hardware (HW) | ✅ 8/10 outright; t_channel & t_teardown fixed, **confirmation re-run pending** |
+| ≥2 submits in flight without CPU wait (test 7) | ✅ **verified on hardware** (148 µs for both submits, single wait at the end) |
 
 ---
 
 ## Known failures / limitations
 
-- **No hardware verification yet** (see above). The `.nro`s and
-  `tests/README.md` are ready; the owner needs to run them and report the
-  logs.
-- **R6 (cache coherency) not yet measurable.** Measuring GPU-write→CPU-read
-  visibility needs a GPU write primitive (inline-to-memory or DMA), which
-  needs engine methods beyond Phase 1's scope. t_map validates mapping
-  mechanics only; the R6 measurement moves to the first GPU write
-  (early Phase 4/5). Recorded as a deliberate deviation from the R6 note.
-- **Kickoff "ring full" is not yet distinguished from other rejections**
-  (synchronization.md §2.1): libnx's queue-full case is prechecked and
-  returns BUSY, but a kernel-side rejection code map needs hardware data;
-  t_submit records the raw `Result` for that.
-- **`nvGpuChannelGetErrorNotification` "no error" detection** assumes a
-  zero timestamp means the notifier never fired; t_channel verifies this
-  on hardware.
-- The two rollback paths in `submit.c` adjust libnx's public
-  `NvGpuChannel` fields (`num_entries`, `fence_incr`) directly; correct
-  against libnx as pinned in the nx-dev image, revisit if libnx changes.
-
-## Measurements the hardware run must produce
-
-1. **R5**: syncpoint value at channel creation (t_channel/t_syncpt notes).
-2. **R3**: entry flags 0 vs `NOT_MAIN|NO_PREFETCH` (t_submit note).
-3. **R10**: GPU-side syncpoint-wait encoding outcome (t_submit note).
-4. **R8**: oversized-reservation error code (t_va_reserve note).
-5. Whether `Generic_16BX2` and big-page maps succeed (t_map notes).
-
----
+- **R6 (cache coherency) still unmeasured** — needs a GPU write primitive
+  (inline-to-memory/DMA), deferred to the first GPU write (early
+  Phase 4/5). Deliberate, recorded deviation.
+- **Kickoff rejection code map** still unpopulated: no kickoff was ever
+  rejected during the run (good), so BUSY-vs-other classification remains
+  based on the libnx-side queue precheck only.
+- The submit rollback paths touch libnx's public `NvGpuChannel` fields;
+  correct against libnx as pinned in the nx-dev image.
 
 ## Pending decisions
 
 | # | Decision | State |
 |---|---|---|
-| D1 | Literal reuse from GPL/AGPL reference | unchanged: **no**; nothing copied in Phase 1 |
-| D4 | Switch available for Phase 1 tests | **answered: yes.** Verification now blocked only on the owner running `build/*.nro` (instructions: `tests/README.md`) |
-| D2/D3 | Mesa pin / submodule vs fetch | unchanged, due at Phase 2 start |
-| D5 | Cache policy per Vulkan memory type | still blocked on R6; R6 itself deferred to first GPU write (see limitations) |
-| D6 | Timeline semaphores vs upload queue | unchanged, Phase 4 |
+| D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
+| D4 | Switch available | **yes — first run done**; confirmation re-run of 2 tests pending |
+| D2/D3 | Mesa pin / checkout mechanism | due at Phase 2 start |
+| D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
+| D6 | Timeline semaphores vs upload queue | Phase 4 |
 
 ---
 
 ## Next concrete task
 
-1. **Owner:** run the ten `.nro`s on the console per `tests/README.md`,
-   paste the logs; incorporate results here, fix whatever fails.
-2. After a green hardware run: **Phase 2 — toolchain** (`docs/milestones.md`),
-   starting with pinning devkitA64/libnx versions (the nx-dev image
-   currently pins them implicitly) in `toolchain/versions.env` and the
-   Meson cross file.
+1. **Owner:** re-run `t_channel.nro` and `t_teardown.nro` (rebuilt zip
+   provided); paste the two logs. Expected: PASS 17/17 and PASS 32/32
+   (the t_teardown check count may vary by one depending on which side of
+   the race the run lands).
+2. Then **Phase 2 — toolchain** (`docs/milestones.md`): pin devkitA64 /
+   libnx / image versions in `toolchain/versions.env`, Meson cross file,
+   fetch/build scripts, no-absolute-paths gate.
 
 ---
 
@@ -144,15 +133,16 @@ behaviour.
 | Commit | Scope |
 |---|---|
 | `horizon/debug: add result plumbing and context-owned logging` | result.h, log, status |
-| `horizon/device: add nv bring-up and GM20B query` | device + align helpers + testfw + t_init |
-| `horizon/memory: add NvMap-backed allocations` | memory + t_alloc + t_nvmap |
-| `horizon/vm: add GPU VA reservations and fixed maps` | vm + t_va_reserve + t_map |
+| `horizon/device: add nv bring-up and GM20B query` | device + align + testfw + t_init |
+| `horizon/memory: add NvMap-backed allocations` | memory + tests 2–3 |
+| `horizon/vm: add GPU VA reservations and fixed maps` | vm + tests 4–5 |
 | `horizon/submit: add GPFIFO command emitters` | cmds (public, pure) |
 | `horizon/sync: add syncpoint fences with wrap-safe waits` | sync |
 | `horizon/channel,submit: add GPFIFO channels and async submission` | channel + submit |
 | `tests: add channel, submit, syncpoint, fence and teardown tests` | tests 6–10 |
-| `build,scripts: add devkitA64 Makefile, layering gate, host tests` | Makefile, scripts, tests/host |
-| `docs: record Phase 1 implementation status` | this file, tests/README.md |
-
-Pushed to `origin/claude/mesa-nvk-horizon-phase1-rp61t8` with the owner's
-authorisation (given at planning time).
+| `build,scripts: add devkitA64 Makefile, layering gate, host tests` | build + gates |
+| `docs: record Phase 1 implementation status` | STATUS, tests/README |
+| `horizon/device: track the public device header` | fixup |
+| `horizon/channel: treat absent error notification as no error` | HW finding fix |
+| `tests: make t_teardown's in-flight destroy probe race-tolerant` | test fix |
+| `docs: record the first hardware run` | this update |
