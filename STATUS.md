@@ -7,24 +7,209 @@
 
 ## Current phase
 
-**Phase 3 — minimal Horizon support in Mesa. Item 3 (newlib/libnx gaps)
-is done as far as it reaches; see "Phase 3 — item 3" below.**
+**Phase 3 — minimal Horizon support in Mesa. Items 3 and 6 are done;
+the build half of the phase's exit criterion is met.**
 
-Mesa now **configures for `horizon`** (`meson setup` exits 0) and the
-non-driver core builds to **325 of 326 objects**, producing 9 of its 10
-static libraries. The single remaining object is `src/util/os_misc.c`,
-stopped by milestone **item 6** (physical memory / page size queries),
-not by item 3.
+**Mesa configures for `horizon` (`meson setup` exits 0) and its
+non-driver core builds: 379 of 379 edges, zero failures, all ten static
+libraries archived.** That is `docs/milestones.md`'s Phase 3 exit
+criterion "Mesa configures for `horizon` and builds the non-driver
+core", as a cross build (X).
 
 Two things happened before any Mesa work was possible, both recorded
-below: a defect in **our own** cross file was making five of Mesa's
+below: a defect in **our own** cross file was making six of Mesa's
 configure checks return false answers, and `mesa-patches/` had no
-mechanics at all (it held a `.gitkeep`).
+mechanics at all (it held a `.gitkeep`). The series now stands at **ten
+patches**, every one formulated as a property of the C library or the
+compiler rather than as an OS name.
+
+`compat/` has its **first content**: `sysconf`, which devkitA64's newlib
+declares and does not define. That is the one door `CLAUDE.md` leaves
+open, and `scripts/check-layering.sh` now polices it.
 
 **Carried over and still open:** the ten `.nro` have not been re-run on
 real hardware since Phase 1's second review round. Phase 3 changes no
 code in `horizon/` — the ten `.nro` are byte-identical to the Phase 2
-baseline, verified — so that item is unchanged, not resolved.
+baseline, verified again after every change here — so that item is
+unchanged, not resolved. **`t_sysinfo` (the eleventh `.nro`) has never
+been run at all**: it exists precisely to measure what `compat/sysconf.c`
+returns on a console, and until it does, those numbers are cited and
+reasoned, not measured.
+
+---
+
+## Phase 3 — item 6, physical memory and page size (2026-07-26)
+
+Closes the one object item 3 could not: `src/util/os_misc.c`. No code in
+`horizon/` was touched. Everything here is **cross build (X)** or
+**host (H)**; `t_sysinfo` is explicitly **not** hardware-verified.
+
+### The decision: `compat/`, not a Mesa patch
+
+Item 6 needed two facts with no libc route — `sysconf` and
+`getpagesize` are both genuinely absent, each verified by link probe
+(`undefined reference`). Three things settled where the answer comes
+from:
+
+1. **Returning `false` is not benign.** In NVK,
+   `os_get_total_physical_memory` failing is a hard
+   `VK_ERROR_INITIALIZATION_FAILED`
+   (`mesa/src/nouveau/vulkan/nvk_physical_device.c:1513`) — the device
+   is not enumerated at all. `os_get_page_size` failing is worse:
+   `nvkmd/nouveau/nvkmd_nouveau_pdev.c:114` reads an **uninitialised**
+   `uint64_t` into `bind_align_B`, which reaches
+   `VkMemoryRequirements::alignment`. Both must return true.
+2. **newlib *declares* `sysconf`** (`sys/unistd.h:236`) and defines
+   `_SC_PAGESIZE`, `_SC_PHYS_PAGES` and `_SC_AVPHYS_PAGES` (8, 11, 12).
+   It simply never defines the symbol — the probe failed at *link*, not
+   at compile. That is the textbook `compat/` case `CLAUDE.md` allows,
+   and the layer table already permits `compat/ → libnx`.
+3. **`HAVE_SYSCONF` makes all three functions take their *first*
+   branch**, so most of item 6 needed no Mesa change at all.
+
+A Mesa patch could not have answered this. Total memory has no source
+that is not libnx, and putting `<switch.h>` into Mesa's generic
+`src/util` would be both un-upstreamable and a layering breach. A
+hardcoded constant would be *wrong*, not merely approximate: the Switch
+gives an application and an applet very different limits.
+
+### What `compat/sysconf.c` reports, and on what authority
+
+| Name | Value | Source |
+|---|---|---|
+| `_SC_PAGESIZE` / `_SC_PAGE_SIZE` | `0x1000` | switchbrew's SVC docs — every memory svc takes sizes "aligned to 0x1000 bytes", repeated in libnx's `switch/kernel/svc.h`; ARMv8-A's smallest granule is 4 KiB. Corroborated by this project's own console runs: `horizon_gpu_mem_create` uses `aligned_alloc(0x1000, …)` and `nvMapCreate`, which requires page-aligned CPU memory, accepted it across `t_alloc` 21/21, `t_nvmap` 16/16, `t_map` 26/26 |
+| `_SC_PHYS_PAGES` | `svcGetInfo(InfoType_TotalMemorySize) / 0x1000` | `svc.h:191` |
+| `_SC_AVPHYS_PAGES` | `(Total − `InfoType_UsedMemorySize`) / 0x1000`, clamped | `svc.h:192` |
+| anything else | `-1`, `errno = EINVAL` | POSIX |
+
+**The semantics are declared, not implied.** `InfoType_TotalMemorySize`
+is *"Total amount of memory available for process"* — the process's
+limit, not the console's DRAM. That is deliberately what gets reported:
+it is what a caller sizing a heap needs, since memory the process cannot
+allocate is not usable however much the machine has, and it is
+mode-aware. `SystemInfoType_TotalPhysicalMemorySize` would give the DRAM
+but is privileged and not reliably available to homebrew.
+
+`svcGetInfo` is a raw syscall needing no service session and no
+`__appInit`, so `sysconf` is safe to call before libnx's service
+initialisation — which matters for a C library function.
+
+### Two Mesa patches, both general
+
+- **0009 `util/os_misc: include <unistd.h> where sysconf is the answer`**
+  — the include chain at the top of the file is a list of OS names
+  ending in `#error`, and it fires before any implementation is looked
+  at. An `#elif HAVE_SYSCONF` at the end of the chain is all a
+  sysconf platform needs. Additive; unreachable for anything that
+  already matched.
+- **0010 `util/os_misc: query available memory through sysconf`** —
+  `os_get_available_system_memory` fell to `#else return false`, which
+  compiles but in Phase 4 gives `heapBudget = 0` for the **only** heap
+  on a Tegra SoC, violating the `VK_EXT_memory_budget` clause the code
+  quotes at `nvk_physical_device.c:1725` and logging a `vk_loge` per
+  query. Adds an `#elif HAVE_SYSCONF && defined(_SC_AVPHYS_PAGES)`
+  branch after every existing one.
+
+### Linking `compat/` — why it is in the cross file
+
+`cc.has_function('sysconf')` is a **link** test, which is how Mesa
+decides `HAVE_SYSCONF`, and Meson links a test program during its own
+sanity check at setup. So the archive has to exist **before any
+`meson setup`** — including the one that would build it, which is why it
+is not a target of our `meson.build`.
+
+- `scripts/build-compat.sh` — provisioning, in the same sense as
+  `horizon_ensure_meson`. Idempotent; archives from scratch so a deleted
+  source cannot leave a stale member.
+- `horizon_compat_libdir`, a new constant from `gen-cross-file.sh`
+  alongside `devkitpro` — same pattern, so no tracked file gains a path.
+- `toolchain/horizon-aarch64.cross` links `-lhorizon_compat` before
+  `-lnx`. From Meson's point of view compat/ *completes the C library*,
+  which is what a cross file describes.
+- The **`Makefile` builds the archive natively**, and that was not
+  optional: `make clean` is `rm -rf build` and the archive lives inside
+  it, so a Makefile that only consumed it broke on `make clean && make`.
+  Found by doing exactly that. Verified after the fix: a full clean
+  followed by `make all -j4`, with nothing provisioned, builds all
+  eleven `.nro`.
+
+### The gate gained `compat/` — and caught two of my own comments
+
+`scripts/check-layering.sh` did not look at `compat/` at all. It now
+checks that `compat/` includes no Vulkan/Mesa/NIR/DRM header **and no
+`horizon/` header** (compat/ is below it; reaching up would invert the
+stack), the reciprocal that `horizon/` includes no `compat/` header, and
+`compat/` joins the rejected-design greps.
+
+On its first run it failed — on comments in `compat/sysconf.c` and
+`build-compat.sh` that spelled out the banned linker flag while
+explaining that they do not use it. **Reworded rather than filtered:** a
+comment-line exemption would have weakened a check whose entire value is
+being blunt. Verified afterwards that the gate *detects* rather than
+merely passes: a probe file including `horizon_gpu/device.h` from
+`compat/` is reported and exits 1.
+
+### `t_sysinfo` — the eleventh `.nro`
+
+`compat/sysconf.c` is the only code here that answers with a number
+nobody can check by compiling. `tests/t_sysinfo.c` measures it, and is
+deliberately **not** an assertion of the constant against itself:
+
+- every region `svcGetInfo` reports (heap, alias, aslr, stack) must be
+  page-aligned and a whole number of pages of whatever `sysconf`
+  returned — a larger real page size would put a boundary off it;
+- `_SC_PHYS_PAGES × page size` must equal the raw
+  `InfoType_TotalMemorySize`, which is the claim `compat/` makes about
+  *what* it reports;
+- available never exceeds total, and agrees with total − used;
+- an unknown name gives `-1`/`EINVAL`, not a plausible number.
+
+Raw values are printed as well as checked, so a console log records the
+figures as data. It uses no `horizon_gpu` and needs no nv services,
+which also makes it the cheapest test to run first when triaging.
+
+**It has never been run.** Until it is, the page size is cited and the
+memory figures are reasoned.
+
+### Commands run and results
+
+| Command | Class | Result |
+|---|---|---|
+| `scripts/build-compat.sh`, twice | X | builds 1 object; second run `up to date` |
+| `scripts/configure-mesa.sh` | X | exit 0, **`Checking for function "sysconf" : YES`** |
+| `ninja -k 0` over the ten core libraries | X | **379/379 edges, 0 FAILED, 10/10 libraries archived** |
+| `scripts/apply-mesa-patches.sh` on a reset `mesa/`, twice | H | applies 10; second run `all 10 patches already applied` |
+| `scripts/configure-horizon.sh && scripts/build-horizon.sh` | X | **11 `.nro`**; the original ten keep the Phase 2 baseline's sha256 |
+| `scripts/build-switch.sh clean` then `all -j4`, nothing provisioned | X | exit 0, 11 `.nro`, archive built by the Makefile itself |
+| Makefile vs Meson, all eleven | X | identical sizes 11/11 |
+| `nm build/meson/t_sysinfo.elf` | X | `T sysconf` — the archive member is pulled in |
+| `scripts/run-host-tests.sh` | H | **103/103 PASS** |
+| `scripts/check-layering.sh` | H | OK, with the `compat/` checks; and rejects a planted violation |
+| `scripts/check-no-abs-paths.sh` | H | OK |
+| `scripts/check-rust-target.sh` | H | OK |
+
+### Phase 3 exit criteria — state
+
+| Criterion (`docs/milestones.md`) | State |
+|---|---|
+| Each item is a separate patch file with a header explaining it (X) | ✅ 10 patches, four-field header each |
+| Mesa configures for `horizon` and builds the non-driver core (X) | ✅ **configure exit 0; 379/379 edges, 10/10 libraries** |
+| No patch mixes functional change with formatting | ✅ |
+
+### Known gaps at the end of item 6
+
+- **`t_sysinfo` has not run on hardware.** Its whole purpose is to turn
+  `compat/sysconf.c`'s numbers into measurements; it ships as a cross
+  build.
+- **`util_cpu_detect` reports 1 CPU on Horizon.** Its whole CPU-counting
+  block is under `#elif DETECT_OS_POSIX`, and patch 0007 chose
+  POSIX-**lite** deliberately (no `<syslog.h>`, no `<sys/shm.h>`, no
+  loader), so nothing sets `available_cpus`. Confirmed by `nm`:
+  `u_cpu_detect.c.o` has no `sysconf` reference. A quality problem for
+  Phase 4 — the Switch has more than one usable core — not a blocker,
+  and recorded rather than papered over.
+- Milestone items 2 and 4 are untouched; items 1, 5 and 7 still carry
+  only the minimum each needed.
 
 ---
 
@@ -803,33 +988,27 @@ every test, not just one. `build/pkg/` now holds the ten `.nro` plus a
 pins, so the result can be attributed to an exact build. Phase 2 changed
 no `horizon/` code, so either build path's artefacts are valid for this.
 
-That is the owner's step and does not block the rest of Phase 3.
+That step now covers **eleven** `.nro`, not ten. `t_sysinfo` is new and
+has never run; it is what turns `compat/sysconf.c`'s page size and
+memory figures from cited-and-reasoned into measured, and it needs no nv
+services so it is the cheapest one to start with.
 
-**The next Phase 3 task is milestone item 6 — physical memory and page
-size queries**, which is the single thing between here and "the
-non-driver core builds". It is one file, `src/util/os_misc.c`, and two
-questions, both needing a decision rather than more code:
+**Phase 3's build criterion is met**, so the remaining Phase 3 work is
+the items that were never blocking: **2** (Meson
+`host_machine.system() == 'horizon'` handling) and **4** (threads beyond
+the one `pthread_mutex_timedlock` patch), plus the rest of items 1, 5
+and 7 beyond the minimum each has. Item 8 was closed in Phase 2 without
+a patch.
 
-1. **CPU page size.** `sysconf` and `getpagesize` are both absent
-   (verified by link probe), so `os_get_page_size`'s `HAVE_SYSCONF`
-   path is unavailable and the value has to come from somewhere named.
-   Do **not** reuse `HORIZON_GPU_SMALL_PAGE_SIZE` — that is the GPU
-   MMU's small page, a different quantity.
-2. **Total physical memory.** libnx can answer
-   (`svcGetInfo`/`InfoType_TotalMemorySize`), but putting `<switch.h>`
-   into Mesa's generic `src/util` makes the patch un-upstreamable and
-   blurs the layering. The alternatives are a measured constant, or
-   implementing the function's documented "cannot determine" path and
-   saying so. This is a decision for the owner, not a drive-by.
+Also worth doing before Phase 4 leans on it: `util_cpu_detect` reports
+one CPU on Horizon (see "Known gaps" above).
 
-Then items 2 and 4, and the rest of items 1, 5 and 7 beyond the minimum
-already applied.
-
-Already in place: `mesa/` at `MESA_COMMIT` with the eight-patch series
+Already in place: `mesa/` at `MESA_COMMIT` with the ten-patch series
 applying cleanly and idempotently, `scripts/configure-mesa.sh` and
-`scripts/build-mesa.sh` as the reproducible loop, the cross file no
-longer corrupting Mesa's configure answers, and pkg-config actually
-resolving the Switch portlibs.
+`scripts/build-mesa.sh` as the reproducible loop, `compat/` linked into
+both build paths and policed by the layering gate, the cross file no
+longer corrupting Mesa's configure answers, and pkg-config resolving the
+Switch portlibs.
 
 ---
 
@@ -903,4 +1082,15 @@ for the same reason and cites this incident in its header.
 | `mesa-patches: make dlopen availability a libc trait, not an OS trait` | patches 0001–0002 |
 | `toolchain: put devkitPro's portlibs pkg-config on PATH` | `versions.env`, `toolchain-env.sh` |
 | `mesa-patches,scripts: close the item 3 newlib/libnx gaps that block the core` | patches 0003–0008, `build-mesa.sh`, shader-cache decision, meson shebang fix |
-| `docs: record Phase 3 item 3` | this update |
+| `docs: record Phase 3 item 3` | STATUS |
+
+## Commit log for Phase 3 (item 6)
+
+| Commit | Scope |
+|---|---|
+| `compat: implement the sysconf newlib declares but does not define` | `compat/sysconf.c` — first content in `compat/` |
+| `toolchain,build: link compat into both build paths` | `build-compat.sh`, `horizon_compat_libdir`, cross file, `Makefile`, both configure scripts |
+| `scripts: extend the layering gate to compat/` | `check-layering.sh` |
+| `mesa-patches: let sysconf answer the memory and page-size queries` | patches 0009–0010 |
+| `tests: add t_sysinfo, the eleventh .nro` | `t_sysinfo.c`, `meson.build`, `Makefile` |
+| `docs: record Phase 3 item 6` | this update |
