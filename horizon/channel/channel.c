@@ -75,16 +75,22 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
     memset(&notif, 0, sizeof(notif));
     Result rc = nvGpuChannelGetErrorNotification(&chan->gc, &notif);
     if (R_FAILED(rc)) {
-        /* Measured on hardware (Phase 1 run, t_channel): Horizon fails
-         * this ioctl when no notification is pending, so a failure on a
-         * healthy channel means "no error", not a broken query. */
-        horizon_logf(&chan->dev->log, HORIZON_LOG_DEBUG,
-                     "GetErrorNotification: 0x%08x (treated as none "
-                     "pending)", rc);
-        *out_type = 0;
-        if (out_desc)
-            *out_desc = channel_error_desc(0);
-        return horizon_gpu_ok();
+        /* libnx's nvGpuChannelGetErrorNotification (nx/source/nvidia/
+         * gpu_channel.c) does a non-blocking eventWait(..., 0) on the
+         * channel's error event before the ioctl; "no notification
+         * pending" surfaces as that wait's own KERNELRESULT(TimedOut),
+         * not an nv-service error. Only that specific result means
+         * "none" — anything else (a real ioctl/service failure) must be
+         * reported, not swallowed as a false-healthy channel. */
+        if (rc == KERNELRESULT(TimedOut)) {
+            *out_type = 0;
+            if (out_desc)
+                *out_desc = channel_error_desc(0);
+            return horizon_gpu_ok();
+        }
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "GetErrorNotification failed: 0x%08x", rc);
+        return horizon_gpu_err_nv(rc);
     }
 
     /* A notification with a zero timestamp has never fired. */
@@ -426,7 +432,7 @@ horizon_gpu_result
 horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                                horizon_gpu_fence fence, uint64_t timeout_ns)
 {
-    if (!chan)
+    if (!chan || fence.syncpt_id != chan->syncpt_id)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     if (chan->lost)
         return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
@@ -504,13 +510,38 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
                          (unsigned long long)(chan->shadow_target - now64));
             return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
         }
-        horizon_gpu_channel_reap(chan, NULL);
     }
+    /* Reap even on a lost channel: whatever did retire before the fault
+     * still fires normally. This is a plain syncpoint read, harmless
+     * regardless of channel health. */
+    horizon_gpu_channel_reap(chan, NULL);
     if (chan->retire_count != 0) {
-        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                     "channel %p: destroy refused, %u unretired entries",
-                     (void *)chan, chan->retire_count);
-        return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
+        if (chan->lost) {
+            /* A lost channel's syncpoint can never advance further and
+             * there is no cancellation ioctl, so these entries can never
+             * retire through the normal path — refusing destroy here
+             * would leak the channel (and, transitively, the device)
+             * forever. Run them anyway: on Horizon a channel fault
+             * abandons every not-yet-retired submit on it, so "retired"
+             * here means "abandoned", not "completed" — callers relying
+             * on the callback to mean GPU-visible completion must check
+             * horizon_gpu_channel_is_lost() first (architecture.md § 6). */
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "channel %p: lost with %u unretired entries; "
+                         "force-retiring them as abandoned so teardown can "
+                         "proceed", (void *)chan, chan->retire_count);
+            for (uint32_t i = 0; i < chan->retire_count; i++) {
+                horizon_retire_entry e = chan->retire[i];
+                if (e.fn)
+                    e.fn(e.ctx);
+            }
+            chan->retire_count = 0;
+        } else {
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "channel %p: destroy refused, %u unretired "
+                         "entries", (void *)chan, chan->retire_count);
+            return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
+        }
     }
 
     /* Reverse of creation. */

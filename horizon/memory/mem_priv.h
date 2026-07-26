@@ -14,6 +14,10 @@
 
 #include "horizon_gpu/memory.h"
 
+/* Opaque here; vm/vm_priv.h owns the full definition and the intrusive
+ * mapping_list_head links below. */
+struct horizon_gpu_mapping;
+
 struct horizon_gpu_mem {
     horizon_gpu_device *dev;   /* not owned */
     NvMap nvmap;               /* owned; closed at destroy */
@@ -24,7 +28,8 @@ struct horizon_gpu_mem {
 
     /* Mapping bookkeeping, maintained by vm/ (memory-model § 2). */
     _Atomic uint32_t live_mappings;
-    uint64_t mapped_va;        /* most recent live mapping's VA; 0 = none */
+    uint64_t mapped_va;        /* most recent LIVE mapping's VA; 0 = none */
+    struct horizon_gpu_mapping *mapping_list_head; /* most-recent-first */
 };
 
 #endif /* HORIZON_MEMORY_MEM_PRIV_H */

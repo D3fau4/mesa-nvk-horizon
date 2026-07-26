@@ -42,6 +42,13 @@ LIB_SRCS := \
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD)/%.o)
 LIB      := $(BUILD)/libhorizon_gpu.a
 
+# Object directories as order-only prerequisites, not `mkdir -p` inside each
+# recipe: under `make -j`, two recipes racing to create the same new
+# directory can lose an object file silently (observed with -j4 on this
+# toolchain image's overlay filesystem — the compile for that object never
+# ran and `ar` failed with "No such file or directory").
+OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/)
+
 TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
          t_syncpt t_fence_wait t_teardown
 
@@ -51,27 +58,25 @@ TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 all: lib $(TEST_NROS)
 lib: $(LIB)
 
-$(BUILD)/%.o: %.c
-	@mkdir -p $(dir $@)
+$(OBJ_DIRS):
+	mkdir -p $@
+
+$(BUILD)/%.o: %.c | $(OBJ_DIRS)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(LIB): $(LIB_OBJS)
-	@mkdir -p $(dir $@)
+$(LIB): $(LIB_OBJS) | $(BUILD)/
 	$(AR) rcs $@ $^
 
-$(BUILD)/testfw.o: tests/common/testfw.c
-	@mkdir -p $(dir $@)
+$(BUILD)/testfw.o: tests/common/testfw.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/%.t.o: tests/%.c
-	@mkdir -p $(dir $@)
+$(BUILD)/%.t.o: tests/%.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB)
 	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD)/%.nacp:
-	@mkdir -p $(dir $@)
+$(BUILD)/%.nacp: | $(BUILD)/
 	$(NACPTOOL) --create "$*" "mesa-nvk-horizon" "phase1" $@
 
 $(BUILD)/%.nro: $(BUILD)/%.elf $(BUILD)/%.nacp

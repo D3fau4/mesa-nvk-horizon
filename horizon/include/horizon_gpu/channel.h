@@ -84,7 +84,11 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
                                             uint32_t *out_retired);
 
 /* Registers (fence, callback, context) for retirement at reap time.
- * The callback runs from reap/wait contexts; it must not submit. */
+ * The callback runs from reap/wait contexts; it must not submit. If the
+ * channel is lost before this fence is reached, horizon_gpu_channel_destroy
+ * still runs the callback (there is no cancellation path) — check
+ * horizon_gpu_channel_is_lost() first if the callback must distinguish
+ * "GPU work completed" from "channel faulted, work abandoned". */
 horizon_gpu_result
 horizon_gpu_channel_add_retirement(horizon_gpu_channel *chan,
                                    horizon_gpu_fence fence,

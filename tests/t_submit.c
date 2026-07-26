@@ -91,9 +91,10 @@ int run_test(test_ctx *t)
     horizon_gpu_mapping *map = NULL;
     horizon_gpu_cmd_span span;
     res = make_nop_list(dev, &mem, &range, &map, &span);
-    if (t_check(t, horizon_gpu_succeeded(res), "NOP list built and mapped "
-                "(status=%s nv=0x%08x)",
-                horizon_gpu_status_str(res.status), res.nv)) {
+    bool nop_ok = t_check(t, horizon_gpu_succeeded(res),
+                          "NOP list built and mapped (status=%s nv=0x%08x)",
+                          horizon_gpu_status_str(res.status), res.nv);
+    if (nop_ok) {
         horizon_gpu_fence f1;
         res = horizon_gpu_submit(chan, &span, 1,
                                  HORIZON_GPU_SUBMIT_DEFAULT, &f1);
@@ -106,28 +107,36 @@ int run_test(test_ctx *t)
     /* 3. Multiple submits in flight, no CPU wait between them (the
      * milestone's exit criterion; the reference drains after every
      * submit). Both horizon_gpu_submit calls return before any wait;
-     * we then wait once, on the LAST fence only. */
-    horizon_gpu_fence fa, fb;
-    uint64_t tick0 = armGetSystemTick();
-    res = horizon_gpu_submit(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
-                             &fa);
-    horizon_gpu_result res2 = horizon_gpu_submit(chan, &span, 1,
-                                                 HORIZON_GPU_SUBMIT_DEFAULT,
-                                                 &fb);
-    uint64_t submit_ns = armTicksToNs(armGetSystemTick() - tick0);
-    t_check(t, horizon_gpu_succeeded(res) && horizon_gpu_succeeded(res2),
-            "two back-to-back submits accepted without waiting");
-    t_check(t, fb.threshold == fa.threshold + 1,
-            "fences ordered by submission (%u then %u)", fa.threshold,
-            fb.threshold);
-    t_note(t, "both submits issued in %" PRIu64 " us (no intervening CPU "
-           "wait by construction)", submit_ns / 1000);
-    res = horizon_gpu_channel_wait_fence(chan, fb, WAIT_NS);
-    t_check(t, horizon_gpu_succeeded(res), "second fence reached");
-    bool first_done = false;
-    res = horizon_gpu_fence_poll(dev, fa, &first_done);
-    t_check(t, horizon_gpu_succeeded(res) && first_done,
-            "first fence implied by the second (single-channel ordering)");
+     * we then wait once, on the LAST fence only. Depends on `span` from
+     * step 2, so it is skipped rather than run on an uninitialised span
+     * if that setup failed. */
+    if (!nop_ok) {
+        t_note(t, "skipping multi-submit-in-flight check: NOP list from "
+               "step 2 was never built");
+    } else {
+        horizon_gpu_fence fa, fb;
+        uint64_t tick0 = armGetSystemTick();
+        res = horizon_gpu_submit(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
+                                 &fa);
+        horizon_gpu_result res2 = horizon_gpu_submit(chan, &span, 1,
+                                                     HORIZON_GPU_SUBMIT_DEFAULT,
+                                                     &fb);
+        uint64_t submit_ns = armTicksToNs(armGetSystemTick() - tick0);
+        t_check(t, horizon_gpu_succeeded(res) && horizon_gpu_succeeded(res2),
+                "two back-to-back submits accepted without waiting");
+        t_check(t, fb.threshold == fa.threshold + 1,
+                "fences ordered by submission (%u then %u)", fa.threshold,
+                fb.threshold);
+        t_note(t, "both submits issued in %" PRIu64 " us (no intervening "
+               "CPU wait by construction)", submit_ns / 1000);
+        res = horizon_gpu_channel_wait_fence(chan, fb, WAIT_NS);
+        t_check(t, horizon_gpu_succeeded(res), "second fence reached");
+        bool first_done = false;
+        res = horizon_gpu_fence_poll(dev, fa, &first_done);
+        t_check(t, horizon_gpu_succeeded(res) && first_done,
+                "first fence implied by the second (single-channel "
+                "ordering)");
+    }
 
     /* 4. Engine binds execute in-stream (R7): SET_OBJECT on subch 0-4. */
     horizon_gpu_fence fbind;
@@ -169,42 +178,72 @@ int run_test(test_ctx *t)
                horizon_gpu_status_str(res.status));
     }
 
-    /* 6. R10 measurement: GPU-side syncpoint wait encoding, against an
-     * already-reached threshold so a correct encoding completes
-     * instantly and a wrong one faults or times out — visibly. Dedicated
-     * channel for the same reason as above. */
-    horizon_gpu_channel *r10chan = NULL;
-    res = horizon_gpu_channel_create(dev, NULL, &r10chan);
-    t_check(t, horizon_gpu_succeeded(res), "R10 experiment channel created");
-    if (r10chan) {
+    /* 6. R10 measurement: GPU-side syncpoint wait encoding, exercised as
+     * an actual cross-channel dependency. A wait against the *consumer's
+     * own* already-reached counter (the original version of this test)
+     * proves nothing: the fence it waits on is satisfied whether or not
+     * the encoded wait is honoured, ignored, or has the wrong threshold
+     * semantics — so instead this waits on a *producer* channel's
+     * counter at a threshold the producer has not yet reached. The
+     * consumer's own completion fence cannot signal until its whole
+     * command list — including the embedded cross-channel wait — has
+     * finished executing, so:
+     *   1. a short wait on the consumer's fence must time out while the
+     *      producer is still behind (proves the wait actually blocks);
+     *   2. incrementing the producer past the threshold must then let
+     *      the same fence be reached (proves it unblocks correctly). */
+    #define R10_SHORT_WAIT_NS UINT64_C(300000000) /* 300 ms: several poll
+                                                    * chunks, well under
+                                                    * WAIT_NS */
+    horizon_gpu_channel *r10prod = NULL, *r10cons = NULL;
+    res = horizon_gpu_channel_create(dev, NULL, &r10prod);
+    t_check(t, horizon_gpu_succeeded(res), "R10 producer channel created");
+    res = horizon_gpu_channel_create(dev, NULL, &r10cons);
+    t_check(t, horizon_gpu_succeeded(res), "R10 consumer channel created");
+    if (r10prod && r10cons) {
         horizon_gpu_mem *wmem = NULL;
         horizon_gpu_va_range *wrange = NULL;
         horizon_gpu_mapping *wmap = NULL;
         horizon_gpu_cmd_span wspan;
         res = make_nop_list(dev, &wmem, &wrange, &wmap, &wspan);
-        if (horizon_gpu_succeeded(res)) {
+        if (t_check(t, horizon_gpu_succeeded(res),
+                    "R10 wait cmdlist built and mapped")) {
+            uint32_t prod_id = horizon_gpu_channel_syncpt_id(r10prod);
             uint32_t cur = 0;
-            horizon_gpu_syncpt_read(dev,
-                                    horizon_gpu_channel_syncpt_id(r10chan),
-                                    &cur);
+            horizon_gpu_syncpt_read(dev, prod_id, &cur);
+            uint32_t future = cur + 1; /* producer has not reached this */
+
             uint32_t *cmds = horizon_gpu_mem_cpu_ptr(wmem);
-            uint32_t n = horizon_cmds_syncpt_wait(
-                cmds, horizon_gpu_channel_syncpt_id(r10chan), cur);
+            uint32_t n = horizon_cmds_syncpt_wait(cmds, prod_id, future);
             horizon_gpu_mem_flush(wmem, 0, n * 4);
             wspan.num_dwords = n;
 
             horizon_gpu_fence fw;
-            res = horizon_gpu_submit(r10chan, &wspan, 1,
+            res = horizon_gpu_submit(r10cons, &wspan, 1,
                                      HORIZON_GPU_SUBMIT_DEFAULT, &fw);
-            if (horizon_gpu_succeeded(res)) {
-                res = horizon_gpu_channel_wait_fence(r10chan, fw, WAIT_NS);
-                t_note(t, "R10: syncpt-wait(reached threshold %u) -> %s",
-                       cur, horizon_gpu_status_str(res.status));
+            if (t_check(t, horizon_gpu_succeeded(res),
+                        "R10 cross-channel wait submit accepted")) {
+                res = horizon_gpu_channel_wait_fence(r10cons, fw,
+                                                     R10_SHORT_WAIT_NS);
+                t_check(t, res.status == HORIZON_GPU_ERR_TIMEOUT,
+                        "R10: consumer stays blocked on producer syncpt %u "
+                        "threshold %u not yet reached (status=%s)", prod_id,
+                        future, horizon_gpu_status_str(res.status));
+
+                horizon_gpu_fence pf;
+                res = horizon_gpu_submit(r10prod, NULL, 0,
+                                         HORIZON_GPU_SUBMIT_DEFAULT, &pf);
+                t_check(t, horizon_gpu_succeeded(res) &&
+                        horizon_gpu_syncpt_reached(pf.threshold, future),
+                        "R10: producer submit reaches the awaited "
+                        "threshold (producer now %u, awaited %u)",
+                        pf.threshold, future);
+
+                res = horizon_gpu_channel_wait_fence(r10cons, fw, WAIT_NS);
                 t_check(t, horizon_gpu_succeeded(res),
-                        "GPU-side syncpoint wait encoding validated (R10)");
-            } else {
-                t_note(t, "R10: wait submit rejected (status=%s nv=0x%08x)",
-                       horizon_gpu_status_str(res.status), res.nv);
+                        "R10: GPU-side cross-channel wait unblocks once "
+                        "the producer reaches the threshold (status=%s)",
+                        horizon_gpu_status_str(res.status));
             }
         }
         if (wmap)
@@ -213,10 +252,24 @@ int run_test(test_ctx *t)
             horizon_gpu_vm_release(wrange);
         if (wmem)
             horizon_gpu_mem_destroy(wmem);
-        res = horizon_gpu_channel_destroy(r10chan);
-        t_note(t, "R10 channel destroy: %s",
+    }
+    if (r10cons) {
+        res = horizon_gpu_channel_wait_idle(r10cons, WAIT_NS);
+        t_note(t, "R10 consumer wait_idle: %s",
+               horizon_gpu_status_str(res.status));
+        res = horizon_gpu_channel_destroy(r10cons);
+        t_note(t, "R10 consumer channel destroy: %s",
                horizon_gpu_status_str(res.status));
     }
+    if (r10prod) {
+        res = horizon_gpu_channel_wait_idle(r10prod, WAIT_NS);
+        t_note(t, "R10 producer wait_idle: %s",
+               horizon_gpu_status_str(res.status));
+        res = horizon_gpu_channel_destroy(r10prod);
+        t_note(t, "R10 producer channel destroy: %s",
+               horizon_gpu_status_str(res.status));
+    }
+    #undef R10_SHORT_WAIT_NS
 
     /* Teardown. */
     res = horizon_gpu_channel_wait_idle(chan, WAIT_NS);

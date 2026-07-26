@@ -7,8 +7,11 @@
 
 ## Current phase
 
-**Phase 1 — `horizon/` standalone GPU layer. COMPLETE — VERIFIED ON REAL
-HARDWARE.**
+**Phase 1 — `horizon/` standalone GPU layer. Hardware-verified as of the
+2026-07-26 confirmation run; a PR review since then (Codex, same date)
+found 9 real issues, now fixed (host + cross build green) but NOT yet
+re-run on hardware — see "Codex PR review" below. Treat Phase 1 as
+verified-pending-reconfirmation until that re-run happens.**
 
 The owner ran all ten `.nro`s on a real Switch (logs received
 2026-07-26); 8/10 passed outright and the two failures were fixed
@@ -121,6 +124,40 @@ files were reported missing — note the tests write them to
 
 ---
 
+## Codex PR review (2026-07-26) — findings addressed
+
+`chatgpt-codex-connector[bot]` reviewed commit `b1c53f0a5c` (PR #1) and left
+9 comments. All are real; fixed here (host + cross build clean, `-Wall
+-Wextra -Werror`, host tests 78/78, layering gate OK) — **hardware re-run
+still pending**, since several touch code paths already measured on
+console (t_channel's notifier fix, t_submit's R10 measurement).
+
+| # | File:line | Finding | Fix |
+|---|---|---|---|
+| 1 | `tests/t_submit.c:192` (P2) | R10 test waited on the consumer's own already-reached syncpoint — proved nothing about the encoding | Redesigned as a real producer/consumer pair: wait on a *future* threshold on a different channel's syncpoint, assert a short wait times out while unresolved, then assert it unblocks after the producer submits. Re-measures R10; the old "encoding VALIDATED" note undersold what was actually proven |
+| 2 | `horizon/channel/channel.c:432` | `wait_fence` read `chan`'s own syncpoint regardless of `fence.syncpt_id`, so a foreign-channel fence could compare the wrong counter | Validate `fence.syncpt_id == chan->syncpt_id`, matching `add_retirement`'s existing check |
+| 3 | `horizon/channel/channel.c:513` (P1) | A lost channel with pending retirements could never destroy: `!chan->lost` gated both the busy check *and* the reap, and nothing ever clears `retire_count` | Always reap (a plain syncpt read, harmless on a lost channel); if entries remain on a *lost* channel, force-retire them (documented as "abandoned", not "completed" — no cancellation ioctl exists) instead of refusing destroy forever |
+| 4 | `horizon/vm/vm.c:269` | Unmapping the most-recently-created mapping zeroed `mem->mapped_va` even if an older mapping of the same object was still live, contradicting the documented "0 = no live mapping" contract | Added an intrusive most-recent-first list of live mappings per `horizon_gpu_mem` (`mem_priv.h`/`vm_priv.h`); unmap now restores `mapped_va` to another live mapping if one remains |
+| 5 | `tests/t_submit.c:116` | If `make_nop_list` failed, `span` was uninitialised but the next section submitted it anyway | Gated the multi-submit section on the same success flag as the NOP-list section |
+| 6 | `horizon/submit/submit.c:133` (P1) | Shadow/kernel fence mismatch was logged but still returned success with the (untrustworthy) shadow-derived fence | Marks the channel lost and returns `HORIZON_GPU_ERR_CHANNEL_LOST` instead — the submit already reached hardware and cannot be undone, but no caller gets a fence it can't trust |
+| 7 | `horizon/channel/channel.c:81` | `get_error` treated *every* failed `GetErrorNotification` as "no error", which would mask a genuine service/driver failure as a healthy channel | Verified against libnx source (`nx/source/nvidia/gpu_channel.c`, fetched from github.com/switchbrew/libnx): "no notification pending" is the non-blocking `eventWait(..., 0)`'s own `KERNELRESULT(TimedOut)`, not an nv error. Now matches that exact result only; anything else propagates as a real failure |
+| 8 | `horizon/device/device.c:140` | When `as_big_page_size` selected a non-default (but valid) size, `dev->info.big_page_size` kept the characteristics default, so `vm_page_size_valid` validated reservations against the wrong value | Store the effective `as_big_page` into `dev->info.big_page_size` before `nvAddressSpaceCreate` |
+| 9 | `horizon/vm/vm.c:210` | If `MapBufferEx` returned an unexpected VA *and* the cleanup `UnmapBuffer` also failed, the interval and mapping bookkeeping were freed anyway — an orphaned kernel mapping with the device/mem counters reporting no leak | On that double-failure, keep the VA interval and both live-mapping counters non-reusable/elevated and return `HORIZON_GPU_ERR_LEAK` instead of freeing the bookkeeping |
+
+Also fixed while rebuilding: `Makefile`'s per-recipe `mkdir -p $(dir $@)`
+raced under `make -j4` on this toolchain image's overlay filesystem — one
+object file's compile silently never ran and `ar` failed. Object
+directories are now order-only prerequisites created by a single rule.
+Confirmed: `-j4` clean after the fix (previously reproduced the failure
+twice, `-j1` always worked).
+
+**Not yet done:** re-running the ten `.nro`s on real hardware to confirm
+none of the above regress the already-hardware-verified behaviour,
+particularly `t_channel` (finding 7) and `t_submit`'s R10 measurement
+(finding 1, now a materially different test).
+
+---
+
 ## Next concrete task
 
 **Phase 2 — toolchain** (`docs/milestones.md`), pending the owner's
@@ -154,3 +191,5 @@ go-ahead:
 | `horizon/channel: treat absent error notification as no error` | HW finding fix |
 | `tests: make t_teardown's in-flight destroy probe race-tolerant` | test fix |
 | `docs: record the first hardware run` | this update |
+| `docs: document the devkitA64 Docker fallback in CLAUDE.md` | CLAUDE.md |
+| `horizon,tests,build: fix Codex review findings` | channel/vm/submit/device fixes, t_submit R10 redesign, Makefile -j race |

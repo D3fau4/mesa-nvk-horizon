@@ -124,13 +124,20 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     /* libnx tracks the absolute fence value the kernel returned; our
      * shadow must agree with its low word. A mismatch means the kernel
-     * incremented differently than requested — log it loudly, it would
-     * invalidate the shadow (R5). */
-    if (chan->gc.fence.value != fence.threshold)
+     * incremented differently than requested, which invalidates every
+     * future threshold derived from the shadow (R5) — the work already
+     * reached hardware (kickoff succeeded), but this and every later
+     * fence from this channel can no longer be trusted, so the channel
+     * is marked lost rather than returning a fence callers would wait on
+     * incorrectly. */
+    if (chan->gc.fence.value != fence.threshold) {
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "shadow (%u) and kernel fence (%u) disagree on "
-                     "syncpt %u", fence.threshold, chan->gc.fence.value,
-                     chan->syncpt_id);
+                     "syncpt %u — marking channel lost", fence.threshold,
+                     chan->gc.fence.value, chan->syncpt_id);
+        chan->lost = true;
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+    }
 
     horizon_logf(&dev->log, HORIZON_LOG_DEBUG,
                  "channel %p: submitted %u span(s)+incr, fence=%u:%u",

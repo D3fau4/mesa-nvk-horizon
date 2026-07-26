@@ -24,6 +24,12 @@ struct horizon_gpu_mapping {
     horizon_gpu_mem *mem;        /* not owned */
     uint64_t va;
     uint64_t size;
+
+    /* Intrusive links in mem->mapping_list_head, most-recently-created
+     * first — lets vm_unmap restore mem->mapped_va to another still-live
+     * mapping instead of clearing it out from under a surviving one. */
+    struct horizon_gpu_mapping *mem_next;
+    struct horizon_gpu_mapping *mem_prev;
 };
 
 #endif /* HORIZON_VM_VM_PRIV_H */

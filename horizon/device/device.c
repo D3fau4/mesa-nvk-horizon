@@ -146,6 +146,11 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
         res = horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
         goto fail_gpu;
     }
+    /* device_fill_info() just recorded the characteristics' default
+     * big_page_size; overwrite it with the size actually selected for
+     * this address space so vm_page_size_valid() validates reservations
+     * against the size in effect, not the unused default. */
+    dev->info.big_page_size = as_big_page;
 
     /* Step 5/5: /dev/nvhost-as-gpu with the *queried* big-page size. */
     rc = nvAddressSpaceCreate(&dev->as, as_big_page);

@@ -204,10 +204,32 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
                      "MapBufferEx returned va 0x%llx, requested 0x%llx",
                      (unsigned long long)offset_out, (unsigned long long)va);
         Result urc = nvioctlNvhostAsGpu_UnmapBuffer(dev->as.fd, offset_out);
-        if (R_FAILED(urc))
+        if (R_FAILED(urc)) {
+            /* The kernel mapping at offset_out is still live and we have
+             * no handle to it (we never recorded a mapping object at that
+             * VA), so it cannot be retried or targeted by a future unmap.
+             * Leaking the VA interval and the mapping struct is the safe
+             * failure mode here: keep both un-reusable and keep the leak
+             * counted, rather than freeing them and letting the range or
+             * the device report zero live objects while the kernel still
+             * holds this mapping (never silently leak — memory-model § 7).
+             */
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                         "cleanup UnmapBuffer(0x%llx) failed: 0x%08x",
+                         "cleanup UnmapBuffer(0x%llx) failed: 0x%08x — "
+                         "leaking the interval and mapping object, kernel "
+                         "mapping cannot be reached again",
                          (unsigned long long)offset_out, urc);
+            mapping->range = range;
+            mapping->mem = mem;
+            mapping->va = offset_out;
+            mapping->size = rounded;
+            /* mem must also refuse destroy: its backing memory is still
+             * mapped at the kernel level even though no mapping handle
+             * was returned to reach it. */
+            atomic_fetch_add(&mem->live_mappings, 1);
+            atomic_fetch_add(&dev->live_mappings, 1);
+            return horizon_gpu_err(HORIZON_GPU_ERR_LEAK);
+        }
         horizon_va_set_remove(&range->live, offset_in_range);
         free(mapping);
         return horizon_gpu_err(HORIZON_GPU_ERR_NV);
@@ -217,6 +239,12 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
     mapping->mem = mem;
     mapping->va = va;
     mapping->size = rounded;
+
+    mapping->mem_prev = NULL;
+    mapping->mem_next = mem->mapping_list_head;
+    if (mem->mapping_list_head)
+        mem->mapping_list_head->mem_prev = mapping;
+    mem->mapping_list_head = mapping;
 
     atomic_fetch_add(&mem->live_mappings, 1);
     mem->mapped_va = va;
@@ -261,12 +289,21 @@ horizon_gpu_result horizon_gpu_vm_unmap(horizon_gpu_mapping *mapping)
 
     horizon_va_set_remove(&range->live, mapping->va - range->base);
 
-    /* Clear the recorded VA on the memory object — the exact invariant
-     * whose absence causes the reference's double-unmap bug
-     * (memory-model § 2). */
-    atomic_fetch_sub(&mapping->mem->live_mappings, 1);
-    if (mapping->mem->mapped_va == mapping->va)
-        mapping->mem->mapped_va = 0;
+    /* Unlink from mem->mapping_list_head and restore mapped_va to another
+     * still-live mapping of the same object, if one exists — the exact
+     * invariant whose absence causes the reference's double-unmap bug
+     * (memory-model § 2): 0 means no live mapping, never a stale VA, and
+     * never a false zero while a sibling mapping is still live. */
+    horizon_gpu_mem *mem = mapping->mem;
+    if (mapping->mem_prev)
+        mapping->mem_prev->mem_next = mapping->mem_next;
+    else
+        mem->mapping_list_head = mapping->mem_next;
+    if (mapping->mem_next)
+        mapping->mem_next->mem_prev = mapping->mem_prev;
+
+    atomic_fetch_sub(&mem->live_mappings, 1);
+    mem->mapped_va = mem->mapping_list_head ? mem->mapping_list_head->va : 0;
 
     atomic_fetch_sub(&dev->live_mappings, 1);
     mapping->range = NULL; /* double-unmap fails INVALID_ARG, not UAF */
