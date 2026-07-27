@@ -56,6 +56,22 @@ const char *const test_name = "t_ostime";
  * few enough to stay instantaneous. */
 #define SAMPLES 2000
 
+/* ...but a sample count alone does not make "the clock advanced" a fair
+ * question. This test accepts a resolution as coarse as 1 ms (see
+ * min_step below), and 2000 register reads can finish inside one such
+ * tick — which would leave one distinct value and look exactly like a
+ * stopped clock. So the loop also runs until the ARM system counter,
+ * which is not the clock under test, says more than one accepted tick
+ * has passed. Five milliseconds is four ticks of headroom.
+ */
+#define SAMPLE_MIN_MS 5
+
+/* And a ceiling, so a clock that never advances ends the loop instead of
+ * spinning until the console is powered off. At roughly 50 ns per read
+ * this is a few seconds — far above SAMPLE_MIN_MS on any working clock,
+ * so it bounds only the broken case. */
+#define SAMPLES_MAX 20000000
+
 /* The sleep the accuracy section asks for, in microseconds. */
 #define SLEEP_US 50000 /* 50 ms */
 
@@ -77,6 +93,12 @@ static uint64_t
 ticks_to_ns(uint64_t ticks)
 {
     return armTicksToNs(ticks);
+}
+
+static uint64_t
+ms_since(uint64_t start_tick)
+{
+    return ticks_to_ns(armGetSystemTick() - start_tick) / 1000000u;
 }
 
 int
@@ -118,8 +140,14 @@ run_test(test_ctx *t)
     int backwards = 0;
     int64_t min_step = 0; /* smallest non-zero step seen */
     int distinct = 1;
+    int taken = 1;
+    uint64_t loop_start = armGetSystemTick();
+    uint64_t span_ms;
 
-    for (int i = 1; i < SAMPLES; i++) {
+    /* Both conditions, not either: SAMPLES is what makes a backwards
+     * step likely to be caught, SAMPLE_MIN_MS is what makes "it never
+     * advanced" mean something. */
+    while (taken < SAMPLES || ms_since(loop_start) < SAMPLE_MIN_MS) {
         int64_t now = os_time_get_nano();
 
         if (now < prev)
@@ -132,25 +160,44 @@ run_test(test_ctx *t)
         }
         prev = now;
         last = now;
-    }
+        taken++;
 
-    t_note(t, "os_time_get_nano: first=%lld last=%lld over %d samples, "
-              "%d distinct values",
-           (long long)first, (long long)last, SAMPLES, distinct);
+        if (taken >= SAMPLES_MAX)
+            break;
+    }
+    span_ms = ms_since(loop_start);
+
+    t_note(t, "os_time_get_nano: first=%lld last=%lld over %d samples "
+              "spanning %llu ms by the ARM counter, %d distinct values",
+           (long long)first, (long long)last, taken,
+           (unsigned long long)span_ms, distinct);
 
     t_check(t, backwards == 0,
             "os_time_get_nano never went backwards in %d samples (%d did)",
-            SAMPLES, backwards);
+            taken, backwards);
     t_check(t, first > 0, "os_time_get_nano returned a positive value (%lld)",
             (long long)first);
 
-    /* A clock that never changes across two thousand reads is stopped,
-     * which is what an unimplemented CLOCK_MONOTONIC returning a
-     * constant would look like. */
-    if (t_check(t, distinct > 1,
-                "the clock advanced during the sample loop (%d distinct "
-                "values)",
-                distinct)) {
+    /* A clock that does not change over an interval an independent
+     * counter measured as several milliseconds is stopped, which is what
+     * an unimplemented CLOCK_MONOTONIC returning a constant would look
+     * like. Asserting that only once the interval is established keeps a
+     * merely coarse clock from being reported as a stopped one. */
+    if (!t_check(t, span_ms >= SAMPLE_MIN_MS,
+                 "the sample loop spanned at least %d ms of real time "
+                 "(%llu ms over %d reads)",
+                 SAMPLE_MIN_MS, (unsigned long long)span_ms, taken)) {
+        /* The loop only ends early at SAMPLES_MAX, and that many reads
+         * cannot take under 5 ms on this hardware — so this is the
+         * reference counter failing, not the clock under test. Saying
+         * which one failed is the point of measuring with two. */
+        t_note(t, "that is the ARM system counter not advancing, not "
+                  "os_time_get_nano; the resolution checks are NOT "
+                  "attempted");
+    } else if (t_check(t, distinct > 1,
+                       "the clock advanced during the sample loop (%d "
+                       "distinct values)",
+                       distinct)) {
         t_note(t, "smallest observed step: %lld ns", (long long)min_step);
         /* One millisecond is already coarse for a driver that times GPU
          * work; anything worse is worth failing on so it is not
