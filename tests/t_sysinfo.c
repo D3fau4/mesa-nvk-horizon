@@ -103,7 +103,16 @@ probe_map_granularity(test_ctx *t, u64 page_size)
         Result rc;
 
         virtmemLock();
-        dst = virtmemFindAslr((size_t)size, 0);
+        /* The STACK region, not the ASLR one. svcMapMemory is documented
+         * as "mainly used for adding guard pages around stack" and only
+         * accepts a destination there — measured: with virtmemFindAslr
+         * every rung came back 0x0000dc01, which decodes as kernel
+         * description 110, KernelError_InvalidMemoryRange. Notably NOT
+         * KernelError_InvalidSize (101), which is what a granularity
+         * refusal would be, so the first hardware run proved the region
+         * was wrong rather than the page size. libnx uses
+         * virtmemFindStack for exactly this call. */
+        dst = virtmemFindStack((size_t)size, 0);
         rc = dst ? svcMapMemory(dst, src, size) : 1;
         if (dst && R_SUCCEEDED(rc)) {
             Result urc = svcUnmapMemory(dst, src, size);
@@ -116,8 +125,22 @@ probe_map_granularity(test_ctx *t, u64 page_size)
             break;
         }
         virtmemUnlock();
-        t_note(t, "svcMapMemory(0x%llx): %s 0x%08x", (unsigned long long)size,
-               dst ? "rejected" : "no address space,", (unsigned)rc);
+        /* Name the kernel description rather than only printing the hex.
+         * InvalidSize is the only one that is a statement about
+         * granularity; anything else means the probe itself is wrong,
+         * which is what the first hardware run turned out to be. */
+        t_note(t, "svcMapMemory(0x%llx): %s 0x%08x%s",
+               (unsigned long long)size,
+               dst ? "rejected" : "no address space,", (unsigned)rc,
+               !dst                                   ? ""
+               : R_MODULE(rc) != Module_Kernel        ? " (not a kernel error)"
+               : R_DESCRIPTION(rc) == KernelError_InvalidSize
+                   ? " InvalidSize — a granularity refusal"
+               : R_DESCRIPTION(rc) == KernelError_InvalidMemoryRange
+                   ? " InvalidMemoryRange — wrong region, not granularity"
+               : R_DESCRIPTION(rc) == KernelError_InvalidMemoryState
+                   ? " InvalidMemoryState — source not mappable"
+                   : " (other kernel error)");
     }
 
     free(src);
