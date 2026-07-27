@@ -138,16 +138,39 @@ sysconf(int name)
      * number of processors usable by this process, which is exactly the
      * quantity _SC_NPROCESSORS_ONLN names.
      *
-     * ONLN and CONF get the same answer, deliberately. Horizon exposes
-     * no second, wider number to a normal process: there is no query
-     * for "cores the SoC has, whether or not you may use them" that
-     * homebrew can rely on. Reporting the SoC's four Cortex-A57s for
-     * _SC_NPROCESSORS_CONF would be a constant nobody measured, and the
-     * only caller in sight (Mesa's util_cpu_detect, which uses CONF to
-     * size a CPU mask) is better served by a number that is true than
-     * by one that is larger. tests/t_threads.c checks the two agree and
-     * prints the raw mask, so a console log records the bitmask itself
-     * rather than only its population count.
+     * ONLN and CONF get the same answer, deliberately, and the reason
+     * is a measurement rather than an argument. The kernel's only
+     * unprivileged answer about cores is this mask; the wider question —
+     * "cores the SoC has, whether or not you may use them" — has no
+     * query behind it. svcGetSystemInfo is the candidate, and libnx
+     * enumerates everything it accepts:
+     *
+     *   SystemInfoType_TotalPhysicalMemorySize  = 0
+     *   SystemInfoType_UsedPhysicalMemorySize   = 1
+     *   SystemInfoType_InitialProcessIdRange    = 2
+     *
+     * (switch/kernel/svc.h:222-225 in the pinned toolchain image; read
+     * out of the image itself, not from documentation.) None of the
+     * three is a processor count, so there is nothing to report for CONF
+     * that ONLN does not already answer.
+     *
+     * Reporting the SoC's four Cortex-A57s instead would be a constant
+     * nobody queried, and the only caller in sight — Mesa's
+     * util_cpu_detect, which uses CONF to size a CPU mask — is better
+     * served by a number that is true than by one that is larger. The
+     * cost of sharing the case is real and is stated rather than hidden:
+     * a caller cannot distinguish "the SoC has four, you may use three",
+     * which is the ordinary applet situation on this console. Nothing
+     * this project builds needs that distinction, and inventing an
+     * answer for it would be worse than not offering it.
+     *
+     * tests/t_threads.c prints the raw mask, so a console log records
+     * the bitmask itself and not only its population count, and it is
+     * the place that knows the SoC has four cores — a test may know
+     * which console it was launched on; a C library function may not
+     * hand a caller a number nobody asked the kernel for. What that test
+     * checks about ONLN and CONF is the wiring of this function, not the
+     * core count; it says so.
      *
      * Not clamped to any expected value: if a future firmware hands a
      * process more or fewer cores, the measurement should say so.
