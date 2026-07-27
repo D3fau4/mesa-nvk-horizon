@@ -1,4 +1,4 @@
-From a612749bdfa5147ca72b7e1b936696c90ae1d153 Mon Sep 17 00:00:00 2001
+From 110a410906fd382b16243654ddf3447c0ca26027 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:35 +0000
 Subject: [PATCH 01/10] meson: do not require libdl where there is no dynamic
