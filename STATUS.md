@@ -37,10 +37,11 @@ open, and `scripts/check-layering.sh` now polices it.
 an 8.1× difference on the same console — so a hardcoded constant would
 have been badly wrong, not approximately right.
 
-**Still owed:** one check. `t_sysinfo`'s granularity probe mapped nothing
-because it asked for the wrong memory region, which the test correctly
-reported as "not a statement about the page size". Fixed; that one `.nro`
-needs re-running, and nothing else does.
+`t_sysinfo` failed one check on the first run — its granularity probe
+asked for the wrong memory region, which the test correctly reported as
+"not a statement about the page size". Fixed and re-run the same day:
+**PASS 21/21 in both modes**, so the page size is now bounded from both
+sides by measurement. **Nothing is owed on hardware.**
 
 ---
 
@@ -63,9 +64,10 @@ the first console evidence for anything in Phase 3.
 | 8 | `t_syncpt` | **PASS 48/48** | **PASS 48/48** |
 | 9 | `t_fence_wait` | **PASS 14/14** | **PASS 14/14** |
 | 10 | `t_teardown` | **PASS 34/34** | **PASS 32/32** |
-| 11 | `t_sysinfo` | FAIL 18/19 | FAIL 18/19 |
+| 11 | `t_sysinfo` | FAIL 18/19 → **PASS 21/21** | FAIL 18/19 → **PASS 21/21** |
 
-**Ten of eleven pass in both modes, on the current code.** The counts are
+**Eleven of eleven pass in both modes, on the current code**, after one
+fix to the test itself (below). The first run had ten. The counts are
 higher than the Phase 1 run (`t_map` 26→28, `t_submit` 23→30,
 `t_va_reserve` 17→18, `t_teardown` 28→34/32) because the second review
 round added assertions; those are the very tests whose paths it changed.
@@ -75,7 +77,34 @@ in-flight-destroy race taking its two legal branches — both PASS.
 `t_init` and `t_map` are **byte-identical between modes**, which is what
 you want from a device-query test.
 
-### The one failure is in my new test, and it is not what it looks like
+### Second run: `t_sysinfo` PASS 21/21 in both modes — everything closed
+
+The fixed probe was re-run the same day. Both modes:
+
+```
+ok   unmapped the 0x1000 probe (rc=0x00000000)
+note svcMapMemory(0x1000): OK
+ok   the kernel mapped at least one size up to 0x10000
+ok   smallest granularity the kernel accepts is 0x1000, and sysconf reports 0x1000
+RESULT: PASS (21/21)
+```
+
+The **first** rung mapped. So the page size is now bounded from *both*
+sides by measurement: no region boundary falls off `0x1000` (upper), and
+the kernel accepts a map of exactly `0x1000` (lower). `compat/sysconf.c`'s
+cited constant is confirmed, not merely consistent. 21 checks rather
+than 19 because a successful ladder adds the unmap and the equality.
+
+**Eleven of eleven now PASS on hardware, in both process modes.**
+
+The memory figures **reproduce exactly** across the two independent
+runs — `total`, `used` and `_SC_AVPHYS_PAGES` byte-identical in each
+mode (394 MiB / 35214 pages applet; 3189 MiB / 995 pages full-game), so
+they are deterministic per mode rather than sampling noise. Only the
+region base addresses move, which is ASLR doing its job; the `aslr`
+region base itself is `0x8000000` in every run.
+
+### The first run's one failure, and why it was not what it looked like
 
 `t_sysinfo` fails exactly one check, identically in both modes: the
 `svcMapMemory` granularity ladder never mapped anything. Every rung
@@ -112,7 +141,9 @@ whole number of pages of it, in both modes:
 | aslr | `0x8000000` + `0x7ff8000000` | `0x8000000` + `0x7ff8000000` |
 | stack | `0x3469000000` + `0x80000000` | `0x5a68e00000` + `0x80000000` |
 
-The lower bound stays unmeasured until the fixed probe runs.
+**And confirmed from below**, by the second run: `svcMapMemory` accepts
+a map of exactly `0x1000`, the ladder's first rung. Both bounds are now
+measurements.
 
 **The mode-aware argument is confirmed, and by a wide margin.** This is
 the reasoning `compat/sysconf.c` was written on, now measured:
@@ -154,13 +185,12 @@ read the budget.
 
 - **Phase 1's two hardware exit criteria go back to ✅** — measured on
   the current code, not on `732b58c`. See that table below.
-- `compat/sysconf.c` is hardware-verified for everything except the
-  granularity lower bound: the page size it reports is consistent with
-  every region the kernel exposes, and both memory figures match the raw
-  syscall in two very different process modes.
-- Owed: **re-run `t_sysinfo` alone** with the fixed probe. Nothing else
-  needs re-running — `package-horizon.sh` reports `1 copied, 10 already
-  current`, so the other ten artefacts are unchanged.
+- `compat/sysconf.c` is hardware-verified in full, after the probe fix.
+- **Nothing is owed on hardware.** `compat/sysconf.c` is verified end to
+  end: the page size it reports is bounded from above by every region
+  the kernel exposes and from below by the smallest map the kernel
+  accepts, and both memory figures match the raw syscall exactly in two
+  process modes that differ by 8×.
 
 ---
 
@@ -382,11 +412,11 @@ memory figures are reasoned.
 
 ### Known gaps at the end of item 6
 
-- **`t_sysinfo` has not run on hardware.** Its whole purpose is to turn
-  `compat/sysconf.c`'s numbers into measurements; it ships as a cross
-  build. It now bounds the page size from both sides (see the Codex
-  review round above); the earlier claim that divisibility alone caught
-  an understated page size was wrong.
+- ~~**`t_sysinfo` has not run on hardware.**~~ **Closed 2026-07-27:**
+  PASS 21/21 in both process modes. It bounds the page size from both
+  sides now — the earlier claim that divisibility alone caught an
+  understated page size was wrong, and the lower bound it was missing is
+  measured (`svcMapMemory` accepts exactly `0x1000`).
 - **`util_cpu_detect` reports 1 CPU on Horizon.** Its whole CPU-counting
   block is under `#elif DETECT_OS_POSIX`, and patch 0007 chose
   POSIX-**lite** deliberately (no `<syslog.h>`, no `<sys/shm.h>`, no
@@ -1167,20 +1197,29 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Re-run `t_sysinfo` alone**, with the fixed granularity probe. It is
-the only thing owed on hardware: the run of 2026-07-27 covered all
-eleven `.nro` in both process modes and closed the re-run the second
-review round had been waiting for. Nothing else changed —
-`package-horizon.sh` reports `1 copied, 10 already current`.
+**Nothing is owed on hardware.** The 2026-07-27 runs closed all of it:
+eleven of eleven `.nro` PASS in both process modes, Phase 1's two
+hardware exit criteria are ✅ again on the current code, and
+`compat/sysconf.c` is verified end to end.
 
-What that one re-run decides: whether the page size is bounded from
-below as well as above. Everything else about `compat/sysconf.c` is
-already measured. If the ladder's first rung (`svcMapMemory(0x1000)`)
-maps, `0x1000` is confirmed on both sides; if the smallest accepted size
-is larger, the cited constant is wrong and `compat/sysconf.c` has to be
-redone — which would also change what Mesa reports for
-`minMemoryMapAlignment`. A failure that names anything other than
-`InvalidSize` means the probe is still wrong, not the page size.
+The next work is the rest of **Phase 3**, none of which was ever
+blocking:
+
+- **item 2** — Meson `host_machine.system() == 'horizon'` handling.
+  Untouched.
+- **item 4** — threads, beyond the one `pthread_mutex_timedlock` patch.
+- The remainder of items 1, 5 and 7, each of which carries only the
+  minimum it needed. Item 8 was closed in Phase 2 without a patch.
+
+Then **Phase 4 — `nvkmd_horizon`**, which is now unblocked in the sense
+that mattered: it builds directly on `horizon/`, and `horizon/` is
+hardware-verified on the code that exists today rather than on a commit
+from two phases ago.
+
+One quality item to fix before Phase 4 leans on it: `util_cpu_detect`
+reports **1 CPU** on Horizon, because its whole counting block sits
+under `#elif DETECT_OS_POSIX` and patch 0007 deliberately chose
+POSIX-lite. Recorded under "Known gaps at the end of item 6".
 
 **Phase 3's build criterion is met**, so the remaining Phase 3 work is
 the items that were never blocking: **2** (Meson
