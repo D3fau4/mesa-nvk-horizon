@@ -38,10 +38,18 @@
  * on a console. The polling mtx_timedlock is the sharpest case: a
  * timeout that returns immediately, or one that never returns, both look
  * like "thrd_timedout" to a test that does not measure the time. So
- * every timed check here is bounded from BOTH sides, and the clock used
- * to bound it is armGetSystemTick() — the ARM system counter, which is
- * not the clock the implementation uses (clock_gettime through
- * c23_timespec_get). Measuring a clock with itself proves nothing.
+ * every check on a call that must EXPIRE — mtx_timedlock and
+ * cnd_timedwait against their deadlines — is bounded from BOTH sides,
+ * and the clock used to bound it is armGetSystemTick() — the ARM system
+ * counter, which is not the clock the implementation uses (clock_gettime
+ * through c23_timespec_get). Measuring a clock with itself proves
+ * nothing.
+ *
+ * A call that must NOT wait is a different question and is bounded above
+ * only: an uncontended mtx_timedlock, a signalled condvar and a
+ * broadcast one are correct when they return at once, so there is no
+ * lower bound to assert. Those are the PROMPT_MAX_MS checks, and the
+ * claim they make is that much weaker deliberately.
  *
  * NEVER WAIT WITHOUT A BOUND. The upper bound above is worth nothing if
  * reaching it means blocking first: a mtx_timedlock or cnd_timedwait
@@ -67,7 +75,16 @@
  * THREAD SAFETY OF THE TEST ITSELF. t_check() and t_note() write the
  * shared test_ctx and a FILE*, so they are called from the main thread
  * only. Worker threads set plain counters and flags, which are read
- * after the join — or the atomic flag — that orders them.
+ * after the join — or the atomic flag — that orders them. A field a
+ * worker may write while NOT holding the section's mutex (because the
+ * lock is what failed) is an atomic_int instead, or several workers
+ * failing at once would lose counts.
+ *
+ * Every mtx_* and cnd_* return is checked, in the workers as well as on
+ * the main thread (CLAUDE.md). A worker that carried on after a failed
+ * mtx_lock would hand cnd_wait an unlocked mutex and race the counters
+ * it shares, turning one honest failure into several that point
+ * elsewhere.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -267,6 +284,9 @@ section_call_once(test_ctx *t)
 typedef struct counter_ctx {
     mtx_t *mtx;
     uint64_t *counter;
+    /* How many increments this worker actually performed. Not assumed to
+     * be INCREMENTS: see the expected total in the section below. */
+    uint64_t increments;
     int lock_failures;
     int unlock_failures;
 } counter_ctx;
@@ -285,6 +305,7 @@ counter_worker(void *arg)
          * atomic: the mutex is what is being tested, so the increment
          * must be one the mutex has to protect. */
         *c->counter = *c->counter + 1;
+        c->increments++;
         if (mtx_unlock(c->mtx) != thrd_success)
             c->unlock_failures++;
     }
@@ -296,7 +317,7 @@ section_mutex_counter(test_ctx *t)
 {
     thrd_t threads[WORKERS];
     counter_ctx ctxs[WORKERS];
-    uint64_t counter = 0;
+    uint64_t counter = 0, performed = 0;
     mtx_t mtx;
     int created = 0;
     int lock_failures = 0, unlock_failures = 0;
@@ -328,15 +349,23 @@ section_mutex_counter(test_ctx *t)
     for (int i = 0; i < created; i++) {
         lock_failures += ctxs[i].lock_failures;
         unlock_failures += ctxs[i].unlock_failures;
+        performed += ctxs[i].increments;
     }
     t_check(t, lock_failures == 0, "no mtx_lock failed (%d)", lock_failures);
     t_check(t, unlock_failures == 0, "no mtx_unlock failed (%d)",
             unlock_failures);
-    t_note(t, "shared counter: %d threads x %d increments", created, INCREMENTS);
-    t_check(t, counter == (uint64_t)created * INCREMENTS,
+    t_note(t, "shared counter: %d threads x %d increments, %llu performed",
+           created, INCREMENTS, (unsigned long long)performed);
+    /* Against what the workers actually performed, not against
+     * created * INCREMENTS. A failed mtx_lock skips its increment, and
+     * it is already reported by the check above; measuring the counter
+     * against the nominal total would report that same defect a second
+     * time, as a lost update it is not. With no lock failure the two
+     * numbers are identical, so nothing is weakened — this stays a check
+     * that every increment the mutex admitted survived. */
+    t_check(t, counter == performed,
             "counter is exactly %llu, no update lost (got %llu)",
-            (unsigned long long)created * INCREMENTS,
-            (unsigned long long)counter);
+            (unsigned long long)performed, (unsigned long long)counter);
 
     mtx_destroy(&mtx);
 }
@@ -350,6 +379,7 @@ typedef struct timedlock_ctx {
     bool deadline_ok;    /* could a TIME_UTC deadline be built at all */
     int result;          /* what mtx_timedlock returned */
     uint64_t elapsed_ms; /* measured by the ARM system counter */
+    bool unlock_failed;  /* the recovery unlock below, if it had to run */
 
     /* Set last, after every field above. The main thread waits on this
      * with a bound instead of joining, so that a mtx_timedlock which
@@ -372,9 +402,10 @@ timedlock_worker(void *arg)
 
         /* If it unexpectedly succeeded, do not leave the mutex held: the
          * main thread unlocks its own hold and would then be unlocking a
-         * mutex owned by nobody. */
-        if (c->result == thrd_success)
-            mtx_unlock(c->mtx);
+         * mutex owned by nobody. Checked, because the section's claim
+         * that the mutex is not left held either way rests on it. */
+        if (c->result == thrd_success && mtx_unlock(c->mtx) != thrd_success)
+            c->unlock_failed = true;
     }
 
     atomic_store(&c->done, 1);
@@ -463,6 +494,13 @@ section_mutex_timed(test_ctx *t)
                         "mtx_timedlock on a held mutex returned thrd_timedout "
                         "(%d)",
                         tl.result);
+                /* Only on the path that ran it: on the expected one the
+                 * worker never took the mutex, so there is nothing to
+                 * assert about releasing it. */
+                if (tl.result == thrd_success)
+                    t_check(t, !tl.unlock_failed,
+                            "the worker released the mutex it unexpectedly "
+                            "acquired");
                 /* The two bounds are the point of this section. Either
                  * one alone passes for an implementation that is wrong
                  * in the other direction. */
@@ -527,6 +565,12 @@ typedef struct cnd_ctx {
     int predicate;   /* guarded by mtx */
     int woken;       /* guarded by mtx */
     int wait_failed; /* guarded by mtx */
+
+    /* mtx_lock/mtx_unlock failures inside a worker. Atomic and not
+     * guarded by mtx, because the case it records is the one where the
+     * worker does not hold it — several workers can be failing at
+     * once. */
+    atomic_int mtx_failures;
 } cnd_ctx;
 
 static int
@@ -534,7 +578,13 @@ cnd_worker(void *arg)
 {
     cnd_ctx *c = arg;
 
-    mtx_lock(&c->mtx);
+    /* Returning instead of carrying on: without the mutex the loop below
+     * would read the predicate unguarded, hand cnd_wait a mutex it does
+     * not own, and race c->woken — one failure reported as three. */
+    if (mtx_lock(&c->mtx) != thrd_success) {
+        atomic_fetch_add(&c->mtx_failures, 1);
+        return 0;
+    }
     while (!c->predicate) {
         if (cnd_wait(&c->cnd, &c->mtx) != thrd_success) {
             c->wait_failed++;
@@ -542,8 +592,31 @@ cnd_worker(void *arg)
         }
     }
     c->woken++;
-    mtx_unlock(&c->mtx);
+    if (mtx_unlock(&c->mtx) != thrd_success)
+        atomic_fetch_add(&c->mtx_failures, 1);
     return 0;
+}
+
+/* Sets the predicate the workers loop on, and reports whether the mutex
+ * calls around it succeeded.
+ *
+ * The store happens either way, and that is deliberate. Waiters are
+ * released by predicate-then-broadcast; if the main thread could not
+ * take the mutex, storing it anyway is what still lets the joins below
+ * terminate, and leaving it clear would produce exactly the unbounded
+ * wait this file exists not to have. On that path the store races the
+ * workers' reads — on a platform whose plain mutex has already failed,
+ * which the caller reports. */
+static bool
+cnd_set_predicate(cnd_ctx *c)
+{
+    bool ok = mtx_lock(&c->mtx) == thrd_success;
+
+    c->predicate = 1;
+
+    if (ok && mtx_unlock(&c->mtx) != thrd_success)
+        ok = false;
+    return ok;
 }
 
 /* The main thread is the one that waits in the cnd_timedwait check, so
@@ -589,10 +662,11 @@ cnd_watchdog_worker(void *arg)
         return 0; /* the waiter got there first; nothing to rescue */
 
     /* Under the mutex, so this is ordered against the waiter
-     * reacquiring it on the way out of cnd_timedwait. */
-    mtx_lock(&w->cc->mtx);
-    w->cc->predicate = 1;
-    mtx_unlock(&w->cc->mtx);
+     * reacquiring it on the way out of cnd_timedwait. A failure here is
+     * recorded like any other, and the broadcast still goes out: it is
+     * what releases the waiter. */
+    if (!cnd_set_predicate(w->cc))
+        atomic_fetch_add(&w->cc->mtx_failures, 1);
     cnd_broadcast(&w->cc->cnd);
     return 0;
 }
@@ -630,9 +704,8 @@ section_condvar(test_ctx *t)
          * already waiting or has not reached the wait yet. And because
          * the predicate is already true, the join below cannot block on
          * a lost wakeup — the worker rechecks it and leaves. */
-        mtx_lock(&cc.mtx);
-        cc.predicate = 1;
-        mtx_unlock(&cc.mtx);
+        t_check(t, cnd_set_predicate(&cc),
+                "main thread set the predicate under the mutex");
         t_check(t, cnd_signal(&cc.cnd) == thrd_success, "cnd_signal succeeded");
 
         thrd_join(threads[0], NULL);
@@ -641,6 +714,9 @@ section_condvar(test_ctx *t)
         t_check(t, cc.woken == 1, "the cnd_wait worker woke (%d)", cc.woken);
         t_check(t, cc.wait_failed == 0, "cnd_wait did not fail (%d)",
                 cc.wait_failed);
+        t_check(t, atomic_load(&cc.mtx_failures) == 0,
+                "no mutex call failed in the cnd_wait worker (%d)",
+                atomic_load(&cc.mtx_failures));
         t_check(t, elapsed <= PROMPT_MAX_MS,
                 "signal to wake took %llu ms, under the %d ms bound",
                 (unsigned long long)elapsed, PROMPT_MAX_MS);
@@ -651,6 +727,7 @@ section_condvar(test_ctx *t)
     cc.predicate = 0;
     cc.woken = 0;
     cc.wait_failed = 0;
+    atomic_store(&cc.mtx_failures, 0);
 
     for (int i = 0; i < WORKERS; i++) {
         if (thrd_create(&threads[i], cnd_worker, &cc) != thrd_success)
@@ -663,9 +740,8 @@ section_condvar(test_ctx *t)
     if (created > 0) {
         uint64_t start = armGetSystemTick();
 
-        mtx_lock(&cc.mtx);
-        cc.predicate = 1;
-        mtx_unlock(&cc.mtx);
+        t_check(t, cnd_set_predicate(&cc),
+                "main thread set the predicate under the mutex");
         t_check(t, cnd_broadcast(&cc.cnd) == thrd_success,
                 "cnd_broadcast succeeded");
 
@@ -677,6 +753,9 @@ section_condvar(test_ctx *t)
                 "every broadcast waiter woke (%d of %d)", cc.woken, created);
         t_check(t, cc.wait_failed == 0, "no cnd_wait failed (%d)",
                 cc.wait_failed);
+        t_check(t, atomic_load(&cc.mtx_failures) == 0,
+                "no mutex call failed in a cnd_broadcast worker (%d)",
+                atomic_load(&cc.mtx_failures));
         t_check(t, elapsed <= PROMPT_MAX_MS,
                 "broadcast to all woken took %llu ms, under the %d ms bound",
                 (unsigned long long)elapsed, PROMPT_MAX_MS);
@@ -698,6 +777,7 @@ section_condvar(test_ctx *t)
 
         memset(&wd, 0, sizeof(wd));
         wd.cc = &cc;
+        atomic_store(&cc.mtx_failures, 0);
 
         /* The wait below is the only place in this file where the main
          * thread itself can block indefinitely, so it does not happen
@@ -710,13 +790,27 @@ section_condvar(test_ctx *t)
             goto out;
         }
 
-        mtx_lock(&cc.mtx);
-        if (!deadline_in_ms(&deadline, TIMEOUT_MS)) {
-            mtx_unlock(&cc.mtx);
+        /* cnd_timedwait requires this thread to hold the mutex; calling
+         * it without is undefined, so a failure here ends the check
+         * instead of being reported and stepped over. Nothing is
+         * unlocked on this path — the lock is what failed. */
+        if (!t_check(t, mtx_lock(&cc.mtx) == thrd_success,
+                     "main thread took the mutex for cnd_timedwait")) {
+            t_note(t, "cnd_timedwait needs it held; NOT called");
             cnd_claim_outcome(&wd, CND_OUTCOME_WAITER); /* stand the watchdog down */
             thrd_join(wd_thread, NULL);
+            goto out;
+        }
+
+        if (!deadline_in_ms(&deadline, TIMEOUT_MS)) {
             t_check(t, false, "built a TIME_UTC deadline for cnd_timedwait");
             t_note(t, "cnd_timedwait was NOT called");
+            cnd_claim_outcome(&wd, CND_OUTCOME_WAITER);
+            /* Before the join: a watchdog that won the exchange first is
+             * blocked on this mutex. */
+            t_check(t, mtx_unlock(&cc.mtx) == thrd_success,
+                    "main thread released the mutex");
+            thrd_join(wd_thread, NULL);
             goto out;
         }
 
@@ -724,7 +818,8 @@ section_condvar(test_ctx *t)
         rc = cnd_timedwait(&cc.cnd, &cc.mtx, &deadline);
         elapsed = ms_since(start);
         cnd_claim_outcome(&wd, CND_OUTCOME_WAITER);
-        mtx_unlock(&cc.mtx);
+        t_check(t, mtx_unlock(&cc.mtx) == thrd_success,
+                "main thread released the mutex cnd_timedwait reacquired");
 
         thrd_join(wd_thread, NULL);
 
@@ -752,6 +847,10 @@ section_condvar(test_ctx *t)
                       "measure the watchdog, not cnd_timedwait",
                    TIMEOUT_MS);
         }
+
+        t_check(t, atomic_load(&cc.mtx_failures) == 0,
+                "no mutex call failed in the cnd_timedwait watchdog (%d)",
+                atomic_load(&cc.mtx_failures));
     }
 
 out:
@@ -877,7 +976,24 @@ section_tss(test_ctx *t)
 /* Evidence for mesa-patches/0012 and compat/sysconf.c. The raw core mask
  * is printed, not just its population count, because the mask is the
  * measurement and the count is derived from it. Depends on none of the
- * synchronisation above, so it runs whatever those sections found. */
+ * synchronisation above, so it runs whatever those sections found.
+ *
+ * WHAT EACH CHECK HERE IS WORTH — stated, because two of them look
+ * stronger than they are. compat/sysconf.c answers _SC_NPROCESSORS_ONLN
+ * with the population count of this same svcGetInfo(InfoType_CoreMask),
+ * and answers _SC_NPROCESSORS_CONF from the same case label. So
+ * "onln == mask_cpus" and "conf == onln" cannot disagree with that
+ * file's arithmetic: they are wiring checks. What they would catch is
+ * the wiring breaking — the svcGetInfo inside sysconf failing and
+ * returning -1, a _SC_ name falling through to the EINVAL default, or a
+ * later edit that reports something other than the mask's popcount. They
+ * are not an independent confirmation of the core count, and nothing
+ * here should be read as offering one.
+ *
+ * The independent measurements are the mask itself, its bounds, and
+ * caps->nr_cpus: util_cpu_detect arrives at its number through Mesa's
+ * own code, and reported 1 regardless of the mask before
+ * mesa-patches/0012. */
 static void
 section_cpu_count(test_ctx *t)
 {
@@ -903,16 +1019,25 @@ section_cpu_count(test_ctx *t)
     /* The Tegra X1 in the Switch has four Cortex-A57s. More than four
      * allowed cores would mean this reasoning, or the mask, is not what
      * it is believed to be — worth failing on rather than reporting a
-     * larger number. */
+     * larger number.
+     *
+     * That the four is spelled here and not in compat/sysconf.c is the
+     * intended split, not an oversight: a test may know which console it
+     * was launched on, while a C library function must not hand a caller
+     * a number nobody queried. sysconf reports what this process is
+     * allowed; this line checks that against the hardware it is running
+     * on. */
     t_check(t, mask_cpus <= 4,
             "allowed cores (%d) do not exceed the SoC's four A57s", mask_cpus);
 
     t_check(t, onln == mask_cpus,
-            "sysconf(_SC_NPROCESSORS_ONLN) = %ld matches the core mask (%d)",
+            "sysconf(_SC_NPROCESSORS_ONLN) = %ld is the popcount of the mask "
+            "it is computed from (%d)",
             onln, mask_cpus);
     t_check(t, conf == onln,
-            "sysconf(_SC_NPROCESSORS_CONF) = %ld agrees with _ONLN (%ld)", conf,
-            onln);
+            "sysconf(_SC_NPROCESSORS_CONF) = %ld answers as _ONLN (%ld), the "
+            "case label it shares",
+            conf, onln);
 
     /* And the number Mesa will actually act on. Before
      * mesa-patches/0012 this was 1 regardless of the mask, because
