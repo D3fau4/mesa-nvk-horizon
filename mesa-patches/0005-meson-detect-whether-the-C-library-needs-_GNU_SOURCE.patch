@@ -1,0 +1,85 @@
+From 11c106a3bf5658239be8871adb398f3baa4cafcd Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:33:49 +0000
+Subject: [PATCH 05/10] meson: detect whether the C library needs _GNU_SOURCE
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The block deciding _GNU_SOURCE is a list of operating system names, and
+carries Mesa's own "TODO: this is very incomplete" above it. What it is
+really asking is a property of the C library: whether GNU extensions
+such as asprintf and mkostemp are declared only when _GNU_SOURCE is
+defined. An OS name cannot answer that.
+
+Ask the C library. When the chain has not already defined _GNU_SOURCE,
+compile a probe with and without it; define it only when doing so
+demonstrably changes whether the extension is declared. The probe takes
+the function's address rather than calling it, so a missing declaration
+is an error in every C dialect rather than a warning some compiler
+versions let through.
+
+Nothing already working changes. A libc that declares these anyway (the
+BSDs, macOS) makes the first compile succeed and the block does
+nothing; Solaris, which uses __EXTENSIONS__, fails both probes and is
+left alone; Windows is excluded, and MinGW has already added
+_GNU_SOURCE by the time this is reached.
+
+mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
+Why: newlib declares asprintf and mkostemp under __GNU_VISIBLE, i.e.
+  only with _GNU_SOURCE, and 'horizon' is not on Mesa's list. The
+  functions are present — configure finds mkostemp by link test — so
+  this is a visibility gap, not a missing-function gap, which is
+  exactly why an OS list gets it wrong.
+Evidence: building src/util for aarch64/horizon fails with
+    anon_file.c:86:9: error: implicit declaration of function
+    'mkostemp'; did you mean 'mkstemp'?
+    anon_file.c:122:13: error: implicit declaration of function
+    'asprintf'; did you mean 'asnprintf'?
+  while the same configure reports Checking for function "mkostemp":
+  YES. With this patch configure reports
+    Checking if "GNU extensions declared by default" compiles: NO
+    Checking if "GNU extensions declared with _GNU_SOURCE" compiles: YES
+  and -D_GNU_SOURCE reaches every compile line.
+Upstream: yes — it answers the TODO the code already carries, and is a
+  no-op on every platform currently on the list.
+---
+ meson.build | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/meson.build b/meson.build
+index ddec752..ef415aa 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1248,6 +1248,28 @@ elif host_machine.system() == 'openbsd'
+   pre_args += '-D_ISOC11_SOURCE'
+ endif
+ 
++# The list above is a list of operating systems standing in for a
++# property of the C library: whether it hides GNU extensions such as
++# asprintf and mkostemp unless _GNU_SOURCE is defined. Ask the C library
++# instead of adding another name to it. The probe takes the function's
++# address rather than calling it, so a missing declaration is an error
++# in every C dialect, not a warning some compilers let through.
++#
++# Only reached when the chain above did not already define _GNU_SOURCE,
++# and it only acts when defining it demonstrably changes the answer, so
++# a C library that declares these anyway (the BSDs, macOS) or that uses
++# a different macro (Solaris' __EXTENSIONS__) is left exactly as it was.
++if not pre_args.contains('-D_GNU_SOURCE') and host_machine.system() != 'windows'
++  _gnu_ext_probe = '''
++    #include <stdio.h>
++    int main(void) { return (void *)&asprintf != (void *)0; }'''
++  if not cc.compiles(_gnu_ext_probe, name : 'GNU extensions declared by default') and \
++     cc.compiles(_gnu_ext_probe, args : '-D_GNU_SOURCE',
++                 name : 'GNU extensions declared with _GNU_SOURCE')
++    pre_args += '-D_GNU_SOURCE'
++  endif
++endif
++
+ # Check for generic C arguments
+ c_msvc_compat_args = []
+ no_override_init_args = []
+-- 
+2.43.0
+

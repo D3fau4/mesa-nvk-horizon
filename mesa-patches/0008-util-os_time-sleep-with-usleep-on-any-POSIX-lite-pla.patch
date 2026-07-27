@@ -1,0 +1,55 @@
+From 762c38498d3cc70f784b9c0359c73538c481a0b9 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:38:12 +0000
+Subject: [PATCH 08/10] util/os_time: sleep with usleep on any POSIX-lite
+ platform
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+os_time_sleep falls back to usleep under DETECT_OS_POSIX, while the
+includes that make it usable — <unistd.h> and friends at the top of the
+file — are already selected under DETECT_OS_POSIX_LITE. A platform that
+is POSIX-lite therefore got the headers and then hit "#error Unsupported
+OS" a few lines later.
+
+DETECT_OS_POSIX_LITE defaults to DETECT_OS_POSIX, so every platform that
+took this branch before still takes it, byte for byte. It only widens to
+the POSIX-lite ones, which is what the include block above already
+assumed.
+
+usleep is the minimum a platform needs to be POSIX-lite in this file's
+terms; the branch above still gives Linux, Managarm and Fuchsia
+clock_nanosleep.
+
+mesa-nvk-horizon: Phase 3 item 5 (timers / clocks) — a DEVIATION from
+  this session's item 3 scope, recorded in STATUS.md. It is one line
+  and it is what stops src/util compiling.
+Why: newlib has usleep and the headers the file wants, but Horizon is
+  POSIX-lite, not POSIX (no syslog, no shm, no loader), so the existing
+  condition excluded it.
+Evidence: building src/util for aarch64/horizon, with
+  DETECT_OS_HORIZON in place, still fails with
+    os_time.c:99:4: error: #error Unsupported OS
+Upstream: yes — POSIX implies POSIX_LITE, so no platform's behaviour
+  changes.
+---
+ src/util/os_time.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/util/os_time.c b/src/util/os_time.c
+index 71fc7e3..4660145 100644
+--- a/src/util/os_time.c
++++ b/src/util/os_time.c
+@@ -86,7 +86,7 @@ os_time_sleep(int64_t usecs)
+    time.tv_nsec = (usecs % 1000000) * 1000;
+    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &time, &time) == EINTR);
+ 
+-#elif DETECT_OS_POSIX
++#elif DETECT_OS_POSIX_LITE
+    usleep(usecs);
+ 
+ #elif DETECT_OS_WINDOWS
+-- 
+2.43.0
+

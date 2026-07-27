@@ -21,9 +21,15 @@ CFLAGS  := -g -O2 -Wall -Wextra -Werror -std=gnu11 -ffunction-sections \
            -D__SWITCH__ $(ARCH) \
            -Ihorizon/include -Itests \
            -I$(DEVKITPRO)/libnx/include
+# -lhorizon_compat supplies functions newlib declares and does not
+# define (compat/). It is produced by scripts/build-compat.sh, not by
+# this Makefile: the Meson cross file names it too, and it has to exist
+# before `meson setup` runs, so one provisioning step feeds both build
+# paths. Keeping it in LIBS here is what stops the two paths diverging.
+COMPAT_LIBDIR := build/toolchain/lib
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) \
-           -Wl,--gc-sections -L$(DEVKITPRO)/libnx/lib
-LIBS    := -lnx
+           -Wl,--gc-sections -L$(COMPAT_LIBDIR) -L$(DEVKITPRO)/libnx/lib
+LIBS    := -lhorizon_compat -lnx
 
 BUILD   := build
 
@@ -47,10 +53,14 @@ LIB      := $(BUILD)/libhorizon_gpu.a
 # directory can lose an object file silently (observed with -j4 on this
 # toolchain image's overlay filesystem — the compile for that object never
 # ran and `ar` failed with "No such file or directory").
-OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/)
+COMPAT_SRCS := $(wildcard compat/*.c)
+COMPAT_OBJS := $(COMPAT_SRCS:compat/%.c=$(COMPAT_LIBDIR)/%.o)
+COMPAT_LIB  := $(COMPAT_LIBDIR)/libhorizon_compat.a
+
+OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/)
 
 TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
-         t_syncpt t_fence_wait t_teardown
+         t_syncpt t_fence_wait t_teardown t_sysinfo
 
 TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 
@@ -67,14 +77,31 @@ $(BUILD)/%.o: %.c | $(OBJ_DIRS)
 $(LIB): $(LIB_OBJS) | $(BUILD)/
 	$(AR) rcs $@ $^
 
+# compat/ — functions newlib declares and does not define. Built here
+# with this Makefile's own CC and CFLAGS so `make clean && make` works
+# on its own: clean removes $(BUILD), and $(COMPAT_LIBDIR) lives inside
+# it. scripts/build-compat.sh produces the identical archive at the same
+# path for the Meson and Mesa builds, which need it to exist *before*
+# `meson setup` runs and therefore cannot get it from a make rule. The
+# two recipes must keep emitting the same flags; the script's header
+# says so too.
+$(COMPAT_LIB): $(COMPAT_OBJS) | $(COMPAT_LIBDIR)/
+	$(AR) rcs $@ $^
+
+$(COMPAT_LIBDIR)/%.o: compat/%.c | $(COMPAT_LIBDIR)/
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
 $(BUILD)/testfw.o: tests/common/testfw.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/%.t.o: tests/%.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB)
-	$(CC) $(LDFLAGS) $^ $(LIBS) -o $@
+# $(COMPAT_LIB) is a prerequisite but not in $^: it is reached through
+# -lhorizon_compat in $(LIBS), which is where it has to be so the linker
+# resolves it after the objects that reference it.
+$(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
+	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) $(LIBS) -o $@
 
 $(BUILD)/%.nacp: | $(BUILD)/
 	$(NACPTOOL) --create "$*" "mesa-nvk-horizon" "phase1" $@
@@ -85,4 +112,7 @@ $(BUILD)/%.nro: $(BUILD)/%.elf $(BUILD)/%.nacp
 clean:
 	rm -rf $(BUILD)
 
--include $(LIB_OBJS:.o=.d) $(TESTS:%=$(BUILD)/%.t.d) $(BUILD)/testfw.d
+# The compat depfiles were generated but never included, so a change to a
+# newlib or libnx header did not rebuild compat/ on this path either.
+-include $(LIB_OBJS:.o=.d) $(TESTS:%=$(BUILD)/%.t.d) $(BUILD)/testfw.d \
+         $(COMPAT_OBJS:.o=.d)

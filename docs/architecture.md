@@ -103,6 +103,8 @@ The skeleton in the task description is followed exactly, with these clarificati
    files that a script copies into the pinned tree with a manifest) preserves a reviewable
    delta and a credible upstreaming path. `horizon/` stays Vulkan-free, which is what makes
    Phase 1 independently testable.
+   The series format, the header every patch carries and the idempotent applier are
+   defined in `mesa-patches/README.md`.
 
 3. **`toolchain/` holds declarative inputs; `scripts/` holds executables.** Cross files,
    the Rust target JSON and version pins live in `toolchain/`; anything that runs lives in

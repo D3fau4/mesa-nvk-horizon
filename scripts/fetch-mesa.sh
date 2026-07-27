@@ -21,6 +21,13 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# Same reason as scripts/apply-mesa-patches.sh, which carries the long
+# version: with GIT_WORK_TREE set, the git-dir assertion below still
+# passes while every write lands somewhere else entirely.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
+      GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+
 # shellcheck source=../toolchain/versions.env
 . toolchain/versions.env
 
@@ -44,6 +51,16 @@ mesa_dirty() {
             grep -v '^?? \.gitkeep$')" ]
 }
 
+# HEAD is MESA_COMMIT plus commits on top — which is exactly what
+# scripts/apply-mesa-patches.sh produces. The tree is CLEAN in that
+# state, so neither at_pinned_commit nor mesa_dirty fires and the fetch
+# below would check the tag back out, silently un-applying the series.
+descends_from_pinned() {
+    [ -d "$DEST/.git" ] || return 1
+    git -C "$DEST" cat-file -e "${MESA_COMMIT}^{commit}" 2>/dev/null || return 1
+    git -C "$DEST" merge-base --is-ancestor "$MESA_COMMIT" HEAD 2>/dev/null
+}
+
 if at_pinned_commit; then
     if mesa_dirty; then
         echo "fetch-mesa: $DEST is at $MESA_TAG but has local modifications."
@@ -54,6 +71,19 @@ if at_pinned_commit; then
         echo "fetch-mesa: $DEST already at $MESA_TAG ($MESA_COMMIT); nothing to do"
         exit 0
     fi
+fi
+
+if descends_from_pinned; then
+    n=$(git -C "$DEST" rev-list --count "${MESA_COMMIT}..HEAD")
+    echo "fetch-mesa: $DEST is at $MESA_TAG plus $n local commit(s) — the"
+    echo "            applied mesa-patches/ series. Nothing to do."
+    if mesa_dirty; then
+        echo "            (It also has uncommitted changes.)"
+    fi
+    echo "            Use --force to reset it to $MESA_COMMIT, dropping"
+    echo "            those commits; scripts/apply-mesa-patches.sh puts"
+    echo "            the series back."
+    [ "$FORCE" -eq 0 ] && exit 0
 fi
 
 if [ "$FORCE" -eq 0 ] && mesa_dirty; then

@@ -20,6 +20,9 @@ echo "toolchain: $HORIZON_TOOLCHAIN_DESC"
 
 horizon_ensure_meson
 scripts/gen-cross-file.sh
+# Before meson setup, never after: the cross file links -lhorizon_compat
+# and Meson links a test program during its compiler sanity check.
+scripts/build-compat.sh
 
 # Cross-file order matters only in that the generated file must be
 # readable; Meson shares [constants] across all of them. Passing the
@@ -30,10 +33,16 @@ set -- \
     --cross-file "$HORIZON_CROSS_FILE" \
     "$@"
 
-if [ -f "$HORIZON_BUILD_DIR/meson-info/meson-info.json" ]; then
-    echo "reconfiguring $HORIZON_BUILD_DIR"
-    horizon_meson setup --reconfigure "$@" "$HORIZON_BUILD_DIR" .
-else
-    echo "configuring $HORIZON_BUILD_DIR"
-    horizon_meson setup "$@" "$HORIZON_BUILD_DIR" .
-fi
+mode=$(horizon_setup_mode "$HORIZON_BUILD_DIR")
+case "$mode" in
+    --wipe)
+        echo "cross files changed since $HORIZON_BUILD_DIR was configured;"
+        echo "wiping it — Meson only reads them on a first configure"
+        ;;
+    --reconfigure) echo "reconfiguring $HORIZON_BUILD_DIR" ;;
+    *)             echo "configuring $HORIZON_BUILD_DIR" ;;
+esac
+
+# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
+horizon_meson setup $mode "$@" "$HORIZON_BUILD_DIR" .
+horizon_record_cross_id "$HORIZON_BUILD_DIR"

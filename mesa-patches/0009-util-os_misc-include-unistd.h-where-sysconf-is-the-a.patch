@@ -1,0 +1,61 @@
+From fc7377e49bbc150f229d25eadcc9a68a76d5662b Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 23:12:53 +0000
+Subject: [PATCH 09/10] util/os_misc: include <unistd.h> where sysconf is the
+ answer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The include block at the top of os_misc.c is a chain of platform names
+ending in "#error unexpected platform in os_sysinfo.c". It fires before
+any of the three implementations below is even looked at, so a platform
+that has sysconf() — which all three prefer, each testing HAVE_SYSCONF
+in its first branch — still could not compile the file.
+
+Add <unistd.h> under HAVE_SYSCONF as the last branch. That is all such
+a platform needs from this block, and it removes the reason to keep
+adding an OS name here whenever one appears.
+
+Additive: it is an #elif at the end of the chain, unreachable for every
+platform that already matched, and the #error stays for a platform with
+neither a listed OS nor sysconf.
+
+mesa-nvk-horizon: Phase 3 item 6 (physical memory / page size queries)
+Why: Horizon reaches none of the listed platforms. sysconf itself is
+  supplied by this project's compat/ — devkitA64's newlib declares it
+  (sys/unistd.h:236) and defines every _SC_ name used here, but never
+  defines the symbol — so HAVE_SYSCONF is true and the three functions
+  below work unchanged; only this block stood in the way.
+Evidence: building src/util for aarch64/horizon fails with
+    os_misc.c:81:2:  #error unexpected platform in os_sysinfo.c
+    os_misc.c:407:2: #error unexpected platform in os_misc.c
+    os_misc.c:507:2: #error unexpected platform in os_sysinfo.c
+  With compat/ linked, configure reports
+    Checking for function "sysconf" : YES
+  and only the first of the three remained.
+Upstream: yes — it is additive and cannot change any platform that
+  compiles today.
+---
+ src/util/os_misc.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/util/os_misc.c b/src/util/os_misc.c
+index ee2b790..0ef5128 100644
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -77,6 +77,11 @@
+ #elif DETECT_OS_FUCHSIA
+ #include <unistd.h>
+ #include <zircon/syscalls.h>
++#elif HAVE_SYSCONF
++/* Reached only when none of the platforms above matched. Every
++ * implementation below has a sysconf() path and takes it first, so
++ * <unistd.h> is all such a platform needs — no new branch per OS. */
++#include <unistd.h>
+ #else
+ #error unexpected platform in os_sysinfo.c
+ #endif
+-- 
+2.43.0
+

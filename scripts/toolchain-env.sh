@@ -35,6 +35,11 @@ HORIZON_MESON_DIR="build/toolchain/meson-${MESON_VERSION}"
 # Python modules Mesa's generators need, kept separate from Meson's
 # install so either can be reprovisioned without disturbing the other.
 HORIZON_PYTHON_DIR="build/toolchain/python"
+# Where scripts/build-compat.sh archives libhorizon_compat.a. It sits
+# with the other provisioned inputs rather than in a build directory,
+# because the cross file names it and therefore every build needs it to
+# exist *before* meson setup runs (see build-compat.sh).
+HORIZON_COMPAT_LIBDIR="build/toolchain/lib"
 
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
@@ -64,19 +69,19 @@ fi
 
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
-export HORIZON_TOOLCHAIN_DESC
+export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR
 
 # Run a command with the cross toolchain reachable. The image's default
-# PATH omits devkitA64/bin (measured; recorded in versions.env), and the
-# Meson cross file resolves its [binaries] by bare name, so the bin
-# directory is prepended in both modes.
+# PATH omits devkitA64/bin and portlibs/switch/bin (measured; recorded
+# in versions.env), and the Meson cross file resolves its [binaries] by
+# bare name, so all three bin directories are prepended in both modes.
 #
 # In container mode the tree is mounted at the *same* path as on the
 # host, so paths in diagnostics, depfiles and Meson's build.ninja are
 # valid on both sides — and no container workdir is hardcoded
 # (scripts/check-no-abs-paths.sh).
 horizon_run() {
-    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}"
+    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}"
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         # A local install's rustc is already on the developer's PATH.
         PATH="${_hz_bins}:${PATH}" "$@"
@@ -99,6 +104,50 @@ horizon_meson() {
     horizon_run env \
         "PYTHONPATH=$PWD/$HORIZON_MESON_DIR:$PWD/$HORIZON_PYTHON_DIR" \
         python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" "$@"
+}
+
+# Meson reads the machine files only when a build directory is FIRST
+# configured. `setup --reconfigure` keeps the [built-in options] it
+# recorded then, so an edit to the cross file never reaches an existing
+# build directory — it silently keeps building with the old toolchain
+# description.
+#
+# Measured, and it is not theoretical: after -lhorizon_compat was added
+# to c_link_args, a build directory configured before that change and
+# then --reconfigure'd still had zero occurrences of the flag in
+# build.ninja, and t_sysinfo failed to link with
+#   undefined reference to `sysconf'
+# `setup --wipe` does re-read them (11 occurrences afterwards). This is
+# the ordinary upgrade path — a developer who already has build/meson —
+# so it has to be detected rather than left to whoever reads the diff.
+#
+# Echoes the setup mode to use: "" for a fresh directory,
+# "--reconfigure" when the cross files are unchanged, "--wipe" when they
+# are not. The recorded identity lives *beside* the build directory,
+# because --wipe empties the directory itself. A configured directory
+# with no stamp is treated as changed: it predates this check, which is
+# exactly the case that broke.
+horizon_setup_mode() { # builddir
+    if [ ! -f "$1/meson-info/meson-info.json" ]; then
+        echo ""
+        return 0
+    fi
+    if [ "$(horizon_cross_id)" = "$(cat "$1.crossid" 2>/dev/null)" ]; then
+        echo "--reconfigure"
+    else
+        echo "--wipe"
+    fi
+}
+
+horizon_cross_id() {
+    cat "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" 2>/dev/null |
+        sha256sum | cut -d' ' -f1
+}
+
+# Called after a successful setup, never before: a failed configure must
+# not leave a stamp claiming the directory matches.
+horizon_record_cross_id() { # builddir
+    horizon_cross_id > "$1.crossid"
 }
 
 # Mesa's code generators (milestone item 6). Separate from
@@ -141,10 +190,47 @@ horizon_image_digest() {
         grep . || echo unknown
 }
 
+# pip writes the *installing* interpreter's absolute path into the
+# launcher's shebang — here the host's /usr/local/bin/python3, which
+# does not exist inside the toolchain image (it has /usr/bin/python3).
+# horizon_meson sidesteps that by running the launcher through python3
+# explicitly, but Meson's own `--internal exe` wrapper — which every
+# custom_target that captures its output goes through — re-invokes the
+# launcher *by path* from a plain /bin/sh, where the shebang is what
+# runs it. Measured: Mesa's generated sources all failed with
+# "/bin/sh: 1: .../bin/meson: not found".
+#
+# Rewriting it to env python3 makes one install work on both sides. This
+# is the same rule as scripts/check-no-abs-paths.sh enforces on tracked
+# files — an installing machine's path must not decide whether a build
+# works — applied to a generated one the gate cannot see.
+horizon_fix_meson_shebang() {
+    _hz_launcher="$HORIZON_MESON_DIR/bin/meson"
+    [ -f "$_hz_launcher" ] || return 0
+    if [ "$(head -n 1 "$_hz_launcher")" = '#!/usr/bin/env python3' ]; then
+        return 0
+    fi
+    # Not `sed -i`: GNU takes no argument for it and BSD/macOS requires
+    # one, so the GNU spelling fails outright on a local devkitPro
+    # install on macOS — and it fails on the *first* configure there,
+    # before Meson ever runs. Rewriting through a temp file is the same
+    # idiom the rest of scripts/ uses and needs no sed at all. chmod
+    # before the move: the launcher has to stay executable.
+    _hz_tmp="$_hz_launcher.tmp.$$"
+    {
+        printf '%s\n' '#!/usr/bin/env python3'
+        tail -n +2 "$_hz_launcher"
+    } > "$_hz_tmp"
+    chmod +x "$_hz_tmp"
+    mv "$_hz_tmp" "$_hz_launcher"
+    echo "meson: rewrote the launcher shebang to /usr/bin/env python3"
+}
+
 # Idempotent: a second call with the pin unchanged does nothing.
 horizon_ensure_meson() {
     if [ -x "$HORIZON_MESON_DIR/bin/meson" ]; then
         echo "meson ${MESON_VERSION}: already installed in $HORIZON_MESON_DIR"
+        horizon_fix_meson_shebang
         return 0
     fi
     echo "installing pinned meson ${MESON_VERSION} into $HORIZON_MESON_DIR"
@@ -153,4 +239,5 @@ horizon_ensure_meson() {
     # has no pip and no outbound connectivity.
     python3 -m pip install --quiet --no-cache-dir \
         --target "$HORIZON_MESON_DIR" "meson==${MESON_VERSION}"
+    horizon_fix_meson_shebang
 }

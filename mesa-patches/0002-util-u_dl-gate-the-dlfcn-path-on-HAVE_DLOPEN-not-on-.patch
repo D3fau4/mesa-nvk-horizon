@@ -1,0 +1,90 @@
+From 8ea5117172b3609e67505e68f46945b122d5f3a5 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:19:54 +0000
+Subject: [PATCH 02/10] util/u_dl: gate the dlfcn path on HAVE_DLOPEN, not on
+ the OS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+u_dl.c selected its dlfcn implementation with DETECT_OS_POSIX_LITE, so
+any POSIX-ish system was assumed to have dlopen. Whether dlopen exists
+is a property of the C library, not of the operating system: a libc
+with no dynamic loader can be entirely POSIX-shaped and still have no
+dlfcn.h. Use the HAVE_DLOPEN the build now defines.
+
+No fallback code is added. The #else branches this reaches — returning
+NULL from util_dl_open and util_dl_get_proc_address, "unknown error"
+from util_dl_error, and doing nothing in util_dl_close — are already in
+the file for exactly this case; they were simply unreachable, because
+the only condition that could select them was "not POSIX and not
+Windows". Platforms that have a loader take the same branch as before.
+
+util_dl_get_path_from_proc is left alone: it is already gated on
+HAVE_DLADDR, which is its own configure check.
+
+mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
+Why: On newlib/libnx there is no dynamic loader, so <dlfcn.h> does not
+  exist and the DETECT_OS_POSIX_LITE branch cannot compile.
+Evidence: configuring mesa-26.1.5 for aarch64/horizon reports
+    Check usable header "dlfcn.h" : NO
+    Checking for function "dlopen" : NO
+  while DETECT_OS_POSIX_LITE is what previously chose the dlfcn branch.
+Upstream: yes — same reasoning as the meson change it depends on, and
+  it is a no-op wherever dlopen exists.
+---
+ src/util/u_dl.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/util/u_dl.c b/src/util/u_dl.c
+index 6d8b2b8..f283c7f 100644
+--- a/src/util/u_dl.c
++++ b/src/util/u_dl.c
+@@ -29,7 +29,7 @@
+ 
+ #include "detect_os.h"
+ 
+-#if DETECT_OS_POSIX_LITE
++#ifdef HAVE_DLOPEN
+ #include <dlfcn.h>
+ #endif
+ #if DETECT_OS_WINDOWS
+@@ -44,7 +44,7 @@
+ struct util_dl_library *
+ util_dl_open(const char *filename)
+ {
+-#if DETECT_OS_POSIX_LITE
++#ifdef HAVE_DLOPEN
+    return (struct util_dl_library *)dlopen(filename, RTLD_LAZY | RTLD_LOCAL);
+ #elif DETECT_OS_WINDOWS
+    return (struct util_dl_library *)LoadLibraryA(filename);
+@@ -58,7 +58,7 @@ util_dl_proc
+ util_dl_get_proc_address(struct util_dl_library *library,
+                          const char *procname)
+ {
+-#if DETECT_OS_POSIX_LITE
++#ifdef HAVE_DLOPEN
+    return (util_dl_proc) pointer_to_func(dlsym((void *)library, procname));
+ #elif DETECT_OS_WINDOWS
+    return (util_dl_proc)GetProcAddress((HMODULE)library, procname);
+@@ -104,7 +104,7 @@ util_dl_get_path_from_proc(const void *func_proc)
+ void
+ util_dl_close(struct util_dl_library *library)
+ {
+-#if DETECT_OS_POSIX_LITE
++#ifdef HAVE_DLOPEN
+    dlclose((void *)library);
+ #elif DETECT_OS_WINDOWS
+    FreeLibrary((HMODULE)library);
+@@ -117,7 +117,7 @@ util_dl_close(struct util_dl_library *library)
+ const char *
+ util_dl_error(void)
+ {
+-#if DETECT_OS_POSIX_LITE
++#ifdef HAVE_DLOPEN
+    return dlerror();
+ #elif DETECT_OS_WINDOWS
+    return "unknown error";
+-- 
+2.43.0
+

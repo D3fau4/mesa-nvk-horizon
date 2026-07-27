@@ -1,0 +1,65 @@
+From f3a933d4a60aadd7b48a63d2a416481717ea517d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 26 Jul 2026 22:36:18 +0000
+Subject: [PATCH 06/10] util/log: include u_process.h for the use that is not
+ POSIX-guarded
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa_log_init_once calls util_get_process_name() under
+
+  #if !DETECT_OS_WINDOWS
+
+but the include that declares it, "util/u_process.h", sits under
+
+  #if DETECT_OS_POSIX
+
+Those are not the same condition. A platform that is neither POSIX nor
+Windows compiles the call with no declaration in scope, which on any
+recent GCC is an error, and the implicit int return then makes the
+adjacent snprintf's %s take an int.
+
+The header is platform-independent — it includes only <stdbool.h> and
+<stddef.h>, and u_process.c is built unconditionally with its own
+fallbacks — so it moves to the unconditional includes. <syslog.h>, which
+really is POSIX, stays where it was.
+
+This is a pre-existing bug, not something Horizon introduces; Horizon is
+just the first platform to be neither.
+
+mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
+Why: no DETECT_OS_* macro matches Horizon, so DETECT_OS_POSIX and
+  DETECT_OS_WINDOWS are both 0 and the mismatch is reachable.
+Evidence: building src/util for aarch64/horizon fails with
+    log.c:153:77: error: implicit declaration of function
+                  'util_get_process_name'
+    log.c:153:59: error: format '%s' expects argument of type 'char *',
+                  but argument 4 has type 'int' [-Werror=format=]
+Upstream: yes — it is a straightforward guard mismatch and the fix is
+  a no-op everywhere the guards already agreed.
+---
+ src/util/log.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/util/log.c b/src/util/log.c
+index b594a8f..981d28f 100644
+--- a/src/util/log.c
++++ b/src/util/log.c
+@@ -30,10 +30,12 @@
+ #include "util/log.h"
+ #include "util/ralloc.h"
+ #include "util/u_debug.h"
++/* Used under #if !DETECT_OS_WINDOWS below, which is a wider condition
++ * than DETECT_OS_POSIX. The header itself is platform-independent. */
++#include "util/u_process.h"
+ 
+ #if DETECT_OS_POSIX
+ #include <syslog.h>
+-#include "util/u_process.h"
+ #endif
+ 
+ #if DETECT_OS_ANDROID
+-- 
+2.43.0
+

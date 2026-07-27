@@ -14,7 +14,9 @@
 # meson.build are checked too — they are build inputs subject to the same
 # rule, and they are clean today, so including them costs nothing and
 # stops the rule being silently bypassed by putting the path there
-# instead.
+# instead. mesa-patches/ likewise: a patch is a build input, and
+# `git diff` output is a place an absolute path arrives without anyone
+# typing it (a --src-prefix, a generated-file path, a quoted build log).
 #
 # Not flagged, deliberately: /opt/devkitpro and other paths *inside* the
 # pinned container image. Those are properties of the image (pinned by
@@ -34,7 +36,7 @@ fail=0
 # This script necessarily contains every pattern it searches for.
 EXCL=(--exclude=check-no-abs-paths.sh)
 
-TARGETS=(toolchain scripts Makefile meson.build)
+TARGETS=(toolchain scripts mesa-patches Makefile meson.build)
 
 # Drop targets that do not exist yet: the gate is added before the Meson
 # build and before toolchain/ has content, and a missing file must not be
