@@ -176,7 +176,62 @@ testfw = static_library(
 
 test_nros = []
 
+# ---------------------------------------------------------------------
+# Tests 12 and 13 — Mesa's own code, measured on hardware.
+# ---------------------------------------------------------------------
+# Phase 3 items 4 (threads) and 5 (timers/clocks). They link the archives
+# Mesa's build produced, not sources recompiled with flags of our own:
+# the object under test has to be the object Mesa builds, or the
+# measurement describes a different build. -DHAVE_PTHREAD and
+# -DHAVE_STRUCT_TIMESPEC are Mesa's own configure results here, copied so
+# its headers declare the same types; both appear in
+# build/mesa-probe/build.ninja.
+#
+# Skipped, with a message, when Mesa has not been built — a bare clone
+# must still produce the eleven tests that need only the toolchain.
+# Kept in step with the Makefile's MESA_TESTS / MESA_LIBS / MESA_CFLAGS.
+fs = import('fs')
+
+mesa_build_dir = 'build/mesa-probe'
+mesa_test_libs = [
+  mesa_build_dir / 'src/c11/impl/libmesa_util_c11.a',
+  mesa_build_dir / 'src/util/libmesa_util.a',
+]
+mesa_tests = ['t_threads', 't_ostime']
+
+mesa_libs_present = true
+foreach l : mesa_test_libs
+  if not fs.exists(meson.project_source_root() / l)
+    mesa_libs_present = false
+  endif
+endforeach
+
+if mesa_libs_present
+  mesa_test_link_args = []
+  foreach l : mesa_test_libs
+    mesa_test_link_args += meson.project_source_root() / l
+  endforeach
+
+  idep_mesa_core = declare_dependency(
+    compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC'],
+    include_directories : include_directories('mesa/src', 'mesa/include'),
+    link_args : mesa_test_link_args,
+  )
+  horizon_tests += mesa_tests
+else
+  message('skipping ' + ' '.join(mesa_tests) + ': no Mesa archives in ' +
+          mesa_build_dir + '; run scripts/configure-mesa.sh and ' +
+          'scripts/build-mesa.sh first')
+endif
+
 foreach t : horizon_tests
+  # Tests 12 and 13 additionally see Mesa's headers and archives; the
+  # other eleven are built with no Mesa in sight, as before.
+  t_deps = [idep_horizon_gpu]
+  if mesa_libs_present and mesa_tests.contains(t)
+    t_deps += idep_mesa_core
+  endif
+
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the
   # intermediate distinguishable from the .nro in the build directory.
   t_elf = executable(
@@ -184,7 +239,7 @@ foreach t : horizon_tests
     files('tests' / (t + '.c')),
     include_directories : [horizon_gpu_inc, tests_inc],
     link_with : testfw,
-    dependencies : idep_horizon_gpu,
+    dependencies : t_deps,
     name_suffix : 'elf',
     install : false,
   )

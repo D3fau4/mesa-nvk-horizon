@@ -62,6 +62,32 @@ OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/)
 TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
          t_syncpt t_fence_wait t_teardown t_sysinfo
 
+# Tests 12 and 13 measure Mesa's own code on hardware (Phase 3 items 4
+# and 5): the C11 threads shim Mesa selects here, and os_time.c. They
+# link the archives Mesa's build produced rather than recompiling those
+# sources with flags of our own — the object under test has to be the
+# object Mesa builds, or the measurement is about a different build.
+#
+# -DHAVE_PTHREAD and -DHAVE_STRUCT_TIMESPEC are not choices: they are
+# what Mesa's own configure decided here, copied so the headers declare
+# the same types. Both are visible in build/mesa-probe/build.ninja.
+#
+# Conditional because they need `scripts/configure-mesa.sh &&
+# scripts/build-mesa.sh` first, and a bare clone must still build the
+# eleven tests that need nothing but the toolchain.
+MESA_BUILD  := build/mesa-probe
+MESA_LIBS   := $(MESA_BUILD)/src/c11/impl/libmesa_util_c11.a \
+               $(MESA_BUILD)/src/util/libmesa_util.a
+MESA_CFLAGS := -Imesa/src -Imesa/include -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC
+MESA_TESTS  := t_threads t_ostime
+
+ifeq ($(words $(wildcard $(MESA_LIBS))),$(words $(MESA_LIBS)))
+TESTS += $(MESA_TESTS)
+else
+$(info Makefile: skipping $(MESA_TESTS) — no Mesa archives in $(MESA_BUILD);)
+$(info Makefile: run scripts/configure-mesa.sh && scripts/build-mesa.sh first.)
+endif
+
 TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 
 .PHONY: all lib clean
@@ -95,13 +121,22 @@ $(BUILD)/testfw.o: tests/common/testfw.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/%.t.o: tests/%.c | $(BUILD)/
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -MMD -MP -c $< -o $@
 
 # $(COMPAT_LIB) is a prerequisite but not in $^: it is reached through
 # -lhorizon_compat in $(LIBS), which is where it has to be so the linker
-# resolves it after the objects that reference it.
+# resolves it after the objects that reference it. $(EXTRA_LIBS) is the
+# same idea for the Mesa archives — before -lhorizon_compat and -lnx,
+# because it is Mesa's objects that reference sysconf and libnx.
 $(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
-	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) $(LIBS) -o $@
+	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) \
+	    $(EXTRA_LIBS) $(LIBS) -o $@
+
+# Target-specific, so only tests 12 and 13 see the Mesa include path and
+# archives; the other eleven keep building with no Mesa in sight.
+$(MESA_TESTS:%=$(BUILD)/%.t.o): EXTRA_CFLAGS := $(MESA_CFLAGS)
+$(MESA_TESTS:%=$(BUILD)/%.elf): EXTRA_LIBS := $(MESA_LIBS)
+$(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)
 
 $(BUILD)/%.nacp: | $(BUILD)/
 	$(NACPTOOL) --create "$*" "mesa-nvk-horizon" "phase1" $@
