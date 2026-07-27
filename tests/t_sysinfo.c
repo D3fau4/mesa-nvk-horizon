@@ -7,11 +7,16 @@
  * at run time. Phase 3 could only cross-build it. This test is what
  * turns those into measurements.
  *
- * It deliberately avoids asserting the constant against itself. The
- * page-size check that matters is the consistency one: every memory
- * region the kernel reports must be a whole number of pages. If the
- * real page size were larger than what sysconf returns, a region
- * boundary would eventually land off it.
+ * It deliberately avoids asserting the constant against itself, and it
+ * bounds the page size from both sides, because either check alone
+ * proves only half of it:
+ *
+ *   too large   every region the kernel reports must be a whole number
+ *               of pages. A page size bigger than the real one puts a
+ *               region boundary off it.
+ *   too small   divisibility cannot see this — a 64 KiB-aligned region
+ *               is also divisible by 4 KiB — so the smallest size
+ *               svcMapMemory accepts is what answers it.
  *
  * Uses no horizon_gpu: this is the C library and the kernel, nothing
  * else. It needs no nv services, so it is also the cheapest test to run
@@ -24,6 +29,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <switch.h>
@@ -59,6 +65,81 @@ get_info(test_ctx *t, u32 id, u64 *out, const char *what)
     return true;
 }
 
+/* How many multiples of the reported page size to try mapping. 16 covers
+ * 4 KiB through 64 KiB, which spans every granule AArch64 defines. */
+#define GRANULARITY_LADDER 16
+
+/* Measure the smallest granularity the kernel actually accepts.
+ *
+ * The divisibility checks below bound the page size from ONE side only:
+ * a region aligned to 64 KiB is also divisible by 4 KiB, so they catch a
+ * reported page size that is too LARGE and say nothing whatever about
+ * one that is too small. (An earlier version of this file claimed the
+ * opposite. It was wrong, and the claim is what the review caught.)
+ *
+ * svcMapMemory is granularity-sensitive: it rejects a size the kernel
+ * cannot express. So the other bound is the smallest size it accepts.
+ * Walking a ladder rather than testing one size is what makes this
+ * self-diagnosing — a failure caused by anything other than granularity
+ * (wrong region, no free address space, permissions) fails at *every*
+ * rung, and that is visibly different from a granularity answer.
+ */
+static void
+probe_map_granularity(test_ctx *t, u64 page_size)
+{
+    u64 max_size = page_size * GRANULARITY_LADDER;
+    u64 smallest_mapped = 0;
+    void *src;
+
+    /* Aligned to the largest candidate, so every smaller one is aligned
+     * too and alignment is never what is being measured. */
+    src = aligned_alloc((size_t)max_size, (size_t)max_size);
+    if (!t_check(t, src != NULL, "allocated 0x%llx to probe map granularity",
+                 (unsigned long long)max_size))
+        return;
+
+    for (u64 size = page_size; size <= max_size; size *= 2) {
+        void *dst;
+        Result rc;
+
+        virtmemLock();
+        dst = virtmemFindAslr((size_t)size, 0);
+        rc = dst ? svcMapMemory(dst, src, size) : 1;
+        if (dst && R_SUCCEEDED(rc)) {
+            Result urc = svcUnmapMemory(dst, src, size);
+            virtmemUnlock();
+            t_check(t, R_SUCCEEDED(urc),
+                    "unmapped the 0x%llx probe (rc=0x%08x)",
+                    (unsigned long long)size, (unsigned)urc);
+            smallest_mapped = size;
+            t_note(t, "svcMapMemory(0x%llx): OK", (unsigned long long)size);
+            break;
+        }
+        virtmemUnlock();
+        t_note(t, "svcMapMemory(0x%llx): %s 0x%08x", (unsigned long long)size,
+               dst ? "rejected" : "no address space,", (unsigned)rc);
+    }
+
+    free(src);
+
+    /* Zero means the ladder never mapped anything, which is not a
+     * statement about granularity — say so instead of blaming the page
+     * size. The note lines above carry each rung's Result for triage. */
+    if (!t_check(t, smallest_mapped != 0,
+                 "the kernel mapped at least one size up to 0x%llx",
+                 (unsigned long long)max_size)) {
+        t_note(t, "granularity NOT measured: no rung mapped, so the cause "
+                  "is something other than the page size");
+        return;
+    }
+
+    t_check(t, smallest_mapped == page_size,
+            "smallest granularity the kernel accepts is 0x%llx, and "
+            "sysconf reports 0x%llx",
+            (unsigned long long)smallest_mapped,
+            (unsigned long long)page_size);
+}
+
 int
 run_test(test_ctx *t)
 {
@@ -85,9 +166,14 @@ run_test(test_ctx *t)
 
     t_note(t, "page size reported as 0x%lx (%ld bytes)", page_size, page_size);
 
-    /* The real check on the page size: the kernel's own region
-     * boundaries have to be whole pages of it. This is measured against
-     * the kernel, not against the constant compat/ was compiled with. */
+    /* Lower bound: the smallest granularity the kernel accepts. Without
+     * this, everything below passes just as happily for a page size
+     * reported too small. */
+    probe_map_granularity(t, (u64)page_size);
+
+    /* Upper bound: the kernel's own region boundaries have to be whole
+     * pages of it. Measured against the kernel, not against the constant
+     * compat/ was compiled with. */
     for (size_t i = 0; i < sizeof(regions) / sizeof(regions[0]); i++) {
         u64 addr = 0, size = 0;
 
@@ -144,10 +230,20 @@ run_test(test_ctx *t)
 
     /* Used memory moves between the two svcGetInfo calls compat/ makes,
      * so this is a bound rather than an equality: available must not
-     * claim more than total minus what was used at the time. */
-    t_check(t, (u64)avail_pages <= (total_bytes - used_bytes) / (u64)page_size + 1,
+     * claim more than total minus what was used at the time.
+     *
+     * The clamp has to happen here too, and for the same reason compat/
+     * applies one: used > total is observable between two non-atomic
+     * queries, and on u64 the subtraction would then wrap to something
+     * enormous, making the bound trivially true and the check worthless
+     * in precisely the case it exists to cover. */
+    u64 free_pages = used_bytes >= total_bytes
+                         ? 0
+                         : (total_bytes - used_bytes) / (u64)page_size;
+
+    t_check(t, (u64)avail_pages <= free_pages + 1,
             "available pages agree with total - used (%llu pages)",
-            (unsigned long long)((total_bytes - used_bytes) / (u64)page_size));
+            (unsigned long long)free_pages);
 
     t_note(t, "reported free: %llu MiB of %llu MiB",
            (unsigned long long)(((u64)avail_pages * (u64)page_size) >> 20),
