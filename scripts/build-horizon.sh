@@ -26,5 +26,12 @@ fi
 
 horizon_meson compile -C "$HORIZON_BUILD_DIR" "$@"
 
+# No `ninja -t cleandead` here: this build has edges that come and go —
+# tests 12 and 13 exist only while Mesa's archives do — but Meson already
+# runs restat+cleandead itself after regenerating build.ninja
+# (mesonbuild/backend/ninjabackend.py:705, for ninja >= 1.12 or >= 1.10
+# without dyndeps; this build has ninja 1.11.1 and no dyndeps). Measured:
+# removing $MESA_BUILD_DIR and reconfiguring left 11 .nro on disk before
+# this script ran at all. Adding a second cleandead cleaned 0 files.
 count=$(find "$HORIZON_BUILD_DIR" -maxdepth 1 -name '*.nro' | wc -l)
 echo "build-horizon: $count .nro in $HORIZON_BUILD_DIR"
