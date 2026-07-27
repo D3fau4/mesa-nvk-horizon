@@ -77,8 +77,8 @@ set -- \
     -Dshader-cache=disabled \
     "$@"
 
-mode=$(horizon_setup_mode "$MESA_BUILD_DIR")
-case "$mode" in
+horizon_setup_mode "$MESA_BUILD_DIR"
+case "$HORIZON_SETUP_MODE" in
     --wipe)
         echo "cross files changed since $MESA_BUILD_DIR was configured;"
         echo "wiping it — Meson only reads them on a first configure"
@@ -87,6 +87,6 @@ case "$mode" in
     *)             echo "configuring $MESA_BUILD_DIR" ;;
 esac
 
-# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
-horizon_meson setup $mode "$@" "$MESA_BUILD_DIR" mesa
-horizon_record_cross_id "$MESA_BUILD_DIR"
+# shellcheck disable=SC2086 # one flag or deliberately empty
+horizon_meson setup $HORIZON_SETUP_MODE "$@" "$MESA_BUILD_DIR" mesa
+horizon_record_cross_id

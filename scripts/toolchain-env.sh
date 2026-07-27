@@ -11,9 +11,15 @@
 #   $HORIZON_BUILD_DIR         Meson build directory
 #   $HORIZON_CROSS_CONST_FILE  generated [constants] cross file
 #   $HORIZON_MESON_DIR         pinned Meson install (gitignored)
+#   $MESA_BUILD_DIR            where Mesa is configured and built
+#   $HORIZON_MESA_TEST_LIBS    archives tests 12 and 13 link, relative
+#                              to $MESA_BUILD_DIR
 #   horizon_run <cmd>...       run in the toolchain (host or container)
 #   horizon_meson <args>...    run the pinned Meson in the toolchain
 #   horizon_ensure_meson       install the pinned Meson if missing
+#   horizon_mesa_libs_present  are those archives all there right now
+#   horizon_setup_mode <dir> [identity files...]  "", --reconfigure, --wipe
+#   horizon_record_cross_id    stamp what horizon_setup_mode checked
 #
 # Two execution modes:
 #   - $DEVKITPRO set  -> run directly on this machine.
@@ -42,6 +48,24 @@ HORIZON_PYTHON_DIR="build/toolchain/python"
 # overrode it in only some of them got the two Mesa tests silently
 # skipped while the build reported success.
 MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+
+# One spelling of that path, whatever the caller typed. Two consumers
+# compare it literally — the stamp beside the directory
+# (${MESA_BUILD_DIR}.crossid) and the Makefile's clean rule — so
+# build/mesa-probe/ and build/mesa-probe must not look like two
+# different directories to them. The Makefile normalises independently
+# with $(abspath), because it is also a standalone entry point.
+while [ "${MESA_BUILD_DIR%/}" != "$MESA_BUILD_DIR" ] &&
+      [ -n "${MESA_BUILD_DIR%/}" ]; do
+    MESA_BUILD_DIR="${MESA_BUILD_DIR%/}"
+done
+
+# The archives tests 12 and 13 link, relative to $MESA_BUILD_DIR. Named
+# here so a script can ask whether Mesa is built without restating them;
+# the Makefile and meson.build carry their own copies, because each
+# build system stays readable on its own, and
+# scripts/check-mesa-test-parity.sh is what keeps the three in step.
+HORIZON_MESA_TEST_LIBS="src/c11/impl/libmesa_util_c11.a src/util/libmesa_util.a"
 
 # Where scripts/build-compat.sh archives libhorizon_compat.a. It sits
 # with the other provisioned inputs rather than in a build directory,
@@ -78,6 +102,18 @@ fi
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
+export HORIZON_MESA_TEST_LIBS
+
+# True when every archive tests 12 and 13 link is present. Both build
+# paths decide whether to build those two tests on exactly this
+# question; they just ask it at different times, which is what
+# scripts/build-horizon.sh has to reconcile.
+horizon_mesa_libs_present() {
+    for _hz_lib in $HORIZON_MESA_TEST_LIBS; do
+        [ -f "$MESA_BUILD_DIR/$_hz_lib" ] || return 1
+    done
+    return 0
+}
 
 # Run a command with the cross toolchain reachable. The image's default
 # PATH omits devkitA64/bin and portlibs/switch/bin (measured; recorded
@@ -144,34 +180,70 @@ horizon_meson() {
 # --wipe empties the directory itself. A configured directory with no
 # stamp is treated as changed: it predates this check, which is exactly
 # the case that broke.
+#
+# The directory and the extra files are remembered here, and
+# horizon_record_cross_id takes no arguments as a result. Passing the
+# list twice was the same shape of defect as the one this mechanism was
+# added to fix: the next option file added would be handed to one call
+# site and not the other, and the stamp would then record a different
+# identity from the one that was checked.
+#
+# The mode is returned in $HORIZON_SETUP_MODE rather than echoed, which
+# is what makes remembering possible at all: `mode=$(horizon_setup_mode
+# ...)` runs the function in a subshell, so anything it assigned was
+# gone by the time the caller reached horizon_record_cross_id. Measured
+# — the first run after the change failed with
+#   error: horizon_record_cross_id before horizon_setup_mode
 horizon_setup_mode() { # builddir [extra identity files...]
-    _hz_dir="$1"
+    HORIZON_ID_DIR="$1"
     shift
-    if [ ! -f "$_hz_dir/meson-info/meson-info.json" ]; then
-        echo ""
+    HORIZON_ID_FILES="$*"
+    if [ ! -f "$HORIZON_ID_DIR/meson-info/meson-info.json" ]; then
+        HORIZON_SETUP_MODE=""
         return 0
     fi
-    if [ "$(horizon_cross_id "$@")" = "$(cat "$_hz_dir.crossid" 2>/dev/null)" ]
+    # shellcheck disable=SC2086 # deliberate word splitting: a file list
+    if [ "$(horizon_cross_id ${HORIZON_ID_FILES:-})" = \
+         "$(cat "$HORIZON_ID_DIR.crossid" 2>/dev/null)" ]
     then
-        echo "--reconfigure"
+        HORIZON_SETUP_MODE="--reconfigure"
     else
-        echo "--wipe"
+        HORIZON_SETUP_MODE="--wipe"
     fi
 }
 
+# Every input must exist, and is checked before the pipeline rather than
+# after it: cat's exit status is discarded by a pipeline, so a renamed or
+# deleted identity file used to degrade the hash silently back to the
+# cross files alone — precisely the staleness the stamp exists to catch,
+# failing open.
+#
+# Each file's path is hashed with its contents. Without that separator,
+# moving a line from one hashed file to another leaves the concatenation
+# unchanged, and the two are not interchangeable inputs.
 horizon_cross_id() { # [extra identity files...]
-    cat "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" "$@" 2>/dev/null |
-        sha256sum | cut -d' ' -f1
+    for _hz_id in "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" "$@"; do
+        [ -f "$_hz_id" ] || {
+            echo "error: identity input $_hz_id does not exist" >&2
+            return 1
+        }
+    done
+    for _hz_id in "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" "$@"; do
+        printf '=== %s\n' "$_hz_id"
+        cat "$_hz_id"
+    done | sha256sum | cut -d' ' -f1
 }
 
 # Called after a successful setup, never before: a failed configure must
-# not leave a stamp claiming the directory matches. The extra files must
-# be the same ones horizon_setup_mode was given, or the stamp records a
-# different identity from the one that was checked.
-horizon_record_cross_id() { # builddir [extra identity files...]
-    _hz_dir="$1"
-    shift
-    horizon_cross_id "$@" > "$_hz_dir.crossid"
+# not leave a stamp claiming the directory matches. Uses what
+# horizon_setup_mode was given, so the two cannot disagree.
+horizon_record_cross_id() {
+    [ -n "${HORIZON_ID_DIR:-}" ] || {
+        echo "error: horizon_record_cross_id before horizon_setup_mode" >&2
+        return 1
+    }
+    # shellcheck disable=SC2086 # deliberate word splitting: a file list
+    horizon_cross_id ${HORIZON_ID_FILES:-} > "$HORIZON_ID_DIR.crossid"
 }
 
 # Mesa's code generators (milestone item 6). Separate from
