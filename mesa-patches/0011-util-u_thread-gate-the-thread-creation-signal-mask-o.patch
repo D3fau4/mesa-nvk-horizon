@@ -1,0 +1,95 @@
+From 855599260c9d2cc5b33f55c978defc4520a821d1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 27 Jul 2026 20:26:08 +0000
+Subject: [PATCH 11/11] util/u_thread: gate the thread-creation signal mask on
+ pthread_sigmask
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+u_thread_create() blocks every signal but SIGSYS and SIGSEGV around
+thrd_create(), and the block is guarded by HAVE_PTHREAD alone. That
+conflates two different questions: whether the C library has threads,
+and whether it has pthread_sigmask. POSIX puts pthread_sigmask in the
+signal option group, not in threads, so a C library can implement all of
+pthreads without it — and then this file does not link, on a function
+every consumer of util/ reaches through u_queue.
+
+Formulated as a property of the C library rather than as an OS name: a
+configure check sets HAVE_PTHREAD_SIGMASK, and the guard tests it. Every
+platform that has the function keeps the exact behaviour it had, because
+the check answers yes there. The #else branch is not new — it is the
+plain thrd_create() this reduces to, already in the file for the
+platforms without pthreads — so a library without pthread_sigmask loses
+the signal masking and nothing else.
+
+mesa-nvk-horizon: Phase 3 item 4 (threads — C11 threads over
+  pthread/newlib)
+Why: devkitA64's newlib/libnx has pthreads (dependency('threads') is
+  found, HAVE_PTHREAD is set, pthread_create/mutex/cond/key/barrier all
+  link) but no pthread_sigmask. Horizon has no POSIX signal delivery, so
+  the masking has nothing to mask.
+Evidence: configure reports
+    Run-time dependency threads found: YES
+  and an undefined-symbol audit of Mesa's built non-driver core against
+  the whole devkitA64 + libnx + portlibs symbol set leaves
+  pthread_sigmask unresolved, referenced by exactly one object:
+    pthread_sigmask   : u_thread.c.o
+  Reproduced directly:
+    $ aarch64-none-elf-gcc -specs=.../switch.specs p_pthread_sigmask.c -lnx
+    undefined reference to `pthread_sigmask'
+  while the same probe links for sched_yield, clock_gettime,
+  pthread_barrier_init and pthread_getcpuclockid, so this is one absent
+  function and not a missing threading layer.
+Upstream: yes — it is a libc trait, not an OS name; the fallback is the
+  branch that was already there; and no platform that has the function
+  changes behaviour.
+---
+ meson.build         | 11 +++++++++++
+ src/util/u_thread.c |  8 +++++++-
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index ef415aa..ef9c244 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1792,6 +1792,17 @@ if dep_thread.found()
+       args : '-D_GNU_SOURCE')
+     pre_args += '-DHAVE_PTHREAD_MUTEX_TIMEDLOCK'
+   endif
++  # util/u_thread.c blocks every signal around thread creation, which
++  # needs pthread_sigmask. POSIX makes it optional (it belongs to the
++  # signal option group, not to threads), so a C library can provide the
++  # rest of pthreads without it.
++  if cc.has_function(
++      'pthread_sigmask',
++      dependencies : dep_thread,
++      prefix : '#include <signal.h>',
++      args : '-D_GNU_SOURCE')
++    pre_args += '-DHAVE_PTHREAD_SIGMASK'
++  endif
+ endif
+ 
+ with_expat = get_option('expat') \
+diff --git a/src/util/u_thread.c b/src/util/u_thread.c
+index 3a8785c..e10d5b5 100644
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -47,7 +47,13 @@ util_get_current_cpu(void)
+ int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *param)
+ {
+    int ret = thrd_error;
+-#if defined(HAVE_PTHREAD) && !DETECT_OS_FUCHIA
++/* Creating the thread with every signal blocked needs pthread_sigmask,
++ * which POSIX makes optional and which a C library can leave out even
++ * though it has the rest of pthreads. Having it is therefore a property
++ * of the C library, not of having threads at all. The #else below is
++ * already the plain creation this reduces to, so a library without it
++ * loses the signal-masking and nothing else. */
++#if defined(HAVE_PTHREAD) && defined(HAVE_PTHREAD_SIGMASK) && !DETECT_OS_FUCHIA
+    sigset_t saved_set, new_set;
+ 
+    sigfillset(&new_set);
+-- 
+2.43.0
+

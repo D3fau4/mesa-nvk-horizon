@@ -1,7 +1,7 @@
-From 89d2158c06b2bd92d9a4f422c7022922c1f459b2 Mon Sep 17 00:00:00 2001
+From 84314b9be5dc2936f949b9468e7a6a3455054fa7 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:13:16 +0000
-Subject: [PATCH 10/10] util/os_misc: query available memory through sysconf
+Subject: [PATCH 10/11] util/os_misc: query available memory through sysconf
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
