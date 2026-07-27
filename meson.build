@@ -189,7 +189,14 @@ test_nros = []
 #
 # Skipped, with a message, when Mesa has not been built — a bare clone
 # must still produce the eleven tests that need only the toolchain.
-# Kept in step with the Makefile's MESA_TESTS / MESA_LIBS / MESA_CFLAGS.
+#
+# The Makefile states the same four facts — MESA_TESTS, MESA_LIBS and
+# MESA_CFLAGS' defines and include paths — and each build system is meant
+# to stay readable on its own, so they are duplicated rather than shared.
+# scripts/check-mesa-test-parity.sh is what enforces that: a comment
+# asking for them to be kept in step is not enforcement, and the .nro
+# size comparison would not notice a define present here and missing
+# there.
 fs = import('fs')
 
 # Not hardcoded: scripts/configure-mesa.sh and scripts/build-mesa.sh both
@@ -221,6 +228,27 @@ foreach p : mesa_test_lib_paths
 endforeach
 
 if mesa_libs_present
+  # WHERE THESE LAND ON THE LINK LINE, and why it works here.
+  #
+  # The Makefile puts the archives *before* -lhorizon_compat -lnx and
+  # says so in a comment, because it is Mesa's objects that reference
+  # sysconf and libnx and a plain left-to-right link resolves in that
+  # order only. This path does the opposite, and that is not a
+  # divergence to fix — it is a different mechanism, measured in the
+  # generated build/meson/build.ninja:
+  #
+  #   LINK_ARGS = ... -Wl,--start-group -lhorizon_compat -lnx \
+  #       libtestfw.a libhorizon_gpu.a \
+  #       .../libmesa_util_c11.a .../libmesa_util.a -Wl,--end-group
+  #
+  # A dependency's link_args go last, after the cross file's
+  # c_link_args, so the archives sit behind the libraries they need —
+  # and Meson wraps the whole set in --start-group/--end-group, which
+  # makes the linker rescan until no undefined symbol is left. Order
+  # inside a group does not decide the outcome, which is why this links
+  # at all. Recorded rather than left to inference: the property was
+  # documented on the path where it is guaranteed and nowhere on the
+  # path where it is not obvious.
   idep_mesa_core = declare_dependency(
     compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC'],
     include_directories : include_directories('mesa/src', 'mesa/include'),
@@ -239,12 +267,15 @@ foreach t : horizon_tests
   t_deps = [idep_horizon_gpu]
   # Rebuilding Mesa must relink these two, or they would keep measuring
   # the archives of an older Mesa build. Meson already infers that:
-  # guess_external_link_dependencies() (mesonbuild/backend/ninjabackend.py)
-  # records any link argument that is an absolute path to an existing
-  # library file, and the generated rule reads
+  # guess_external_link_dependencies() (ninjabackend.py:3636 in meson
+  # 1.11.2, the version toolchain/versions.env pins) records any link
+  # argument that is an absolute path to an existing library file, and
+  # the generated rule reads
   #   build t_threads.elf: c_LINKER ... | .../libmesa_util_c11.a ...
   # Declaring it as well costs one line and does not depend on that
-  # inference staying a documented guess.
+  # inference staying a documented guess — nor on the archives existing
+  # when this directory was configured, which is what the guess requires
+  # and scripts/build-horizon.sh now detects separately.
   t_link_depends = []
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
