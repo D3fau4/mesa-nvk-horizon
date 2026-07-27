@@ -1,14 +1,15 @@
 # STATUS
 
 **Last updated:** 2026-07-27
-**Branch:** `claude/mesa-nvk-horizon-phase3-item3-9g57iu`
+**Branch:** `claude/mesa-horizon-phase3-closeout-2ahzsq`
 
 ---
 
 ## Current phase
 
-**Phase 3 — minimal Horizon support in Mesa. Items 3 and 6 are done;
-the build half of the phase's exit criterion is met.**
+**Phase 3 — minimal Horizon support in Mesa. Every milestone item now
+has a disposition with evidence behind it; the phase's build criterion
+is met. Two hardware measurements are owed and named below.**
 
 **Mesa configures for `horizon` (`meson setup` exits 0) and its
 non-driver core builds: 379 of 379 edges, zero failures, all ten static
@@ -16,12 +17,25 @@ libraries archived.** That is `docs/milestones.md`'s Phase 3 exit
 criterion "Mesa configures for `horizon` and builds the non-driver
 core", as a cross build (X).
 
+Item by item: **1** OS detection (patch 0007 + 0012), **2** Meson
+`host_machine.system()` — **no patch, and the reason is measured**,
+**3** newlib/libnx gaps (patches 0001–0006), **4** threads (patch 0003 +
+0011, decision recorded), **5** timers/clocks (patch 0008), **6**
+physical memory / page size (`compat/sysconf.c` + patches 0009–0010),
+**7** endianness (patch 0004), **8** build ID (answered in Phase 2, no
+patch). The series stands at **twelve patches**, every one formulated as
+a property of the C library or the compiler rather than as an OS name.
+
+**What is owed:** `t_threads` and `t_ostime`, the twelfth and thirteenth
+`.nro`, have been cross-built and never run. Until the owner runs them,
+items 4 and 5 are cross-build results only — Mesa's C11 threads shim and
+`os_time.c` compile and link, and nothing more is claimed. See "Phase 3
+— closing items 1, 2, 4, 5 and 7" below.
+
 Two things happened before any Mesa work was possible, both recorded
 below: a defect in **our own** cross file was making six of Mesa's
 configure checks return false answers, and `mesa-patches/` had no
-mechanics at all (it held a `.gitkeep`). The series now stands at **ten
-patches**, every one formulated as a property of the C library or the
-compiler rather than as an OS name.
+mechanics at all (it held a `.gitkeep`).
 
 `compat/` has its **first content**: `sysconf`, which devkitA64's newlib
 declares and does not define. That is the one door `CLAUDE.md` leaves
@@ -42,6 +56,480 @@ asked for the wrong memory region, which the test correctly reported as
 "not a statement about the page size". Fixed and re-run the same day:
 **PASS 21/21 in both modes**, so the page size is now bounded from both
 sides by measurement. **Nothing is owed on hardware.**
+
+---
+
+## Phase 3 — closing items 1, 2, 4, 5 and 7 (2026-07-27)
+
+No code in `horizon/` was touched. Everything in this section is **cross
+build (X)** or **host (H)**. The two new `.nro` are **not** hardware
+results and are not written up as if they were.
+
+The session's method was the one the earlier rounds settled on: measure
+first, and let the measurement decide whether there is a patch at all.
+It produced **two** new patches out of five items, and the two it
+produced were not the ones the milestone list would have suggested.
+
+### Item 2 — Meson `host_machine.system() == 'horizon'`: no patch
+
+The item asks for "handling". The measurement says there is nothing to
+handle, and that is recorded here with the numbers rather than asserted.
+
+`mesa/meson.build` mentions `host_machine.system()` **54 times**,
+classified by parsing every occurrence rather than by eye:
+
+| Form | Count | Operands |
+|---|---|---|
+| `== '<os>'` | 36 | windows 21, darwin 7, freebsd 2, gnu / cygwin / haiku / linux / sunos / openbsd 1 each |
+| `!= '<os>'` | 7 | windows 6, netbsd 1 |
+| list membership (`.contains(…)`, `in`) | 8 | lines 159, 195, 197, 281, 414, 1208, 1549, 2374 |
+| inside an error message's `.format()` | 3 | lines 201, 286, 464 |
+
+**Not one of them names an OS this port is.** Every comparison is
+against somebody else's platform, so `horizon` falls to the `else` in
+all 54 — and in all 54 the `else` is the answer a platform with no
+KMS/DRM, no dynamic loader, no X11 and no Win32 should get:
+`system_has_kms_drm` false, `with_dri_platform = 'none'`,
+`HAVE_RENDERDOC_INTEGRATION=0`, `sys/sysctl.h` probed rather than
+assumed absent, the `-Werror=format` and `-Werror=thread-safety` trials
+enabled, `dependency('threads')` used, `nm` chosen for the symbols
+check. The `_GNU_SOURCE` OS list at line 1208 is the one place the
+`else` was wrong, and patch **0005** already replaced it with a probe.
+
+Three sites can print the string `horizon`, all three inside
+`error('Unknown OS @0@…')`, all three reached only when an option is
+left at `auto`. Measured as a chain, each with a fresh build directory:
+
+```
+$ meson setup … build/probe/mesa-default mesa
+mesa/meson.build:200:4: ERROR: Problem encountered: Unknown OS horizon.
+  Please pass -Dgallium-drivers to set driver options.
+
+$ meson setup … -Dgallium-drivers= …
+mesa/meson.build:285:4: ERROR: … Please pass -Dvulkan-drivers …
+
+$ meson setup … -Dgallium-drivers= -Dvulkan-drivers= …
+mesa/meson.build:463:4: ERROR: … Please pass -Dplatforms …
+
+$ meson setup … -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms=
+(no error)
+```
+
+That is Mesa saying "I have no default driver list for your OS, name
+one", which is **correct** rather than merely different — and
+`scripts/configure-mesa.sh` has passed all three explicitly since item 3,
+for reasons already recorded. Phase 4 will pass
+`-Dvulkan-drivers=nouveau`, equally explicitly. Adding an
+`elif host_machine.system() == 'horizon'` there would encode a driver
+and platform policy, not fix a defect.
+
+The Phase 4 route has no branches at all:
+
+```
+$ grep -rn "host_machine.system()" mesa/src/nouveau/ mesa/src/vulkan/ \
+      --include=meson.build
+(no output, exit 1)
+```
+
+Across all of `mesa/src`, 22 `meson.build` files mention it; **five**
+sites are inside the non-driver core this project builds, and each was
+read:
+
+| Site | Horizon takes | Correct? |
+|---|---|---|
+| `util/blake3/meson.build:8` | `is_windows = false` | yes — portable C, no MASM |
+| `util/meson.build:417, 471, 502` | all three inside `if with_tests` | not reached; tests are off |
+| `util/rust/meson.build:31` | not in `['linux','windows','darwin','macos']` → `rustix` **not** required | yes — a POSIX-syscall crate that does not support this target |
+| `c11/impl/meson.build:12` | `threads_posix.c` | yes, and it is item 4's whole subject |
+
+**One honest caveat.** `meson.build:22-31` gives Horizon
+`libname_prefix = 'lib'`, `libname_suffix = 'so'`, which feeds
+`icd_file_name = 'libvulkan_nouveau.so'` in
+`src/nouveau/vulkan/meson.build:168`. On a platform with no dynamic
+loader (`dlopen : NO`, `HAVE_DLOPEN` unset) that name describes a file
+nothing will ever open — a Vulkan ICD manifest is a loader concept, and
+NVK here will be linked into the application. It is *meaningless*, not
+*wrong*, it costs nothing today, and deciding what it should say is a
+Phase 4/6 question about how the driver is delivered. Recorded rather
+than patched.
+
+**Disposition: item 2 needs no patch (case (a)).** A patch here would be
+decoration, and `mesa-patches/README.md` requires a measurement behind
+every one.
+
+### Item 4 — threads: keep `threads_posix.c`, and the defect that decided it
+
+**Which implementation Mesa uses, re-measured.**
+
+```
+$ grep -c "HAVE_THRD_CREATE" build/mesa-probe/build.ninja
+0
+```
+
+`mesa/meson.build:1619-1626` sets `with_c11_threads` only when
+`with_platform_android`, so `src/c11/impl/meson.build:10-17` compiles
+`threads_posix.c`. newlib's own `thrd_create` links
+(`Checking for function "thrd_create" : YES`) and is not used.
+
+**Should it be? No, and the reason is not a preference.** newlib defines
+the whole C11 threads API in `libc.a(libc_a-threads.o)` — 25 symbols,
+`thrd_*`, `mtx_*`, `cnd_*`, `tss_*`, `call_once`. Two of them are not
+implementations:
+
+```
+$ aarch64-none-elf-objdump -d --disassemble=mtx_timedlock libc_a-threads.o
+0000000000000000 <mtx_timedlock>:
+   0:   52800040        mov     w0, #0x2      // thrd_error
+   4:   d65f03c0        ret
+```
+
+An unconditional failure that never attempts the lock. And `mtx_init`
+tests bit 2 of the type — `mtx_timed = 0x4` in newlib's `threads.h` —
+and branches straight to the same `#2`, so a *timed mutex cannot even be
+created*. Consistent with the object's undefined symbols: it references
+`pthread_mutex_lock`, `_trylock` and `_unlock`, `nanosleep`,
+`sched_yield` and the cond/key family, and **no timedlock of any kind**.
+
+Mesa's `threads_posix.c` really implements the timeout, by polling
+`mtx_trylock` — the path `mesa-patches/0003` turns on where
+`pthread_mutex_timedlock` is absent. Both implementations sit on the
+same `libsysbase` pthreads underneath, so switching would buy nothing
+and would replace a working timed lock with `return thrd_error`.
+
+The two are also not mixable: newlib's enumeration is
+`thrd_busy = 1, thrd_error = 2, thrd_nomem = 3, thrd_success = 4,
+thrd_timedout = 5`, Mesa's is `thrd_success = 0, thrd_timedout = 1, …`.
+A translation unit that included the wrong header would compare against
+the wrong constants and compile silently.
+
+**Decision: keep `threads_posix.c`. No patch for the selection itself.**
+
+**The defect the item did produce → patch 0011.** `util/u_thread.c`'s
+`u_thread_create()` blocks every signal around `thrd_create()` under a
+`defined(HAVE_PTHREAD)` guard. POSIX puts `pthread_sigmask` in the
+signal option group, not in threads, and devkitA64 has all of pthreads
+without it — so the file does not link, on the function `util/u_queue.c`
+uses to create every worker thread. Link probes, run directly against
+`switch.specs`:
+
+| Probe | Result |
+|---|---|
+| `pthread_sigmask` | **undefined reference** |
+| `sched_yield` | links |
+| `clock_gettime` | links |
+| `pthread_barrier_init` | links |
+| `pthread_getcpuclockid` | links |
+
+So it is one absent function, not a missing threading layer — which is
+why the patch is a configure check (`HAVE_PTHREAD_SIGMASK`) and not an
+OS branch. After it:
+
+```
+Checking for function "pthread_sigmask" with dependency threads: NO
+$ aarch64-none-elf-nm -u …/u_thread.c.o | grep pthread_sigmask
+(no output)
+```
+
+`tests/t_threads.c` is the console half, described below.
+
+### Item 1 — OS detection: what `DETECT_OS_HORIZON` is for, and the audit
+
+`DETECT_OS_HORIZON` is defined by patch 0007 and **referenced nowhere
+else in Mesa**:
+
+```
+$ grep -rn "DETECT_OS_HORIZON" mesa/src/
+src/util/detect_os.h:103:#define DETECT_OS_HORIZON 1
+src/util/detect_os.h:135:#ifndef DETECT_OS_HORIZON
+src/util/detect_os.h:136:#define DETECT_OS_HORIZON 0
+```
+
+That is deliberate and is the answer to "is it used everywhere it is
+needed": an OS needs an *identity*, but every behavioural question is
+answered by `DETECT_OS_POSIX_LITE`, which is a statement about the C
+library and therefore upstreamable. `DETECT_OS_POSIX_LITE` defaults to
+`DETECT_OS_POSIX`, so each such patch is additive for every existing
+platform. It gates `os_time.c` (patch 0008) and now `u_cpu_detect.c`
+(patch 0012).
+
+**Finding the `#else` branches that assume Linux, by measurement rather
+than by reading.** 21 of the 323 sources compiled into the core mention
+`DETECT_OS_*`. Rather than judge each by eye, the whole core was audited
+at the link level — a branch that assumes more C library than exists
+shows up as a symbol nothing defines:
+
+```
+core undefined refs   : 1816
+resolved inside core  : 1637
+resolved by toolchain :  156   (libc, libm, libsysbase, libpthread,
+                                libstdc++, libnx, portlibs, libgcc,
+                                libhorizon_compat)
+UNRESOLVED            :    7
+```
+
+| Symbol | Referenced by | Category |
+|---|---|---|
+| `pthread_sigmask` | `u_thread.c.o` | **fixed here — patch 0011** |
+| `posix_memalign` | `sparse_array.c.o` | item 3 residue, and a **lying configure check** |
+| `flock` | `mesa_cache_db.c.o` | item 3 residue |
+| `getuid` | `anon_file.c.o`, `log.c.o`, `perf_u_trace.c.o` | item 3 residue |
+| `geteuid`, `getgid`, `getegid` | `log.c.o`, `perf_u_trace.c.o` | item 3 residue |
+
+**`posix_memalign` is the interesting one.** Configure says
+
+```
+Checking for function "posix_memalign" : YES
+```
+
+and `-DHAVE_POSIX_MEMALIGN` reaches 352 compile lines — while a direct
+link probe answers `undefined reference to 'posix_memalign'`. GCC has a
+`__builtin_posix_memalign`, so Meson's check compiles and links its own
+snippet successfully. This is *exactly* the hazard `mesa/meson.build`
+documents three lines above the check, for MinGW, and it applies here
+too. It is a false configure answer of the same class as the `-Werror`
+defect this project found in its own cross file in item 3.
+
+**These six are recorded, not fixed.** They are item 3's category
+(newlib/libnx gaps) and item 3 is closed; none of them blocks Phase 3's
+criterion, because the criterion is that the core *builds* and a static
+archive never resolves anything. They are what Phase 4 will meet at its
+**first link**, and this is the list. Fixing them is a scoped piece of
+work, not a drive-by.
+
+**Three more things the audit surfaced, none of them a link failure:**
+
+- `util/u_thread.c:92` emits `#warning Not sure how to call
+  pthread_setname_np` — measured, it fires. Thread names are cosmetic
+  and the branch is a no-op; recorded so it is not mistaken for a defect
+  later.
+- `util/u_process.c:186` emits `#pragma message ( "Warning: Per
+  application configuration won't work with your OS version." )`. driconf
+  per-application matching will not work; Mesa says so itself and
+  degrades rather than failing.
+- `util/rand_xor.c` takes the `!DETECT_OS_WINDOWS` path and calls
+  `open("/dev/urandom")`, which cannot succeed here. The file's own
+  fallback then seeds from a constant plus `time(NULL)`. Nothing is
+  simulated and no rejected design is involved — the open simply fails —
+  but the seed is weak. Horizon does have an entropy source
+  (`InfoType_RandomEntropy`, libnx `randomGet`), so a `compat/getrandom`
+  would make `HAVE_GETRANDOM` true and route Mesa to it. Deliberately
+  **not** done in this session: it is item 3's category and out of scope.
+
+**Item 1's own patch → 0012**, below.
+
+### The known defect, fixed: `util_cpu_detect` reported 1 CPU
+
+Recorded at the end of item 6 and carried since. `_util_cpu_detect_once`
+counts processors under `#elif DETECT_OS_POSIX`, patch 0007 chose
+POSIX-**lite**, so nothing set `available_cpus`, `nr_cpus` fell to
+`MAX2(1, 0)` and `util/u_queue.c` would have sized its thread pool for a
+single-core machine.
+
+Two changes, and the split between them is a layering decision:
+
+- **`mesa-patches/0012`** turns the outer guard and the `<unistd.h>`
+  include into `DETECT_OS_POSIX_LITE`. Nothing inside the block needs
+  the whole of POSIX — every path is already guarded by the macro naming
+  what it uses (`HAS_SCHED_GETAFFINITY`, `_SC_NPROCESSORS_ONLN`,
+  `_SC_NPROCESSORS_CONF`, `HW_NCPUONLINE`) — so this is the same shape
+  as patch 0008 and changes no existing platform.
+- **`compat/sysconf.c`** answers `_SC_NPROCESSORS_ONLN` and
+  `_SC_NPROCESSORS_CONF` from `svcGetInfo(InfoType_CoreMask)`,
+  "Bitmask of allowed Core IDs" (libnx `switch/kernel/svc.h:185`), whose
+  population count is the set of cores the process may run on.
+
+**Why the number comes from `compat/` and not from a Mesa patch:** the
+only source for it is libnx, and `<switch.h>` inside Mesa's generic
+`src/util` would break this project's layer rules and could never go
+upstream. `sysconf` is already the door `CLAUDE.md` leaves open and the
+cross file already links `libhorizon_compat` before `-lnx`. newlib
+defines both names (`sys/unistd.h:370-371`, values 9 and 10) and defines
+neither symbol, which is the same case as the three names `compat/`
+already answered.
+
+`_ONLN` and `_CONF` deliberately return the same value: Horizon exposes
+no second, wider count to an ordinary process, and reporting the SoC's
+four Cortex-A57s for `_CONF` would be a constant nobody measured. A zero
+mask is treated as a failed query, since a running process must be
+allowed at least one core.
+
+Measured effect (cross build):
+
+```
+before:  $ aarch64-none-elf-nm u_cpu_detect.c.o | grep sysconf   →  (nothing)
+after :  $ aarch64-none-elf-nm -u u_cpu_detect.c.o | grep sysconf →  U sysconf
+```
+
+`HAS_SCHED_GETAFFINITY` is absent (`sched_getaffinity : NO`), which is
+why the `_SC_NPROCESSORS_ONLN` path is the one that had to be reachable.
+**The value itself is not yet measured** — that needs `t_threads` on a
+console.
+
+### Item 5 — timers / clocks
+
+`os_time.c` has compiled since patch 0008 and no line of it had run. Two
+of its functions cannot be taken on trust from a compile:
+
+- **`os_time_get_nano()` does not check its clock.** It calls
+  `timespec_get(&ts, TIME_MONOTONIC)` and returns from `ts` regardless.
+  On this platform `timespec_get` is Mesa's own `c23_timespec_get`
+  (`src/c11/impl/time.c`), which forwards to
+  `clock_gettime(CLOCK_MONOTONIC)` and, on failure, returns 0 **without
+  touching `ts`** — so the caller gets uninitialised stack. newlib
+  defines `CLOCK_MONOTONIC` as 4 (`time.h:278`) whether or not
+  `libsysbase` honours it, and `clock_gettime` links, so nothing about
+  this is visible before the code runs.
+- **`os_time_sleep()` is `usleep()`** through the POSIX-lite branch
+  patch 0008 added. A `usleep` that returns at once and one that sleeps
+  ten times too long both "work".
+
+`tests/t_ostime.c` measures both, plus resolution, rate,
+`os_time_nanosleep_until` and `os_time_get_absolute_timeout`. **Item 5
+stays a cross-build result until that runs.**
+
+### Item 7 — endianness: closed on the cross build
+
+This one needs no console: it is a compile-time property.
+
+```
+$ aarch64-none-elf-gcc -D__SWITCH__ -Imesa/src … -E -dM -x c mesa/src/util/u_endian.h
+#define UTIL_ARCH_BIG_ENDIAN 0
+#define UTIL_ARCH_LITTLE_ENDIAN 1
+#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+
+$ # and which branch answered:
+$ echo '#include <endian.h>' | aarch64-none-elf-gcc -c -x c -
+fatal error: endian.h: No such file or directory
+```
+
+A translation unit with
+`_Static_assert(UTIL_ARCH_LITTLE_ENDIAN == 1)` and
+`_Static_assert(UTIL_ARCH_BIG_ENDIAN == 0)` compiles clean under
+`-Wall -Wextra -Werror`. `endian.h` is absent and no libc branch in
+`u_endian.h` matches, so the answer came from patch 0004's
+`__BYTE_ORDER__` fallback — the branch under test, not one of the
+pre-existing ones. **Item 7 is closed (X).**
+
+### The two new `.nro`, and why they link Mesa's archives
+
+`tests/t_threads.c` (12) and `tests/t_ostime.c` (13) link
+`build/mesa-probe/src/c11/impl/libmesa_util_c11.a` and
+`.../src/util/libmesa_util.a` — **the archives Mesa's own build
+produced**, not those sources recompiled with flags of ours. The object
+under test has to be the object Mesa builds, or the measurement is about
+a different build. The only two defines the test sources need are
+`-DHAVE_PTHREAD` and `-DHAVE_STRUCT_TIMESPEC`, both Mesa's own configure
+results here, both visible in `build/mesa-probe/build.ninja`.
+
+Consequences accepted and handled:
+
+- They need `scripts/configure-mesa.sh && scripts/build-mesa.sh` first.
+  Both build paths **skip them with a message** when the archives are
+  absent, so a bare clone still produces the eleven tests that need only
+  the toolchain. `make` prints
+  `skipping t_threads t_ostime — no Mesa archives in build/mesa-probe`.
+- Tests 1–11 still build with no Mesa in sight; the Mesa include path
+  and archives are target-specific in the `Makefile` and a separate
+  dependency in `meson.build`.
+- `libmesa_util.a` links cleanly into both, which also demonstrates the
+  audit's finding from the other side: the six unresolved libc symbols
+  live in objects (`log.c.o`, `anon_file.c.o`, `sparse_array.c.o`,
+  `mesa_cache_db.c.o`) that these two tests do not pull in.
+
+What `t_threads` checks: `thrd_create`/`thrd_join` including the
+returned value, `u_thread_create` (the function patch 0011 changed),
+`call_once` across four threads, a shared counter of 4 × 20 000
+increments under a mutex, `mtx_trylock` on a held mutex,
+**`mtx_timedlock` expiring**, `mtx_timedlock` on a free mutex returning
+promptly, `cnd_wait`/`cnd_signal`, `cnd_broadcast` waking all four,
+**`cnd_timedwait` expiring** (which `src/vulkan/runtime/vk_sync_timeline.c`
+depends on in Phase 4), `tss_create`/`tss_set`/`tss_get` with a
+cross-thread leak check and the destructor count, and the processor
+count against the raw `InfoType_CoreMask`.
+
+Every timed check is bounded **from both sides** — 150 ms ≤ elapsed ≤
+800 ms for a 200 ms timeout — and timed with `armGetSystemTick()`, the
+ARM system counter read directly. That is not the clock the code under
+test uses; measuring a clock with itself proves nothing, and a polling
+`mtx_timedlock` whose comparison is inverted returns `thrd_timedout`
+immediately, which a one-sided check cannot tell from correct.
+
+`t_check`/`t_note` write shared state, so they are called from the main
+thread only; workers set plain per-thread fields read after the join
+that orders them, and the one counter several threads touch at once (the
+`tss` destructor count) is `atomic_int`.
+
+The artefacts handed over, so a console log can be attributed to exactly
+these builds (Makefile path, which is the reference path):
+
+```
+45e49f1e09b7a271a6feb40a71e8e45953e598537d304157bfad4eef3f723820  t_threads.nro
+3ccc2294e51165e19e95113d80dc47ce0bdf938da9d690ac43e2cb187d306c1b  t_ostime.nro
+```
+
+The Meson path produces the same **sizes** for all thirteen and
+different sha256 for these two — the inter-object padding difference
+recorded at the end of Phase 2 (≤32 bytes of `.bss`, ≤16 of `.text`,
+from archive ordering), not a behavioural difference.
+
+### Commands run and results
+
+| Command | Class | Result |
+|---|---|---|
+| `scripts/fetch-mesa.sh` | H | `mesa-26.1.5`, HEAD verified `6a02618ccf6c…`, 503 MB |
+| `scripts/apply-mesa-patches.sh` on a reset `mesa/`, twice | H | applies **12**; second run `all 12 patches already applied; nothing to do`, exit 0 |
+| `scripts/apply-mesa-patches.sh --list` | H | 12 applied, 0 pending |
+| `scripts/build-compat.sh` | X | rebuilds after the `sysconf` change |
+| `scripts/configure-mesa.sh` | X | exit 0; `sysconf : YES`, `thrd_create : YES`, `sched_getaffinity : NO`, **`pthread_sigmask : NO`** |
+| `scripts/build-mesa.sh` from a deleted `build/mesa-probe` | X | **379/379 edges, 0 FAILED, 10/10 libraries** |
+| the same after `fetch-mesa.sh --force` + re-apply (end-to-end rerun) | X | 321/321 edges rebuilt, 0 FAILED, 10/10 |
+| `meson setup` with default options, then adding one option at a time | X | the three `Unknown OS horizon` errors, in order, then success |
+| `nm -u` audit of the ten core archives vs the whole toolchain | X | 1816 → 7 unresolved (table above) |
+| Link probes for 9 libc/pthread functions | X | 4 absent, 5 present (table above) |
+| `-E -dM` on `u_endian.h`; `_Static_assert` TU | X | `UTIL_ARCH_LITTLE_ENDIAN 1` / `BIG 0`; compiles under `-Werror` |
+| `objdump -d` of newlib's `libc_a-threads.o` | X | `mtx_timedlock` is `mov w0,#2; ret` |
+| `scripts/build-switch.sh all -j4` | X | **13 `.nro`** |
+| `scripts/configure-horizon.sh && scripts/build-horizon.sh` | X | **13 `.nro`**, `tests : 13` |
+| Makefile vs Meson, all thirteen | X | **identical sizes 13/13** |
+| `scripts/run-host-tests.sh` | H | **103/103 PASS** (6 suites, unchanged) |
+| `scripts/check-layering.sh` | H | OK |
+| `scripts/check-no-abs-paths.sh` | H | OK |
+| `scripts/check-rust-target.sh` | H | OK |
+
+### Phase 3 exit criteria — state
+
+| Criterion (`docs/milestones.md`) | State |
+|---|---|
+| Each item is a separate patch file with a header explaining it (X) | ✅ 12 patches, four-field header each. Items 2 and 8 carry **no** patch, each with the measurement that says none is warranted |
+| Mesa configures for `horizon` and builds the non-driver core (X) | ✅ configure exit 0; **379/379 edges, 0 FAILED, 10/10 libraries** |
+| No patch mixes functional change with formatting | ✅ |
+
+### Milestone items — final disposition
+
+| # | Item | Disposition |
+|---|---|---|
+| 1 | OS detection | patch 0007 (identity) + patch 0012 (CPU count). Audit above says where the `#else` still assumes more libc than exists |
+| 2 | Meson `host_machine.system()` | **no patch** — 54 sites classified, all 54 correct in the `else`; the 3 that name the OS are `auto`-default errors we already pass options for |
+| 3 | newlib/libnx gaps | patches 0001–0006. **Six link-time gaps remain**, listed above, deliberately not reopened |
+| 4 | threads | patch 0003 + patch 0011; decision to keep `threads_posix.c` recorded with the disassembly behind it. `t_threads` **not yet run** |
+| 5 | timers / clocks | patch 0008; `t_ostime` **not yet run** |
+| 6 | physical memory / page size | `compat/sysconf.c` + patches 0009–0010, hardware-verified 2026-07-27 |
+| 7 | endianness | patch 0004, **closed on the cross build** — it is a compile-time property |
+| 8 | build ID | closed in Phase 2 without a patch: `-Wl,--build-id=sha1` is supported |
+
+### What this session did NOT do, said plainly
+
+- **`t_threads` and `t_ostime` have never run.** Items 4 and 5 are cross
+  builds. Nothing about Mesa's threading or clocks on a console is
+  claimed here, including the CPU count patch 0012 produces.
+- **Six unresolved libc symbols are left in place** (`posix_memalign`,
+  `flock`, `getuid`, `geteuid`, `getgid`, `getegid`). They will stop the
+  first executable link in Phase 4 and they are listed with their
+  objects so that is a task, not a surprise.
+- **`rand_xor` seeds weakly on Horizon**, by Mesa's own documented
+  fallback. A `compat/getrandom` is the fix and was not written.
+- The `posix_memalign` configure check answers `YES` and is wrong. Not
+  fixed here.
 
 ---
 
@@ -417,15 +905,17 @@ memory figures are reasoned.
   sides now — the earlier claim that divisibility alone caught an
   understated page size was wrong, and the lower bound it was missing is
   measured (`svcMapMemory` accepts exactly `0x1000`).
-- **`util_cpu_detect` reports 1 CPU on Horizon.** Its whole CPU-counting
-  block is under `#elif DETECT_OS_POSIX`, and patch 0007 chose
-  POSIX-**lite** deliberately (no `<syslog.h>`, no `<sys/shm.h>`, no
-  loader), so nothing sets `available_cpus`. Confirmed by `nm`:
-  `u_cpu_detect.c.o` has no `sysconf` reference. A quality problem for
-  Phase 4 — the Switch has more than one usable core — not a blocker,
-  and recorded rather than papered over.
-- Milestone items 2 and 4 are untouched; items 1, 5 and 7 still carry
-  only the minimum each needed.
+- ~~**`util_cpu_detect` reports 1 CPU on Horizon.**~~ **Fixed
+  2026-07-27** by `mesa-patches/0012` plus `_SC_NPROCESSORS_ONLN` /
+  `_SC_NPROCESSORS_CONF` in `compat/sysconf.c`; `u_cpu_detect.c.o` now
+  references `sysconf`. The value it produces is **not yet measured on a
+  console** — that is what `t_threads` is for. See "Phase 3 — closing
+  items 1, 2, 4, 5 and 7".
+- ~~Milestone items 2 and 4 are untouched; items 1, 5 and 7 still carry
+  only the minimum each needed.~~ **Closed 2026-07-27**, in the same
+  section: item 2 with a measurement saying no patch is warranted, item
+  4 with a decision and patch 0011, items 1, 5 and 7 with evidence and
+  (for 1) patch 0012.
 
 ---
 
@@ -1197,46 +1687,42 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Nothing is owed on hardware.** The 2026-07-27 runs closed all of it:
-eleven of eleven `.nro` PASS in both process modes, Phase 1's two
-hardware exit criteria are ✅ again on the current code, and
-`compat/sysconf.c` is verified end to end.
+**Run `t_threads` and `t_ostime` on a console.** They are the only thing
+Phase 3 owes. Both are in `build/` and `build/meson/` (identical sizes)
+and write their logs to `sdmc:/horizon_gpu_tests/` like the other
+eleven. Until their output is in hand:
 
-The next work is the rest of **Phase 3**, none of which was ever
-blocking:
+- item 4 is a cross build, and nothing is claimed about Mesa's C11
+  threads shim on hardware — in particular not the polling
+  `mtx_timedlock`, which is where the implementation can lie;
+- item 5 is a cross build, and `os_time_get_nano`'s unchecked
+  `timespec_get` is an open question, not a known-good path;
+- `mesa-patches/0012`'s effect is a compile result: `u_cpu_detect.c.o`
+  references `sysconf`, and what number it produces on a Switch is
+  unmeasured.
 
-- **item 2** — Meson `host_machine.system() == 'horizon'` handling.
-  Untouched.
-- **item 4** — threads, beyond the one `pthread_mutex_timedlock` patch.
-- The remainder of items 1, 5 and 7, each of which carries only the
-  minimum it needed. Item 8 was closed in Phase 2 without a patch.
+Everything else in Phase 3 is closed with evidence — see "Phase 3 —
+closing items 1, 2, 4, 5 and 7" for the item-by-item disposition and for
+the four things this session deliberately did not do.
 
-Then **Phase 4 — `nvkmd_horizon`**, which is now unblocked in the sense
-that mattered: it builds directly on `horizon/`, and `horizon/` is
-hardware-verified on the code that exists today rather than on a commit
-from two phases ago.
+Then **Phase 4 — `nvkmd_horizon`**. Two things from this session belong
+at the top of its plan, both measured rather than anticipated:
 
-One quality item to fix before Phase 4 leans on it: `util_cpu_detect`
-reports **1 CPU** on Horizon, because its whole counting block sits
-under `#elif DETECT_OS_POSIX` and patch 0007 deliberately chose
-POSIX-lite. Recorded under "Known gaps at the end of item 6".
+1. **Six libc symbols are unresolved** in Mesa's built core —
+   `posix_memalign`, `flock`, `getuid`, `geteuid`, `getgid`, `getegid` —
+   and a static archive never resolves anything, so they will stop the
+   first executable link. The list, with the object referencing each, is
+   in the audit above. `posix_memalign` additionally has a configure
+   check that answers `YES` and is wrong.
+2. **`vk_sync_timeline.c` uses `cnd_timedwait`**, so Phase 4's timeline
+   semaphores depend on the timeout path `t_threads` measures.
 
-**Phase 3's build criterion is met**, so the remaining Phase 3 work is
-the items that were never blocking: **2** (Meson
-`host_machine.system() == 'horizon'` handling) and **4** (threads beyond
-the one `pthread_mutex_timedlock` patch), plus the rest of items 1, 5
-and 7 beyond the minimum each has. Item 8 was closed in Phase 2 without
-a patch.
-
-Also worth doing before Phase 4 leans on it: `util_cpu_detect` reports
-one CPU on Horizon (see "Known gaps" above).
-
-Already in place: `mesa/` at `MESA_COMMIT` with the ten-patch series
-applying cleanly and idempotently, `scripts/configure-mesa.sh` and
-`scripts/build-mesa.sh` as the reproducible loop, `compat/` linked into
-both build paths and policed by the layering gate, the cross file no
-longer corrupting Mesa's configure answers, and pkg-config resolving the
-Switch portlibs.
+Already in place: `mesa/` at `MESA_COMMIT` with the **twelve**-patch
+series applying cleanly and idempotently, `scripts/configure-mesa.sh`
+and `scripts/build-mesa.sh` as the reproducible loop, `compat/` linked
+into both build paths and policed by the layering gate, the cross file
+no longer corrupting Mesa's configure answers, and pkg-config resolving
+the Switch portlibs.
 
 ---
 
@@ -1322,6 +1808,16 @@ for the same reason and cites this incident in its header.
 | `mesa-patches: let sysconf answer the memory and page-size queries` | patches 0009–0010 |
 | `tests: add t_sysinfo, the eleventh .nro` | `t_sysinfo.c`, `meson.build`, `Makefile` |
 | `docs: record Phase 3 item 6` | STATUS |
+
+## Commit log for Phase 3 (closeout — items 1, 2, 4, 5, 7)
+
+| Commit | Scope |
+|---|---|
+| `compat: answer the processor-count queries from the kernel's core mask` | `compat/sysconf.c` — `_SC_NPROCESSORS_ONLN` / `_SC_NPROCESSORS_CONF` from `svcGetInfo(InfoType_CoreMask)` |
+| `mesa-patches: gate the thread-creation signal mask on pthread_sigmask` | patch 0011 (item 4) |
+| `mesa-patches: count the CPUs on POSIX-lite platforms too` | patch 0012 (item 1; the `util_cpu_detect` defect) |
+| `tests: add t_threads and t_ostime, the twelfth and thirteenth .nro` | `t_threads.c`, `t_ostime.c`, `Makefile`, `meson.build` |
+| `docs: record the Phase 3 closeout` | this update |
 
 ## Commit log for the Codex review round
 
