@@ -32,12 +32,17 @@ items 4 and 5 are cross-build results only — Mesa's C11 threads shim and
 `os_time.c` compile and link, and nothing more is claimed. See "Phase 3
 — closing items 1, 2, 4, 5 and 7" below.
 
-**Codex reviewed PR #4 and left 8 findings; 7 were real and are fixed,
-1 was refuted with the generated `build.ninja` in hand.** Three of them
-were about the two new tests being able to *report* a failure rather than
-hang on it — which matters more than usual here, because those two tests
-have never run and the owner will read their log, not watch them.
-See "Codex PR review, PR #4" below.
+**Codex reviewed PR #4 twice.** The first round left 8 findings — 7 real
+and fixed, 1 refuted with the generated `build.ninja` in hand — mostly
+about the two new tests being able to *report* a failure rather than
+hang on it. The second round reviewed that output too and left **18
+findings, 17 of them real**: a `make clean` that still lost the Mesa
+build for any non-canonical spelling of the path, a Meson build that
+could never notice Mesa appearing after it was configured, bounds loose
+enough to pass for the failure they name, unchecked mutex returns in the
+test's own workers, and six places where the tree described itself more
+strongly than the code supports. Both rounds are written up below; the
+second one also corrects the first one's write-up of the refuted P1.
 
 Two things happened before any Mesa work was possible, both recorded
 below: a defect in **our own** cross file was making six of Mesa's
@@ -79,7 +84,7 @@ fix is in this repository's build files or in the two new tests.
 
 | # | Finding | Disposition |
 |---|---|---|
-| P1 | The Mesa archives reach the link only through `link_args`, so Ninja does not treat them as inputs and a rebuilt Mesa would not relink the tests | **Refuted, with the generated file.** Meson already records them: `guess_external_link_dependencies()` (`mesonbuild/backend/ninjabackend.py:3636`) appends any link argument that `os.path.isabs() and is_library() and os.path.isfile()`, and `build/meson/build.ninja:287` reads `build t_threads.elf: c_LINKER … \| …/libmesa_util_c11.a …/libmesa_util.a …`. Measured: `touch build/mesa-probe/src/util/libmesa_util.a` then `scripts/build-horizon.sh` → `[1/4] Linking target t_ostime.elf … [3/4] Linking target t_threads.elf`. The Makefile path already had the archives as explicit prerequisites (`$(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)`). **Changed anyway, one line:** `link_depends` now states it, because Meson's own name for that code is a *guess* and it is conditional on the file existing at configure time |
+| P1 | The Mesa archives reach the link only through `link_args`, so Ninja does not treat them as inputs and a rebuilt Mesa would not relink the tests | **Refuted, with the generated file** — and the write-up of that refutation was itself defective; see the correction below. Meson already records them: `guess_external_link_dependencies()` (`ninjabackend.py:3636` in meson 1.11.2) appends any link argument that `os.path.isabs() and is_library() and os.path.isfile()`, and `build/meson/build.ninja:287` reads `build t_threads.elf: c_LINKER … \| …/libmesa_util_c11.a …/libmesa_util.a …`. Measured: `touch build/mesa-probe/src/util/libmesa_util.a` then `scripts/build-horizon.sh` → `[1/4] Linking target t_ostime.elf … [3/4] Linking target t_threads.elf`. The Makefile path already had the archives as explicit prerequisites (`$(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)`). `link_depends` was added anyway, one line |
 | P1 | A build that skips tests 12 and 13 leaves the previous build's `.nro` for `scripts/package-horizon.sh` to ship | **Real on the Makefile path.** Measured: build 13 `.nro`, move `build/mesa-probe` aside, `make` → the two stale `.nro` were still there, and `package-horizon.sh` copies `"$SRC"/*.nro` unconditionally into a manifest whose entire job is attributing an artefact to one build. Fixed: the skip branch now collects `$(STALE_MESA)` and a `prune-stale` prerequisite of `all` removes the `.nro`, `.elf`, `.nacp` and `.t.o`. **Not real on the Meson path**, and the reason is measured: Meson runs `ninja -t restat && ninja -t cleandead` itself after regenerating `build.ninja` (`ninjabackend.py:705`, for ninja ≥ 1.12 or ≥ 1.10 without dyndeps — this build has ninja 1.11.1 and no dyndeps), so after the same experiment there were 11 `.nro` on disk *before* the build step ran. A `cleandead` added to `build-horizon.sh` cleaned 0 files and was removed again; the condition is recorded in that script so a future ninja or dyndeps change has something to check against |
 | P1 | `thrd_join` on the `mtx_timedlock` worker, and the main thread's own `cnd_timedwait`, are unbounded waits — the exact failure the section exists to catch would hang the test instead of failing it | **Real, and the sharpest finding of the round.** A `mtx_timedlock` that never returns is *the* thing test 12 was written for, and the test would have hung on it with the verdict unwritten. Fixed with two different mechanisms because the two cases are not the same: the worker is watched by the main thread through an `atomic_int done` polled against `armGetSystemTick` for `WATCHDOG_MS` (2000 ms, above the 800 ms upper bound so a merely slow implementation is still reported as slow), and the mutex is released **before** the join, which is what frees a worker stuck in a lock that ignored its deadline; the main thread's `cnd_timedwait` gets a watchdog thread that sets the predicate and broadcasts. The failing `t_check` is written *before* either call that could still block, and `testfw` fflushes each line to sdmc, so even a run that hangs anyway leaves a log naming the section |
 | P2 | `make clean` deletes `build/mesa-probe`, so `make clean && make` silently drops the two Mesa tests | **Real.** `clean` was `rm -rf build` and `$(MESA_BUILD)` lives there. Fixed by filtering. **Wider than reported, and found by running it:** the same `rm -rf` also removed `build/toolchain`, i.e. the pinned Meson install and Mesa's Python generator deps, both installed *from the network* — which `CLAUDE.md` names as the thing that may not be reachable. `make clean` uninstalling the build system is not what anyone types it for. Now `clean` keeps `$(MESA_BUILD)`, its `.crossid` stamp and `$(BUILD)/toolchain`, and removes the parts of `toolchain/` this Makefile does produce (`lib/`, `compat-obj/`) explicitly |
@@ -104,6 +109,19 @@ fix is in this repository's build files or in the two new tests.
   defect — applies to review findings too. The one-line `link_depends`
   that went in anyway is documented as hardening of a Meson heuristic,
   not as a fix.
+
+**Correction, made in the second round (2026-07-27).** That row
+originally justified the one-line change by saying the inference "is
+conditional on the file existing at configure time" — which asserts a
+residual defect inside a row labelled *Refuted*. Codex called out the
+contradiction and was right about it. The disposition stands, and the
+reasoning does not: the conditionality creates no hole, because
+`meson.build` builds these two tests **only** when the archives exist,
+so any configuration in which the edge could be missing is one in which
+there is no edge. `link_depends` is defence against a future Meson
+changing an undocumented inference, and nothing more. The genuine defect
+in that neighbourhood is a different one — `fs.exists()` never being
+asked again — and it is finding 8 of the second round.
 
 ### A defect this round introduced and closed inside itself
 
@@ -158,6 +176,121 @@ arrives by accident.
 above makes them better at reporting what they find; none of it is a
 measurement of Horizon. The watchdogs in particular have never fired,
 because the code containing them has never executed.
+
+---
+
+## Codex PR review, PR #4, second round (2026-07-27) — 18 findings, 17 real
+
+`chatgpt-codex-connector` reviewed `e0980e2..b328813` — that is, the
+first review round's own output plus the Phase 3 closeout — and left
+**18 findings**. Each was checked against the code and against a command
+before anything was changed. **Seventeen held up.** The one that did not
+is the one Codex itself marked as needing confirmation against the
+pinned checkout.
+
+Nothing in `horizon/` and nothing in `mesa-patches/` was touched. Six of
+the eighteen are corrections to what the tree *says* about itself rather
+than to what it does, and they are treated as defects on the same
+footing: a comment that overstates what a check proves is how a false
+claim gets into a hardware report.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | `make clean` still deletes the Mesa build for any non-canonical `MESA_BUILD_DIR`, because `$(filter-out)` is a literal comparison | **Real, reproduced.** `make -n clean` with `build/mesa-probe/`, `./build/mesa-probe` and `build//mesa-probe` all put `build/mesa-probe` and its `.crossid` into the `rm -rf`. The verification behind the original fix only used `build/mesa-alt`, which happens to be canonical — the check passed because the input was well-behaved. Both sides now go through `$(abspath)`, which normalises without requiring the path to exist; `scripts/toolchain-env.sh` normalises for the script path too. After: all four spellings keep it, and `build/mesa-alt` still correctly does not keep `build/mesa-probe` |
+| 2 | `clean`'s stated contract ("removes what this Makefile produces, and only that") contradicts what it does — it deletes `build/meson`, which Meson and `configure-horizon.sh` produce | **Real.** The behaviour is right and the sentence was wrong. The rule is now stated as it actually is: anything cheap to regenerate from this tree is removed, anything costing minutes of compilation or a network fetch is kept. `build/meson` is removed because it reconfigures in seconds and a stale cross build directory is a hazard; `$(MESA_BUILD)` and `$(BUILD)/toolchain` are kept because they are not |
+| 3 | The processor-count section is circular and is described as a cross-check: `sysconf(_SC_NPROCESSORS_ONLN)` **is** the popcount of the `svcGetInfo` it is compared against, and `conf == onln` shares a `case` label | **Real, and the wording was the defect.** The checks stay — they catch the wiring breaking (query failure inside `sysconf`, a `_SC_` name reaching the `EINVAL` default, a later edit reporting something else) — but they are now labelled wiring checks in the test, in `compat/sysconf.c` and here, not evidence of a core count. The independent measurements in that section are the raw mask, its bounds, and `caps->nr_cpus`, which reached 1 regardless of the mask before patch 0012 |
+| 4 | `os_time_get_absolute_timeout((uint64_t)INT64_MAX)` asserts a defined result for a signed-overflow path that `-O2` may fold away | **Not real against the pinned Mesa**, and Codex flagged it as needing confirmation there. Mesa 26.1.5's `os_time.c` does not add first: it uses `util_add_overflow(int64_t, time, timeout, &abs_timeout)`, which is `__builtin_add_overflow` here — `HAVE___BUILTIN_ADD_OVERFLOW` is in this build's compile args (`build/mesa-probe/build.ninja`) — and computes in infinite precision before deciding. The shape the finding describes (`abs_timeout = time + timeout; if (abs_timeout < time)`) is older upstream. Recorded in the test, with the guard's own case added as a second check, so a Mesa bump that restores it fails here rather than passing by accident |
+| 5 | The resolution check's message says the opposite of the check: `min_step <= 1000000` printed as "clock resolution is at least 1 ms" | **Real.** That line is read by someone looking at a FAIL in a console log with no source to hand. Now "1 ms or finer" |
+| 6 | "Every timed check is bounded from both sides" is not true of the code — the `PROMPT_MAX_MS` checks, `os_time_sleep(0)`, a past deadline and the `drift` check are one-sided | **Real.** Each is defensible on its own; the blanket claim was not. The header now separates the two: a call that must *expire* is bounded from both sides, a call that must *not wait* has no lower bound to assert and is bounded above only |
+| 7 | Several bounds are loose enough to pass for the failure they name: `SLEEP_MIN_US = SLEEP_US / 2` accepts a 2× unit error, `os_time_sleep(0)` accepts 49 ms against a 50 ms sleep, `nanosleep_until(+50 ms)` accepts 25–200 ms — and `t_threads` uses −25 %/×4 for the same class of measurement with no explanation of the disagreement | **Real, and the sharpest of the documentation-shaped findings.** One convention now, stated once: −25 % below, ×4 above, in both files. The "must not wait" bound is 10 ms — a fifth of `SLEEP_US`, so it can no longer be satisfied by a call that slept the full requested amount, which is the one thing it existed to distinguish |
+| 8 | Meson and Make detect Mesa's archives at different times and only one recovers: `fs.exists()` runs once at configure and is baked into `build.ninja`, so building Mesa afterwards leaves that path producing 11 `.nro` indefinitely | **Real, and measured before and after.** With the archives hidden, `configure-horizon.sh`, then the archives restored: the `build-horizon.sh` on the branch printed `11 .nro` on two consecutive runs. `configure-horizon.sh` now records what `fs.exists()` decided beside the build directory and `build-horizon.sh` compares it against the state on disk — same scenario: `Mesa archives are present, build/meson was configured with them absent; reconfiguring`, then `13 .nro`. Both directions verified |
+| 9 | Four facts are restated in two build systems with a comment as the only enforcement, and the `.nro`-size parity check would not notice a define present on one path and missing on the other | **Real.** The duplication stays — each build system has to be readable on its own, and the Makefile is the hardware-verified path — but divergence now fails: `scripts/check-mesa-test-parity.sh` compares the test names, the two archive paths, the defines, the Mesa include directories and the default build directory across `Makefile`, `meson.build`, `meson.options` and `scripts/toolchain-env.sh`. Verified by breaking each of the five in turn plus the gate's own extraction — six deliberate breakages, six exit 1 |
+| 10 | Link order is stated on one path and left to inference on the other | **Real, and the answer needed measuring rather than asserting.** The Makefile needs the archives *before* `-lhorizon_compat -lnx` because it is a plain left-to-right link. The Meson path does the opposite — a dependency's `link_args` go last — and links anyway because Meson wraps the whole set in `-Wl,--start-group … --end-group`, so the linker rescans. Read out of the generated `build.ninja` and recorded beside `idep_mesa_core`; the two paths are not expected to emit the same link line |
+| 11 | `horizon_cross_id` hashes with no separator and discards `cat`'s exit status, so a renamed identity file degrades the hash back to the cross files alone — silently | **Real, and it fails open, which is the worst direction for a staleness check.** Every input is now verified to exist *before* the pipeline (a pipeline's status is `sha256sum`'s), and each file's path is hashed with its contents, so a line moved between two hashed files is no longer invisible |
+| 12 | The extra-identity-file mechanism reproduces the coupling it was added to fix: two call sites must be handed the same list, with a comment as the only enforcement | **Real.** The list is given once, to `horizon_setup_mode`, and `horizon_record_cross_id` takes no arguments |
+| 13 | `compat/sysconf.c` merges `_SC_NPROCESSORS_CONF` into `_ONLN` on an argued, unmeasured premise; `svcGetSystemInfo` is dismissed in prose | **Real, and the measurement was available.** libnx's `SystemInfoType` accepts exactly `TotalPhysicalMemorySize`, `UsedPhysicalMemorySize` and `InitialProcessIdRange` (`switch/kernel/svc.h:222-225`, read out of the pinned image). None is a processor count. The cost of sharing the case — a caller cannot distinguish "the SoC has four, you may use three" — is now stated rather than implied, as is why the SoC constant lives in the test and not in the C library function |
+| 14 | Mutex operations go unchecked in the worker threads, and `section_mutex_timed`'s "the mutex is not left held either way" rests on one of them | **Real, and `CLAUDE.md` requires the check.** Every `mtx_*` return is checked now, in the workers too. A `cnd_worker` whose lock failed returns instead of proceeding — it would otherwise read the predicate unguarded, hand `cnd_wait` a mutex it does not own and race the counters. The main thread's locks go through one helper that still stores the predicate when the mutex call fails, because that store is what releases the waiters and lets the joins terminate; the lock before `cnd_timedwait` is the exception and ends the check, since calling it unlocked is undefined |
+| 15 | `counter_worker` produces two failures for one defect — the same pattern `section_mutex_timed` explicitly apologises for | **Real.** The counter is now measured against what the workers actually performed. With no lock failure that is the same number as `created * INCREMENTS`, so nothing is weakened |
+| 16 | The rate check consumes a possibly-backwards clock without consulting the monotonicity result it just computed; and `ref_ns / 100 * PCT` divides before multiplying | **Real.** One backwards pair makes the subtraction about 1.8e19, which the note printed as a measurement in nanoseconds while the check failed for an unstated reason. The interval is now tested first and the rate check is skipped with a note. The division order is fixed — harmless at 1e8 ns and still the wrong order in a file whose stated rule is to check every arithmetic step |
+| 17 | The "refuted P1" is recorded as both refuted and fixed, and the round's headline count depends on the disposition the same row contradicts | **Real as a write-up defect; the disposition stands.** Correction written into the first round's section above: the configure-time conditionality creates no hole, because these two tests are built only when the archives exist, so any configuration where the edge could be missing is one where there is no edge. Citing it as a reason to change was the contradiction. The real defect in that neighbourhood is finding 8, and it is not about the link edge |
+| 18 | Third-party line-number citations name no version, in a repository whose own rule is that every constant cites its source | **Real.** Both `ninjabackend.py` citations now name meson 1.11.2, the version `toolchain/versions.env` pins, and both were re-read at that version before the change |
+
+### What this round says about the verification, not the code
+
+- **A gate that has never failed has not been tested.** Finding 1 is the
+  clearest case: the fix was correct for the input it was tried with. It
+  is why every claim in this round's verification table below was
+  produced by breaking the thing first — the parity gate was checked by
+  six deliberate divergences, `make clean` by four spellings of the same
+  directory, finding 8 by running the previous commit's script in the
+  scenario that defeats it.
+- **Six of eighteen are the tree describing itself wrongly**, and none
+  of them would have failed a build: a message that says the opposite of
+  its check, a claim of two-sided bounds that were one-sided, two checks
+  offered as evidence they cannot be. These reach the owner's hands in a
+  console log, which is exactly where there is no source to check them
+  against.
+- **The one finding that did not hold up was the one Codex hedged.**
+  It asked for confirmation against the pinned checkout; the pinned
+  checkout answered. That is the same discipline this project applies to
+  its own patches, arriving from the other direction.
+
+### A defect this round introduced and closed inside itself
+
+Removing the two-call-site coupling of finding 12 broke the first run
+outright:
+
+```
+$ scripts/configure-horizon.sh
+Found ninja-1.11.1 at /usr/bin/ninja
+error: horizon_record_cross_id before horizon_setup_mode
+```
+
+`horizon_setup_mode` remembered the identity file list in a shell
+variable while its callers still ran it as `mode=$(horizon_setup_mode
+…)` — a command substitution is a subshell, so every assignment was
+discarded before the caller reached the next line. The mode is returned
+in `$HORIZON_SETUP_MODE` now and there is no subshell. It failed loudly
+rather than recording a wrong stamp, which is the behaviour finding 11
+was about.
+
+### Verification after the fixes
+
+Every command was run from the repository root against
+`ghcr.io/d3fau4/nx-dev:latest` (no local devkitA64). All of it is **cross
+build (X)**. Nothing here is a hardware result.
+
+| Check | Command | Result |
+|---|---|---|
+| `clean` keeps Mesa whatever the spelling | `MESA_BUILD_DIR=<4 spellings> make -n clean` | before: 3 of 4 deleted it; after: 4 of 4 keep it, and `build/mesa-alt` still does not keep `build/mesa-probe` |
+| `make clean` keeps the toolchain | `scripts/build-switch.sh clean && ls build/` | `mesa-probe  mesa-probe.crossid  toolchain`, and `toolchain/` still holds `meson-1.11.2` and `python` |
+| …and rebuilds to thirteen | `scripts/build-switch.sh -j4` | 13 `.nro` |
+| Meson path after `clean` removed its directory | `scripts/build-horizon.sh` | configures and builds, `13 .nro` |
+| Mesa built *after* configure, old script | `git show HEAD:scripts/build-horizon.sh`, twice | `11 .nro`, `11 .nro` — the defect |
+| Mesa built *after* configure, new script | `scripts/build-horizon.sh` | `Mesa archives are present, build/meson was configured with them absent; reconfiguring` → `13 .nro` |
+| Mesa hidden, both paths | `scripts/build-switch.sh`, `scripts/build-horizon.sh` | `removing stale Mesa test artefacts: …` → **11**; `Mesa archives are absent…` → **11** |
+| Mesa restored, both paths | same | **13** and **13** |
+| Parity gate detects divergence | 6 deliberate breakages | 6 × exit 1 with the right label, including "extracted nothing" when the gate's own extraction is broken |
+| Parity gate on the tree | `scripts/check-mesa-test-parity.sh` | OK |
+| Both tests compile `-Wall -Wextra -Werror` | `scripts/build-switch.sh` | clean, no diagnostics |
+| Patch series on a reset `mesa/`, ×2 | `git -C mesa reset --hard $MESA_COMMIT && scripts/apply-mesa-patches.sh` | applies 12; second run `all 12 patches already applied` |
+| `.nro` parity, Makefile vs Meson | `stat -c%s` over both directories | **13/13 identical sizes** |
+| Host unit tests | `scripts/run-host-tests.sh` | **103/103** |
+| Gates | `check-layering.sh`, `check-no-abs-paths.sh`, `check-rust-target.sh`, `check-mesa-test-parity.sh` | all OK |
+
+One-time cost, recorded because someone will hit it: the identity format
+changed, so the first `scripts/configure-mesa.sh` on an existing tree
+sees a stamp it cannot match, treats the directory as changed and wipes
+it — which rebuilds Mesa. That is the conservative direction and it
+happens once.
+
+### Still owed after this round — unchanged
+
+`t_threads` and `t_ostime` have still never run on a console. This round
+made three of their bounds able to fail for the defect they name and
+made the rest of the file report one defect once; none of it is a
+measurement of Horizon. **Both `.nro` changed again** — the hashes at the
+end of the closeout section below are the ones to run.
 
 ---
 
@@ -561,23 +694,28 @@ thread only; workers set plain per-thread fields read after the join
 that orders them. Everything read *without* a join in between is
 `atomic_int`: the `tss` destructor count several exiting threads
 increment at once, the `done` flag the main thread polls instead of
-joining the `mtx_timedlock` worker, and the `outcome` the `cnd_timedwait`
+joining the `mtx_timedlock` worker, the `outcome` the `cnd_timedwait`
 waiter and its watchdog settle with one compare-exchange so that exactly
-one of them ends the wait.
+one of them ends the wait, and — added by the second review round — the
+count of failed `mtx_lock`/`mtx_unlock` calls inside the condvar
+workers, which is the one field a worker writes while *not* holding the
+mutex, because not holding it is what it records.
 
 The artefacts handed over, so a console log can be attributed to exactly
 these builds (Makefile path, which is the reference path):
 
 ```
-0ca4b59ffadab963251b1293355d469482caabcf6d6f98a638f9f32c1eb80236  t_threads.nro
-f3d29a21c21bac3b5f0c410508b5e3505d4ec72e926384add0ec2bacc1f3a5a9  t_ostime.nro
+3f97f5d215a56804be2fb333173843bd767672020e32d3aa1f366152441e66cb  t_threads.nro
+ff999f013acd300f029f13605bad20e70992afa191033d405cfed475b8f2d6c8  t_ostime.nro
 ```
 
-Both were rebuilt by the PR #4 review round and these are the current
-hashes; the ones first recorded here (`45e49f1e…`, `3ccc2294…`) are the
-pre-review builds and must not be the ones run. What changed in them is
-in "Codex PR review, PR #4" above — no check was removed, three were
-added, and every wait on a timed call is now bounded.
+Both were rebuilt by the **second** PR #4 review round and these are the
+current hashes. The earlier ones — `45e49f1e…` / `3ccc2294…` (before any
+review) and `0ca4b59f…` / `f3d29a21…` (after the first round) — must not
+be the ones run. What changed is in the two review sections above: no
+check has ever been removed, several were added, every wait on a timed
+call is bounded, and the second round tightened three bounds that were
+loose enough to pass for the failure they name.
 
 The Meson path produces the same **sizes** for all thirteen and
 different sha256 for these two — the inter-object padding difference
@@ -1804,10 +1942,13 @@ Phase 3 owes. Both are in `build/` and `build/meson/` (identical sizes)
 and write their logs to `sdmc:/horizon_gpu_tests/` like the other
 eleven.
 
-Rebuild them first if the copies on the SD card predate the PR #4 review
-round: both were changed by it, and `t_threads` in particular can now
-report a timed call that never returns instead of hanging on it. Until
-their output is in hand:
+Rebuild them first if the copies on the SD card predate the **second**
+PR #4 review round: both were changed by both rounds. `t_threads` can
+now report a timed call that never returns instead of hanging on it, and
+checks every mutex return in its own workers; `t_ostime`'s sleep bounds
+can now fail for a 2× unit error, which they could not before. The
+current hashes are in "Phase 3 — closing items 1, 2, 4, 5 and 7" below.
+Until their output is in hand:
 
 - item 4 is a cross build, and nothing is claimed about Mesa's C11
   threads shim on hardware — in particular not the polling
@@ -1945,6 +2086,18 @@ for the same reason and cites this incident in its header.
 | `build: honour MESA_BUILD_DIR in both build paths` | `meson.options`, `meson.build`, `Makefile`, `toolchain-env.sh`, `configure-horizon.sh`, `configure-mesa.sh`, `build-mesa.sh`, `build-switch.sh`, `check-no-abs-paths.sh` |
 | `build: stop clean and stale artefacts from crossing between builds` | `Makefile` (`clean`, `prune-stale`), `build-horizon.sh` |
 | `docs: record the PR #4 review round` | this update, `tests/README.md` |
+
+## Commit log for the second Codex review round on PR #4
+
+| Commit | Scope |
+|---|---|
+| `tests: check every mutex call, and report one defect once` | `t_threads.c` — worker mutex returns, the counter's expected total, the processor-count section's claims, the both-sided header claim |
+| `tests: bounds that can fail for the defect they name` | `t_ostime.c` — one wait convention, the prompt bound, the rate check's backwards guard, the resolution message, the overflow note |
+| `scripts: a loud build identity, and one that survives Mesa appearing` | `toolchain-env.sh`, `configure-horizon.sh`, `configure-mesa.sh`, `build-horizon.sh` |
+| `build: gate the four facts both build systems restate` | `check-mesa-test-parity.sh` (new), `meson.build` — link-order measurement, versioned citation |
+| `build: clean that does not depend on how the path was spelled` | `Makefile` — `$(abspath)` comparison, the rule's actual contract |
+| `compat: measure the claim that Horizon has no wider core count` | `compat/sysconf.c` |
+| `docs: record the second PR #4 review round` | this update, `tests/README.md` |
 
 ## Commit log for the Codex review round
 

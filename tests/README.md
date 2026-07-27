@@ -39,10 +39,24 @@ artefacts from two builds. Nothing else here needs Mesa.
 `$MESA_BUILD_DIR` selects where Mesa was built (default `build/mesa-probe`)
 and is honoured by all four of `scripts/{configure,build}-mesa.sh`, the
 Makefile and the Meson build; set it for the Mesa build and for the test
-build alike.
+build alike. How the path is spelled does not matter —
+`build/mesa-probe`, `build/mesa-probe/` and `./build/mesa-probe` are the
+same directory to every consumer, including `make clean`.
 
 `make clean` leaves that directory alone, so `make clean && make` still
-produces all thirteen.
+produces all thirteen. It also leaves `build/toolchain` alone, since the
+pinned Meson and Mesa's Python dependencies are installed there over the
+network. Everything else under `build/`, including the Meson build
+directory, is removed.
+
+Building Mesa *after* configuring the Meson build directory is fine:
+`scripts/build-horizon.sh` notices that the archives have appeared and
+reconfigures, so it does not keep producing eleven.
+
+`scripts/check-mesa-test-parity.sh` checks that the Makefile and the
+Meson build still agree on which tests these two are, which archives
+they link, and which defines and include paths they compile with. Run it
+after touching either build system.
 
 ## Running on the console
 
@@ -63,7 +77,7 @@ produces all thirteen.
    | 9 | `t_fence_wait` | wait-after-completion; timeout path timing |
    | 10 | `t_teardown` | full reverse teardown, zero leaks, twice per process |
    | 11 | `t_sysinfo` | `compat/sysconf.c`: page size bounded from both sides, process memory, `_SC_NPROCESSORS_*` |
-   | 12 | `t_threads` | Mesa's C11 threads shim: `mtx_timedlock` and `cnd_timedwait` expiry (both-sided timing), mutual exclusion, condvars, TSS, and the CPU count |
+   | 12 | `t_threads` | Mesa's C11 threads shim: `mtx_timedlock` and `cnd_timedwait` expiry (both-sided timing on the calls that must expire; an upper bound only on the ones that must not wait), mutual exclusion, condvars, TSS, and the CPU count |
    | 13 | `t_ostime` | Mesa's `os_time.c`: monotonicity, resolution, rate against the ARM counter, `os_time_sleep` accuracy |
 
    Tests 11-13 use no `horizon_gpu` and need no nv services, so they are
