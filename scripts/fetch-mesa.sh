@@ -21,6 +21,13 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# Same reason as scripts/apply-mesa-patches.sh, which carries the long
+# version: with GIT_WORK_TREE set, the git-dir assertion below still
+# passes while every write lands somewhere else entirely.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
+      GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+
 # shellcheck source=../toolchain/versions.env
 . toolchain/versions.env
 

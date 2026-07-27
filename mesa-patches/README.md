@@ -17,11 +17,14 @@ mesa-patches/0001-<slug>.patch
 mesa-patches/0002-<slug>.patch
 ```
 
-File-name order is apply order. The **commit subject is the patch's identity**:
-`scripts/apply-mesa-patches.sh` matches the subjects recorded in `mesa/`'s
-history against the subjects in these files to decide what is already applied.
-Renaming a file is harmless; changing a subject after the patch has been applied
-is not — the applier will report divergence and refuse to guess.
+File-name order is apply order. A patch is identified by **its commit subject
+and its diff**: `scripts/apply-mesa-patches.sh` matches both against what
+`mesa/`'s history records, so a patch whose body is corrected without its
+subject changing is caught rather than reported as already applied. Renaming a
+file is harmless; changing a subject or a diff after the patch has been applied
+is not — the applier reports divergence and refuses to guess. The one thing it
+cannot see is a change confined to the commit message *below* the subject with
+an identical diff; regenerate the series after such an edit.
 
 ## Required header
 

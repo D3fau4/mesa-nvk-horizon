@@ -7,8 +7,8 @@
 #   scripts/apply-mesa-patches.sh --list     # report state, write nothing
 #
 # The series is applied on top of MESA_COMMIT, in file-name order. Each
-# patch is a `git format-patch` file whose commit subject is its
-# identity — see mesa-patches/README.md for the header convention.
+# patch is a `git format-patch` file, identified by its commit subject
+# *and* its diff — see mesa-patches/README.md for the header convention.
 #
 # Idempotent: a second run applies nothing and says so. Non-destructive:
 # every path that could write is guarded, and a tree it does not fully
@@ -26,6 +26,16 @@
 # SPDX-License-Identifier: MIT
 set -eu
 cd "$(dirname "$0")/.."
+
+# Git takes these from the environment and they override where a command's
+# repository and working tree actually are. GIT_WORK_TREE is the sharp
+# one: with it set, `rev-parse --absolute-git-dir` still answers
+# mesa/.git — so the assertion below passes — while `status` and `am`
+# operate on a completely different tree. Measured, not hypothesised.
+# Clearing them is what makes the guards mean what they say.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
+      GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
 
 # shellcheck source=../toolchain/versions.env
 . toolchain/versions.env
@@ -72,14 +82,27 @@ die() { # message...
     "       (the archive path is addressed by commit and is content-" \
     "       correct, but it cannot record commits.)"
 
+dest_abs="$(cd "$DEST" && pwd)"
+
 gitdir=$(git -C "$DEST" rev-parse --absolute-git-dir 2>/dev/null || true)
-want="$(cd "$DEST" && pwd)/.git"
-[ "$gitdir" = "$want" ] || die \
+[ "$gitdir" = "$dest_abs/.git" ] || die \
     "error: $DEST is not its own git repository." \
     "       git reports its git-dir as: ${gitdir:-<none>}" \
-    "       expected: $want" \
+    "       expected: $dest_abs/.git" \
     "       Refusing to run git commands that would act on the" \
     "       enclosing repository instead."
+
+# The git-dir alone does not say where writes land. core.worktree in
+# mesa/.git/config redirects the working tree while leaving the git-dir
+# exactly as asserted above, and no environment variable is involved, so
+# clearing the environment does not cover this. Ask git where it would
+# actually write.
+toplevel=$(git -C "$DEST" rev-parse --show-toplevel 2>/dev/null || true)
+[ "$toplevel" = "$dest_abs" ] || die \
+    "error: $DEST's git repository has a different working tree." \
+    "       git reports its top level as: ${toplevel:-<none>}" \
+    "       expected: $dest_abs" \
+    "       git am would apply the series there, not here. Refusing."
 
 git -C "$DEST" cat-file -e "${MESA_COMMIT}^{commit}" 2>/dev/null || die \
     "error: the pinned commit $MESA_COMMIT is not in $DEST." \
@@ -128,12 +151,36 @@ patch_subject() { # patch file
         sed -n 's/^Subject: //p'
 }
 
-applied=()
-while IFS= read -r s; do
-    if [ -n "$s" ]; then
-        applied+=("$s")
+# A subject is a label, not an identity. Correcting a patch's diff
+# without touching its subject line would otherwise be invisible here:
+# the script would report the whole series as applied and every build
+# afterwards would be testing the superseded code, which is exactly the
+# opposite of what mesa-patches/README.md promises. patch-id hashes the
+# diff — ignoring context line numbers, whitespace at line ends and the
+# commit message — so it answers "is this the same change?" rather than
+# "is this the same title?".
+#
+# Residual, stated because it is not covered: a change confined to the
+# commit *message body* below the subject, with an identical diff, still
+# reads as applied. Regenerating the series after such an edit is the
+# way to keep mesa/ honest.
+file_patch_id() { # patch file
+    git patch-id --stable < "$1" 2>/dev/null | cut -d' ' -f1
+}
+
+commit_patch_id() { # commit sha
+    git -C "$DEST" diff-tree -p --no-commit-id "$1" 2>/dev/null |
+        git patch-id --stable 2>/dev/null | cut -d' ' -f1
+}
+
+applied_sha=()
+applied_subject=()
+while IFS=' ' read -r sha subject; do
+    if [ -n "$sha" ]; then
+        applied_sha+=("$sha")
+        applied_subject+=("$subject")
     fi
-done < <(git -C "$DEST" log --reverse --format=%s "${MESA_COMMIT}..HEAD")
+done < <(git -C "$DEST" log --reverse --format='%H %s' "${MESA_COMMIT}..HEAD")
 
 # The applied commits must be a prefix of the series, in order. Anything
 # else — a reordered series, a hand-made commit on top, a patch edited
@@ -145,14 +192,23 @@ for p in "${patches[@]}"; do
     [ -n "$subject" ] || die \
         "error: $p has no Subject: line; it is not a git format-patch" \
         "       file. See mesa-patches/README.md."
-    if [ "$i" -lt "${#applied[@]}" ]; then
-        [ "${applied[$i]}" = "$subject" ] || die \
+    if [ "$i" -lt "${#applied_sha[@]}" ]; then
+        [ "${applied_subject[$i]}" = "$subject" ] || die \
             "error: $DEST's history diverges from the series at" \
             "       commit $((i + 1))." \
-            "         in $DEST: ${applied[$i]}" \
+            "         in $DEST: ${applied_subject[$i]}" \
             "         in $p: $subject" \
             "       Not guessing. Inspect $DEST, or reset it with" \
             "       scripts/fetch-mesa.sh --force and re-run."
+        [ "$(commit_patch_id "${applied_sha[$i]}")" = "$(file_patch_id "$p")" ] || die \
+            "error: commit $((i + 1)) in $DEST has the same subject as" \
+            "       $p but a different diff." \
+            "         $(git -C "$DEST" rev-parse --short "${applied_sha[$i]}")  ${applied_subject[$i]}" \
+            "       The patch has been regenerated or edited since it was" \
+            "       applied. Reporting it applied would leave every later" \
+            "       build testing the superseded code. Reset with" \
+            "       scripts/fetch-mesa.sh --force and re-run to pick up" \
+            "       the current series."
         if [ "$LIST" -eq 1 ]; then
             echo "  applied  $(basename "$p")  $subject"
         fi
@@ -165,16 +221,16 @@ for p in "${patches[@]}"; do
     i=$((i + 1))
 done
 
-if [ "${#applied[@]}" -gt "${#patches[@]}" ]; then
+if [ "${#applied_sha[@]}" -gt "${#patches[@]}" ]; then
     die \
-        "error: $DEST has ${#applied[@]} commits on top of" \
+        "error: $DEST has ${#applied_sha[@]} commits on top of" \
         "       $MESA_COMMIT but the series has only ${#patches[@]}." \
         "       Something applied commits this script did not. Nothing" \
         "       was written."
 fi
 
 if [ "$LIST" -eq 1 ]; then
-    echo "apply-mesa-patches: ${#applied[@]} applied, ${#pending[@]} pending" \
+    echo "apply-mesa-patches: ${#applied_sha[@]} applied, ${#pending[@]} pending" \
          "(${#patches[@]} in $PATCHDIR/)"
     exit 0
 fi
