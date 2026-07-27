@@ -1,0 +1,97 @@
+From 7b39c2fca0b1b93e13a57d88920d36e57e6c4f4a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 27 Jul 2026 20:26:52 +0000
+Subject: [PATCH 12/12] util/u_cpu_detect: count the CPUs on POSIX-lite
+ platforms too
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The whole processor-counting block sits under DETECT_OS_POSIX, but
+nothing inside it needs the whole of POSIX: each path is already guarded
+by the macro that names what it uses — HAS_SCHED_GETAFFINITY,
+_SC_NPROCESSORS_ONLN, _SC_NPROCESSORS_CONF, HW_NCPUONLINE. A POSIX-lite
+C library that has sysconf() and defines _SC_NPROCESSORS_ONLN therefore
+gets the right answer from the code that is already written; it is only
+the outer guard that keeps it out.
+
+Left out, available_cpus stays 0, nr_cpus falls to MAX2(1, 0) and every
+consumer believes the machine has one core. util/u_queue.c sizes its
+thread pool from that number, so the effect is a single-threaded
+compiler on a multi-core device.
+
+DETECT_OS_POSIX_LITE defaults to DETECT_OS_POSIX in detect_os.h, so
+every platform that reached this block still reaches it, with the same
+paths enabled. The <unistd.h> include above moves for the same reason
+and in the same way.
+
+mesa-nvk-horizon: Phase 3 item 1 (OS detection) — the CPU-count half of
+  it, and the quality defect recorded in STATUS.md at the end of item 6
+Why: Horizon is POSIX-lite (patch 0007: no <syslog.h>, no <sys/shm.h>,
+  no dynamic loader), so it matched neither arm of the DETECT_OS_WINDOWS
+  / DETECT_OS_POSIX pair and set no CPU count at all. newlib does define
+  _SC_NPROCESSORS_CONF (9) and _SC_NPROCESSORS_ONLN (10) in
+  sys/unistd.h:370-371, and compat/sysconf.c answers both from
+  svcGetInfo(InfoType_CoreMask), so the existing sysconf path is exactly
+  the one that works here.
+Evidence: before this patch, the object built for aarch64/horizon
+  contains no reference to sysconf at all —
+    $ aarch64-none-elf-nm build/mesa-probe/.../u_cpu_detect.c.o | grep sysconf
+    (no output)
+  — while configure reports "Checking for function \"sysconf\" : YES",
+  and HAS_SCHED_GETAFFINITY is absent ("Checking for function
+  \"sched_getaffinity\" : NO"), which is why the _SC_NPROCESSORS_ONLN
+  path is the one that has to be reachable. After it, the same object
+  references sysconf and tests/t_threads.c checks the value it produces
+  against svcGetInfo(InfoType_CoreMask) on the console.
+Upstream: yes — POSIX-lite is an existing macro of Mesa's own, it
+  defaults to DETECT_OS_POSIX so no current platform changes, and the
+  inner guards were already written to answer for themselves.
+---
+ src/util/u_cpu_detect.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/src/util/u_cpu_detect.c b/src/util/u_cpu_detect.c
+index 451881d..1f6bf34 100644
+--- a/src/util/u_cpu_detect.c
++++ b/src/util/u_cpu_detect.c
+@@ -73,7 +73,10 @@
+ #include <elf.h>
+ #endif
+ 
+-#if DETECT_OS_POSIX
++/* For sysconf(), which is where the CPU count comes from below.
++ * POSIX-lite rather than POSIX: <unistd.h> and sysconf are part of the
++ * subset every POSIX-lite C library has. */
++#if DETECT_OS_POSIX_LITE
+ #include <unistd.h>
+ #endif
+ 
+@@ -779,7 +782,14 @@ _util_cpu_detect_once(void)
+       GetSystemInfo(&system_info);
+       available_cpus = MAX2(1, system_info.dwNumberOfProcessors);
+    }
+-#elif DETECT_OS_POSIX
++/* Counting processors needs sysconf() or sysctl(), not the whole of
++ * POSIX. Every path inside is already guarded by the macro that names
++ * what it uses, so a POSIX-lite platform takes exactly the ones its C
++ * library supports and no more. Without this, such a platform sets
++ * nothing at all and nr_cpus falls to the MAX2(1, 0) below — one CPU on
++ * a machine that has several, which u_queue then sizes its thread pool
++ * from. */
++#elif DETECT_OS_POSIX_LITE
+ #  if defined(HAS_SCHED_GETAFFINITY)
+    {
+       /* sched_setaffinity() can be used to further restrict the number of
+@@ -847,7 +857,7 @@ _util_cpu_detect_once(void)
+       total_cpus = ncpu;
+    }
+ #  endif /* DETECT_OS_BSD */
+-#endif /* DETECT_OS_POSIX */
++#endif /* DETECT_OS_POSIX_LITE */
+ 
+    util_cpu_caps.nr_cpus = MAX2(1, available_cpus);
+    total_cpus = MAX2(total_cpus, util_cpu_caps.nr_cpus);
+-- 
+2.43.0
+
