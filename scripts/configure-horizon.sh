@@ -28,16 +28,27 @@ scripts/build-compat.sh
 # readable; Meson shares [constants] across all of them. Passing the
 # generated one first keeps the reading order the same as the
 # dependency order.
+#
+# -Dmesa_build_dir is how $MESA_BUILD_DIR reaches meson.build: Meson runs
+# inside the toolchain container, which receives only the variables
+# horizon_run names, so reading the environment from meson.build would
+# see nothing there. Tests 12 and 13 link the archives in that directory
+# and are skipped when it holds none.
 set -- \
     --cross-file "$HORIZON_CROSS_CONST_FILE" \
     --cross-file "$HORIZON_CROSS_FILE" \
+    -Dmesa_build_dir="$MESA_BUILD_DIR" \
     "$@"
 
-mode=$(horizon_setup_mode "$HORIZON_BUILD_DIR")
+# meson.options is part of this directory's identity as well: a -D for an
+# option added after the directory was configured is rejected before
+# Meson re-reads the file that declares it.
+mode=$(horizon_setup_mode "$HORIZON_BUILD_DIR" meson.options)
 case "$mode" in
     --wipe)
-        echo "cross files changed since $HORIZON_BUILD_DIR was configured;"
-        echo "wiping it — Meson only reads them on a first configure"
+        echo "cross files or meson.options changed since $HORIZON_BUILD_DIR"
+        echo "was configured; wiping it — Meson only reads them on a first"
+        echo "configure"
         ;;
     --reconfigure) echo "reconfiguring $HORIZON_BUILD_DIR" ;;
     *)             echo "configuring $HORIZON_BUILD_DIR" ;;
@@ -45,4 +56,4 @@ esac
 
 # shellcheck disable=SC2086 # $mode is one flag or deliberately empty
 horizon_meson setup $mode "$@" "$HORIZON_BUILD_DIR" .
-horizon_record_cross_id "$HORIZON_BUILD_DIR"
+horizon_record_cross_id "$HORIZON_BUILD_DIR" meson.options

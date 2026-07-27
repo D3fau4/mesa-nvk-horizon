@@ -22,9 +22,21 @@ if ! command -v docker >/dev/null; then
     exit 1
 fi
 
+# The container sees only the variables named here, and the Makefile
+# selects tests 12 and 13 by looking for Mesa's archives under
+# $MESA_BUILD_DIR. Forwarded only when the caller actually set it, so the
+# default stays in one place (scripts/toolchain-env.sh and the Makefile
+# agree on build/mesa-probe) instead of being restated here.
+set -- make "$@"
+if [ -n "${MESA_BUILD_DIR:-}" ]; then
+    set -- -e "MESA_BUILD_DIR=$MESA_BUILD_DIR" "$IMAGE" "$@"
+else
+    set -- "$IMAGE" "$@"
+fi
+
 # The tree is mounted at the *same* path inside the container as outside.
 # Two reasons: it keeps a hardcoded container workdir out of this script
 # (scripts/check-no-abs-paths.sh), and it makes compiler diagnostics and
 # generated depfiles name paths that also resolve on the host.
 exec docker run --rm -e DEVKITPRO=/opt/devkitpro \
-    -v "$PWD":"$PWD" -w "$PWD" "$IMAGE" make "$@"
+    -v "$PWD":"$PWD" -w "$PWD" "$@"

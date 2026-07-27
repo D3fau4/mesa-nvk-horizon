@@ -23,8 +23,8 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=toolchain-env.sh
 . scripts/toolchain-env.sh
-
-MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+# $MESA_BUILD_DIR comes from there now, so meson.build and the Makefile
+# resolve it to the same directory this script builds in.
 
 # src/meson.build builds these subdirectories unconditionally — every
 # driver is behind a with_* condition — so this list *is* the non-driver

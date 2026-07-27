@@ -192,30 +192,39 @@ test_nros = []
 # Kept in step with the Makefile's MESA_TESTS / MESA_LIBS / MESA_CFLAGS.
 fs = import('fs')
 
-mesa_build_dir = 'build/mesa-probe'
+# Not hardcoded: scripts/configure-mesa.sh and scripts/build-mesa.sh both
+# honour $MESA_BUILD_DIR, and looking somewhere else than the directory
+# the caller actually built in would skip these two tests while claiming
+# Mesa had not been built. scripts/configure-horizon.sh passes the same
+# value through (see meson.options for why it is an option and not an
+# environment variable).
+mesa_build_dir = get_option('mesa_build_dir')
 mesa_test_libs = [
   mesa_build_dir / 'src/c11/impl/libmesa_util_c11.a',
   mesa_build_dir / 'src/util/libmesa_util.a',
 ]
 mesa_tests = ['t_threads', 't_ostime']
 
-mesa_libs_present = true
+# meson.project_source_root() / p returns p unchanged when p is absolute,
+# so both an absolute and a source-root-relative option value resolve
+# here without a second code path.
+mesa_test_lib_paths = []
 foreach l : mesa_test_libs
-  if not fs.exists(meson.project_source_root() / l)
+  mesa_test_lib_paths += meson.project_source_root() / l
+endforeach
+
+mesa_libs_present = true
+foreach p : mesa_test_lib_paths
+  if not fs.exists(p)
     mesa_libs_present = false
   endif
 endforeach
 
 if mesa_libs_present
-  mesa_test_link_args = []
-  foreach l : mesa_test_libs
-    mesa_test_link_args += meson.project_source_root() / l
-  endforeach
-
   idep_mesa_core = declare_dependency(
     compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC'],
     include_directories : include_directories('mesa/src', 'mesa/include'),
-    link_args : mesa_test_link_args,
+    link_args : mesa_test_lib_paths,
   )
   horizon_tests += mesa_tests
 else
@@ -228,8 +237,18 @@ foreach t : horizon_tests
   # Tests 12 and 13 additionally see Mesa's headers and archives; the
   # other eleven are built with no Mesa in sight, as before.
   t_deps = [idep_horizon_gpu]
+  # Rebuilding Mesa must relink these two, or they would keep measuring
+  # the archives of an older Mesa build. Meson already infers that:
+  # guess_external_link_dependencies() (mesonbuild/backend/ninjabackend.py)
+  # records any link argument that is an absolute path to an existing
+  # library file, and the generated rule reads
+  #   build t_threads.elf: c_LINKER ... | .../libmesa_util_c11.a ...
+  # Declaring it as well costs one line and does not depend on that
+  # inference staying a documented guess.
+  t_link_depends = []
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
+    t_link_depends = mesa_test_lib_paths
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the
@@ -240,6 +259,7 @@ foreach t : horizon_tests
     include_directories : [horizon_gpu_inc, tests_inc],
     link_with : testfw,
     dependencies : t_deps,
+    link_depends : t_link_depends,
     name_suffix : 'elf',
     install : false,
   )

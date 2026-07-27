@@ -27,8 +27,8 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=toolchain-env.sh
 . scripts/toolchain-env.sh
-
-MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+# $MESA_BUILD_DIR comes from there now, so meson.build and the Makefile
+# resolve it to the same directory this script builds in.
 
 [ -f mesa/meson.build ] || {
     echo "error: mesa/ is not populated (no meson.build)." >&2

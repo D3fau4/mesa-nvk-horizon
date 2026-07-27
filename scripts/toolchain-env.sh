@@ -35,6 +35,14 @@ HORIZON_MESON_DIR="build/toolchain/meson-${MESON_VERSION}"
 # Python modules Mesa's generators need, kept separate from Meson's
 # install so either can be reprovisioned without disturbing the other.
 HORIZON_PYTHON_DIR="build/toolchain/python"
+# Where scripts/{configure,build}-mesa.sh build the pinned Mesa. Defined
+# here rather than in each of them because four things have to agree on
+# it: those two, meson.build (tests 12 and 13 link the archives it
+# contains, through -Dmesa_build_dir) and the Makefile. A caller that
+# overrode it in only some of them got the two Mesa tests silently
+# skipped while the build reported success.
+MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+
 # Where scripts/build-compat.sh archives libhorizon_compat.a. It sits
 # with the other provisioned inputs rather than in a build directory,
 # because the cross file names it and therefore every build needs it to
@@ -69,7 +77,7 @@ fi
 
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
-export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR
+export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
 
 # Run a command with the cross toolchain reachable. The image's default
 # PATH omits devkitA64/bin and portlibs/switch/bin (measured; recorded
@@ -121,33 +129,49 @@ horizon_meson() {
 # the ordinary upgrade path — a developer who already has build/meson —
 # so it has to be detected rather than left to whoever reads the diff.
 #
+# The same is true of the set of project options. `setup --reconfigure`
+# validates every -D against the options it recorded on the first
+# configure, before it re-reads meson.options — so adding an option and
+# passing it in the same commit fails with
+#   ERROR: Unknown option: "mesa_build_dir".
+# on any directory configured before it existed (measured). Callers pass
+# such files as extra arguments below, and a change to one wipes the
+# directory the same way a cross-file change does.
+#
 # Echoes the setup mode to use: "" for a fresh directory,
-# "--reconfigure" when the cross files are unchanged, "--wipe" when they
-# are not. The recorded identity lives *beside* the build directory,
-# because --wipe empties the directory itself. A configured directory
-# with no stamp is treated as changed: it predates this check, which is
-# exactly the case that broke.
-horizon_setup_mode() { # builddir
-    if [ ! -f "$1/meson-info/meson-info.json" ]; then
+# "--reconfigure" when those inputs are unchanged, "--wipe" when they are
+# not. The recorded identity lives *beside* the build directory, because
+# --wipe empties the directory itself. A configured directory with no
+# stamp is treated as changed: it predates this check, which is exactly
+# the case that broke.
+horizon_setup_mode() { # builddir [extra identity files...]
+    _hz_dir="$1"
+    shift
+    if [ ! -f "$_hz_dir/meson-info/meson-info.json" ]; then
         echo ""
         return 0
     fi
-    if [ "$(horizon_cross_id)" = "$(cat "$1.crossid" 2>/dev/null)" ]; then
+    if [ "$(horizon_cross_id "$@")" = "$(cat "$_hz_dir.crossid" 2>/dev/null)" ]
+    then
         echo "--reconfigure"
     else
         echo "--wipe"
     fi
 }
 
-horizon_cross_id() {
-    cat "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" 2>/dev/null |
+horizon_cross_id() { # [extra identity files...]
+    cat "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" "$@" 2>/dev/null |
         sha256sum | cut -d' ' -f1
 }
 
 # Called after a successful setup, never before: a failed configure must
-# not leave a stamp claiming the directory matches.
-horizon_record_cross_id() { # builddir
-    horizon_cross_id > "$1.crossid"
+# not leave a stamp claiming the directory matches. The extra files must
+# be the same ones horizon_setup_mode was given, or the stamp records a
+# different identity from the one that was checked.
+horizon_record_cross_id() { # builddir [extra identity files...]
+    _hz_dir="$1"
+    shift
+    horizon_cross_id "$@" > "$_hz_dir.crossid"
 }
 
 # Mesa's code generators (milestone item 6). Separate from

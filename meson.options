@@ -1,0 +1,25 @@
+# Project options for mesa-nvk-horizon.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+
+# Where scripts/configure-mesa.sh and scripts/build-mesa.sh put the Mesa
+# build. Tests 12 and 13 link the archives that build produced, so this
+# file has to look in the same directory the caller actually used.
+#
+# It is an option rather than an environment variable because Meson runs
+# inside the toolchain container (scripts/toolchain-env.sh), which
+# receives only the variables named on the `docker run` command line — an
+# environment variable read here would be silently empty in the container
+# mode that CLAUDE.md documents as the supported one. Passed by
+# scripts/configure-horizon.sh from $MESA_BUILD_DIR; the default is the
+# same string those scripts default to.
+#
+# Relative paths are taken from the project source root; an absolute path
+# is used as given.
+option(
+  'mesa_build_dir',
+  type : 'string',
+  value : 'build/mesa-probe',
+  description : 'Mesa build directory whose archives tests 12 and 13 link',
+)
