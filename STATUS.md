@@ -38,6 +38,57 @@ reasoned, not measured.
 
 ---
 
+## Codex PR review, Phase 3 (2026-07-26) — 9 findings, all real
+
+`chatgpt-codex-connector[bot]` reviewed PR #3 at `bd74d45` and left
+**3 × P1 and 6 × P2**. Each was checked against the code before anything
+was changed, as in the two earlier rounds. **This time all nine held
+up** — none was investigated and dismissed.
+
+Two of them are failures of *my verification*, not just of the code, and
+are recorded as such.
+
+| # | Finding | Disposition |
+|---|---|---|
+| P1 | `meson setup --reconfigure` keeps the machine-file args recorded at the first configure, so `-lhorizon_compat` never reaches an existing build directory | **Real, and it breaks the ordinary upgrade path.** Reproduced end to end: a directory configured with the old cross file then `--reconfigure`d has **zero** occurrences of the flag, and `t_sysinfo` fails with `undefined reference to 'sysconf'` ×5. `--wipe` does re-read them (11). Fixed: `horizon_setup_mode` hashes both cross files beside the build directory and picks `""`/`--reconfigure`/`--wipe`; a configured directory with no stamp counts as changed, which is every directory predating the fix |
+| P1 | `GIT_WORK_TREE` / `core.worktree` defeat the applier's git-dir assertion | **Real, measured.** With `GIT_WORK_TREE` set, `--absolute-git-dir` still answers `mesa/.git` — the guard passes — while `--show-toplevel` answers the foreign tree, which is where `status` and `am` would act. Fixed on both sides: the redirecting Git environment variables are cleared, *and* `--show-toplevel` is asserted, since `core.worktree` needs no variable. `fetch-mesa.sh` had the same guard and got the same fix |
+| P1 | "Already applied" compared only commit subjects, so a regenerated patch body was invisible | **Real.** Fixed with `git patch-id --stable` on both sides, subject kept for diagnostics. Verified by editing a line inside 0010's diff and leaving its `Subject:` alone: now reported as divergence, where before it said "all 10 applied". Residual stated in `mesa-patches/README.md`: a change confined to the commit message below the subject, with an identical diff, still reads as applied |
+| P2 | Patch 0010 treated `avail_pages == 0` as a query failure | **Real, and self-inconsistent:** `compat/sysconf.c` deliberately returns 0 when `used >= total`, so the patch turned its own documented case into a spurious failure. NVK would log "failed to query the budget" instead of publishing a valid zero. Now only `-1` is an error |
+| P2 | `t_sysinfo`'s available-memory bound underflows on u64 | **Real**, same root cause: `total - used` wraps in exactly the case `compat/` documents, making the bound trivially true. Clamped before subtracting |
+| P2 | The page-size check is one-directional | **Real, and the claim in the code and in this file was wrong.** A 64 KiB-aligned region is also divisible by 4 KiB, so divisibility catches an *overstated* page size and says nothing about an understated one — the opposite of what was written. Corrected, and the missing bound added: `probe_map_granularity` walks a ladder of `svcMapMemory` sizes and checks the smallest accepted one equals what `sysconf` reports. A ladder rather than one size so a failure from any other cause fails at every rung and is reported as "not measured" instead of blaming the page size |
+| P2 | `sed -i` in GNU form fails on BSD/macOS | **Real.** It would fail on the *first* configure of a local devkitPro install on macOS. Rewritten through a temp file |
+| P2 | An apostrophe in the checkout path breaks the generated cross file | **Real.** Escaped for Meson's string syntax, backslashes first |
+| P2 | `build-compat.sh` cannot see the toolchain move | **Real, and wider than reported.** mtimes cannot notice a different `$DEVKITPRO` or a newer image, and the Switch toolchain is deliberately unpinned, so Mesa could link an object built against the previous environment right after an update. Replaced with a content identity (flags, toolchain description, image digest, compiler banner, sources). Codex named only the script; **the `Makefile` had the matching gap** — it generated `build/toolchain/lib/*.d` and never listed them in its `-include` line — and that is fixed too |
+
+### What the round says about the verification, not the code
+
+- **The upgrade path was never tested.** Every check in the item 3 and
+  item 6 sessions began with `rm -rf build/meson`. The clean path was
+  verified repeatedly; the path an actual developer takes — an existing
+  build directory — not once. That is why a P1 got through.
+- **The page-size claim was the one I flagged as least certain** in the
+  review request, and it was indeed wrong. Asking about it was right;
+  writing it as settled in `STATUS.md` was not.
+- The gates caught two of the fixes' own comments — the `--wrap` spelling
+  in the compat round, and a `/home/` example path in this one. Both
+  reworded rather than exempted.
+
+### Re-verification after the fixes
+
+| Check | Result |
+|---|---|
+| Old-cross-file build directory + `configure-horizon.sh` | detected, wiped, flag lands (11 occurrences); second run reports `--reconfigure` |
+| `GIT_WORK_TREE` set / `core.worktree` set | ignored correctly / refused with the tree it would have written to |
+| 0010's diff edited, subject untouched | divergence reported and refused |
+| `scripts/apply-mesa-patches.sh` on a reset `mesa/`, ×2 | applies 10; second run `nothing to do` |
+| `scripts/configure-mesa.sh` + `ninja -k 0` | exit 0, `sysconf : YES`, **379/379, 0 FAILED, 10/10 libraries** |
+| Ten Phase 1 `.nro` vs the Phase 2 baseline | **identical 10/10** |
+| `make clean && make all -j4` | exit 0, 11 `.nro` |
+| `build-compat.sh` on a changed identity / unchanged | rebuilds / no-op |
+| Host tests, three gates | 103/103, all OK |
+
+---
+
 ## Phase 3 — item 6, physical memory and page size (2026-07-26)
 
 Closes the one object item 3 could not: `src/util/os_misc.c`. No code in
@@ -155,13 +206,20 @@ merely passes: a probe file including `horizon_gpu/device.h` from
 nobody can check by compiling. `tests/t_sysinfo.c` measures it, and is
 deliberately **not** an assertion of the constant against itself:
 
-- every region `svcGetInfo` reports (heap, alias, aslr, stack) must be
-  page-aligned and a whole number of pages of whatever `sysconf`
-  returned — a larger real page size would put a boundary off it;
+- **upper bound** — every region `svcGetInfo` reports (heap, alias,
+  aslr, stack) must be page-aligned and a whole number of pages of
+  whatever `sysconf` returned. A page size *bigger* than the real one
+  puts a boundary off it;
+- **lower bound** — the smallest size `svcMapMemory` accepts must equal
+  what `sysconf` reports. Divisibility cannot see an understated page
+  size (a 64 KiB-aligned region divides by 4 KiB too), so this half is
+  what covers it. **Added after the Codex review**: the first version of
+  this section claimed divisibility caught both, and that was wrong;
 - `_SC_PHYS_PAGES × page size` must equal the raw
   `InfoType_TotalMemorySize`, which is the claim `compat/` makes about
   *what* it reports;
-- available never exceeds total, and agrees with total − used;
+- available never exceeds total, and agrees with total − used, clamped
+  the way `compat/` clamps it;
 - an unknown name gives `-1`/`EINVAL`, not a plausible number.
 
 Raw values are printed as well as checked, so a console log records the
@@ -200,7 +258,9 @@ memory figures are reasoned.
 
 - **`t_sysinfo` has not run on hardware.** Its whole purpose is to turn
   `compat/sysconf.c`'s numbers into measurements; it ships as a cross
-  build.
+  build. It now bounds the page size from both sides (see the Codex
+  review round above); the earlier claim that divisibility alone caught
+  an understated page size was wrong.
 - **`util_cpu_detect` reports 1 CPU on Horizon.** Its whole CPU-counting
   block is under `#elif DETECT_OS_POSIX`, and patch 0007 chose
   POSIX-**lite** deliberately (no `<syslog.h>`, no `<sys/shm.h>`, no
@@ -1093,4 +1153,15 @@ for the same reason and cites this incident in its header.
 | `scripts: extend the layering gate to compat/` | `check-layering.sh` |
 | `mesa-patches: let sysconf answer the memory and page-size queries` | patches 0009–0010 |
 | `tests: add t_sysinfo, the eleventh .nro` | `t_sysinfo.c`, `meson.build`, `Makefile` |
-| `docs: record Phase 3 item 6` | this update |
+| `docs: record Phase 3 item 6` | STATUS |
+
+## Commit log for the Codex review round
+
+| Commit | Scope |
+|---|---|
+| `scripts: wipe a build directory when the cross files change (P1)` | `horizon_setup_mode`, both configure scripts |
+| `scripts: harden the mesa/ git guards against redirection (P1)` | `--show-toplevel` assertion, Git env cleared, patch-id matching, `fetch-mesa.sh`, README |
+| `mesa-patches: treat zero available memory as an answer, not a failure (P2)` | patch 0010 |
+| `tests: measure the page granularity instead of asserting it (P2)` | `t_sysinfo.c` — the map ladder and the clamp |
+| `scripts,build: fix portability and staleness in the compat plumbing (P2)` | `sed -i`, Meson quoting, compat identity, Makefile depfiles |
+| `docs: record the Codex review round` | this update |
