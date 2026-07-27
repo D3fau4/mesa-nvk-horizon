@@ -32,7 +32,17 @@ scripts/configure-mesa.sh && scripts/build-mesa.sh
 ```
 
 Without that, both build paths skip those two with a message and produce
-the other eleven. Nothing else here needs Mesa.
+the other eleven — and the Makefile path also deletes any `.nro` a
+previous build with Mesa present had left, so `build/` never mixes
+artefacts from two builds. Nothing else here needs Mesa.
+
+`$MESA_BUILD_DIR` selects where Mesa was built (default `build/mesa-probe`)
+and is honoured by all four of `scripts/{configure,build}-mesa.sh`, the
+Makefile and the Meson build; set it for the Mesa build and for the test
+build alike.
+
+`make clean` leaves that directory alone, so `make clean && make` still
+produces all thirteen.
 
 ## Running on the console
 
