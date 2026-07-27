@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-07-26
+**Last updated:** 2026-07-27
 **Branch:** `claude/mesa-nvk-horizon-phase3-item3-9g57iu`
 
 ---
@@ -27,14 +27,140 @@ compiler rather than as an OS name.
 declares and does not define. That is the one door `CLAUDE.md` leaves
 open, and `scripts/check-layering.sh` now polices it.
 
-**Carried over and still open:** the ten `.nro` have not been re-run on
-real hardware since Phase 1's second review round. Phase 3 changes no
-code in `horizon/` — the ten `.nro` are byte-identical to the Phase 2
-baseline, verified again after every change here — so that item is
-unchanged, not resolved. **`t_sysinfo` (the eleventh `.nro`) has never
-been run at all**: it exists precisely to measure what `compat/sysconf.c`
-returns on a console, and until it does, those numbers are cited and
-reasoned, not measured.
+**Closed 2026-07-27:** all eleven `.nro` were run on a real Switch, in
+**both applet and full/game mode**. Ten of eleven PASS in both; Phase
+1's two hardware exit criteria go back to ✅ on the current code. See
+"Hardware run of all eleven `.nro`" below.
+
+`compat/sysconf.c`'s mode-aware argument is confirmed by a wide margin —
+394 MiB of process memory in applet mode against 3189 MiB in full/game,
+an 8.1× difference on the same console — so a hardcoded constant would
+have been badly wrong, not approximately right.
+
+**Still owed:** one check. `t_sysinfo`'s granularity probe mapped nothing
+because it asked for the wrong memory region, which the test correctly
+reported as "not a statement about the page size". Fixed; that one `.nro`
+needs re-running, and nothing else does.
+
+---
+
+## Hardware run of all eleven `.nro`, both process modes (2026-07-27)
+
+Owner-executed on a real Switch, **applet mode and full/game mode**,
+logs received as `horizongputests.rar` (22 files, `sdmc:/horizon_gpu_tests/`).
+This closes the re-run owed since Phase 1's second review round and is
+the first console evidence for anything in Phase 3.
+
+| # | Test | Applet | Full/game |
+|---|---|---|---|
+| 1 | `t_init` | **PASS 22/22** | **PASS 22/22** |
+| 2 | `t_alloc` | **PASS 21/21** | **PASS 21/21** |
+| 3 | `t_nvmap` | **PASS 16/16** | **PASS 16/16** |
+| 4 | `t_va_reserve` | **PASS 18/18** | **PASS 18/18** |
+| 5 | `t_map` | **PASS 28/28** | **PASS 28/28** |
+| 6 | `t_channel` | **PASS 17/17** | **PASS 17/17** |
+| 7 | `t_submit` | **PASS 30/30** | **PASS 30/30** |
+| 8 | `t_syncpt` | **PASS 48/48** | **PASS 48/48** |
+| 9 | `t_fence_wait` | **PASS 14/14** | **PASS 14/14** |
+| 10 | `t_teardown` | **PASS 34/34** | **PASS 32/32** |
+| 11 | `t_sysinfo` | FAIL 18/19 | FAIL 18/19 |
+
+**Ten of eleven pass in both modes, on the current code.** The counts are
+higher than the Phase 1 run (`t_map` 26→28, `t_submit` 23→30,
+`t_va_reserve` 17→18, `t_teardown` 28→34/32) because the second review
+round added assertions; those are the very tests whose paths it changed.
+`t_teardown`'s different totals between modes are the documented
+in-flight-destroy race taking its two legal branches — both PASS.
+
+`t_init` and `t_map` are **byte-identical between modes**, which is what
+you want from a device-query test.
+
+### The one failure is in my new test, and it is not what it looks like
+
+`t_sysinfo` fails exactly one check, identically in both modes: the
+`svcMapMemory` granularity ladder never mapped anything. Every rung
+returned `0x0000dc01`.
+
+Decoded against libnx's `result.h`: module 1 (kernel), description 110 =
+**`KernelError_InvalidMemoryRange`** — *not* `KernelError_InvalidSize`
+(101), which is what a granularity refusal would be. So the kernel was
+objecting to *where* the probe tried to map, never to the size.
+
+The cause is a bug in the probe: it took its destination from
+`virtmemFindAslr`, and `svcMapMemory` only accepts the **stack** region
+— it is documented as "mainly used for adding guard pages around stack",
+and libnx uses `virtmemFindStack` for exactly this call. Fixed; the
+probe's diagnostics now name the kernel description instead of printing
+only hex.
+
+**The ladder design did its job.** The test reported
+`granularity NOT measured: no rung mapped, so the cause is something
+other than the page size` rather than failing the page-size check — which
+is precisely the self-diagnosis it was built for after the Codex review.
+A single-size probe would have looked like "the page size is wrong".
+
+### What was measured, as opposed to reasoned
+
+**The page size is 0x1000, upper bound confirmed.** `sysconf(_SC_PAGESIZE)`
+returns 4096, and every region the kernel reports is page-aligned and a
+whole number of pages of it, in both modes:
+
+| Region | Applet | Full/game |
+|---|---|---|
+| heap | `0x11ec600000` + `0x200000000` | `0x695de00000` + `0x200000000` |
+| alias | `0x4d4a200000` + `0x1000000000` | `0x42bce00000` + `0x1000000000` |
+| aslr | `0x8000000` + `0x7ff8000000` | `0x8000000` + `0x7ff8000000` |
+| stack | `0x3469000000` + `0x80000000` | `0x5a68e00000` + `0x80000000` |
+
+The lower bound stays unmeasured until the fixed probe runs.
+
+**The mode-aware argument is confirmed, and by a wide margin.** This is
+the reasoning `compat/sysconf.c` was written on, now measured:
+
+| | Applet | Full/game | Ratio |
+|---|---|---|---|
+| `InfoType_TotalMemorySize` | `0x18aab000` = **394 MiB** | `0xc7500000` = **3189 MiB** | **8.1×** |
+| `_SC_PHYS_PAGES` | 101 035 | 816 384 | |
+| `_SC_AVPHYS_PAGES` | 35 214 (137 MiB free) | 995 (3 MiB free) | |
+
+A hardcoded "4 GiB" would have been wrong by more than 8× in applet
+mode, and `_SC_PHYS_PAGES × page size` equals the raw
+`InfoType_TotalMemorySize` exactly in both. This is the decision from
+"Phase 3 — item 6" holding up against hardware rather than against an
+argument.
+
+It also shows why the **zero-available fix from the Codex review
+matters**: in full/game mode the console reported 995 free pages, 3 MiB.
+A process starting slightly later reports zero, and the pre-fix code
+would have called that a failed query and made NVK log that it could not
+read the budget.
+
+### Other measurements worth keeping
+
+- GM20B identical in both modes: `chip='gm20b' arch=0x120 impl=0xb
+  rev=0xa1`, 1 GPC × 2 TPC, L2 `0x40000`, `va_bits=40`,
+  `big_page=0x20000`, `compression_page=0x20000`, classes 3d `0xb197` /
+  compute `0xb1c0` / 2d `0x902d` / gpfifo `0xb06f` / i2m `0xa140` /
+  copy `0xb0b5`.
+- VA regions: small `base=0x8000000 pages=0x3f7fff page=0x1000`, big
+  `base=0x400000000 pages=0xdffff page=0x20000`.
+- **R5 again**: syncpoint id 26, value 68680 at channel create, 71046 at
+  `t_syncpt` start — counters still not reset per channel, third
+  independent confirmation that the shadow-from-read design is required.
+- **Async submission still holds**: both submits issued in **149 µs**
+  with no intervening CPU wait (Phase 1 measured 148 µs).
+
+### Consequences
+
+- **Phase 1's two hardware exit criteria go back to ✅** — measured on
+  the current code, not on `732b58c`. See that table below.
+- `compat/sysconf.c` is hardware-verified for everything except the
+  granularity lower bound: the page size it reports is consistent with
+  every region the kernel exposes, and both memory figures match the raw
+  syscall in two very different process modes.
+- Owed: **re-run `t_sysinfo` alone** with the fixed probe. Nothing else
+  needs re-running — `package-horizon.sh` reports `1 copied, 10 already
+  current`, so the other ten artefacts are unchanged.
 
 ---
 
@@ -613,16 +739,17 @@ files were reported missing — note the tests write them to
 | Ten tests cross-compile (X) | ✅ |
 | Pure logic builds/runs on host (H) | ✅ 103/103 |
 | Layering gate clean | ✅ |
-| Tests 1–10 pass on hardware (HW) | ⚠️ **all ten PASSED, on code that has since changed** — 8/10 on the first run, plus `t_channel` 17/17 and `t_teardown` 28/28 on the confirmation re-run. Measured at `732b58c`; the second review round (`747b915`) then changed `horizon/`. **Not re-run since.** |
-| ≥2 submits in flight without CPU wait (test 7) | ⚠️ **measured on hardware** (148 µs for both submits, single wait at the end) — same caveat: `submit.c` changed in `747b915` |
+| Tests 1–10 pass on hardware (HW) | ✅ **all ten PASS, on the current code, in both process modes** (2026-07-27 — see "Hardware run of all eleven `.nro`" above). Applet and full/game agree test for test; the counts are higher than the Phase 1 run because the second review round added assertions to exactly these paths |
+| ≥2 submits in flight without CPU wait (test 7) | ✅ **re-measured on hardware**: both submits issued in **149 µs** with no intervening CPU wait, and the bound is now `t_check`ed rather than noted (148 µs at `732b58c`) |
 
-**Every Phase 1 exit criterion was met at `732b58c`.** Two of them are
-hardware criteria and `horizon/` changed afterwards, so they are
-*stale*, not *failed*: nothing suggests a regression, and the changed
-code builds clean and passes 103/103 host tests. But a ✅ here would
-claim console evidence for code no console has run, which is exactly the
-host / cross / hardware distinction this project refuses to blur
-(CLAUDE.md). They go back to ✅ after the re-run in "Next concrete task".
+**Every Phase 1 exit criterion is met, and the two hardware ones are no
+longer stale.** They were measured at `732b58c` and `horizon/` changed
+afterwards in `747b915`, which is why they sat at ⚠️ through Phases 2
+and 3 — a ✅ would have claimed console evidence for code no console had
+run. The 2026-07-27 run closes that: it exercised the current code,
+including every path the second review round touched (channel
+create/destroy, `vm_map`, device big-page handling, the GPFIFO
+emitters), and found no regression in either mode.
 
 ---
 
@@ -1040,18 +1167,20 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Re-run the ten `.nro`s on real hardware** to close out the second
-review round — the changed paths (channel create/destroy, `vm_map`,
-device big-page handling, the GPFIFO command emitters) are exercised by
-every test, not just one. `build/pkg/` now holds the ten `.nro` plus a
-`MANIFEST.txt` recording each artefact's sha256 against the toolchain
-pins, so the result can be attributed to an exact build. Phase 2 changed
-no `horizon/` code, so either build path's artefacts are valid for this.
+**Re-run `t_sysinfo` alone**, with the fixed granularity probe. It is
+the only thing owed on hardware: the run of 2026-07-27 covered all
+eleven `.nro` in both process modes and closed the re-run the second
+review round had been waiting for. Nothing else changed —
+`package-horizon.sh` reports `1 copied, 10 already current`.
 
-That step now covers **eleven** `.nro`, not ten. `t_sysinfo` is new and
-has never run; it is what turns `compat/sysconf.c`'s page size and
-memory figures from cited-and-reasoned into measured, and it needs no nv
-services so it is the cheapest one to start with.
+What that one re-run decides: whether the page size is bounded from
+below as well as above. Everything else about `compat/sysconf.c` is
+already measured. If the ladder's first rung (`svcMapMemory(0x1000)`)
+maps, `0x1000` is confirmed on both sides; if the smallest accepted size
+is larger, the cited constant is wrong and `compat/sysconf.c` has to be
+redone — which would also change what Mesa reports for
+`minMemoryMapAlignment`. A failure that names anything other than
+`InvalidSize` means the probe is still wrong, not the page size.
 
 **Phase 3's build criterion is met**, so the remaining Phase 3 work is
 the items that were never blocking: **2** (Meson
