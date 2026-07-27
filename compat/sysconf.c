@@ -23,6 +23,13 @@
  * nvk_physical_device_create() return VK_ERROR_INITIALIZATION_FAILED,
  * so no Vulkan device is enumerated at all.
  *
+ * Mesa's src/util/u_cpu_detect.c is the second caller: it counts
+ * processors with sysconf(_SC_NPROCESSORS_ONLN), and util/u_queue.c
+ * sizes its thread pool from the result. Answering it here rather than
+ * inside Mesa is what keeps <switch.h> out of Mesa's generic src/util —
+ * a layering rule of this project, and the reason such a patch could
+ * never go upstream.
+ *
  * Layer rules (CLAUDE.md): compat/ may use newlib and libnx, and must
  * not touch Mesa, NVK or horizon/. This file uses exactly libnx's svc.h
  * and newlib.
@@ -121,6 +128,44 @@ sysconf(int name)
         if (!horizon_process_info(InfoType_TotalMemorySize, &total))
             break;
         return bytes_to_pages(total);
+
+    /* WHERE THE PROCESSOR COUNT COMES FROM.
+     *
+     * InfoType_CoreMask is "Bitmask of allowed Core IDs" (libnx
+     * switch/kernel/svc.h:185) — the set of CPU cores this process may
+     * be scheduled on, which is what svcSetThreadCoreMask validates a
+     * thread's affinity against. Its population count is therefore the
+     * number of processors usable by this process, which is exactly the
+     * quantity _SC_NPROCESSORS_ONLN names.
+     *
+     * ONLN and CONF get the same answer, deliberately. Horizon exposes
+     * no second, wider number to a normal process: there is no query
+     * for "cores the SoC has, whether or not you may use them" that
+     * homebrew can rely on. Reporting the SoC's four Cortex-A57s for
+     * _SC_NPROCESSORS_CONF would be a constant nobody measured, and the
+     * only caller in sight (Mesa's util_cpu_detect, which uses CONF to
+     * size a CPU mask) is better served by a number that is true than
+     * by one that is larger. tests/t_threads.c checks the two agree and
+     * prints the raw mask, so a console log records the bitmask itself
+     * rather than only its population count.
+     *
+     * Not clamped to any expected value: if a future firmware hands a
+     * process more or fewer cores, the measurement should say so.
+     */
+    case _SC_NPROCESSORS_ONLN:
+    case _SC_NPROCESSORS_CONF: {
+        u64 core_mask;
+
+        if (!horizon_process_info(InfoType_CoreMask, &core_mask))
+            break;
+        /* A mask of zero would mean the process may run on no core at
+         * all, which cannot be true of a process that is running. Treat
+         * it as a failed query rather than reporting zero processors,
+         * which callers read as "unknown" only if it is negative. */
+        if (core_mask == 0)
+            break;
+        return (long)__builtin_popcountll(core_mask);
+    }
 
     case _SC_AVPHYS_PAGES:
         if (!horizon_process_info(InfoType_TotalMemorySize, &total))
