@@ -77,10 +77,16 @@ set -- \
     -Dshader-cache=disabled \
     "$@"
 
-if [ -f "$MESA_BUILD_DIR/meson-info/meson-info.json" ]; then
-    echo "reconfiguring $MESA_BUILD_DIR"
-    horizon_meson setup --reconfigure "$@" "$MESA_BUILD_DIR" mesa
-else
-    echo "configuring $MESA_BUILD_DIR"
-    horizon_meson setup "$@" "$MESA_BUILD_DIR" mesa
-fi
+mode=$(horizon_setup_mode "$MESA_BUILD_DIR")
+case "$mode" in
+    --wipe)
+        echo "cross files changed since $MESA_BUILD_DIR was configured;"
+        echo "wiping it — Meson only reads them on a first configure"
+        ;;
+    --reconfigure) echo "reconfiguring $MESA_BUILD_DIR" ;;
+    *)             echo "configuring $MESA_BUILD_DIR" ;;
+esac
+
+# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
+horizon_meson setup $mode "$@" "$MESA_BUILD_DIR" mesa
+horizon_record_cross_id "$MESA_BUILD_DIR"

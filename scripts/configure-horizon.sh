@@ -33,10 +33,16 @@ set -- \
     --cross-file "$HORIZON_CROSS_FILE" \
     "$@"
 
-if [ -f "$HORIZON_BUILD_DIR/meson-info/meson-info.json" ]; then
-    echo "reconfiguring $HORIZON_BUILD_DIR"
-    horizon_meson setup --reconfigure "$@" "$HORIZON_BUILD_DIR" .
-else
-    echo "configuring $HORIZON_BUILD_DIR"
-    horizon_meson setup "$@" "$HORIZON_BUILD_DIR" .
-fi
+mode=$(horizon_setup_mode "$HORIZON_BUILD_DIR")
+case "$mode" in
+    --wipe)
+        echo "cross files changed since $HORIZON_BUILD_DIR was configured;"
+        echo "wiping it — Meson only reads them on a first configure"
+        ;;
+    --reconfigure) echo "reconfiguring $HORIZON_BUILD_DIR" ;;
+    *)             echo "configuring $HORIZON_BUILD_DIR" ;;
+esac
+
+# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
+horizon_meson setup $mode "$@" "$HORIZON_BUILD_DIR" .
+horizon_record_cross_id "$HORIZON_BUILD_DIR"

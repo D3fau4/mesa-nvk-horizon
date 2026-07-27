@@ -106,6 +106,50 @@ horizon_meson() {
         python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" "$@"
 }
 
+# Meson reads the machine files only when a build directory is FIRST
+# configured. `setup --reconfigure` keeps the [built-in options] it
+# recorded then, so an edit to the cross file never reaches an existing
+# build directory — it silently keeps building with the old toolchain
+# description.
+#
+# Measured, and it is not theoretical: after -lhorizon_compat was added
+# to c_link_args, a build directory configured before that change and
+# then --reconfigure'd still had zero occurrences of the flag in
+# build.ninja, and t_sysinfo failed to link with
+#   undefined reference to `sysconf'
+# `setup --wipe` does re-read them (11 occurrences afterwards). This is
+# the ordinary upgrade path — a developer who already has build/meson —
+# so it has to be detected rather than left to whoever reads the diff.
+#
+# Echoes the setup mode to use: "" for a fresh directory,
+# "--reconfigure" when the cross files are unchanged, "--wipe" when they
+# are not. The recorded identity lives *beside* the build directory,
+# because --wipe empties the directory itself. A configured directory
+# with no stamp is treated as changed: it predates this check, which is
+# exactly the case that broke.
+horizon_setup_mode() { # builddir
+    if [ ! -f "$1/meson-info/meson-info.json" ]; then
+        echo ""
+        return 0
+    fi
+    if [ "$(horizon_cross_id)" = "$(cat "$1.crossid" 2>/dev/null)" ]; then
+        echo "--reconfigure"
+    else
+        echo "--wipe"
+    fi
+}
+
+horizon_cross_id() {
+    cat "$HORIZON_CROSS_FILE" "$HORIZON_CROSS_CONST_FILE" 2>/dev/null |
+        sha256sum | cut -d' ' -f1
+}
+
+# Called after a successful setup, never before: a failed configure must
+# not leave a stamp claiming the directory matches.
+horizon_record_cross_id() { # builddir
+    horizon_cross_id > "$1.crossid"
+}
+
 # Mesa's code generators (milestone item 6). Separate from
 # horizon_ensure_meson because horizon/ does not need them and should
 # not pay for them; Mesa cannot configure at all without mako.
@@ -166,7 +210,19 @@ horizon_fix_meson_shebang() {
     if [ "$(head -n 1 "$_hz_launcher")" = '#!/usr/bin/env python3' ]; then
         return 0
     fi
-    sed -i '1s|^#!.*|#!/usr/bin/env python3|' "$_hz_launcher"
+    # Not `sed -i`: GNU takes no argument for it and BSD/macOS requires
+    # one, so the GNU spelling fails outright on a local devkitPro
+    # install on macOS — and it fails on the *first* configure there,
+    # before Meson ever runs. Rewriting through a temp file is the same
+    # idiom the rest of scripts/ uses and needs no sed at all. chmod
+    # before the move: the launcher has to stay executable.
+    _hz_tmp="$_hz_launcher.tmp.$$"
+    {
+        printf '%s\n' '#!/usr/bin/env python3'
+        tail -n +2 "$_hz_launcher"
+    } > "$_hz_tmp"
+    chmod +x "$_hz_tmp"
+    mv "$_hz_tmp" "$_hz_launcher"
     echo "meson: rewrote the launcher shebang to /usr/bin/env python3"
 }
 
