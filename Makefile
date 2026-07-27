@@ -112,4 +112,7 @@ $(BUILD)/%.nro: $(BUILD)/%.elf $(BUILD)/%.nacp
 clean:
 	rm -rf $(BUILD)
 
--include $(LIB_OBJS:.o=.d) $(TESTS:%=$(BUILD)/%.t.d) $(BUILD)/testfw.d
+# The compat depfiles were generated but never included, so a change to a
+# newlib or libnx header did not rebuild compat/ on this path either.
+-include $(LIB_OBJS:.o=.d) $(TESTS:%=$(BUILD)/%.t.d) $(BUILD)/testfw.d \
+         $(COMPAT_OBJS:.o=.d)

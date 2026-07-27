@@ -57,17 +57,34 @@ if [ ${#sources[@]} -eq 0 ]; then
     exit 1
 fi
 
-needs_build() {
-    [ "$FORCE" -eq 1 ] && return 0
-    [ -f "$LIB" ] || return 0
-    [ "$0" -nt "$LIB" ] && return 0
-    for src in "${sources[@]}"; do
-        [ "$src" -nt "$LIB" ] && return 0
-    done
-    return 1
+# What this archive was built from AND against, hashed. mtimes alone are
+# not enough: the Switch toolchain is deliberately not pinned
+# (toolchain/versions.env), so it moves underneath us. A newer image or
+# a different $DEVKITPRO brings different newlib and libnx headers, and
+# sysconf.c compiles constants and struct layouts out of them — nothing
+# in compat/ would be newer than the archive, so an mtime check would
+# call it up to date and Mesa would link an object built against the
+# previous environment. Precisely the wrong moment to be stale: right
+# after updating the toolchain.
+#
+# Covers the sources' *content* too, so a revert that restores an older
+# file rebuilds rather than being missed for having an older mtime.
+build_identity() {
+    {
+        echo "flags: $CFLAGS"
+        echo "toolchain: $HORIZON_TOOLCHAIN_DESC"
+        echo "image: $(horizon_image_digest)"
+        horizon_run aarch64-none-elf-gcc --version 2>/dev/null | head -n 1
+        cat "${sources[@]}"
+    } | sha256sum | cut -d' ' -f1
 }
 
-if ! needs_build; then
+STAMP="$HORIZON_COMPAT_LIBDIR/.build-id"
+
+identity=$(build_identity)
+
+if [ "$FORCE" -eq 0 ] && [ -f "$LIB" ] &&
+   [ "$identity" = "$(cat "$STAMP" 2>/dev/null)" ]; then
     echo "build-compat: $LIB up to date (${#sources[@]} source(s))"
     exit 0
 fi
@@ -87,5 +104,9 @@ done
 # keep members whose sources have since been deleted.
 rm -f "$LIB"
 horizon_run aarch64-none-elf-gcc-ar rcs "$LIB" "${objects[@]}"
+
+# After the archive exists, never before: a failed build must not leave a
+# stamp claiming it is current.
+printf '%s\n' "$identity" > "$STAMP"
 
 echo "build-compat: wrote $LIB (${#objects[@]} object(s))"
