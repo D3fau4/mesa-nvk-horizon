@@ -4785,6 +4785,111 @@ crashing.
 Tested: cross build, six gates, host tests 103/103, series re-applied
 twice from the pinned base (33 patches). Not executed.
 
+## Hardware run, 2026-07-28 — four tests, and the first real Vulkan fault
+
+Four logs from the owner's console, this build.
+
+| Test | Result |
+|---|---|
+| `t_uncached` | **PASS 19/19** — D14 holds on hardware |
+| `t_threads` | **PASS 67/67** |
+| `t_ostime` | **PASS 43/43** |
+| `t_vulkan` | FAIL 36/37, aborted at `vkCreateDevice -> -13` |
+
+**D14 is closed on hardware.** The uncached policy answered all three
+questions it was built to ask: `svcSetMemoryAttribute` accepts our
+reservations; the resulting memory is usable with ordinary C — `memcpy`
+round-trips, so Horizon gives Normal-NC and not Device, and the crash
+this test warned about did not happen; and the GPU read a 64-pair NOP
+list written by the CPU **with no cache maintenance at all** and
+completed it. That is the whole property `NVKMD_MEM_COHERENT` needs.
+
+`t_threads` and `t_ostime` were owed from Phase 3 on hardware rather
+than on the emulator. Both paid.
+
+### The syncpoint question is settled
+
+```
+[horizon_gpu:I] channel 0x3df8f20050: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x3df8f20050: up, syncpt=26 initial=77282 zcull=off
+  ok   probe: the syncpoint baseline is readable (id=26, value=77282)
+```
+
+The degraded mode did not engage, as designed. NVK's own channel came up
+on the same syncpoint. Everything the emulator blamed on the driver was
+the emulator.
+
+### `vkCreateDevice -> -13`, and why the log did not say why
+
+The only Mesa output was two lines that turned out to be noise:
+
+```
+MESA: error: nvkmd_horizon: VA 0x80fa000 freed with 0x10000 still bound at +0x0
+MESA: error: nvkmd_horizon: VA 0x80f9000 freed with 0x1000 still bound at +0x0
+```
+
+Freeing a bound VA is nvkmd's ordinary path — `nvkmd_horizon_mem_free`
+releases the VA its object owns without unbinding, and
+`nvk_mem_arena_finish` states it outright ("Freeing the VA will unbind
+all the memory"). `nvkmd_nouveau_mem_free` does the same. Logging it as
+a driver bug was wrong, and it was actively harmful: it was the only
+thing printed, so it read as the cause.
+
+The real failure was silent because **every `vk_errorf` in this build
+is**. `vk_log.c` returns before printing unless the instance has debug
+logging on or a messenger is registered, and the `#if !MESA_DEBUG` guard
+is compiled in at `--buildtype=plain`. `enable_debug_logging` is set by
+the Intel drivers and nobody else.
+
+### Diagnosis, from the numbers alone
+
+`nvkmd_horizon_alloc_va` chose the big-page half whenever the
+reservation's own size and alignment were multiples of the big page.
+That reasons about the wrong object. `horizon_gpu_vm_map` applies the
+reservation's page size to **each mapping inside it** — both offsets
+aligned to it, size rounded up to it and still having to fit the memory
+object — and a reservation is not always bound as one piece.
+`nvk_mem_arena` binds `NVK_MEM_ARENA_MIN_SIZE` (64 KiB) chunks at 64 KiB
+offsets into a contiguous VA that is megabytes wide.
+
+So `dev->images` asked for a contiguous VA of `1024 * 1024 *
+sizeof(nil_descriptor)`, which met the old condition and landed in the
+big-page half (`as_big_page = 0x20000`, from the log). Its first chunk,
+`nvk_mem_arena_mem_size_B(0) = 0x10000`, was bound at offset 0;
+`horizon_gpu_vm_map` rounded `0x10000` up to `0x20000`;
+`horizon_range_fits_u64(0, 0x20000, 0x10000)` is false →
+`HORIZON_GPU_ERR_OVERFLOW` → `nvkmd_horizon_result` default →
+`VK_ERROR_UNKNOWN` = **-13**.
+
+Every number in the log is accounted for: exactly two memory objects
+alive at the failure (zero_page `0x1000` at 0x80f9000, arena chunk
+`0x10000` at 0x80fa000), freed in reverse order, and 0x80fa000 is not
+`0x20000`-aligned because it is the chunk's own GART VA, not the
+arena's.
+
+### Fixed (patch 0034)
+
+- The small-page half is now the default; the reservation's size and
+  alignment no longer decide. The block-linear exception stays, because
+  the Maxwell MMU only fills those kinds in big pages.
+- Freeing a bound VA is silent again.
+- `t_vulkan` registers a `VK_EXT_debug_utils` messenger, chained into
+  `VkInstanceCreateInfo::pNext` **and** created as an object, so the two
+  windows are both covered. This is the API's own answer to "tell me
+  why", it costs the test one struct, and Mesa stays untouched. Finding
+  this defect cost a full console round trip that a messenger would have
+  answered in one line.
+
+**Known risk, recorded not guessed at.** The block-linear path inherits
+the same rounding hazard: a tiled image whose memory object is not a
+multiple of the big page will have its bind size rounded past the end of
+the object and fail. The fix is to round the *allocation* up where the
+kind is block-linear, which is `nvkmd_horizon_mem`'s decision. Untested
+and untouched because Phase 4's sequence binds no images.
+
+Tested: host 103/103, cross build, six gates, series re-applied twice
+from the pinned base. **Not yet run on hardware.**
+
 ## Next concrete task
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit

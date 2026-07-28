@@ -64,6 +64,35 @@ vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
 #define FILL_SIZE_B   4096u
 #define FILL_PATTERN  0xa5c3f00du
 
+/* Where the driver's own error messages come out. Mesa builds every
+ * vk_errorf into a VK_EXT_debug_utils message and then, in a release
+ * build, drops it unless somebody is listening; this listens.
+ */
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debug_messenger_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                   VkDebugUtilsMessageTypeFlagsEXT types,
+                   const VkDebugUtilsMessengerCallbackDataEXT *data,
+                   void *user_data)
+{
+   (void)types;
+
+   const char *sev = "info";
+   if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+      sev = "error";
+   else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+      sev = "warning";
+
+   /* Both fields are optional in the spec, and a null here would be a
+    * crash inside the driver's error path — the worst possible place to
+    * lose the message that says what went wrong. */
+   t_note((test_ctx *)user_data, "vk %s [%s]: %s", sev,
+          data->pMessageIdName ? data->pMessageIdName : "-",
+          data->pMessage ? data->pMessage : "(no message)");
+
+   /* VK_FALSE: report, never abort the call the message came from. */
+   return VK_FALSE;
+}
+
 #define GET_INSTANCE_PROC(inst, name)                                    \
    do {                                                                  \
       name = (PFN_##name)vk_icdGetInstanceProcAddr(inst, #name);         \
@@ -220,15 +249,66 @@ run_test(test_ctx *t)
       .pApplicationName = "t_vulkan",
       .apiVersion = VK_API_VERSION_1_1,
    };
+   /* Every vk_errorf in the driver is silent in this build, and that is
+    * not a build mistake to fix: vk_log.c returns before printing unless
+    * the instance has debug logging on or a messenger is registered
+    * (release builds compile the #if !MESA_DEBUG guard in). The hardware
+    * run of 2026-07-28 paid for this — vkCreateDevice returned
+    * VK_ERROR_UNKNOWN with nothing in the log but an unrelated message,
+    * and finding the cause took a full console round trip.
+    *
+    * A messenger is the fix, and it belongs here rather than in Mesa:
+    * VK_EXT_debug_utils is the API's own answer to "tell me why", it
+    * costs a test one struct, and the driver stays untouched. Chained
+    * into pNext as well as created as an object, because the two cover
+    * different windows: the chained one is live during vkCreateInstance
+    * itself, the object from then on.
+    */
+   const VkDebugUtilsMessengerCreateInfoEXT dumci = {
+      .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+      .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
+      .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+      .pfnUserCallback = debug_messenger_cb,
+      .pUserData = t,
+   };
+   const char *const instance_exts[] = {
+      VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+   };
    const VkInstanceCreateInfo ici = {
       .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+      .pNext = &dumci,
       .pApplicationInfo = &app,
+      .enabledExtensionCount = 1,
+      .ppEnabledExtensionNames = instance_exts,
    };
    VkInstance instance = VK_NULL_HANDLE;
    VkResult r = vkCreateInstance(&ici, NULL, &instance);
    t_check(t, r == VK_SUCCESS, "vkCreateInstance -> %d", (int)r);
    if (r != VK_SUCCESS)
       return 1;
+
+   /* From here to vkDestroyInstance. Not fatal if it fails: the chained
+    * messenger above already covers the interesting window, and losing
+    * diagnostics is not a reason to fail a test that can still run. */
+   PFN_vkCreateDebugUtilsMessengerEXT p_vkCreateDebugUtilsMessengerEXT =
+      (PFN_vkCreateDebugUtilsMessengerEXT)
+      vk_icdGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+   PFN_vkDestroyDebugUtilsMessengerEXT p_vkDestroyDebugUtilsMessengerEXT =
+      (PFN_vkDestroyDebugUtilsMessengerEXT)
+      vk_icdGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+   VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+   if (t_check(t, p_vkCreateDebugUtilsMessengerEXT != NULL &&
+                  p_vkDestroyDebugUtilsMessengerEXT != NULL,
+                  "VK_EXT_debug_utils entry points resolved")) {
+      r = p_vkCreateDebugUtilsMessengerEXT(instance, &dumci, NULL, &messenger);
+      t_check(t, r == VK_SUCCESS,
+                    "vkCreateDebugUtilsMessengerEXT -> %d (driver errors will "
+                    "be reported below)", (int)r);
+   }
 
    GET_INSTANCE_PROC(instance, vkEnumeratePhysicalDevices);
    GET_INSTANCE_PROC(instance, vkGetPhysicalDeviceProperties);
@@ -550,6 +630,9 @@ run_test(test_ctx *t)
    vkDestroyBuffer(dev, buf, NULL);
    vkFreeMemory(dev, mem, NULL);
    vkDestroyDevice(dev, NULL);
+   /* Before the instance that owns it, and only if it was created. */
+   if (messenger != VK_NULL_HANDLE)
+      p_vkDestroyDebugUtilsMessengerEXT(instance, messenger, NULL);
    vkDestroyInstance(instance, NULL);
 
    return 0;

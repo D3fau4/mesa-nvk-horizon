@@ -1,0 +1,83 @@
+== t_threads ==
+  ok   thrd_create returned thrd_success (0)
+  ok   thrd_join returned thrd_success (0)
+  ok   thrd_join reported the thread's return value (0x5eed)
+  ok   u_thread_create returned thrd_success (0)
+  ok   u_thread_create's thread ran and returned 0x5eed
+  ok   created 4 call_once workers (4)
+  ok   call_once ran the body exactly once across 4 threads (1)
+  ok   mtx_init(mtx_plain) succeeded
+  ok   created 4 counter workers (4)
+  ok   no mtx_lock failed (0)
+  ok   no mtx_unlock failed (0)
+  note shared counter: 4 threads x 20000 increments, 80000 performed
+  ok   counter is exactly 80000, no update lost (got 80000)
+  ok   mtx_init(mtx_timed) succeeded
+  ok   main thread took the timed mutex
+  ok   mtx_trylock on a held mutex reports thrd_busy
+  ok   created the mtx_timedlock worker
+  ok   mtx_timedlock returned on its own within 2000 ms
+  ok   main thread released the timed mutex
+  ok   the worker built a TIME_UTC deadline
+  note mtx_timedlock(200 ms) returned 1 after 200 ms (thrd_success=0 thrd_timedout=1 thrd_error=2)
+  ok   mtx_timedlock on a held mutex returned thrd_timedout (1)
+  ok   it waited at least 150 ms before giving up (200 ms)
+  ok   it gave up within 800 ms (200 ms)
+  ok   built a TIME_UTC deadline for the free-mutex case
+  ok   mtx_timedlock on a free mutex returned thrd_success (0)
+  ok   and took 0 ms, under the 100 ms bound
+  ok   mtx_init for the condvar section succeeded
+  ok   cnd_init succeeded
+  ok   created the cnd_wait worker
+  ok   the cnd_wait worker reached the wait within 2000 ms (1 of 1)
+  ok   main thread set the predicate under the mutex
+  ok   cnd_signal succeeded
+  ok   cnd_signal woke the waiter within 2000 ms (1 of 1)
+  ok   cnd_wait did not fail (0)
+  ok   no mutex call failed in the cnd_wait worker (0)
+  ok   signal to wake took 6 ms, under the 100 ms bound
+  ok   created 4 cnd_broadcast workers (4)
+  ok   every broadcast worker reached the wait within 2000 ms (4 of 4)
+  ok   main thread set the predicate under the mutex
+  ok   cnd_broadcast succeeded
+  ok   cnd_broadcast woke every waiter within 2000 ms (4 of 4)
+  ok   no cnd_wait failed (0)
+  ok   no mutex call failed in a cnd_broadcast worker (0)
+  ok   broadcast to all woken took 6 ms, under the 100 ms bound
+  ok   created the cnd_timedwait watchdog
+  ok   main thread took the mutex for cnd_timedwait
+  ok   main thread released the mutex cnd_timedwait reacquired
+  note cnd_timedwait(200 ms) returned 1 after 200 ms
+  ok   cnd_timedwait ended on its own, without the 2000 ms watchdog having to signal it
+  ok   cnd_timedwait with nobody signalling returned thrd_timedout (1)
+  ok   cnd_timedwait waited at least 150 ms (200 ms)
+  ok   cnd_timedwait returned within 800 ms (200 ms)
+  ok   no mutex call failed in the cnd_timedwait watchdog (0)
+  ok   tss_create succeeded
+  ok   a fresh key reads back NULL on this thread
+  ok   tss_set on the main thread succeeded
+  ok   tss_get returned what the main thread stored
+  ok   created 4 tss workers (4)
+  ok   tss_set succeeded on every thread (0 failed)
+  ok   tss_get returned each thread's own value (0 mismatched)
+  ok   no thread saw another thread's value (0 did)
+  ok   the main thread's value survived the workers
+  note tss destructor calls after 4 workers: 4
+  ok   the tss destructor ran for every exited thread (4 >= 4)
+  ok   svcGetInfo(InfoType_CoreMask) succeeded (0x00000000)
+  note InfoType_CoreMask = 0x7, 3 core(s) allowed
+  ok   the process may run on at least one core
+  ok   allowed cores (3) do not exceed the SoC's four A57s
+  ok   sysconf(_SC_NPROCESSORS_ONLN) = 3 is the popcount of the mask it is computed from (3)
+  ok   sysconf(_SC_NPROCESSORS_CONF) = 3 answers as _ONLN (3), the case label it shares
+  note provisional tally before the staged probe below: 66 passed, 0 failed
+  note stage 1/4: getenv("GALLIUM_OVERRIDE_CPU_CAPS") — plain newlib
+  note stage 1/4 returned (null)
+  note stage 2/4: os_get_option — Mesa's wrapper over getenv
+  note stage 2/4 returned (null)
+  note stage 3/4: os_get_option_cached — hash table, ralloc, simple_mtx, atexit
+  note stage 3/4 returned (null)
+  note stage 4/4: util_get_cpu_caps
+  note util_cpu_caps: nr_cpus=3 max_cpus=3 num_cpu_mask_bits=32
+  ok   util_cpu_detect reports 3 CPUs, matching the core mask (3)
+RESULT: PASS (67/67)
