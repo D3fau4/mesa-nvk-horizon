@@ -5165,12 +5165,49 @@ NVK's own comment says what the writes are for: enabling FP helper
 invocation memory loads, so that one dEQP subgroup test stops failing
 occasionally. Not required for anything Phase 4 does.
 
-**Not fixed, because it cannot be confirmed without a console.** Whether
-nvgpu reports a refused PRI write as notifier 31 specifically is
-unverified, and skipping the writes on a guess would change upstream
-behaviour for a reason nobody has measured. The experiment is one line
-(`cls_eng3d >= MAXWELL_B` guard in `nvk_push_draw_state_init`) and it is
-the first thing to try when hardware returns.
+### Finding B is R18, and it was already in this repository
+
+Written up as a hypothesis above, then found already recorded — Phase 0
+put it in `docs/known-risks.md` as **R18**, derived from the reference
+ports' hardware experience:
+
+> **R18 — Privileged GR register writes reset a homebrew channel.** The
+> reference neuters `nvk_mme_set_priv_reg` in `nvk_cmd_draw.c` because
+> privileged graphics-register writes are rejected for homebrew channels
+> and reset the channel, **after which every submit times out**.
+
+That is the third hardware run, symptom for symptom: `vkCreateDevice`
+returns 0 because submission is asynchronous, and the next kickoff on
+that channel fails with `LibnxNvidiaError_Timeout` and an error notifier
+set. R18 expected it in Phase 5, at the first draw. It arrives in Phase 4
+because these two writes happen while the *queue's context* is being
+initialised, long before anything is drawn.
+
+So this is not a guess to defer. It is a documented, hardware-derived
+fact that we knowingly parked, and it has come due.
+
+**Fixed as patch 0038, the way R18 asked for.** R18's own mitigation was
+"do not carry this patch forward blindly … determine what NVK loses by
+skipping them. Record the answer rather than inheriting the no-op." So:
+
+- The gate is a kmd capability, `nvkmd_info::has_priv_reg_writes` — the
+  same shape as D12's `has_sparse`, and for the same reason. The class
+  check says the *chip* supports SET_PRIV_REG; whether the driver
+  underneath lets an unprivileged channel use it is a separate question.
+  True for nouveau, where NVK's behaviour is untouched; false for
+  horizon.
+- What is lost is recorded at the declaration, from NVK's own comments:
+  bit 3 of `gr_gpcs_tpcs_sm_disp_ctrl` enables FP helper invocation
+  memory loads, without which one dEQP subgroups test fails
+  occasionally; `sms_hww_warp_esp_report_mask` disables Out Of Range
+  Address exceptions for a case involving an empty fragment shader.
+  Neither is reachable by anything this port runs today.
+
+**Unverified on hardware.** The reasoning is: R18's recorded fact, the
+timeout symptom matching it exactly, and the push dump showing these are
+the only two operations in the whole stream that are not ordinary memory
+access. That is strong, and it is still not a measurement. The console
+run that confirms it is the same one that closes Phase 4.
 
 ## Next concrete task
 
