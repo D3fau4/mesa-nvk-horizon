@@ -1,0 +1,6 @@
+== t_channel ==
+  ok   device_create (status=ok nv=0x00000000)
+[horizon_gpu:E] initial SyncptRead(1) failed: 0x0000055c
+  FAIL channel_create (status=nv service error nv=0x0000055c)
+  ok   device_destroy (status=ok)
+RESULT: FAIL (2/3)

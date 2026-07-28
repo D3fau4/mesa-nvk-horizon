@@ -448,8 +448,27 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
 
     uint32_t hw;
     horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
-    if (horizon_gpu_failed(res))
+    if (horizon_gpu_failed(res)) {
+        /* An untrusted-baseline channel (docs/synchronization.md § 9) is
+         * one whose platform has no syncpoint read at all, so this fails
+         * every time and would fail every submit with it —
+         * horizon_gpu_submit reaps before it queues.
+         *
+         * Report "nothing retired" and carry on. Retirement on such a
+         * channel is meaningless anyway, and of the two possible
+         * answers this is the safe one: the alternative — treating
+         * everything as complete — would make a wait return without the
+         * GPU having run, which is the one answer that must never be
+         * given. The cost is that nothing is ever recycled, which a
+         * bring-up run can afford.
+         */
+        if (!chan->syncpt_baseline_trusted) {
+            if (out_retired)
+                *out_retired = 0;
+            return horizon_gpu_ok();
+        }
         return res;
+    }
     uint64_t now64 = horizon_syncpt_extend(chan->shadow_target, hw);
 
     uint32_t retired = 0;
@@ -570,6 +589,18 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
     if (!chan->lost) {
         uint32_t hw;
         horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
+        if (horizon_gpu_failed(res) && !chan->syncpt_baseline_trusted) {
+            /* Same reasoning as reap (§ 9): the read never works on this
+             * platform, so refusing the destroy would strand the channel
+             * and, through the live-object count, the device with it.
+             * Whether work is still in flight is unknowable here — say
+             * so rather than imply it was checked. */
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "channel %p: destroying with an UNTRUSTED "
+                         "baseline; whether submitted work retired was "
+                         "not checked", (void *)chan);
+            goto skip_inflight_check;
+        }
         if (horizon_gpu_failed(res))
             return res;
         uint64_t now64 = horizon_syncpt_extend(chan->shadow_target, hw);
@@ -581,6 +612,7 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
             return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
         }
     }
+skip_inflight_check:
     /* Reap even on a lost channel: whatever did retire before the fault
      * still fires normally. This is a plain syncpoint read, harmless
      * regardless of channel health. */

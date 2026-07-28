@@ -267,3 +267,28 @@ Rules:
   which it enabled the mode, whatever the readback said.
 - It is not a fallback for a real syncpoint failure on hardware that has syncpoints.
   There, a failed read is a defect and stays fatal.
+
+### 9.1 What a degraded channel does with a failed read
+
+The opt-in is not enough on its own: `horizon_gpu_submit` reaps before it
+queues (§ 3), and reaping reads the syncpoint, so on a platform without
+the read *every submit* fails — including the engine bind, which happens
+at channel creation. Measured on the emulator, 2026-07-28:
+`horizon_gpu_channel_bind_engines failed: ... nv 0x0000055c`.
+
+So on an untrusted-baseline channel, and only there, a failed read is
+answered rather than propagated:
+
+- `horizon_gpu_channel_reap` reports **nothing retired** and succeeds.
+- `horizon_gpu_channel_destroy` skips the in-flight check and says so,
+  because refusing would strand the channel and the device with it.
+- Waits are **not** degraded. `horizon_gpu_fence_wait` and
+  `horizon_gpu_channel_wait_fence` still fail, which is the point: a
+  wait that cannot be ordered must not return success.
+
+Of the two possible answers to a failed read, "nothing retired" is the
+safe one. The other — treating everything as complete — would let a wait
+return without the GPU having run, and that is the one answer this
+project must never give. The cost is that nothing is ever recycled on
+such a channel, which a bring-up run can afford and a real one would
+not.
