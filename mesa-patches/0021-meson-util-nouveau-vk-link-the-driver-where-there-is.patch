@@ -1,7 +1,7 @@
 From eea2ad195d54ed30fd1e0caf05f605d2e015422d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:50:49 +0000
-Subject: [PATCH 21/28] meson,util,nouveau/vk: link the driver where there is
+Subject: [PATCH 21/29] meson,util,nouveau/vk: link the driver where there is
  no DRM and no regex
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
