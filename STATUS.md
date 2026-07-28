@@ -4734,6 +4734,32 @@ is not that. Neither is reachable from NVK today — push memory is
 dword-aligned by construction and command-buffer chunks are far below
 8 MiB — so this closes the class, not an instance.
 
+**A second live defect: `nonCoherentAtomSize`.** `nvkmd_pdev_info::
+nc_atom_size_B` was filled from the services' compression page size. It
+is a CPU cache-maintenance granularity, not a GPU one:
+`vkFlushMappedMemoryRanges` and `vkInvalidateMappedMemoryRanges` run
+`dc cvac` / `dc civac`, so it has to be the cache write-back granule.
+`cache_ops.h:65` says so outright — *"Vulkan drivers should return this
+as nonCoherentAtomSize"* — and nouveau uses `util_cache_granularity()`
+(`nvkmd_nouveau_pdev.c:113`).
+
+Not merely imprecise: GM20B reports `compression_page=0x20000`
+(measured, `t_init` on console, 2026-07-27), and
+`nvk_device_memory.c:461` rounds a flush range **up** to this number
+before handing it to the cache ops. A 4 KiB allocation flushed with
+`VK_WHOLE_SIZE` therefore ran `dc civac` across 128 KiB — 124 KiB past
+the end of the object, a data abort if the pages beyond it are not
+mapped and silent maintenance of unrelated memory if they are. And it is
+on the mandatory sequence's own path: `t_vulkan` flushes its poison and
+invalidates before the readback, both with `VK_WHOLE_SIZE`. Patch 0033.
+
+Also settled while reading it: `t_vulkan` picks the first HOST_VISIBLE
+memory type, and NVK lists cached first on an SoC
+(`nvk_physical_device.c:1581-1591`), so the mandatory sequence exercises
+the **cached** path with explicit maintenance — D5's mechanism. D14's
+uncached type is type 1 and `t_vulkan` never touches it; `t_uncached` is
+its only coverage. Worth knowing before reading either log.
+
 **One latent hazard found and deliberately not fixed.** Of the fifteen
 ops `nvkmd.c` dispatches, this backend leaves two NULL:
 `alloc_tiled_mem` and `import_dma_buf`. Neither is on the Phase 4 path
@@ -4757,7 +4783,7 @@ real answer. Recorded here so it is found by reading rather than by
 crashing.
 
 Tested: cross build, six gates, host tests 103/103, series re-applied
-twice from the pinned base (32 patches). Not executed.
+twice from the pinned base (33 patches). Not executed.
 
 ## Next concrete task
 
@@ -4787,6 +4813,7 @@ of which blocks the criterion above:
 
 | Commit | Scope |
 |---|---|
+| `mesa-patches: nonCoherentAtomSize is a CPU cache property` | patch 0033, STATUS — the pdev half of the audit |
 | `mesa-patches: close the push-truncation class in the submit path` | patch 0032, STATUS — the submit half of the audit |
 | `mesa-patches: every nvkmd_mem needs its own VA` | patch 0031, STATUS — the audit of the never-executed path |
 | `tests: t_uncached, and t_sysinfo's hardware failure was a stale binary` | `tests/t_uncached.c`, `meson.build`, `Makefile`, STATUS — D14 and the t_sysinfo diagnosis |
