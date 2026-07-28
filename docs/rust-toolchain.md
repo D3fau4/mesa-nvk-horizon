@@ -175,3 +175,76 @@ provides, but it is a thing that must exist and does not today.
   drift tripwire.
 - This document, so Phase 3 starts from an answer rather than from the
   open question.
+
+---
+
+## 6. Update from Phase 4 step 3 (2026-07-28) — measured, not predicted
+
+Rust has now been compiled and linked for Horizon. Everything in this
+section is a **cross build (X)**; the full write-up, with commands, is
+in `STATUS.md` under "Phase 4 — step 3".
+
+### § 2's conclusion is confirmed, and by a second route
+
+The document concluded `no_std` + `alloc` from the source. A
+measurement now says the same thing from the target's own metadata:
+
+```
+$ rustc --print cfg --target aarch64-nintendo-switch-freestanding
+target_os="horizon"   target_env=""   (no target_family, no unix)
+
+$ rustc --print cfg --target armv6k-nintendo-3ds
+target_os="horizon"   target_env="newlib"   target_family="unix"   unix
+```
+
+Rust's `std` **does** support `target_os = "horizon"` — and every one of
+those sites is under `sys/pal/unix/`, `sys/fs/unix.rs`,
+`sys/alloc/unix.rs`. That is the **3DS**, which reaches newlib through
+the unix PAL. The Switch target has no `target_family`, so a `std` built
+for it selects `sys/pal/unsupported`, where the operations that make
+`std` worth having return errors.
+
+So building `std` is not the cheaper option that was passed over; it is
+the worse one. `"std": false` in the spec is describing this.
+
+### § 4's open sub-risk is now closed for the probe, open for NAK/NIL
+
+The `-mtp=soft` question — "should not arise, but 'should not' is not
+'measured'" — was checked on the artefact, as this section asked:
+
+```
+R_AARCH64_TLS* relocations in the Rust staticlib: 0
+__aarch64_read_tp references:                     0
+mrs tpidr_el0 in the linked Horizon ELF:          0
+```
+
+A `no_std` + `alloc` staticlib generates no thread-local storage, so
+rustc never reaches the point where it would emit the hardware
+thread-pointer read. **This was measured on a probe crate, not on NAK
+and NIL**, and the check to re-run on their archives is the same one:
+`scripts/check-tls-relocs.sh`, which tests the property rather than the
+flag and will need pointing at the Rust output.
+
+The second sub-risk — `alloc` needs a global allocator, "a thing that
+must exist and does not today" — was satisfied in the probe by a
+`#[global_allocator]` over newlib's `memalign`/`free`, six lines. What
+it turned into is a **design question rather than a shim**: exactly one
+`#[global_allocator]` and one `#[panic_handler]` may exist across the
+whole crate graph, and Mesa links two Rust staticlibs into one binary.
+Where they live is not decided here.
+
+### What the sysroot turned out to be
+
+`-Zbuild-std=core,alloc` produces three rlibs — `core`, `alloc`,
+`compiler_builtins` — and installing them at
+`lib/rustlib/<target>/lib/` is enough for a bare `rustc --sysroot` to
+find them. That matters because **Meson drives `rustc` directly and
+never calls cargo**, so cargo is a build-time tool for the sysroot only.
+
+One condition of the environment had to be handled first: containers
+here have no network, and `-Zbuild-std` resolves the standard library's
+whole workspace, which depends on 30 crates.io packages even when only
+`core` and `alloc` are built. `scripts/fetch-rust-crates.sh` fetches
+them on the host against the checksums in Rust's own
+`library/Cargo.lock`. It pins nothing itself, for the same reason
+`versions.env` does not pin libnx.

@@ -7,8 +7,7 @@
 
 ## Current phase
 
-**Phase 4 — `nvkmd_horizon`. Steps 1 and 2 are done; step 3 (Rust) is
-next.**
+**Phase 4 — `nvkmd_horizon`. Steps 1, 2 and 3 are done.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -26,16 +25,31 @@ built core links, with zero undefined symbols.** Two new patches (0013,
 the two symbols that remain unresolved in the archives are in members
 nothing references, which the link demonstrates rather than assumes.
 
+**Step 3** reproduced the Rust failure first
+(`error[E0463]: can't find crate for 'std'`, at `mesa/meson.build:841`)
+and then got past it: **Rust has been compiled and linked for Horizon
+for the first time in this project** — a `no_std` + `alloc` staticlib,
+linked by devkitA64 into a Horizon ELF with zero undefined symbols and
+**zero TLS relocations**, which also measures the `-mtp=soft` sub-risk
+`docs/rust-toolchain.md` § 4 left open. `scripts/fetch-rust-crates.sh`
+is new: the container has no network and `-Zbuild-std` needs crates.io,
+so the 30 packages are fetched on the host against Rust's own lockfile
+checksums, and the check was broken four ways before being trusted.
+
 **Phase 3 is closed except for one thing, unchanged:** `t_threads` and
 `t_ostime` have never run on a console (they pass on Eden — 67/67 and
 43/43). That does not block Phase 4 and is recorded as owed. The full
 Phase 3 state is kept verbatim below under "Phase 3 — the state it
 closed in".
 
-Of the three known blockers carried into this phase, one is closed (the
-libc symbols, step 2). Rust is untouched — no sysroot built, `std`
-required — and is step 3. `-Db_staticpic=false` remains mandatory and
-its gate runs after every Mesa build.
+All three known blockers carried into this phase are now addressed: the
+libc symbols (step 2), Rust (step 3), and `-Db_staticpic=false`, which
+remains mandatory with its gate running after every Mesa build.
+
+**What is not written yet is `nvkmd_horizon` itself.** The nearest
+obstacle is named and measured: NAK and NIL are still `std` crates, so
+Mesa's Rust half does not build until the seven substitutions
+`docs/rust-toolchain.md` § 2 lists become patches.
 
 ---
 
@@ -586,6 +600,241 @@ and the two that remain are the two the link above does not touch.
 - Regenerating the series rewrote the twelve existing patch files. The
   diff was read before committing: only the `From <sha>` line and the
   `[PATCH n/12]` → `[PATCH n/14]` counter changed, in all twelve.
+
+---
+
+## Phase 4 — step 3: Rust, from the real failure to a linked artefact (2026-07-28)
+
+**Class: cross build (X).** Nothing here ran on a console or an
+emulator. The headline: **Rust has now been compiled and linked for
+Horizon for the first time in this project** — a `no_std` + `alloc`
+staticlib, linked by devkitA64 into a Horizon ELF with **zero undefined
+symbols and zero TLS relocations**. Phase 2 could only say "no Rust has
+been successfully compiled for Horizon"; that sentence is now out of
+date.
+
+### The real failure, reproduced first
+
+As instructed, the failure was reproduced before anything was designed.
+Configuring the pinned tree with the nouveau Vulkan driver, into a
+separate build directory so the working one is untouched:
+
+```
+$ MESA_BUILD_DIR=build/probe/mesa-nouveau scripts/configure-mesa.sh \
+      -Dvulkan-drivers=nouveau
+…
+mesa/meson.build:841:2: ERROR: Compiler rustc --target
+  aarch64-nintendo-switch-freestanding -C linker=aarch64-none-elf-gcc
+  cannot compile programs.
+```
+
+and the log says exactly why (`meson-logs/meson-log.txt:340-352`):
+
+```
+Sanity check compiler command line: rustc --target aarch64-nintendo-switch-freestanding \
+  -C linker=aarch64-none-elf-gcc --emit link=sanity_check_for_rust_cross.exe sanity_check_for_rust.rs
+error[E0463]: can't find crate for `std`
+  = note: the `aarch64-nintendo-switch-freestanding` target may not be installed
+  = help: consider building the standard library from source with `cargo build -Zbuild-std`
+```
+
+It is `add_languages('rust')` at `mesa/meson.build:841`, it is
+unconditional once the driver is on, and the missing thing is a
+prebuilt `std` for a tier-3 target. Same shape Phase 2 predicted.
+
+### The measurement that decides the route: this target is not `unix`
+
+`docs/rust-toolchain.md` answered R13 with "as Mesa links them today,
+`std` is required" **and** with the conclusion that the dependency is
+seven substitutions deep, so the supported route is `no_std` + `alloc`
+and Phase 2 should build no sysroot. This step adds the measurement that
+makes that conclusion load-bearing rather than merely preferable:
+
+```
+$ rustc --print cfg --target aarch64-nintendo-switch-freestanding
+target_os="horizon"      target_env=""      target_vendor="nintendo"
+  (no target_family, no unix)
+
+$ rustc --print cfg --target armv6k-nintendo-3ds
+target_os="horizon"      target_env="newlib"      target_family="unix"      unix
+```
+
+Rust's standard library **does** carry `target_os = "horizon"` support —
+and every one of those sites is under `sys/pal/unix/`, `sys/fs/unix.rs`,
+`sys/alloc/unix.rs`: it is the **3DS**, which reaches newlib through the
+unix PAL. The Switch target has no `target_family`, so a `std` built for
+it would select `sys/pal/unsupported`, where the operations that make
+`std` worth having return errors. Building it would be expensive and
+would buy a `std` that cannot spawn a thread or open a file.
+
+So: **`no_std` + `alloc` is the route**, which is what
+`docs/rust-toolchain.md` § 2 concluded from the source. The target
+metadata agrees with itself here — `"std": false` in the spec.
+
+### The container has no network, and `-Zbuild-std` wants some
+
+```
+$ cargo build --offline -Z build-std=core,alloc \
+      --target aarch64-nintendo-switch-freestanding
+error: no matching package named `cfg-if` found
+location searched: crates.io index
+required by package `std v0.0.0 (…/library/std)`
+```
+
+`-Zbuild-std` **resolves** the standard library's whole workspace even
+when it only builds `core` and `alloc`, and that workspace depends on
+crates.io packages. Containers here have no network, which is the
+condition `CLAUDE.md` states, so the fetch belongs on the host —
+the same rule `fetch-mesa.sh` and `horizon_ensure_python_deps` follow.
+
+**`scripts/fetch-rust-crates.sh` is new** and does exactly that: reads
+`library/Cargo.lock` out of the pinned image's `rust-src`, downloads the
+**30** registry packages it names, verifies each against the checksum
+Rust itself recorded, extracts them into a cargo `directory` source with
+a `.cargo-checksum.json` per crate, and writes the source-replacement
+config under `build/` (never tracked — it names an absolute path, which
+`check-no-abs-paths.sh` forbids in a tracked file).
+
+Nothing in it chooses a version. The pin is Rust's own, read per run, so
+it cannot drift from the toolchain — the policy `versions.env` states
+for libnx and rustc.
+
+**It was broken on purpose four ways before being trusted**, because a
+gate that has never failed has not been tested:
+
+| Breakage | Result |
+|---|---|
+| append a line to a vendored source file | `cfg-if-1.0.4 does not match its checksums; re-extracting` |
+| delete a vendored file | `libc-0.2.189 does not match its checksums; re-extracting` |
+| add a file the `.crate` never had | `memchr-2.7.6 does not match its checksums; re-extracting` |
+| corrupt a downloaded `.crate` | `shlex-1.3.0.crate does not match the lockfile checksum; re-downloading` |
+| clean re-run | `vendored 0 crate(s) (0 re-extracted…)` — a no-op |
+
+The first of those **found a real defect in the first version of the
+script**: it compared only the recorded package hash, so a tampered
+source file left the stamp matching and the run reported the tree
+current. Cargo verifies per-file hashes for crates it actually compiles,
+but `-Zbuild-std` pulls most of this vendor tree in for *resolution*
+only, so a tampered file in an unused crate would never have been looked
+at. The check now hashes every file and also rejects extra ones.
+
+### Rust compiled for Horizon
+
+With the vendor tree in place, offline, inside the container:
+
+```
+$ cargo build --offline -Z build-std=core,alloc \
+      --target aarch64-nintendo-switch-freestanding
+   Compiling compiler_builtins v0.1.160
+   Compiling core v0.0.0
+   Compiling alloc v0.0.0
+   Compiling hello v0.0.0
+    Finished `dev` profile in 21.06s
+```
+
+The probe crate is shaped like Mesa's: `#![no_std]`, `extern crate
+alloc`, `crate-type = ["staticlib"]`, a `#[global_allocator]` over
+newlib's `memalign`/`free` — the "smaller open sub-risk"
+`docs/rust-toolchain.md` § 4 names — and a `#[panic_handler]` that
+aborts, which `panic = "abort"` makes the only sensible one.
+
+Then linked by devkitA64, with the same flags the tests use:
+
+```
+linked: 5478760 bytes
+    (0 undefined symbols)
+```
+
+### The `-mtp=soft` sub-risk, measured for the first time
+
+`docs/rust-toolchain.md` § 4 recorded it as "should not arise — but
+'should not' is not 'measured'", to be checked when Rust is first built
+and linked. It is now checked, on the artefact:
+
+```
+R_AARCH64_TLS* relocations in libhello.a: 0
+__aarch64_read_tp references:             0
+mrs tpidr_el0 in the linked executable:   0
+```
+
+No thread-local storage is generated, so rustc never had the chance to
+emit the hardware thread-pointer read that `-mtp=soft` exists to avoid,
+and the miscompile that cost this project two review rounds has no
+foothold in the Rust half. **Caveat, stated plainly:** this is the probe
+crate, not NAK and NIL. The check is the one to re-run on their archives,
+and `scripts/check-tls-relocs.sh` already tests the property rather than
+the flag — it will need to be pointed at the Rust output too.
+
+### And the rlibs work as a sysroot, which is what Meson needs
+
+Meson drives `rustc` directly and never calls cargo, so the question is
+whether what cargo produced can be handed to a bare `rustc`:
+
+```
+sysroot holds: liballoc-….rlib libcompiler_builtins-….rlib libcore-….rlib
+$ rustc --target … --sysroot <sysroot> --crate-type staticlib …
+rustc with --sysroot: OK (12255694 bytes)
+```
+
+Three rlibs, installed at `lib/rustlib/<target>/lib/`, and a plain
+`rustc --sysroot` finds them. That is the shape the cross file will have
+to point at.
+
+### What step 3 established, and what is still open
+
+**Established:** the route is `no_std` + `alloc`; `std` for this target
+would be the `unsupported` PAL; the crates.io barrier is solved and
+gated; `core`, `alloc` and `compiler_builtins` build for the target
+offline; a Rust staticlib links into a Horizon ELF with nothing
+undefined; no TLS is generated; and the rlibs work as a sysroot for a
+bare `rustc`.
+
+**Still open, and each is a concrete next task:**
+
+1. **NAK and NIL are still `std` crates.** The seven substitutions are
+   listed in `docs/rust-toolchain.md` § 2 with their replacements; they
+   become `mesa-patches/` entries. Until then Mesa's Rust does not build,
+   whatever the sysroot holds.
+2. **A script that installs the sysroot**, so the three rlibs are
+   produced and placed reproducibly rather than by the commands above.
+3. **The cross file has to pass `--sysroot`** to `rust`, and
+   `scripts/check-rust-target.sh`'s drift snapshot should grow the
+   sysroot's identity — a rebuilt nightly changes the rlib hashes.
+4. **Exactly one `#[global_allocator]` and one `#[panic_handler]` may
+   exist** across the whole crate graph. In Mesa that is two crates
+   (NAK and NIL) linked into one binary, so where those items live is a
+   design decision, not a detail. Not taken here.
+5. `-Zbuild-std` needed `compiler_builtins` too, which cargo added on
+   its own. Whether the C library's `memcpy` and friends collide with
+   it at link time was **not** measured — the probe linked, but the
+   probe is small.
+
+### Commands run and results
+
+| Command | Class | Result |
+|---|---|---|
+| `MESA_BUILD_DIR=build/probe/mesa-nouveau scripts/configure-mesa.sh -Dvulkan-drivers=nouveau` | X | **fails at `meson.build:841`**, `error[E0463]: can't find crate for 'std'` |
+| `rustc --print cfg` for both Horizon targets | X | Switch has no `target_family`; 3DS is `unix`/`newlib` |
+| `cargo build -Z build-std --offline`, before vendoring | X | `no matching package named 'cfg-if'` |
+| `scripts/fetch-rust-crates.sh` | H | 30 packages, all checksums match the lockfile |
+| the same, four deliberate breakages | H | 4/4 detected and repaired; clean re-run is a no-op |
+| `cargo build --offline -Z build-std=core,alloc` | X | **core, alloc, compiler_builtins and the crate build** |
+| devkitA64 link of the staticlib | X | **5 478 760 bytes, 0 undefined symbols** |
+| TLS check on the archive and the executable | X | **0 TLS relocations, 0 `mrs tpidr_el0`** |
+| bare `rustc --sysroot` against the three rlibs | X | **OK** |
+| `scripts/check-no-abs-paths.sh`, `check-layering.sh` | H | OK with the new script in `scripts/` |
+
+### A correction to the brief this session started from
+
+The session brief stated R13 as "**`std` hace falta**, no basta
+`no_std` + `alloc`". `docs/rust-toolchain.md` says the first half and
+not the second: `std` is required **as Mesa links NAK/NIL today**, and
+the document's own conclusion is that the dependency is shallow — seven
+sites, each with a listed replacement — so the sysroot is not needed and
+the work is a small patch set. This step's measurement settles it in the
+same direction for a different reason: a `std` for this target would be
+the `unsupported` PAL, so building one is not the cheaper option, it is
+the worse one.
 
 ---
 
@@ -2963,21 +3212,30 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Phase 4 step 3: Rust.** Configure Mesa with
-`-Dvulkan-drivers=nouveau` and record where it actually fails, before
-designing anything. What is known going in: `docs/rust-toolchain.md`
-answered R13 — `std` **is** required, because NAK and NIL are linked as
-staticlibs — the target `aarch64-nintendo-switch-freestanding` ships
-with rustc (tier 3) and `scripts/check-rust-target.sh` watches it for
-drift, and **no sysroot has been built**. Phase 2 reproduced the failure
-deliberately: `error[E0463]: can't find crate for 'std'`. This is
-probably the largest single piece of the phase; it is not to be left
-until last.
+**Make NAK and NIL `no_std`.** That is the one thing standing between
+step 3's linked Rust artefact and Mesa's Rust half building at all, and
+the work is already enumerated: seven sites, each with its replacement,
+in `docs/rust-toolchain.md` § 2 — `std::env::var` → `os_get_option()`,
+`OnceLock` → a `core::sync::atomic` one-shot, two inert
+`catch_unwind`s under `panic = "abort"`, `HashMap` → the `FxHashMap` the
+crate already uses ten times elsewhere, a `#[allow(dead_code)]`
+graphviz dumper to `cfg`-gate, and `std::io::Result` → a local error
+type. They become `mesa-patches/` entries, and the measurement that says
+whether each worked is that `-Zbuild-std=core,alloc` compiles the crate.
+
+Two things have to be decided while doing it, not after: **where the
+single `#[global_allocator]` and `#[panic_handler]` live** (only one of
+each may exist across NAK, NIL and the binary), and whether
+`compiler_builtins` collides with newlib's `memcpy` family at link time
+— the step-3 probe linked, but it was small.
+
+Alongside that: a script that installs the three rlibs as a sysroot
+reproducibly, and the cross file passing `--sysroot` to `rust`.
 
 Then the backend itself, in the milestone's 1..10 order, with D9–D12
 taken as they come up.
 
-Steps 1 and 2 are done and are written up above.
+Steps 1, 2 and 3 are done and are written up above.
 
 **Still owed from Phase 3, unchanged: run `t_threads` and `t_ostime` on
 a console.**
@@ -3047,6 +3305,7 @@ symbols measured unreachable. See "Phase 4 — step 2".
 |---|---|
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
+| `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
 
 ## Commit log for this phase
 
