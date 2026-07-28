@@ -4977,6 +4977,46 @@ shipped as guesses:
   degenerates to "wait for the latest fence", which over-waits and is
   safe. **Pending decision, not a fix to guess at.**
 
+### Audit of the fault path while waiting for the console
+
+Five more candidates read through and **rejected on evidence**. Recorded
+because a rejected hypothesis is worth as much as a fix when the next
+measurement costs a console round trip:
+
+- *`no_prefetch` is dropped by the backend.* True — `struct
+  nvkmd_ctx_exec` carries it and `nvkmd_horizon_ctx_exec` reads only
+  `addr` and `size_B`, while `nvkmd_nouveau_ctx` turns it into
+  `DRM_NOUVEAU_EXEC_PUSH_NO_PREFETCH`. Harmless here:
+  `HORIZON_GPU_SUBMIT_DEFAULT` is already `NOT_MAIN | NO_PREFETCH`, so
+  horizon never prefetches any span. The flag is redundantly always on,
+  which is the safe direction.
+- *`incomplete` is dropped too.* It means "the next push must be in the
+  same submit ioctl", and `nvkmd_horizon_ctx_exec` puts every span in one
+  `horizon_gpu_submit` call. Satisfied by construction.
+- *Subchannel assignment differs from NVK's.* It does not. NVK
+  (`nv_push.h`): 0 = NV9097 3D, 1 = NV90C0 compute, 2 = NV9039 M2MF,
+  3 = NV902D 2D, 4 = NV90B5 copy. horizon (`channel.c:408`):
+  `threed_class, compute_class, inline_to_memory_class, twod_class,
+  dma_copy_class`. Identical, and `vkCmdFillBuffer` emits NV90B5 —
+  subchannel 4, `dma_copy_class` 0xb0b5 as queried on this console.
+- *Engines never bound on the queue's channel.* `nvkmd_horizon_create_ctx`
+  calls `horizon_gpu_channel_bind_engines` at creation, and an unbound
+  subchannel reports notifier 25, not 31.
+- *The push address comes from somewhere exotic.* It does not:
+  `nvk_cmd_buffer.c:195` uses `cmd->push_mem->mem->va->addr + offset`,
+  and `nvk_cmd_mem_create` is a plain `nvkmd_dev_alloc_mapped_mem`. Both
+  candidate addresses — the push and `vkCmdFillBuffer`'s destination
+  (`mem->mem->va->addr + memoryOffset`) — come from patch 0031's per-mem
+  VA.
+
+Both candidates therefore live in the same place, and reading cannot
+separate them. So patch 0035 also dumps the **whole VA map** on a submit
+failure — every reservation, its page size, and what is bound in it —
+not just the pushes. `vkCmdFillBuffer`'s destination is baked into the
+push by NVK and this layer never sees it, so naming only the pushes
+would leave half the candidates unaccounted for. The dump is capped at
+64 reservations and says how many it dropped.
+
 Tested: host 103/103, cross build, six gates, series re-applied twice
 from the pinned base. **Not yet run on hardware.**
 

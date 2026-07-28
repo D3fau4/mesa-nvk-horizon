@@ -25,14 +25,14 @@ during vkQueueSubmit and the message named neither.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---
- .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 25 +++++++++
- .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 29 ++++++++--
- .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  4 ++
- .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 53 +++++++++++++++++++
- 4 files changed, 108 insertions(+), 3 deletions(-)
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  32 ++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  |  31 +++++-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |   4 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 104 ++++++++++++++++++
+ 4 files changed, 168 insertions(+), 3 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index ef93ffe..9b0f7e1 100644
+index ef93ffe..1cb266b 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -78,6 +78,19 @@ struct nvkmd_horizon_dev {
@@ -55,7 +55,7 @@ index ef93ffe..9b0f7e1 100644
  };
  
  NVKMD_DECL_SUBCLASS(dev, horizon);
-@@ -101,10 +114,22 @@ struct nvkmd_horizon_va {
+@@ -101,10 +114,29 @@ struct nvkmd_horizon_va {
      */
     simple_mtx_t mutex;
     struct list_head bindings;
@@ -75,14 +75,21 @@ index ef93ffe..9b0f7e1 100644
 +void nvkmd_horizon_describe_addr(struct nvkmd_horizon_dev *dev,
 +                                 uint64_t addr, char *buf, size_t buf_size);
 +
++/* Logs every live reservation and what is bound in it, up to `max_lines`
++ * reservations, and says how many were dropped. For addresses this layer
++ * never sees — a buffer address NVK baked into a push — the map is what
++ * places them. */
++void nvkmd_horizon_dump_va_map(struct nvkmd_horizon_dev *dev,
++                               uint32_t max_lines);
++
  struct nvkmd_horizon_ctx {
     struct nvkmd_ctx base;
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
-index af736e3..6d0d64f 100644
+index af736e3..1fbac96 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
-@@ -177,10 +177,33 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+@@ -177,10 +177,35 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
     STACK_ARRAY_FINISH(spans);
  
     if (res.status != HORIZON_GPU_OK) {
@@ -107,6 +114,8 @@ index af736e3..6d0d64f 100644
 +                   (void *)ctx->chan, i, exec_count, execs[i].addr,
 +                   execs[i].size_B, where);
 +      }
++
++      nvkmd_horizon_dump_va_map(nvkmd_horizon_dev(_ctx->dev), 64);
 +
        return vk_errorf(log_obj, nvkmd_horizon_result(res),
 -                       "horizon_gpu_submit(%" PRIu32 " spans) failed: "
@@ -142,7 +151,7 @@ index f53fd80..58bdefb 100644
      * actually reported rather than from a constant. horizon_gpu returns
      * two regions — small-page and big-page — and nvkmd wants one
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index 2c2c4b1..5a705ed 100644
+index 2c2c4b1..afb8b02 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -13,6 +13,7 @@
@@ -153,7 +162,7 @@ index 2c2c4b1..5a705ed 100644
  
  /*
   * nvkmd unbinds by (offset, range) and never hands back the object it
-@@ -31,10 +32,58 @@ struct nvkmd_horizon_binding {
+@@ -31,10 +32,109 @@ struct nvkmd_horizon_binding {
     horizon_gpu_mapping *mapping;
  };
  
@@ -200,6 +209,57 @@ index 2c2c4b1..5a705ed 100644
 +   snprintf(buf, buf_size, "in NO reservation of this device");
 +}
 +
++void
++nvkmd_horizon_dump_va_map(struct nvkmd_horizon_dev *dev, uint32_t max_lines)
++{
++   /* The whole map, not just the addresses nvkmd was handed. A submit
++    * carries addresses this layer never sees — vkCmdFillBuffer writes to
++    * a buffer address baked into the push by NVK — so naming only the
++    * push leaves half the candidates unaccounted for. With the map
++    * printed, any address from any source can be placed by reading.
++    */
++   uint32_t shown = 0, total = 0;
++
++   simple_mtx_lock(&dev->va_list_mutex);
++   list_for_each_entry(struct nvkmd_horizon_va, va, &dev->va_list, dev_link) {
++      total++;
++      if (shown >= max_lines)
++         continue;
++      shown++;
++
++      simple_mtx_lock(&va->mutex);
++      uint32_t nbind = 0;
++      list_for_each_entry(struct nvkmd_horizon_binding, b, &va->bindings,
++                          link) {
++         mesa_loge("nvkmd_horizon: map  VA 0x%" PRIx64 "+0x%" PRIx64
++                   " page 0x%" PRIx32 "  bound +0x%" PRIx64 " for 0x%" PRIx64,
++                   va->base.addr, va->base.size_B,
++                   horizon_gpu_va_range_page_size(va->range),
++                   b->va_offset_B, b->range_B);
++         nbind++;
++      }
++      if (nbind == 0) {
++         mesa_loge("nvkmd_horizon: map  VA 0x%" PRIx64 "+0x%" PRIx64
++                   " page 0x%" PRIx32 "  (nothing bound)",
++                   va->base.addr, va->base.size_B,
++                   horizon_gpu_va_range_page_size(va->range));
++      }
++      simple_mtx_unlock(&va->mutex);
++   }
++   simple_mtx_unlock(&dev->va_list_mutex);
++
++   /* Say what was dropped. A truncated map that does not admit it reads
++    * as a complete one, and the missing line is exactly the one that
++    * would have explained the fault. */
++   if (total > shown) {
++      mesa_loge("nvkmd_horizon: map  ... %" PRIu32 " more reservation(s) "
++                "not shown of %" PRIu32, total - shown, total);
++   } else {
++      mesa_loge("nvkmd_horizon: map  %" PRIu32 " reservation(s), all shown",
++                total);
++   }
++}
++
  static void
  nvkmd_horizon_va_free(struct nvkmd_va *_va)
  {
@@ -212,7 +272,7 @@ index 2c2c4b1..5a705ed 100644
  
     /* Freeing a VA that still has memory bound is nvkmd's ordinary path,
      * not a caller error: nvkmd_horizon_mem_free releases the VA its
-@@ -291,6 +340,10 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+@@ -291,6 +391,10 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
     list_inithead(&va->bindings);
     simple_mtx_init(&va->mutex, mtx_plain);
  
