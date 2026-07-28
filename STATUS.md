@@ -2036,6 +2036,70 @@ Series: **twenty-seven**.
 
 ---
 
+## Third hardware run, and how far reading gets on `VK_ERROR_UNKNOWN` (2026-07-28)
+
+```
+  ok   one physical device, got 1
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354)
+  ok   at least one queue family, got 1
+  FAIL vkCreateDevice -> -13
+RESULT: FAIL (34/35) [aborted early]
+```
+
+`GetPhysicalDeviceProperties2` works: the driver names the chip and its
+API version, and finds its queue family. The `--whole-archive` fix was
+the right one. **Four of the mandatory sequence's steps are now
+hardware-verified.**
+
+`-13` is `VK_ERROR_UNKNOWN`, which this backend returns from
+`nvkmd_horizon_result()` for a `horizon_gpu` status with no Vulkan
+equivalent — `INVALID_ARG`, `NV`, `BUSY`, `STATE`, `OVERFLOW`, `LEAK`.
+
+### What reading ruled out, and what it did not
+
+| Candidate | Verdict |
+|---|---|
+| `nvkmd_horizon_create_dev` | **ruled out.** It returns only `OUT_OF_HOST_MEMORY` and `INITIALIZATION_FAILED`; there is no path to `UNKNOWN` |
+| `nvkmd_horizon_create_ctx` | **very unlikely.** `horizon_gpu_channel_create` + `bind_engines` is what `t_channel` does, and `t_channel` passes on this console |
+| the device init that follows — heaps, arena, upload queue | **the remaining ground.** Three sites there produce `UNKNOWN`: a failed `vm_map` (`va.c`), a failed unbind (`va.c:135`), and a push that is not a whole number of dwords (`ctx.c:132`) |
+
+The leading hypothesis was a **page-size alignment mismatch** on bind:
+`horizon_gpu_vm_map` requires both offsets to be aligned to the
+*reservation's* page size (`vm.h:59-63`), and `bind_align_B` is the
+big-page size.
+
+**Checked, and it does not hold.** `nvkmd_horizon_alloc_va` picks the
+big-page half only when the size *and* the alignment are both multiples
+of the big page — which is exactly the condition under which every
+mapping inside the reservation can meet the alignment `vm_map` will
+demand. An offset aligned to `bind_align_B` is aligned to either page
+size. Patching that alignment would have changed something already
+correct.
+
+So reading has gone as far as it goes. Three candidates survive, and
+they are distinguished by one line of output rather than by a guess.
+
+### What was done instead of guessing
+
+Two diagnostic changes, because the reason had already been lost twice:
+
+1. **`stderr` now lands in the test's log file** (`dup2` onto its
+   descriptor, unbuffered). Mesa reports through `mesa_logw`/`vk_errorf`,
+   which reach stderr, and on a console stderr is the screen — which is
+   not what comes back. The driver had printed the failing call and the
+   libnx `Result` both times and neither survived.
+2. **The bind failure names the number that decides it.** It printed
+   the VA offset and the range; it now prints the memory offset, the
+   PTE kind and the reservation's page size as well.
+
+Neither changes behaviour. The next console run distinguishes the three
+candidates instead of narrowing them.
+
+Series: **twenty-eight**.
+
+
+---
+
 ## Phase 3 — the state it closed in (previously "Current phase")
 
 **Phase 3 — minimal Horizon support in Mesa. Every milestone item now
