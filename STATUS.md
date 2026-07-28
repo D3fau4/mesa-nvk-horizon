@@ -7,7 +7,8 @@
 
 ## Current phase
 
-**Phase 4 — `nvkmd_horizon`. Steps 1 to 5 are done.**
+**Phase 4 — `nvkmd_horizon`. The backend exists and NVK builds.
+Milestone items 1 and 2 are done; 3 to 10 are named gaps.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -84,6 +85,16 @@ series. Patches 0016 and 0017; the series is seventeen.
 `src/nouveau/winsys` — libdrm talking to the nouveau kernel driver —
 does not compile against newlib, and it is not supposed to. Replacing
 it *is* `nvkmd_horizon`.
+
+**`nvkmd_horizon` itself now exists.** `libnvk.a`, 94 162 bytes, is the
+nouveau Vulkan driver compiled for Horizon against the `nv` system
+services — `vk_icdGetInstanceProcAddr` and `nvk_CreateInstance` defined,
+0 TLS relocations, built end to end from a clean tree by
+`scripts/build-mesa-nvk.sh` in 4 m 17 s. **D9 and D10 are closed**, by
+the hardware and by where the knowledge belongs respectively, and the
+seven rejected designs are checked one by one in the section below.
+Milestone items 3 to 10 return `VK_ERROR_FEATURE_NOT_PRESENT` with their
+item number, so every gap is named. Patch 0018; the series is eighteen.
 
 ---
 
@@ -1203,6 +1214,124 @@ nouveau kernel driver, and replacing it is the whole point of
 
 `compiler_builtins` versus newlib's `memcpy` family is still
 **unmeasured**: nothing has linked the full driver yet.
+
+
+---
+
+## Phase 4 — items 1 and 2: `nvkmd_horizon` exists and NVK builds (2026-07-28)
+
+**`libnvk.a` — 94 162 bytes — is the nouveau Vulkan driver compiled for
+Horizon with a kernel-mode-driver backend that talks to the `nv` system
+services.** `vk_icdGetInstanceProcAddr` and `nvk_CreateInstance` are
+defined in it; the three backend objects are in the archive; 0 TLS
+relocations in it and in the Rust staticlib beside it. Cross build (X).
+`scripts/build-mesa-nvk.sh` does the whole thing from a clean tree in
+4 m 17 s.
+
+### The seven rejected designs, checked one by one
+
+| # | | In this backend |
+|---|---|---|
+| 1 | no simulated `/dev/dri`, render node or sentinel fd | `get_drm_fd` and `get_drm_primary_fd` return −1, which is what nvkmd defines as "none". Nothing is opened |
+| 2 | no fake libc wrappers, no `--wrap` | none; the backend calls `horizon_gpu` and nothing else |
+| 3 | no re-implemented nouveau uAPI | no `drm_nouveau_*`, no `drmSyncobj*`. The winsys is not built at all on Horizon |
+| 4 | no synthetic GEM handles | memory is `NvMap`-backed through `horizon_gpu_mem`; nothing invents a handle |
+| 5 | no globals | every entry point takes its `nvkmd_pdev`/`nvkmd_dev`; the shared `horizon_gpu_device` hangs off the pdev |
+| 6 | no CPU wait after submit | nothing submits yet (item 7); the only `wait` in the ops table is the one `nvkmd` defines |
+| 7 | no Mesa files copied here | the backend is `mesa-patches/0018`, applied to the pinned tree |
+
+### D9, decided by the hardware
+
+Horizon's `nv` session is per process, and `horizon_gpu_device_create()`
+is what makes the GM20B characteristics queryable at all — **there is no
+way to describe the device without opening it**, which is exactly why
+the nouveau backend opens the render node a second time
+(`nvkmd_nouveau_dev.c:40`).
+
+So **the pdev owns the `horizon_gpu_device` and every `nvkmd_dev`
+created from it shares that one, under a reference count.** Vulkan
+permits several `VkDevice`s from one `VkPhysicalDevice`; they share the
+GPU address space, which is harmless because every VA in it is handed
+out by `horizon_gpu_vm_reserve` and no two reservations overlap.
+
+### D10, decided by where the knowledge belongs
+
+Shader model, warps per MP, MPs per TPC and the legal shared-memory
+splits are **pure functions of the chipset** and they lived inside
+`src/nouveau/winsys/nouveau_device.c` — libdrm talking to the nouveau
+kernel driver. A second backend could not reach them and would have had
+to carry a copy that drifts.
+
+They moved to `src/nouveau/headers/nv_device_info_chipset.c`, next to
+the struct they fill. **Nothing about them changed**; `nouveau_device.c`
+calls them instead of defining them. That is the "move upstream" arm of
+D10, not the "duplicate" one.
+
+### Enumeration without DRM, using a hook that already exists
+
+`vk_instance::physical_devices` offers `try_create_for_drm`, which walks
+`drmGetDevices2`, and `enumerate`, which hands the whole job to the
+driver. Horizon uses the second. **Nothing fabricates a `drmDevice`, a
+render node or a file descriptor** — rejected designs 1 and 3 stay
+closed without inventing anything, which is what step 1 predicted.
+
+`nvk_create_physical_device` is split out of
+`nvk_create_drm_physical_device` so both paths share everything that is
+not about *how* the device was found.
+
+### Four things gave way, none of them Horizon-specific
+
+- **`vk_image::drm_format_mod`** was declared under
+  `#if DETECT_OS_LINUX || DETECT_OS_BSD`, so every driver reading it had
+  to know which operating system it was on. The field is now
+  unconditional and stays `DRM_FORMAT_MOD_INVALID` where the extension
+  is not advertised; the entry point implementing
+  `VK_EXT_drm_format_modifier` stays guarded, because *that* is a real
+  platform dependency.
+- **`<sys/mman.h>`** in `nvk_descriptor_table.c` and
+  `nvk_device_memory.c`, with nothing used from it.
+- **`<sys/sysmacros.h>`** in `nvk_physical_device.c`, for `major()`/
+  `minor()` on a DRM device number.
+- **The ELF build-id**, which `util/build_id.h` only declares where
+  `dl_iterate_phdr` exists. It becomes `driverUUID` and the
+  pipeline-cache UUID, so it cannot simply be dropped; it falls back to
+  hashing `PACKAGE_VERSION` and `MESA_GIT_SHA1`. **This is coarser** —
+  two builds of the same source with different local patches hash the
+  same — and is recorded as a limitation rather than papered over with
+  `__DATE__`, which would change the UUID on every rebuild of unchanged
+  source.
+
+### What the pdev reports, and why each answer is a fact
+
+`nvkmd_info` is all false, and each false is a statement about Horizon
+rather than a gap left for later: no dma-buf (there is no DRM to carry
+one), no VRAM (GM20B is an SoC part), no tiled allocation (the PTE kind
+is a property of the *mapping* here, applied at `horizon_gpu_vm_map`
+time, not of the NvMap), no fixed or over-mapping (NvMap returns a CPU
+pointer of its own choosing), no compression (the services report a
+compression page size, but nothing has exercised compressed kinds on
+this chip and claiming it before measuring would corrupt images rather
+than fail).
+
+`bind_align_B` is the address space's **queried** big-page size.
+`sync_types` is NULL: that is D11 and milestone item 8, and a
+build-visible gap is better than a silently wrong answer.
+
+### Items 3 to 10 are named gaps, not silence
+
+Every unimplemented op returns `VK_ERROR_FEATURE_NOT_PRESENT` with the
+milestone item number in the message. `alloc_tiled_mem` and
+`import_dma_buf` are left NULL on purpose: `nvkmd.h`'s inline wrappers
+assert on the matching `nvkmd_info` flag before dispatching, so a caller
+that ignored the capability faults at the assert rather than getting a
+wrong allocation.
+
+### Two new scripts
+
+`scripts/configure-mesa-nvk.sh` and `scripts/build-mesa-nvk.sh`. They
+use their own build directory: `scripts/configure-mesa.sh` is still the
+Phase 3 build — Mesa's non-driver core, no drivers, no Rust — and the
+two answer different questions, so they must not share configured state.
 
 
 ---
@@ -3184,8 +3313,8 @@ emitters), and found no regression in either mode.
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
 | D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
 | D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open, and now a Phase 4 blocker** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. `vk_sync` waits take *absolute* timeouts built from `os_time_get_absolute_timeout`, so this has to be answered before the sync type is designed |
-| D9 | `nvkmd` pdev/dev split: one `horizon_gpu_device` serving both, or GM20B facts queryable without a device | **open** — Phase 4 item 1. nouveau opens the render node twice (`_pdev.c:70`, `_dev.c:40`); Horizon's `nv` session is per process |
-| D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **open** — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
+| D9 | `nvkmd` pdev/dev split: one `horizon_gpu_device` serving both, or GM20B facts queryable without a device | **closed by the hardware (items 1-2)** — the `nv` session is per process and the GM20B characteristics are only queryable once it is up, so there is no describing the device without opening it. The pdev owns the `horizon_gpu_device`; every `nvkmd_dev` shares it under a reference count. Was: — Phase 4 item 1. nouveau opens the render node twice (`_pdev.c:70`, `_dev.c:40`); Horizon's `nv` session is per process |
+| D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **closed: moved upstream (items 1-2)** — they are now in `src/nouveau/headers/nv_device_info_chipset.c`, next to the struct they fill, unchanged, and `nouveau_device.c` calls them. Was: — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
 | D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **open** — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
@@ -3582,31 +3711,26 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**`nvkmd_horizon` itself**, in `docs/milestones.md` order 1..10. Every
-preparatory step is done and the build now stops exactly where the
-backend belongs:
+**Milestone item 3, memory objects**, then 4 (VA heap) and 5
+(bind/unbind) — the three that turn a driver that initialises into one
+that can hold a buffer. They are the smallest complete step towards the
+mandatory sequence, which needs `vkAllocateMemory` and
+`vkBindBufferMemory` before it needs a queue.
 
-```
-FAILED: src/nouveau/winsys/libnouveau_ws.a.p/nouveau_bo.c.o
-nouveau_bo.c: fatal error: sys/mman.h: No such file or directory
-```
+`horizon_gpu` already has all three: `horizon_gpu_mem_create`,
+`horizon_gpu_vm_reserve` and `horizon_gpu_vm_map`. What needs deciding
+while doing them is the **cache policy per memory type (D5)**, which has
+been waiting on the first GPU write since Phase 1, and whether
+`nvkmd_mem::map` should hold the NvMap CPU pointer directly or a
+reference-counted view of it — `nvkmd` reference-counts internal maps
+and allows exactly one client map.
 
-`nouveau_ws` is libdrm talking to the nouveau kernel driver. It is not
-a gap to patch — it is the thing being replaced. The first commit of
-the backend therefore does two things at once: adds
-`src/nouveau/vulkan/nvkmd/horizon/` and takes `dep_libdrm` and
-`idep_nouveau_ws` out of `nvk_deps` where the Horizon backend is
-selected.
+After that: items 6 and 7 (queue, channel, submit) bring in D11 and the
+`vk_sync` question, which depends on D8.
 
-Item 1 is the device, and it opens with **D9** — whether one
-`horizon_gpu_device` serves both `nvkmd_pdev` and `nvkmd_dev`, or GM20B
-facts can be queried without a device. nouveau opens the render node
-twice; Horizon's `nv` session is per process, which is the fact that
-decides it.
-
-Two things stay unmeasured until the driver links: whether
-`compiler_builtins` collides with newlib's `memcpy` family, and what
-the six `horizon_gpu` extensions from step 1 cost in practice.
+Still unmeasured: whether `compiler_builtins` collides with newlib's
+`memcpy` family. Nothing has *linked* the driver into an executable yet
+— `libnvk.a` is an archive.
 
 ## Commit log for Phase 4
 
@@ -3615,6 +3739,7 @@ the six `horizon_gpu` extensions from step 1 cost in practice.
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
+| `mesa-patches: add the Horizon kernel-mode-driver backend` | patch 0018, `configure-mesa-nvk.sh`, `build-mesa-nvk.sh`, STATUS — items 1-2, D9 and D10 closed |
 | `mesa-patches: build Mesa's Rust half without a standard library` | patches 0016–0017, STATUS — step 5 |
 | `toolchain: build the machine Mesa's nouveau driver needs` | `toolchain/Dockerfile`, `build-toolchain-image.sh`, `fetch-rust-tools.sh`, `fetch-clc-deps.sh`, `fetch-mesa-subprojects.sh`, `build-mesa-clc.sh`, `build-rust-sysroot.sh`, cross file, patch 0015, STATUS — step 4 |
 
