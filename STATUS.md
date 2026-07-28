@@ -105,7 +105,7 @@ bytes, zero undefined symbols, zero multiple definitions. D11 is
 resolved native over syncpoints and D8 where it actually bites: the
 absolute deadline becomes a relative duration exactly once. The
 `compiler_builtins`-versus-newlib question is answered by that link:
-**no collision**. The series is twenty-two.
+**no collision**. The series is twenty-three.
 
 ---
 
@@ -1496,7 +1496,7 @@ measured on console stays attributable to a specific build.
 
 `t_vulkan.nro` is 14 008 376 bytes.
 
-### One avoidable failure found by reading, and fixed
+### Two avoidable failures found by reading, and fixed
 
 NVK advertises `KHR_timeline_semaphore` and `timelineSemaphore`
 **unconditionally** (`nvk_physical_device.c:212,439`) and passes
@@ -1506,8 +1506,23 @@ a type for every timeline semaphore an application asked for — a
 failure that would have looked like a driver bug and was a missing list
 entry. The runtime's `vk_sync_timeline` emulation over the binary type
 is now registered beside it, which is what the nouveau backend does when
-the kernel has no timeline either. Patch 0022; the series is
-twenty-two.
+the kernel has no timeline either.
+
+**A block-linear mapping in the small-page half.** A non-pitch PTE kind
+is block-linear, and the GPU MMU only fills block-linear kinds in big
+pages on Maxwell — such a mapping **faults on first access rather than
+failing to map**. NVK asks for one whenever an image's layout is tiled
+(`nvk_image.c:1175` passes `plane->nil.pte_kind` straight through) and
+does not necessarily round the size to a big page, so choosing the half
+by size and alignment alone put some tiled images in the wrong one. The
+kind now decides.
+
+That second one is the shape of bug that does not fail at the call that
+causes it: the map succeeds and the fault arrives later, somewhere
+else. It is exactly what a hardware run would have reported as an
+unexplained channel fault.
+
+Patches 0022 and 0023; the series is twenty-three.
 
 ### What the hardware run has to show
 
