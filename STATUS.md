@@ -4712,6 +4712,28 @@ refuses with `ERR_BUSY` for exactly that reason.
   the deadline, so `vkWaitForFences(timeout=0)` polls rather than
   reporting a false timeout.
 
+**One latent hazard found and deliberately not fixed.** Of the fifteen
+ops `nvkmd.c` dispatches, this backend leaves two NULL:
+`alloc_tiled_mem` and `import_dma_buf`. Neither is on the Phase 4 path
+— `vkAllocateMemory` takes the tiled branch only when
+`pte_kind != 0 || tile_mode != 0` (`nvk_device_memory.c:227`), and
+`t_vulkan` allocates plain buffer memory — but they differ in how safe
+that is:
+
+- `import_dma_buf` is genuinely unreachable: it needs an import-fd
+  struct, which needs an external-memory extension this driver does not
+  advertise.
+- `alloc_tiled_mem` is **not** guarded. `nvkmd_dev_alloc_tiled_mem`
+  (`nvkmd.c:118`) calls it through the pointer with no check, and any
+  tiled image reaches it through ordinary Vulkan with no extension
+  involved (`nvk_cmd_draw.c:1055`, `nvk_device_memory.c:228`). It is a
+  null call waiting for Phase 5.
+
+Left as it is on purpose: a stub returning an error would be a Phase 5
+design decision taken early, and Phase 5 is where tiled memory gets its
+real answer. Recorded here so it is found by reading rather than by
+crashing.
+
 Tested: cross build, six gates, host tests 103/103, series re-applied
 twice from the pinned base (31 patches). Not executed.
 
