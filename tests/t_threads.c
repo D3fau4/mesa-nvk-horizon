@@ -58,10 +58,20 @@
  * written. So no wait on a timed call here is unbounded. The worker
  * doing mtx_timedlock is watched by the main thread through an atomic
  * flag; the main thread's own cnd_timedwait is watched by a thread that
- * signals the condvar if the deadline is ignored. In both cases the
- * failing check is recorded BEFORE the call that could still block —
- * testfw fflushes every line to sdmc, so a run that hangs anyway leaves
- * a log that says where and why.
+ * signals the condvar if the deadline is ignored; and the condvar
+ * wakeups are awaited on atomic counters rather than in thrd_join, with
+ * a broadcast as recovery. In every case the failing check is recorded
+ * BEFORE the call that could still block — testfw fflushes every line to
+ * sdmc, so a run that hangs anyway leaves a log that says where and why.
+ *
+ * One wait is left unbounded, and it is named rather than hidden: the
+ * main thread's mtx_lock inside cnd_set_predicate. It blocks until a
+ * worker releases the mutex, which cnd_wait does atomically as it
+ * suspends — so a cnd_wait that suspends WITHOUT releasing the mutex
+ * would hang there. mtx_lock has no bounded form other than
+ * mtx_timedlock, and building this file's recovery path out of the very
+ * call the section above it is measuring would be circular. The line
+ * before it is a t_check, so the log still says how far the run got.
  *
  * A SECTION THAT CANNOT SET ITSELF UP DOES NOT RUN. Each section is its
  * own function and returns as soon as its mutex, condvar or key fails to
@@ -239,12 +249,19 @@ section_threads(test_ctx *t)
 /* ---------------------------------------------------------------- */
 
 static once_flag once = ONCE_FLAG_INIT;
-static int once_calls; /* written only inside call_once's callback */
+
+/* Atomic, and that is the whole point of the check. The defect this
+ * section hunts is a call_once that runs the body in more than one
+ * thread; with a plain int, two concurrent increments are a data race
+ * that can lose one, leave the total at 1, and report the broken
+ * implementation as correct. The counter that detects concurrent
+ * execution must itself be defined under concurrent execution. */
+static atomic_int once_calls;
 
 static void
 once_body(void)
 {
-    once_calls++;
+    atomic_fetch_add(&once_calls, 1);
 }
 
 static int
@@ -273,9 +290,9 @@ section_call_once(test_ctx *t)
                  WORKERS, created))
         return;
 
-    t_check(t, once_calls == 1,
+    t_check(t, atomic_load(&once_calls) == 1,
             "call_once ran the body exactly once across %d threads (%d)",
-            WORKERS, once_calls);
+            WORKERS, atomic_load(&once_calls));
 }
 
 /* ---------------------------------------------------------------- */
@@ -564,8 +581,14 @@ typedef struct cnd_ctx {
     mtx_t mtx;
     cnd_t cnd;
     int predicate;   /* guarded by mtx */
-    int woken;       /* guarded by mtx */
     int wait_failed; /* guarded by mtx */
+
+    /* Read by the main thread while the workers are running, so atomic
+     * rather than guarded: `ready` is how it knows a worker is inside
+     * cnd_wait and not merely on its way there, and `woken` is how it
+     * bounds its own wait instead of blocking in thrd_join. */
+    atomic_int ready;
+    atomic_int woken;
 
     /* mtx_lock/mtx_unlock failures inside a worker. Atomic and not
      * guarded by mtx, because the case it records is the one where the
@@ -586,16 +609,38 @@ cnd_worker(void *arg)
         atomic_fetch_add(&c->mtx_failures, 1);
         return 0;
     }
+    /* Published while holding the mutex, immediately before the wait.
+     * cnd_wait releases the mutex atomically, so a main thread that
+     * observes this count and then acquires the mutex knows this worker
+     * is inside the wait rather than about to enter it. That ordering is
+     * what makes the signal a test of cnd_signal instead of a test of
+     * the predicate. */
+    atomic_fetch_add(&c->ready, 1);
     while (!c->predicate) {
         if (cnd_wait(&c->cnd, &c->mtx) != thrd_success) {
             c->wait_failed++;
             break;
         }
     }
-    c->woken++;
+    atomic_fetch_add(&c->woken, 1);
     if (mtx_unlock(&c->mtx) != thrd_success)
         atomic_fetch_add(&c->mtx_failures, 1);
     return 0;
+}
+
+/* Waits for *v to reach n, or for WATCHDOG_MS to pass. Returns what it
+ * last observed, so the caller reports a number rather than a boolean. */
+static int
+await_count(atomic_int *v, int n)
+{
+    uint64_t start = armGetSystemTick();
+    int seen = atomic_load(v);
+
+    while (seen < n && ms_since(start) < WATCHDOG_MS) {
+        svcSleepThread(WATCHDOG_POLL_NS);
+        seen = atomic_load(v);
+    }
+    return seen;
 }
 
 /* Sets the predicate the workers loop on, and reports whether the mutex
@@ -698,21 +743,46 @@ section_condvar(test_ctx *t)
 
     if (t_check(t, thrd_create(&threads[0], cnd_worker, &cc) == thrd_success,
                 "created the cnd_wait worker")) {
-        uint64_t start = armGetSystemTick();
+        uint64_t start, elapsed;
+        int seen;
 
-        /* Set the predicate under the mutex, then signal: the worker
-         * loops on the predicate, so this is correct whether it is
-         * already waiting or has not reached the wait yet. And because
-         * the predicate is already true, the join below cannot block on
-         * a lost wakeup — the worker rechecks it and leaves. */
+        /* Wait until the worker is inside cnd_wait before signalling.
+         * Setting the predicate first is still right — it is what stops
+         * a lost wakeup — but on its own it also lets the check pass
+         * without cnd_signal doing anything: a worker that has not
+         * reached the wait yet reads predicate == 1, leaves, and "the
+         * waiter woke" is true against a cnd_signal that is a no-op
+         * returning thrd_success. */
+        seen = await_count(&cc.ready, 1);
+        t_check(t, seen == 1,
+                "the cnd_wait worker reached the wait within %d ms (%d of 1)",
+                WATCHDOG_MS, seen);
+
+        start = armGetSystemTick();
         t_check(t, cnd_set_predicate(&cc),
                 "main thread set the predicate under the mutex");
         t_check(t, cnd_signal(&cc.cnd) == thrd_success, "cnd_signal succeeded");
 
-        thrd_join(threads[0], NULL);
-        uint64_t elapsed = ms_since(start);
+        /* Bounded, and not thrd_join: a cnd_signal that wakes nobody
+         * leaves the worker in cnd_wait for as long as the console is
+         * on, and joining it here would take the verdict with it. */
+        seen = await_count(&cc.woken, 1);
+        elapsed = ms_since(start);
 
-        t_check(t, cc.woken == 1, "the cnd_wait worker woke (%d)", cc.woken);
+        /* Recorded before anything that could still block. Only this
+         * check is made about the wakeup — a second one after the join
+         * would report the same defect twice. */
+        if (!t_check(t, seen == 1,
+                     "cnd_signal woke the waiter within %d ms (%d of 1)",
+                     WATCHDOG_MS, seen)) {
+            t_note(t, "broadcasting as recovery so the join below can "
+                      "return; if the log stops here, cnd_broadcast did not "
+                      "wake it either and nothing else can");
+            cnd_broadcast(&cc.cnd);
+        }
+
+        thrd_join(threads[0], NULL);
+
         t_check(t, cc.wait_failed == 0, "cnd_wait did not fail (%d)",
                 cc.wait_failed);
         t_check(t, atomic_load(&cc.mtx_failures) == 0,
@@ -726,8 +796,9 @@ section_condvar(test_ctx *t)
     /* ---- cnd_broadcast: every waiter wakes ---------------------- */
 
     cc.predicate = 0;
-    cc.woken = 0;
     cc.wait_failed = 0;
+    atomic_store(&cc.ready, 0);
+    atomic_store(&cc.woken, 0);
     atomic_store(&cc.mtx_failures, 0);
 
     for (int i = 0; i < WORKERS; i++) {
@@ -739,19 +810,41 @@ section_condvar(test_ctx *t)
             WORKERS, created);
 
     if (created > 0) {
-        uint64_t start = armGetSystemTick();
+        uint64_t start, elapsed;
+        int seen;
 
+        /* Same handshake as above, and it matters more here: with some
+         * waiters not yet in cnd_wait, a broadcast that reaches only one
+         * of them still lets every worker leave on the predicate, and
+         * "every broadcast waiter woke" passes for an implementation
+         * that woke one. */
+        seen = await_count(&cc.ready, created);
+        t_check(t, seen == created,
+                "every broadcast worker reached the wait within %d ms "
+                "(%d of %d)",
+                WATCHDOG_MS, seen, created);
+
+        start = armGetSystemTick();
         t_check(t, cnd_set_predicate(&cc),
                 "main thread set the predicate under the mutex");
         t_check(t, cnd_broadcast(&cc.cnd) == thrd_success,
                 "cnd_broadcast succeeded");
 
+        seen = await_count(&cc.woken, created);
+        elapsed = ms_since(start);
+
+        if (!t_check(t, seen == created,
+                     "cnd_broadcast woke every waiter within %d ms "
+                     "(%d of %d)",
+                     WATCHDOG_MS, seen, created)) {
+            t_note(t, "broadcasting again as recovery so the joins below "
+                      "can return; if the log stops here, they cannot");
+            cnd_broadcast(&cc.cnd);
+        }
+
         for (int i = 0; i < created; i++)
             thrd_join(threads[i], NULL);
-        uint64_t elapsed = ms_since(start);
 
-        t_check(t, cc.woken == created,
-                "every broadcast waiter woke (%d of %d)", cc.woken, created);
         t_check(t, cc.wait_failed == 0, "no cnd_wait failed (%d)",
                 cc.wait_failed);
         t_check(t, atomic_load(&cc.mtx_failures) == 0,
