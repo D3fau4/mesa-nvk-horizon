@@ -28,13 +28,17 @@ a property of the C library or the compiler rather than as an OS name.
 
 **What is owed:** `t_threads` and `t_ostime` have now been run **on an
 emulator, not on a console** (2026-07-28). `t_ostime` passed 27/27;
-`t_threads` passed 70 checks and then stopped inside
-`util_get_cpu_caps()` without writing a verdict. Items 4 and 5 stay
-cross-build results as far as hardware is concerned — an emulator answers
-for its own implementation of libnx, not for the console's — but the
-emulator run is real evidence and is written up in "First run of
-`t_threads` and `t_ostime` — emulator" below, together with the open
-failure and the staged probe added to locate it.
+`t_threads` passed 70 checks and hung, and locating that hang **found a
+miscompile**: devkitA64 gcc 15.2.0 generates wrong code for every
+`_Thread_local` access under `-mtp=soft -fPIC`, doubling the thread
+pointer instead of adding the variable's offset and emitting no
+relocation at all. Meson was appending that `-fPIC` to every
+static-library object in the Mesa build, so all three objects there that
+use TLS were affected, silently. Fixed with `-Db_staticpic=false` —
+already used in this project's own `meson.build` for a smaller reason —
+and gated by `scripts/check-tls-relocs.sh`, which fails on the property
+rather than on the flag. Items 4 and 5 stay cross-build results as far as
+hardware is concerned; the two sections below have the measurements.
 
 **Codex reviewed PR #4 twice.** The first round left 8 findings — 7 real
 and fixed, 1 refuted with the generated `build.ninja` in hand — mostly
@@ -307,9 +311,142 @@ printed before the first of them, because a call that does not return
 takes the `RESULT:` line with it and a run that produced 70 results
 should not be unreadable on account of the 71st.
 
-No check was removed or weakened, and nothing was worked around. New
-`t_threads.nro`: `00d15baa9beca514c39cc566ce60c4b4bc438ef54b8b0507f2b68296704289ff`.
-`t_ostime` is unchanged.
+No check was removed or weakened, and nothing was worked around.
+
+---
+
+## The cause: `-mtp=soft -fPIC` miscompiles thread-local storage (2026-07-28)
+
+**Class: X (cross build), reproduced from a four-line file.** The staged
+probe above located the failure in one run, and the owner supplied the
+one fact the log could not: the application **hung**, it did not crash.
+The emulator is **Eden**.
+
+### What the second log says
+
+```
+note provisional tally before the staged probe below: 64 passed, 0 failed
+note stage 1/4: getenv("GALLIUM_OVERRIDE_CPU_CAPS") — plain newlib
+note stage 1/4 returned (null)
+note stage 2/4: os_get_option — Mesa's wrapper over getenv
+note stage 2/4 returned (null)
+note stage 3/4: os_get_option_cached — hash table, ralloc, simple_mtx, atexit
+```
+
+and stops. So `os_get_option_cached()` does not return — on the main
+thread, in a fresh process, outside any `call_once`. An isolated repro,
+not a symptom of the CPU-detection path at all.
+
+### The defect
+
+`os_get_option_cached()` opens with `simple_mtx_lock(&options_tbl_mtx)`.
+`UTIL_FUTEX_SUPPORTED` is 0 here, so that expands to
+`util_call_once_data()` on a statically initialised flag, whose slow path
+is in `u_call_once.c`:
+
+```c
+static thread_local struct util_call_once_context_t call_once_context;
+
+void util_call_once_data_slow(once_flag *once, ...)
+{
+   struct util_call_once_context_t *once_context = &call_once_context;
+   once_context->data = data;
+   once_context->func = func;
+   call_once(once, util_call_once_data_slow_once);
+}
+```
+
+What devkitA64 gcc 15.2.0 compiled that to, **in the object file**:
+
+```
+   8:  bl   __aarch64_read_tp
+   c:  lsl  x0, x0, #1          <- no relocation
+  14:  stp  x2, x1, [x0]
+```
+
+It **doubles the thread pointer** instead of adding the variable's offset
+to it, and emits no relocation for the linker to fix up. `readelf -r` on
+that object finds no `R_AARCH64_TLS*` at all. Every read and write of a
+`_Thread_local` lands at a wild address; here that is a 16-byte store at
+`2 × tp`, which is what corrupted enough state to hang the process.
+
+Isolated to one flag, from a four-line file compiled with the same
+`$CFLAGS`:
+
+| Flags | Generated |
+|---|---|
+| `-mtp=soft -fPIE` | `bl __aarch64_read_tp` + `add`/`add` with `R_AARCH64_TLSLE_ADD_TPREL_HI12` / `_LO12_NC` — correct |
+| `-mtp=soft -fPIC` | `bl __aarch64_read_tp` + `lsl x0, x0, #1`, **no relocation** — the bug |
+| `-fPIE` (hardware TP) | `mrs x0, tpidr_el0` + the same two `add`s — correct |
+| `-mtp=soft -fPIE -ftls-model=local-exec` | correct |
+
+It is `-fPIC` alone. The generated code is byte-identical to what is in
+`u_call_once.c.o`.
+
+### How it got in, and how far it reached
+
+Meson appends `-fPIC` to every static-library object unless
+`b_staticpic=false`. This project's **own** `meson.build` already sets
+that in `default_options`, for a smaller reason recorded there — `-fPIC`
+overriding the cross file's `-fPIE` made the Meson output diverge from
+the hardware-verified Makefile output by 48 bytes of `.text` in
+`t_alloc`. `scripts/configure-mesa.sh` did not set it, so Mesa's build
+got `-fPIC` on every object.
+
+Every object in the Mesa build that uses TLS was affected — **three of
+three**:
+
+```
+src/util/libmesa_util.a.p/u_call_once.c.o
+src/util/libmesa_util.a.p/u_debug.c.o
+src/util/libmesa_util.a.p/u_qsort.cpp.o
+```
+
+Nothing warns. The compile succeeds, the link succeeds, and the program
+misbehaves the first time a thread-local is touched. `t_threads` reached
+`u_call_once.c` through a mutex; NVK in Phase 4 would have reached
+`u_debug.c` and `u_qsort.cpp` through ordinary logging and sorting.
+
+### The fix, and the gate
+
+`scripts/configure-mesa.sh` now passes `-Db_staticpic=false`, with the
+measurement above in its comment. Nothing built here is a shared library
+— Horizon has no dynamic loader, which patch 0007 records — so `-fPIC`
+buys nothing on this platform and costs this.
+
+`scripts/check-tls-relocs.sh` is new and fails the build if it returns.
+It tests the property rather than the flag: an object that calls
+`__aarch64_read_tp` is accessing a thread-local, and correct code for
+that access carries at least one `R_AARCH64_TLS*` relocation. An object
+with the call and no relocation is the broken form, whatever produced it.
+
+This gate is one of the few in the tree that has already failed on real
+code rather than only on a deliberate breakage: it reports 3 bad before
+the fix and 0 after.
+
+### Verification
+
+| Check | Command | Result |
+|---|---|---|
+| The miscompile, isolated | four-line file, four flag combinations | only `-mtp=soft -fPIC` is wrong; output byte-identical to `u_call_once.c.o` |
+| Blast radius before the fix | scan every `.o` in the Mesa build | **3 of 3** TLS objects with no relocation |
+| Mesa rebuilds with the option | `configure-mesa.sh && build-mesa.sh` | **379/379 edges**, 0 failures; `-fPIC` occurrences in `build.ninja`: **0** |
+| The object after | `objdump -dr u_call_once.c.o` | `add`/`add` with `R_AARCH64_TLSLE_ADD_TPREL_HI12` / `_LO12_NC` |
+| The linked binary after | `objdump -d t_threads.elf` | `add x0, x0, #0x0, lsl #12` / `add x0, x0, #0x10` — thread pointer plus offset |
+| Gate | `scripts/check-tls-relocs.sh` | 3 TLS objects, all with relocations, 350 scanned |
+| Both build paths | `build-switch.sh`, `build-horizon.sh` | 13 `.nro` each, **13/13 identical sizes** |
+| Host unit tests | `scripts/run-host-tests.sh` | **103/103** |
+| Other gates | layering, abs-paths, rust-target, mesa-test-parity | all OK |
+
+Both `.nro` changed: `t_ostime` links the same rebuilt archives, so it is
+a new binary too even though its source did not change.
+
+### What this does not establish
+
+That the fix makes `t_threads` finish. It removes a defect that is
+sufficient to explain the hang and that had to be removed regardless;
+whether anything else stops that test is a question for the next run.
+The emulator run remains class E either way.
 
 ---
 
@@ -839,16 +976,15 @@ The artefacts handed over, so a console log can be attributed to exactly
 these builds (Makefile path, which is the reference path):
 
 ```
-00d15baa9beca514c39cc566ce60c4b4bc438ef54b8b0507f2b68296704289ff  t_threads.nro
-ff999f013acd300f029f13605bad20e70992afa191033d405cfed475b8f2d6c8  t_ostime.nro
+a58e2af892782a8928afa5c1f5a5dcb419871bb01ffa8e67ab484179cf231945  t_threads.nro
+92899b59cc19d60b34d543fb80b8904865423c43fc25472602de121b5d1a0ecd  t_ostime.nro
 ```
 
-`t_ostime` is the build the emulator run of 2026-07-28 used and is
-unchanged since. `t_threads` was rebuilt after that run to add the staged
-probe around `util_get_cpu_caps()`; the build that produced the emulator
-log is `3f97f5d2…`, and the two before it — `45e49f1e…` (before any
-review) and `0ca4b59f…` (after the first review round) — are older still.
-Only the hashes in the block above should be run. What changed across
+Both are post-TLS-fix builds: `t_ostime`'s source did not change, but it
+links the same rebuilt Mesa archives, so it is a new binary too. The
+emulator runs of 2026-07-28 used `3f97f5d2…` / `ff999f01…` (first) and
+`00d15baa…` (the staged-probe `t_threads`); `45e49f1e…` and `0ca4b59f…`
+are older still. Only the hashes in the block above should be run. What changed across
 those builds is in the two review sections and the emulator section
 above: no check has ever been removed, several were added, every wait on
 a timed call is bounded, and the second review round tightened three
@@ -2074,22 +2210,25 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Find out what stops `t_threads` inside `util_get_cpu_caps()`, then run
-both on a console.**
+**Re-run `t_threads` against the TLS fix, then run both on a console.**
 
-The emulator run of 2026-07-28 (section above) leaves one open failure
-and one open question. The rebuilt `t_threads.nro`
-(`00d15baa…`) reaches the failing call in four named stages, so the next
-log says which of `getenv`, `os_get_option`, `os_get_option_cached` or
-`util_get_cpu_caps` is the one that does not return. Worth knowing at the
-same time, and only the person at the machine can say: whether the
-application **crashed** or **hung** — a hang points at the statically
-initialised `simple_mtx` or at `call_once`, a fault points at an access.
+The 2026-07-28 emulator runs found and located a real miscompile: every
+`_Thread_local` access in the Mesa build was reading and writing a wild
+address, because Meson was appending `-fPIC` to static-library objects
+and devkitA64 gcc 15.2.0 generates wrong code for `-mtp=soft -fPIC`. It
+is fixed and gated (`scripts/check-tls-relocs.sh`), and both `.nro` were
+rebuilt against the repaired archives — `a58e2af8…` and `92899b59…`.
 
-A console run is still owed regardless: an emulator answers for its own
-libnx, not for the Switch's. Both `.nro` are in `build/` and
-`build/meson/` (identical sizes) and write their logs to
-`sdmc:/horizon_gpu_tests/` like the other eleven.
+What is not established is whether that was the *only* thing stopping
+`t_threads`. The staged probe is still in the test, so if it stops again
+the log names the stage. A verdict line — `RESULT: PASS (n/n)` — is what
+closes it.
+
+A console run is owed regardless: an emulator answers for its own libnx,
+not for the Switch's, and both items 4 and 5 stay cross-build results
+until a Switch log exists. Both `.nro` are in `build/` and `build/meson/`
+(identical sizes) and write their logs to `sdmc:/horizon_gpu_tests/` like
+the other eleven.
 
 Rebuild them first if the copies on the SD card predate the **second**
 PR #4 review round: both were changed by both rounds. `t_threads` can
