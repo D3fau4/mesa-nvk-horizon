@@ -1,11 +1,353 @@
 # STATUS
 
-**Last updated:** 2026-07-27
-**Branch:** `claude/mesa-horizon-phase3-closeout-2ahzsq`
+**Last updated:** 2026-07-28
+**Branch:** `claude/mesa-nvk-horizon-vszk01`
 
 ---
 
 ## Current phase
+
+**Phase 4 — `nvkmd_horizon`. Step 1 of the plan is done and is the
+section below: the interface `nvkmd` requires, operation by operation,
+with its semantics, against what `horizon_gpu` already provides.**
+
+Nothing has been built or written in this step. It is a reading of the
+pinned Mesa tree (`mesa-26.1.5` @ `6a02618ccf6c`) and of the libnx
+headers inside the pinned image, and it exists to answer one question
+before any code: **is Phase 4 implementation, or also an extension of
+`horizon/`?** The answer is *both*, and the extensions are six, small,
+and enumerated — three of them conditional on Vulkan-side decisions that
+are named and deliberately not taken yet.
+
+**Phase 3 is closed except for one thing, unchanged:** `t_threads` and
+`t_ostime` have never run on a console (they pass on Eden — 67/67 and
+43/43). That does not block Phase 4 and is recorded as owed. The full
+Phase 3 state is kept verbatim below under "Phase 3 — the state it
+closed in".
+
+The three known blockers carried into this phase are unchanged and are
+*not* addressed by step 1: six unresolved libc symbols that will stop the
+first executable link, Rust (no sysroot built, `std` required), and
+`-Db_staticpic=false` being mandatory. They are steps 2 and 3.
+
+---
+
+## Phase 4 — step 1: what `nvkmd` requires, against what `horizon_gpu` has (2026-07-28)
+
+**Class: reading of the pinned tree (S).** No build was run in this
+step; nothing here is a cross build, an emulator result or a hardware
+result. Every claim cites `file:line` in `mesa-26.1.5` @
+`6a02618ccf6c5651ecb9cccbde571eb61fd73592`, in the Vulkan runtime of the
+same tree, or in the libnx headers extracted from
+`ghcr.io/d3fau4/nx-dev@sha256:61a38fe4…` — the same digest Phase 2
+recorded.
+
+### Method
+
+Read in full, not skimmed: `nvkmd/nvkmd.h` (627 lines),
+`nvkmd/nvkmd.c` (489), and all five files of the `nouveau/` backend
+(`nvkmd_nouveau.h` 138, `_pdev.c` 190, `_dev.c` 99, `_mem.c` 312,
+`_va.c` 255, `_ctx.c` 470).
+
+An ops table does not state its own semantics, so the callers were read
+too: `nvk_physical_device.c`, `nvk_device.c`, `nvk_queue.c`,
+`nvk_device_memory.c`, and — because the entry point is the first thing
+that does not fit — the Vulkan runtime's `vk_instance.[ch]` and
+`vk_sync.h`.
+
+libnx's headers were extracted from the image (`docker cp`, into
+`build/probe/`, never `/tmp`) because "does `horizon_gpu` already answer
+this" sometimes resolves to **libnx has it and `horizon_gpu` does not
+expose it**, which is a different disposition from "Horizon cannot do
+this".
+
+### The entry point is the first thing that does not fit — and the runtime already solved it
+
+`nvkmd_try_create_pdev_for_drm()` takes a `struct _drmDevice *` and
+forwards unconditionally to the one backend (`nvkmd.c:86-93`). NVK
+registers it as `vk_instance::physical_devices.try_create_for_drm`
+(`nvk_instance.c:167-168`), and the runtime's DRM path calls
+`drmGetDevices2()` (`vk_instance.c:418`).
+
+None of that has to be faked. The runtime has a second hook:
+
+```
+/** Enumerate physical devices for this instance
+ *  … If this callback is not set, try_create_for_drm will be used for
+ *  enumeration. */
+VkResult (*enumerate)(struct vk_instance *instance);      vk_instance.h:158
+```
+
+tried **first**, before any DRM enumeration (`vk_instance.c:445-449`).
+So Horizon enumeration is a driver-side callback that never mentions
+DRM: rejected designs 1 and 3 stay closed without a render node, a
+sentinel fd, or a `drmDevice` shim. What the patch series has to add is
+a second creation entry beside `nvkmd_try_create_pdev_for_drm` — the
+existing one is hardcoded to nouveau *and* its signature carries a type
+this platform does not have.
+
+### Table 1 — `nvkmd_pdev_ops` (`nvkmd.h:126-136`)
+
+| Op | Required? | Semantics | `horizon_gpu` today |
+|---|---|---|---|
+| `destroy` | yes | frees the pdev | `horizon_gpu_device_destroy` — but see the pdev/dev split below |
+| `get_vram_used` | called unguarded by the inline (`nvkmd.h:396`), but its only caller is behind `kmd_info.has_get_vram_used` (`nvk_physical_device.c:1538`) | bytes of VRAM in use | GM20B has no VRAM. Report the flag false and answer 0 |
+| `get_drm_primary_fd` | **optional** — NULL-checked (`nvkmd.h:402`) | DRM primary fd for display | leave NULL |
+| `create_dev` | yes | opens the per-device state | `horizon_gpu_device_create` |
+
+**The pdev/dev split is ours to make.** nouveau opens the render node
+twice — once for the pdev, once for the dev (`_pdev.c:70`, `_dev.c:40`).
+On Horizon the `nv` session is per process and `horizon_gpu_device` owns
+it (device.h:96-104), so one `horizon_gpu_device` has to serve both, or
+the pdev has to hold GM20B facts only and the dev create the device.
+The second reading is the one that matches `nvkmd`'s own lifetime rules
+(a pdev exists before any `VkDevice`), and it needs the characteristics
+query to be possible without a full device — which today it is not.
+**Decision for item 1, not taken here.**
+
+### Table 2 — `nvkmd_dev_ops` (`nvkmd.h:161-195`)
+
+| Op | Required? | Semantics | `horizon_gpu` today |
+|---|---|---|---|
+| `destroy` | yes | | `horizon_gpu_device_destroy` |
+| `get_gpu_timestamp` | **yes, and reached** — `nvk_device.c:172`, `vkGetCalibratedTimestampsKHR` | GPU clock in ns; nouveau reads PTIMER (`nouveau_device.c:606-613`) | **not exposed.** libnx has the same clock: `nvGpuGetTimestamp` (`nvidia/gpu.h:16`) over `nvioctlNvhostCtrlGpu_GetGpuTime` (`nvidia/ioctl.h:262`) → **extension 1** |
+| `get_drm_fd` | **optional** — NULL-checked (`nvkmd.h:431`) | | leave NULL |
+| `alloc_mem` | yes | allocate + **give it a VA and bind it** — nouveau does both at creation (`_mem.c:56-67`) | `horizon_gpu_mem_create` + `vm_reserve` + `vm_map` |
+| `alloc_tiled_mem` | yes (called at `nvk_cmd_draw.c:1055`, `nvk_device_memory.c:229`) | same plus `pte_kind` + `tile_mode`; the kind is carried on the **VA** (`_mem.c:35,56-60`) | `horizon_gpu_vm_map` takes the PTE kind. `tile_mode` has no NvMap equivalent — to be measured |
+| `import_dma_buf` | in the table; callers are external-memory extensions (`nvk_device_memory.c:81,219`) | | no dma-buf on Horizon. NvMap has id-based sharing (`nvMapLoadRemote`, `nvidia/map.h:19`), which is **not** the same thing. Disable the extensions; the op returns an error |
+| `alloc_va` | yes | reserve VA, optionally sparse/fixed | `horizon_gpu_vm_reserve` |
+| `create_ctx` | yes | exec ctx or bind ctx | `horizon_gpu_channel_create` |
+
+### Table 3 — `nvkmd_mem_ops` (`nvkmd.h:210-240`)
+
+| Op | Required? | Semantics | `horizon_gpu` today |
+|---|---|---|---|
+| `free` | yes | | `horizon_gpu_mem_destroy` |
+| `map` / `unmap` | yes (`nvkmd.c:397,416,440,446`) | CPU mapping, refcounted for internal maps, single for the client map | **simpler here, not missing**: the allocation *is* host memory registered with NvMap (memory-model § 1), so `horizon_gpu_mem_cpu_ptr` is valid for the object's whole life. map/unmap become bookkeeping |
+| `overmap` | only `VK_EXT_map_memory_placed` (`nvk_device_memory.c:416`) | replace a client map with `PROT_NONE` so the address stays reserved | impossible without `mmap`. **The extension must be turned off** — see the defect below |
+| `sync_to_gpu` / `sync_from_gpu` | called **only** when `!util_has_cache_ops()` (`nvkmd.c:464-468,483-487`) | CPU cache maintenance over a range | `horizon_gpu_mem_flush` / `_invalidate`. See the aarch64 note below |
+| `export_dma_buf` | asserts `NVKMD_MEM_SHARED` (`nvkmd.h:555`) | | unreachable with external memory off |
+| `log_handle` | `NVK_DEBUG_VM` only (`nvkmd.c:210`) | a handle for logging | `horizon_gpu_mem_get_handle` |
+
+**A defect found by reading, worth a patch.** `nvkmd_info` declares
+`has_map_fixed` and `has_overmap` (`nvkmd.h:121-122`), nouveau sets both
+true (`_pdev.c:102-103`) — and **nothing in Mesa 26.1.5 reads either
+flag.** Measured over the whole tree:
+
+```
+$ grep -rn "has_map_fixed\|has_overmap" src/ | grep -v "nvkmd.h:"
+src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c:102:      .has_map_fixed = true,
+src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c:103:      .has_overmap = true,
+```
+
+so `EXT_map_memory_placed` is advertised unconditionally
+(`nvk_physical_device.c:256`). A capability flag with no consumer is
+invisible until a second backend exists, which is exactly the situation.
+Gating that extension on the flags the interface already carries is a
+one-line general fix with a stated defect behind it — the shape
+`mesa-patches/README.md` requires. `has_dma_buf` is the same case.
+
+**The cache question, and why it is not settled by reading.**
+`util_has_cache_ops()` returns true unconditionally on aarch64
+(`cache_ops.h:50`), so on Horizon the two `sync_*` ops would never be
+called and Mesa would do the maintenance itself with `dc cvac` /
+`dc civac` and a granule read from `CTR_EL0` (`cache_ops_aarch64.c:44-107`).
+Whether those EL0 instructions and that system register are permitted
+under Horizon is a **hardware** question. There is a precedent — libnx's
+own `armDCacheFlush` uses the same instruction — but a precedent is not
+a measurement, and `nc_atom_size_B` (`nvkmd.h`/`nv_device_info.h`) is
+`util_cache_granularity()` in nouveau (`_pdev.c:109`), i.e. that same
+`CTR_EL0` read, reported to applications as `nonCoherentAtomSize`.
+Recorded as an open question; the ops are implementable from
+`horizon_gpu` either way.
+
+### Table 4 — `nvkmd_va_ops` (`nvkmd.h:271-285`)
+
+| Op | Required? | Semantics | `horizon_gpu` today |
+|---|---|---|---|
+| `free` | yes | release the reservation | `horizon_gpu_vm_release` |
+| `bind_mem` | yes | map `mem[mem_offset, +range)` at `va->addr + va_offset`, with `va->pte_kind`; every bound is asserted in core (`nvkmd.c:232-240`) | `horizon_gpu_vm_map` — the same shape, because **R8 already forced FIXED-inside-a-reservation**, which is what `nvkmd` assumes anyway |
+| `unbind` | yes | unmap a sub-range **addressed by (offset, range)** | `horizon_gpu_vm_unmap` takes the mapping object. `nvkmd_horizon` keeps its own per-VA mapping list — bookkeeping in the new backend, not a `horizon_gpu` gap |
+
+`NVKMD_VA_SPARSE` binds the whole reservation sparse at alloc time
+(`_va.c:144-154`). libnx has it — `nvAddressSpaceAlloc(…, bool sparse, …)`
+(`nvidia/address_space.h:14`) — and `horizon_gpu_vm_reserve` does not
+expose the flag → **extension 4**, needed only if sparse binding stays
+exposed.
+
+`NVKMD_VA_ALLOC_FIXED | NVKMD_VA_REPLAY` is capture/replay; nouveau
+splits its heap in two (`nvkmd_nouveau.h:40-44`). libnx has
+`nvAddressSpaceAllocFixed` (`address_space.h:15`), unexposed →
+**extension 5**, needed only if capture/replay stays exposed.
+
+### Table 5 — `nvkmd_ctx_ops` (`nvkmd.h:321-351`) — where the semantics live
+
+Every one of these is **batched**, and that is the interface's most
+important property for this project:
+
+| Op | Blocks? | Semantics |
+|---|---|---|
+| `wait(waits)` | **no** | records `vk_sync` waits for the *next* flush (`_ctx.c:114-133`). It does not wait |
+| `exec(execs)` | **no** | appends pushes; flushes early only when the batch is full (`_ctx.c:191-195`) |
+| `bind(binds)` | **no** | appends map/unmap ops, coalescing adjacent ones (`_ctx.c:399-414`) |
+| `signal(signals)` | no CPU wait | adds signal syncs and **flushes** (`_ctx.c:235`) |
+| `flush()` | no | the actual ioctl |
+| `sync()` | **yes — the only one** | flush, then wait on the ctx's own syncobj (`_ctx.c:238-279`) |
+
+And `sync()` is reached from `nvkmd_ctx_exec` **only** under
+`NVK_DEBUG_PUSH_SYNC` (`nvkmd.c:313-317`). That is CLAUDE.md's rejected
+design 6 already written into upstream NVK: submission is asynchronous,
+and the synchronous mode is a documented debug flag. `horizon_gpu` has
+the same distinction (`device.h:88-90`, `HORIZON_GPU_SYNC=1`). **The two
+debug-synchronous modes should be wired to each other, not left as two
+unrelated switches.**
+
+`struct nvkmd_ctx_exec` (`nvkmd.h:297-306`) is `{addr, size_B, incomplete,
+no_prefetch}` — a GPU VA and a byte length, i.e. `horizon_gpu_cmd_span`
+`{gpu_va, num_dwords}` — except that `no_prefetch` is **per entry**,
+while `horizon_gpu_submit`'s flags are per submit (`submit.h:38-44`).
+→ **extension 2**. `incomplete` means "this push and the next must be in
+the same submit ioctl", which a span array satisfies by construction.
+
+**Two context flavours** (`_ctx.c:458-470`): exec (engines) and bind
+(`NVKMD_ENGINE_BIND`). The bind ctx exists because nouveau's VM_BIND is
+asynchronous and ordered against syncobjs; Horizon's map/unmap is a
+synchronous ioctl, so a Horizon bind ctx is "wait the waits, do the maps,
+signal" — legal, but it contains a CPU wait, and it is created **only**
+when the queue family advertises `VK_QUEUE_SPARSE_BINDING_BIT`
+(`nvk_queue.c:437`, `nvk_physical_device.c:1603`).
+
+**Sparse is not hypothetical on this chip.** `sparseBinding` is
+`info->cls_eng3d >= MAXWELL_B` (`nvk_physical_device.c:371`), `MAXWELL_B`
+is `0xB197` (`clb197.h:32`), and GM20B's queried 3D class **is** `0xb197`
+— measured on console, `t_init`, both process modes. So NVK will
+advertise sparse binding on this GPU unless that condition gains a kmd
+capability. Item 6 has to decide: implement the bind ctx, or add the
+capability and turn the feature off.
+
+### Table 6 — the data the backend must produce
+
+| Datum | Where | Source on Horizon |
+|---|---|---|
+| `nv_device_info` | `nvkmd_pdev::dev_info` | milestone item 2; field by field below |
+| `nvkmd_info` (6 flags) | `nvkmd_pdev::kmd_info` | ours to answer; 3 of the 6 have no consumer (above) |
+| `bind_align_B` | `nvkmd_pdev:151` | nouveau uses `os_get_page_size()` (`_pdev.c:114-117`) = **0x1000 here**, already bounded from both sides on console (`t_sysinfo`) |
+| `sync_types` | `nvkmd_pdev:158` → `pdev->vk.supported_sync_types` (`nvk_physical_device.c:1615`) | nouveau uses DRM syncobj. **The largest single piece of Phase 4** — see below |
+| `va_start` / `va_end` | `nvkmd_dev:204` | read only by `nvk_edb_bview_cache`, itself behind `NVK_DEBUG_FORCE_EDB_BVIEW` (`nvk_physical_device.h:71-75`) — but still must be sane. `horizon_gpu_device_info::va_regions[2]` is the queried answer |
+
+**`nv_device_info` field by field** (`nv_device_info.h`), against
+`horizon_gpu_device_info` (`device.h:38-79`):
+
+| Field | Comes from |
+|---|---|
+| `chipset` | `arch \| impl` = `0x120 \| 0xb` = **0x12b** — queried |
+| `type` | `NV_DEVICE_TYPE_SOC` |
+| `device_name`, `chipset_name` | `chipname` = `"gm20b"` — queried |
+| `gpc_count`, `tpc_count` | `num_gpc`, `num_tpc_per_gpc` — queried (1 × 2 on console) |
+| `cls_copy/eng2d/eng3d/m2mf/compute/gpfifo` | queried; all six already in `horizon_gpu_device_info` |
+| `vram_size_B`, `bar_size_B` | 0 — SoC |
+| `nc_atom_size_B` | `util_cache_granularity()` = `CTR_EL0.CWG` — **unmeasured** |
+| `sm` | `sm_for_chipset(0x12b)` = **53** (`nouveau_device.c:84-86`) |
+| `mp_per_tpc` | 1 (`nouveau_device.c:163-169`) |
+| `max_warps_per_mp` | table on `sm` (`nouveau_device.c:118-160`) |
+| `max_smem_per_wg_kB`, `sm_smem_sizes_kB[]` | `init_shared_mem_sizes()` (`nouveau_device.c:172-315`); for sm 53: 16/32/48 kB, cap 48 |
+| `zcull_info`, `has_zcull_info` | libnx `nvioctlNvhostCtrlGpu_ZCullGetInfo` (`nvidia/ioctl.h:256`); unexposed by `horizon_gpu` → **extension 6**. nouveau allows this query to fail (`nouveau_device.c:484`) |
+
+**The four derived fields are the problem, and it is a layering one.**
+`sm_for_chipset`, `mp_per_tpc_for_chipset`, `max_warps_per_mp_for_sm` and
+`init_shared_mem_sizes` are pure functions of the chipset number living
+in `src/nouveau/winsys/nouveau_device.c` — a file that belongs to the
+nouveau winsys and that a Horizon build does not compile. Either they
+are duplicated into `nvkmd_horizon` (a copy, which this tree's rules
+discourage and which would drift) or they move to a shared file next to
+`nv_device_info.h`. They are properties of the **chip**, not of the
+kernel driver, so moving them is a small mechanical patch with a real
+argument behind it. **Decision for item 2, not taken here.**
+
+### The sync problem, stated precisely
+
+`nvkmd_ctx_wait` / `_signal` take `struct vk_sync_wait` / `vk_sync_signal`
+— Vulkan runtime objects, not fences — and NVK takes its sync type from
+the kmd (`nvk_physical_device.c:1615`). nouveau's is DRM syncobj
+(`_pdev.c:129`), which is rejected design 3 *and* does not exist here.
+
+What Horizon has, measured or declared:
+
+| Primitive | Where | Exposed by `horizon_gpu`? |
+|---|---|---|
+| syncpoint read | `nvioctlNvhostCtrl_SyncptRead` (`ioctl.h:246`) | yes — `horizon_gpu_syncpt_read` |
+| GPU-side increment on submit | in-stream `SYNCPOINTA/B` | yes — every `horizon_gpu_submit` |
+| GPU-side wait | validated on console (R10) | yes — `horizon_cmds_syncpt_wait` |
+| CPU wait with timeout | `nvFenceWait` / `EventWait` (`ioctl.h:250`) | yes — `horizon_gpu_fence_wait` |
+| **CPU-side increment** | `nvioctlNvhostCtrl_SyncptIncr` (`ioctl.h:247`) | **no** → **extension 3** |
+| channel-independent syncpoint allocation | `nvioctlChannel_GetSyncpt` (`ioctl.h:293`) | **no** — every syncpoint here belongs to a channel |
+
+A `vk_sync_type` (`vk_sync.h:156-260`) needs `init`, `finish`, `signal`
+(**from the CPU**), `reset`, `move`, `wait` with an absolute timeout,
+and for a timeline `get_value`. CPU signal is precisely the primitive
+`horizon_gpu` does not expose, and a semaphore that no channel owns is
+precisely the object Horizon syncpoints are not.
+
+Two routes exist and **this step does not choose between them**:
+
+1. a Horizon-native `vk_sync` over syncpoints (needs extension 3, and an
+   answer for who owns a syncpoint that no channel created);
+2. the runtime's own emulation — `vk_sync_timeline.c` builds a timeline
+   out of binary syncs — which is where the `cnd_timedwait` measurement
+   (honours its 200 ms deadline; **emulator only**) and **D8**
+   (`CLOCK_MONOTONIC` here is the real-time clock) already point.
+
+Whichever is chosen, D8 has to be answered first: `vk_sync` waits take
+**absolute** timeouts derived from `os_time_get_absolute_timeout`, and a
+clock that steps when the date changes is not the clock a Vulkan timeout
+wants. That makes D8 a Phase 4 blocker rather than a curiosity.
+
+### Verdict: implementation *and* a bounded extension of `horizon/`
+
+Six candidate extensions, none of them a redesign, each with the
+interface site that demands it:
+
+| # | Extension | Demanded by | Conditional? |
+|---|---|---|---|
+| 1 | GPU timestamp query | `nvkmd_dev_ops::get_gpu_timestamp` → `vkGetCalibratedTimestampsKHR` | **no** |
+| 2 | per-span submit flags (`no_prefetch` per GPFIFO entry) | `struct nvkmd_ctx_exec::no_prefetch` | **no** |
+| 3 | CPU-side syncpoint increment | any Horizon-native `vk_sync` with CPU signal | on the sync decision |
+| 4 | sparse VA reservation | `NVKMD_VA_SPARSE` | on exposing sparse binding |
+| 5 | fixed-address VA reservation | `NVKMD_VA_ALLOC_FIXED` | on exposing capture/replay |
+| 6 | Zcull info query | `nv_device_info::zcull_info` | on `has_zcull_info` |
+
+Everything else the interface asks for, `horizon_gpu` already answers —
+memory objects, VA reservations, FIXED maps with an explicit PTE kind,
+channels, asynchronous submission, fences, bounded waits, teardown with
+leak accounting — and in two places the fit is better than expected:
+`nvkmd`'s reservation-then-bind model is the one R8 forced on us, and
+`nvkmd`'s only CPU stall is behind the same debug flag CLAUDE.md
+requires.
+
+### Decisions this step names and does not take
+
+| # | Decision | Belongs to |
+|---|---|---|
+| D9 | pdev/dev split: one `horizon_gpu_device` for both, or GM20B facts queryable without a device | item 1 |
+| D10 | the four chipset-derived `nv_device_info` fields: duplicate or move upstream | item 2 |
+| D11 | `vk_sync`: Horizon-native over syncpoints, or the runtime's timeline emulation | item 8 |
+| D12 | sparse binding: implement the bind ctx, or add a kmd capability and turn it off | item 6 |
+
+### What step 1 did NOT do, said plainly
+
+- **No code, no patch, no build.** `mesa/` was fetched and the series is
+  not even applied in this container yet.
+- The six unresolved libc symbols are untouched — that is step 2 — and
+  Rust is untouched, which is step 3.
+- Nothing about images, tiling or NIL was read beyond the ops table.
+  That is Phase 5's surface, and reading it now would be guessing.
+- `nc_atom_size_B`, and whether `dc cvac`/`CTR_EL0` are permitted at EL0
+  under Horizon, are **unmeasured**. They are named above rather than
+  assumed.
+
+---
+
+## Phase 3 — the state it closed in (previously "Current phase")
 
 **Phase 3 — minimal Horizon support in Mesa. Every milestone item now
 has a disposition with evidence behind it; the phase's build criterion
@@ -1981,7 +2323,11 @@ emitters), and found no regression in either mode.
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
 | D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
-| D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. Phase 4's Vulkan timeouts need an answer |
+| D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open, and now a Phase 4 blocker** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. `vk_sync` waits take *absolute* timeouts built from `os_time_get_absolute_timeout`, so this has to be answered before the sync type is designed |
+| D9 | `nvkmd` pdev/dev split: one `horizon_gpu_device` serving both, or GM20B facts queryable without a device | **open** — Phase 4 item 1. nouveau opens the render node twice (`_pdev.c:70`, `_dev.c:40`); Horizon's `nv` session is per process |
+| D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **open** — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
+| D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **open** — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
+| D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
@@ -2375,7 +2721,24 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Run `t_threads` and `t_ostime` on a console**, and then Phase 4.
+**Phase 4 step 2: close the six unresolved libc symbols**
+(`posix_memalign`, `flock`, `getuid`, `geteuid`, `getgid`, `getegid`),
+deciding for each between `compat/` with its own individual
+justification and a Mesa patch that removes the dependency. Measure
+first: `posix_memalign`'s configure check answers `YES` and is wrong
+(GCC has a `__builtin_posix_memalign`, so Meson's snippet links), while
+a direct link probe says `undefined reference`. A static archive resolves
+nothing, so these stop the **first executable link** of Phase 4 — which
+is the `.nro` the mandatory Vulkan sequence has to become.
+
+Then step 3 (Rust: configure Mesa with `-Dvulkan-drivers=nouveau` and
+record where it actually fails, before designing anything), and only
+then the backend itself in the milestone's 1..10 order.
+
+Step 1 is done and is written up above under "Phase 4 — step 1".
+
+**Still owed from Phase 3, unchanged: run `t_threads` and `t_ostime` on
+a console.**
 
 They pass on Eden — 67/67 and 43/43 — with the exact binaries recorded
 above (`833d14ef…`, `8c33bccf…`), which are in `build/` and
