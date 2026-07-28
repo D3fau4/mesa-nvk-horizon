@@ -191,8 +191,14 @@ run_test(test_ctx *t)
     * It is a diagnostic and it taints the run — "no test may pass only
     * with the mode enabled" — so the run is failed at the end, exactly
     * like a degraded syncpoint baseline.
+    *
+    * Off for an emulator run: the mode waits on each fence, and that
+    * wait needs the very syncpoint read the emulator does not implement,
+    * so it would replace every notifier reading with the same read
+    * failure. On that platform the degraded baseline carries the run
+    * instead, and it is enabled by the probe rather than from here.
     */
-#define T_VULKAN_DEBUG_SYNC 1
+#define T_VULKAN_DEBUG_SYNC 0
 
 #if T_VULKAN_DEBUG_SYNC
    setenv("HORIZON_GPU_SYNC", "1", 1);

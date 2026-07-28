@@ -5020,7 +5020,88 @@ would leave half the candidates unaccounted for. The dump is capped at
 Tested: host 103/103, cross build, six gates, series re-applied twice
 from the pinned base. **Not yet run on hardware.**
 
+## BLOCKER: no console (2026-07-28)
+
+The owner no longer has access to a Nintendo Switch; only an emulator is
+available. Phase 4's exit criterion is **blocked**, not abandoned, by the
+owner's decision recorded here.
+
+The criterion cannot be met on the emulator, and this is not a
+formality. The emulator answers `NVHOST_IOCTL_CTRL_SYNCPT_READ` with
+`0x55c` (`LibnxNvidiaError_NotImplemented`), and the fence is built on
+that counter. "The CPU reads the pattern the GPU wrote" is a statement
+about *ordering*; without the counter there is no ordering, so a
+matching pattern would prove nothing — it could be right by accident
+with the GPU never having run. `t_vulkan` already refuses to print PASS
+in that state, and that refusal stays.
+
+What the emulator is still good for, and what work continues on it:
+
+- It executes the code. The `get_value` defect fixed in patch 0036 is a
+  jump through a NULL pointer; it would crash there exactly as it would
+  on console.
+- The degraded baseline (`HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE`,
+  synchronization.md § 9) is enabled by `t_vulkan`'s own probe when the
+  platform cannot read the syncpoint, so the run reaches the steps after
+  `vkCreateDevice` instead of stopping there.
+- If the MMU fault of run 3 reproduces, it can be fixed without a
+  console in the loop.
+
+What it cannot establish, and must never be recorded as: fence
+behaviour, submit completion, or anything the syncpoint orders.
+
+`T_VULKAN_DEBUG_SYNC` is **off** for emulator builds. The mode waits on
+each submit's fence, and that wait needs the same missing read, so it
+would replace every notifier reading with the same failure.
+
+Every result obtained from here until a console returns is labelled
+**emulator** in this file, never "hardware".
+
+### Patch 0036 — a NULL call, found by reading
+
+`nvk_mem_stream_init` creates its stream sync on `sync_types[0]` with
+`VK_SYNC_IS_TIMELINE`. On nouveau that is a DRM syncobj, binary *and*
+timeline; here it is `nvk_horizon_sync_type`, which is binary. The
+runtime's guard is an `assert` in `vk_sync_init` and this is a `-DNDEBUG`
+build, so the mismatch never surfaced as an error.
+
+It surfaces as a crash instead: `vk_sync_get_value` calls
+`sync->type->get_value` with **no NULL check**, and this type had no
+`get_value`. Reached from mem-stream chunk recycling as soon as a
+chunk's idle time point is ahead of what the stream has seen pass.
+
+Fixed by giving the type the timeline bookkeeping that use needs: the
+object carries the value its pending fence will complete and the largest
+value known to have completed; `get_value` polls the fence with a
+zero-timeout `channel_wait_fence` (which also notices a faulted channel
+and needs no device pointer); `wait` returns at once for a value already
+passed. `nvkmd_horizon_ctx_signal` now passes `signal_value` through
+rather than dropping it, which is what left that counter at zero.
+
+Binary use is unchanged: `wait_value` is 0 there and `passed_value`
+starts at 0, so the new early-out is never taken.
+
+**Still a pending decision**: whether this type should advertise
+`VK_SYNC_FEATURE_TIMELINE` and replace the runtime's emulation the way
+nouveau's syncobj does. That would change the device's timeline mode
+from EMULATED to ASSISTED across the whole driver, and reordering
+`sync_types` alone would hand `nvkmd_horizon_ctx_signal` a
+`vk_sync_timeline` to `container_of` — worse than the mismatch it fixes.
+Not done mid-bring-up.
+
 ## Next concrete task
+
+**Reproduce the run-3 MMU fault on the emulator and fix it.** The
+console is gone (see the blocker above), so the loop is now: run
+`t_vulkan.nro` there, read where it stops, fix, repeat. The degraded
+baseline carries the run past `vkCreateDevice`; everything after that is
+the same code the console was executing.
+
+If the fault does not reproduce, that is information too — it would mean
+the fault is specific to real nvgpu, and the work moves to the parts the
+emulator can exercise until a console is available.
+
+Held for the console, unchanged:
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
 criterion and the only thing left in it:
