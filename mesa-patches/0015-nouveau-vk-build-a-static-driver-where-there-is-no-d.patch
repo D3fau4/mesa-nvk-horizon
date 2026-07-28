@@ -1,0 +1,79 @@
+From 1cebfb6499201a9e695795f3862d852d41cc140a Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 12:41:52 +0000
+Subject: [PATCH 15/15] nouveau/vk: build a static driver where there is no
+ dynamic loader
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An ICD is two things: a shared object the Vulkan loader dlopen()s, and a
+JSON manifest telling the loader which file to open. Neither means
+anything on a platform that has no dynamic loader. There is no loader
+process to read the manifest, and nothing that could open the library if
+there were, so the shared library is dead weight and the manifest names
+a file nobody will ever look for.
+
+Building it also fails outright when the static libraries it links are
+not position-independent, which is the normal state of a build for a
+platform with no shared libraries at all:
+
+  ERROR: Can't link non-PIC static library 'nvk' into shared library
+         'vulkan_nouveau'. Use the 'pic' option to static_library to
+         build with PIC.
+
+Where there is no dlopen, libnvk is therefore declared as a dependency
+and the shared library and both manifests are skipped. An application on
+such a platform links the driver directly and enters it through
+vk_icdGetInstanceProcAddr, which is in the archive.
+
+with_dlopen is the same condition meson.build already uses to decide
+whether anything can be loaded at run time.
+
+mesa-nvk-horizon: Phase 4 — the nouveau Vulkan driver for Horizon
+Why: Horizon has no dynamic loader (patch 0001 records that dlopen,
+  libdl and dlfcn.h are all absent on newlib/libnx), so an ICD .so and
+  its manifest cannot be used. The driver has to be linked into the
+  application.
+Evidence: configuring mesa-26.1.5 for aarch64/horizon with
+  -Dvulkan-drivers=nouveau stops at
+    src/nouveau/vulkan/meson.build:160:20: ERROR: Can't link non-PIC
+    static library 'nvk' into shared library 'vulkan_nouveau'.
+  With this change the same command configures.
+Upstream: yes — it is conditional on a property Mesa already computes,
+  and changes nothing on any platform that has a loader.
+---
+ src/nouveau/vulkan/meson.build | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index 21b66e8..37d8709 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -157,6 +157,23 @@ libnvk = static_library(
+   gnu_symbol_visibility : 'hidden',
+ )
+ 
++# An ICD is a shared object the Vulkan loader dlopen()s, and a manifest
++# telling it which file to open. Neither means anything on a platform
++# with no dynamic loader: there is no loader process to read the JSON,
++# and nothing that could open the library if there were. On such a
++# platform the driver is linked into the application, which reaches it
++# through vk_icdGetInstanceProcAddr in the static archive.
++#
++# with_dlopen is the same condition meson.build already uses to decide
++# whether anything can be loaded at run time at all.
++if not with_dlopen
++  idep_nvk = declare_dependency(
++    link_whole : libnvk,
++    dependencies : nvk_deps,
++  )
++  subdir_done()
++endif
++
+ libvulkan_nouveau = shared_library(
+   'vulkan_nouveau',
+   link_whole : [libnvk],
+-- 
+2.43.0
+

@@ -7,7 +7,7 @@
 
 ## Current phase
 
-**Phase 4 — `nvkmd_horizon`. Steps 1, 2 and 3 are done.**
+**Phase 4 — `nvkmd_horizon`. Steps 1, 2, 3 and 4 are done.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -50,6 +50,27 @@ remains mandatory with its gate running after every Mesa build.
 obstacle is named and measured: NAK and NIL are still `std` crates, so
 Mesa's Rust half does not build until the seven substitutions
 `docs/rust-toolchain.md` § 2 lists become patches.
+
+**Step 4** is the build machine. `meson setup -Dvulkan-drivers=nouveau`
+now **configures and builds for Horizon**: the C half of the nouveau
+Vulkan driver compiles, and bindgen generates NAK's, NIL's and
+`compiler`'s bindings. Getting there needed four things the toolchain
+did not have — libclang, bindgen, cbindgen and a Rust sysroot for a
+tier-3 target — and then a fifth, `mesa_clc`, because NVK compiles two
+OpenCL C files into SPIR-V at build time. On the owner's suggestion
+these stopped being mounted directories and became a **derived Docker
+image** (`toolchain/Dockerfile`), which is both tidier and the reason
+`build/` is disposable again. Patch 0015 makes the driver a static
+library where there is no dynamic loader; the series is fifteen.
+
+**Where it stops, and why that is progress:** `rustc` fails with five
+hundred errors that are one fact — with no `std` in the sysroot there
+is no prelude. That is the `no_std` conversion arriving as a compiler
+error instead of as a plan, and **D13 is now decided by measurement**:
+two `no_std` Rust staticlibs cannot be linked into one binary
+(`multiple definition of __rust_alloc`, five symbols), so NAK and NIL
+become rlibs behind a single staticlib that carries the one
+`#[global_allocator]` and `#[panic_handler]`.
 
 ---
 
@@ -835,6 +856,215 @@ the work is a small patch set. This step's measurement settles it in the
 same direction for a different reason: a `std` for this target would be
 the `unsupported` PAL, so building one is not the cheaper option, it is
 the worse one.
+
+---
+
+## Phase 4 — step 4: the build machine Mesa's nouveau driver needs (2026-07-28)
+
+Step 3 ended with Rust compiling and linking for Horizon. This step is
+what stood between that and `meson setup -Dvulkan-drivers=nouveau`
+answering anything at all. **It is now configured and building**, and
+the Rust half is where it stops — for one measured reason, recorded at
+the end.
+
+Nothing here is a workaround. Every item is something the toolchain
+genuinely does not have, obtained the same way every other input to
+this project is obtained: **fetched on the host, where the network is;
+built in the container, where the result has to run.**
+
+### The shape of the problem, and the owner's suggestion
+
+Each missing piece was first solved by mounting it into the tree and
+pointing an environment variable at it. Asked mid-way why not derive a
+Docker image from the base one instead, the honest answer was: because
+`docker build` runs its `RUN` steps in a container, and dockerd here
+runs `--bridge=none`, so a build that installs anything cannot reach
+the network. Measured:
+
+```
+$ docker build -t probe build/probe/dockerbuild
+ERROR: process "/bin/sh -c echo offline-build-ok" did not complete
+       successfully: network bridge not found
+
+$ docker build --network=none -t probe build/probe/dockerbuild
+sha256:715d551c12912dafea51f5cd7da0c4ebd5bb5efd3017887943449a6b9ac10eec
+```
+
+`--network=none` works. So the suggestion was right and the work was
+redone as `toolchain/Dockerfile` +
+`scripts/build-toolchain-image.sh`: the material is still fetched on
+the host, but it is *installed into an image* rather than mounted and
+pointed at. That removed three environment variables from
+`horizon_run`, put libclang on the system library path where clang-sys
+finds it with no configuration, and made `build/` disposable again.
+
+The line the image draws is stated in the Dockerfile: **it carries what
+the container cannot otherwise obtain or run; everything that works
+identically in both toolchain modes stays in the tree.** Meson and
+Mesa's Python generators therefore stay where they were.
+
+### What the image adds, and why each one could not just be installed
+
+| Addition | Why not `apt`/`cargo install` |
+|---|---|
+| **libclang 16** (Debian bookworm) | bindgen dlopens it. It has to be a bookworm build: the image is glibc 2.36 and this host is Ubuntu 24.04 / glibc 2.39, so the host's own libclang-18 cannot load there. Two packages, because `libclang1-16` needs `libLLVM-16.so.1` — `readelf -d` confirms the NEEDED entry |
+| **bindgen 0.72.1** | Mesa requires `>= 0.71.1` and refuses 0.72.0 as known-buggy (`mesa/meson.build:850-865`). Not in the image; a host `cargo install` yields an Ubuntu binary the container cannot execute; a container `cargo install` needs the network |
+| **cbindgen 0.29.4** | Same, for NIL's generated `nil.h`. Floor is `>= 0.28` (`mesa/meson.build:909`) |
+| **core, alloc, compiler_builtins** for `aarch64-nintendo-switch-freestanding` | Tier 3, so rustup ships no prebuilt `core`, and **Meson drives `rustc` directly and never calls cargo** — there is no `-Zbuild-std` in a Meson build. Built once with cargo and installed at `/opt/rust-sysroot` in the layout `rustc --sysroot` looks for |
+| **LLVM 15, clang 15, libclc 15, SPIRV-LLVM-Translator 15** (Debian bookworm) | NVK compiles two OpenCL C files into SPIR-V at build time, so `mesa_clc` has to exist. **LLVM 15, not the 16 already there for libclang**: Mesa demands an SPIRV-LLVM-Translator matching the chosen LLVM's major.minor (`mesa/meson.build:2030-2042`) and bookworm packages `libllvmspirvlib` for 14 and 15 only |
+| **SPIRV-Tools v2024.4**, built from source | The one piece the distribution cannot supply: Mesa requires `>= 2024.1` (`mesa/meson.build:2054`) and bookworm ships 2023.1 |
+
+The .deb dependency closure is **resolved**, not listed:
+`scripts/fetch-clc-deps.sh` reads Debian's own `Packages` index, asks
+the base image what it already has, and takes the difference — 42
+packages, each verified against the SHA256 the index records, written
+to `build/toolchain/clc-deps/closure.txt` so a change shows up as a
+diff.
+
+That resolver had two defects, both found by the install failing rather
+than by reading it:
+
+- **Versioned dependencies were ignored.** `libc6-i386 depends on
+  libc6 (= 2.36-9+deb12u14)` is not satisfied by the `2.36-9+deb12u10`
+  the image carries, and treating "libc6 is installed" as an answer
+  produced a closure `dpkg` then refused, leaving five packages
+  unconfigured. Fixed by recording each installed package's version and
+  checking every constraint with **`dpkg --compare-versions`** rather
+  than a reimplementation of Debian version ordering.
+- **Architecture qualifiers were not stripped.** `python3:any` looked
+  unsatisfiable for a package the image has always had.
+
+### The cross file gained three things, all toolchain description
+
+1. **`kernel = 'none'`** in `[host_machine]`. Meson reads `kernel` in
+   exactly one place — its Rust compiler. With anything else, the
+   sanity check compiles `fn main() {}`, which needs libstd, and
+   configure stops at `E0463`. With `'none'` it compiles a
+   `#![no_std] #![no_main]` program instead, which is the shape this
+   target supports. It says "freestanding Rust runtime", not "Horizon
+   has no kernel" — that is the only question Meson asks it, and it is
+   the same word rustc's own target name uses. Mesa never reads
+   `host_machine.kernel()`; verified by grep.
+2. **`--sysroot`** on the `rust` binary line, from a generated
+   constant, for the reason in the table above.
+3. **`bindgen_clang_arguments`**. bindgen parses Mesa's headers with
+   libclang, not with the cross gcc, and given only
+   `--target=aarch64-nintendo-switch-freestanding` it went looking for
+   the C library in the *build machine's* `/usr/include`:
+
+   ```
+   /usr/include/stdio.h:27:10: fatal error: 'bits/libc-header-start.h'
+                              file not found
+   ```
+
+   `--sysroot` at devkitA64's newlib fixes it. Meson passes these to
+   every `rust.bindgen()` call, so they belong in the cross file rather
+   than in a Mesa patch: it is a description of the toolchain.
+
+### mesa_clc: a second, native Mesa build
+
+`scripts/build-mesa-clc.sh` configures the same pinned Mesa checkout
+*natively* — no cross file, no devkitA64 — with
+`-Dinstall-mesa-clc=true`, and builds exactly two targets. The cross
+build then uses `-Dmesa-clc=system`, which is the documented cross
+path and also the one that keeps `dep_llvm` from being resolved as a
+*host machine* dependency for aarch64-horizon, where it does not exist
+and is not wanted.
+
+Two packages were added to the closure only because this build asked
+for them, each found by a compile failure rather than by prediction:
+`zlib1g-dev`/`libzstd-dev`/`libexpat1-dev` (Meson fell through to
+downloading the zlib wrap, which cannot work offline) and
+`libclang-15-dev` (`clc_helpers.cpp:45: fatal error:
+clang/Config/config.h: No such file or directory`).
+
+### Patch 0015 — a static driver where there is no dynamic loader
+
+The series is now **fifteen**. An ICD is a shared object the Vulkan
+loader `dlopen()`s plus a JSON manifest naming it; neither means
+anything with no loader, and the shared library will not even link
+against non-PIC static archives:
+
+```
+src/nouveau/vulkan/meson.build:160:20: ERROR: Can't link non-PIC static
+library 'nvk' into shared library 'vulkan_nouveau'.
+```
+
+Where there is no `dlopen` — the same `with_dlopen` condition patch
+0001 introduced — `libnvk` is declared as a dependency and the shared
+library and both manifests are skipped. The application links the
+driver and enters it through `vk_icdGetInstanceProcAddr`.
+
+### Where it stands, measured
+
+```
+$ meson setup ... -Dvulkan-drivers=nouveau -Dmesa-clc=system   -> configures
+$ meson compile -C build/probe/mesa-nouveau
+   ... the C half builds; bindgen generates NAK/NIL/compiler bindings
+   ... rustc then fails, 500+ errors, of which:
+   141 error: cannot find attribute `derive` in this scope
+   102 error[E0405]: cannot find trait `Default` in this scope
+    35 error[E0425]: cannot find type `Option` in this scope
+     2 error[E0463]: can't find crate for `std`
+```
+
+That shape is one fact, not five hundred: **with no `std` in the
+sysroot there is no prelude**, so every prelude name is unresolved.
+It is the `no_std` conversion, arriving as a compiler error instead of
+as a plan.
+
+### D13, decided by measurement: exactly one Rust staticlib
+
+`docs/rust-toolchain.md` § 6 left open "where the single
+`#[global_allocator]` and `#[panic_handler]` live". The question is now
+answered, and it is not a preference. Two `no_std` + `alloc` Rust
+staticlibs, each with its own allocator and panic handler, **cannot be
+linked into one binary**:
+
+```
+ld: libb.a(...): multiple definition of `__rustc::__rust_alloc';
+    liba.a(...): first defined here
+    ... and __rust_dealloc, __rust_realloc, __rust_alloc_zeroed,
+        rust_begin_unwind — five symbols
+LINK FAILED
+```
+
+Measured with and without `-O`, so it is not a codegen-unit accident.
+Upstream Mesa gets away with two Rust staticlibs because `std` supplies
+the shim and the archive member holding it is simply not pulled the
+second time; under `no_std` the definition is explicit and lands beside
+the code that needs it.
+
+So Mesa's arrangement — NAK and NIL both `rust_abi : 'c'` — cannot
+survive here. **NAK and NIL become rlibs, and one new staticlib links
+both and carries the single allocator and panic handler.** That is a
+build-system patch, not source churn, and it is the shape the rest of
+the `no_std` work is written against.
+
+### The size of what is left, counted rather than estimated
+
+| | files | needing `use alloc::…` |
+|---|---|---|
+| `src/compiler/rust` | 13 | 9 |
+| `src/nouveau/compiler/nak` | 42 | 27 |
+| `src/nouveau/nil` | 10 | 0 |
+| `src/nouveau/rust` (bitview) | 1 | 0 |
+| `src/nouveau/headers` | 1 | 1 |
+
+and ~210 `std::` paths, of which the overwhelming majority are
+`core::` under another name — `std::mem` (50), `std::cmp` (32),
+`std::slice` (30), `std::ops` (22), `std::marker` (20). The genuinely
+operating-system ones are the seven `docs/rust-toolchain.md` § 2 lists.
+
+### Known rough edge, not a blocker
+
+`rustfmt` is not installed in the base image and is a rustup component,
+so it cannot be added offline. bindgen reports
+`Failed to run rustfmt: Internal rustfmt error (non-fatal, continuing)`
+and emits each generated file as one very long line. The bindings
+compile; the only cost is that a rustc diagnostic in a generated file
+quotes a hundred kilobytes of it.
+
 
 ---
 
@@ -2819,6 +3049,7 @@ emitters), and found no regression in either mode.
 | D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **open** — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
 | D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **open** — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
+| D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
@@ -3212,92 +3443,30 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Make NAK and NIL `no_std`.** That is the one thing standing between
-step 3's linked Rust artefact and Mesa's Rust half building at all, and
-the work is already enumerated: seven sites, each with its replacement,
-in `docs/rust-toolchain.md` § 2 — `std::env::var` → `os_get_option()`,
-`OnceLock` → a `core::sync::atomic` one-shot, two inert
-`catch_unwind`s under `panic = "abort"`, `HashMap` → the `FxHashMap` the
-crate already uses ten times elsewhere, a `#[allow(dead_code)]`
-graphviz dumper to `cfg`-gate, and `std::io::Result` → a local error
-type. They become `mesa-patches/` entries, and the measurement that says
-whether each worked is that `-Zbuild-std=core,alloc` compiles the crate.
+**The `no_std` conversion of Mesa's Rust half**, in the shape D13
+decided: NAK and NIL become rlibs, one new staticlib links both and
+carries the single `#[global_allocator]` and `#[panic_handler]`, and
+every crate root gains `#![no_std]` + `extern crate alloc`.
 
-Two things have to be decided while doing it, not after: **where the
-single `#[global_allocator]` and `#[panic_handler]` live** (only one of
-each may exist across NAK, NIL and the binary), and whether
-`compiler_builtins` collides with newlib's `memcpy` family at link time
-— the step-3 probe linked, but it was small.
+The work is counted, not estimated — 37 files needing `use alloc::…`
+and ~210 `std::` paths, of which the overwhelming majority are `core::`
+under another name (see step 4). The genuinely operating-system ones
+are the seven `docs/rust-toolchain.md` § 2 lists and are unchanged by
+any of this. Two further things belong in the same pass:
 
-Alongside that: a script that installs the three rlibs as a sysroot
-reproducibly, and the cross file passing `--sysroot` to `rust`.
+- **`--use-core` in Mesa's `bindgen_output_args`.** The generated
+  bindings currently say `::std::os::raw::c_int`; measured on the first
+  successful bindgen run.
+- **Whether `compiler_builtins` collides with newlib's `memcpy`
+  family** at link time. Still unmeasured on anything large; the step-3
+  probe linked, but it was small.
 
-Then the backend itself, in the milestone's 1..10 order, with D9–D12
-taken as they come up.
+The measurement that says whether each crate worked is that `rustc`
+compiles it with the sysroot in the image — the same command Meson
+runs.
 
-Steps 1, 2 and 3 are done and are written up above.
-
-**Still owed from Phase 3, unchanged: run `t_threads` and `t_ostime` on
-a console.**
-
-They pass on Eden — 67/67 and 43/43 — with the exact binaries recorded
-above (`833d14ef…`, `8c33bccf…`), which are in `build/` and
-`build/meson/` and write their logs to `sdmc:/horizon_gpu_tests/` like
-the other eleven. That is the last thing Phase 3 owes, and it is now a
-confirmation rather than an investigation: an emulator settles what is a
-property of the compiled code, a console settles what is a property of
-the machine. The two questions still open on hardware are whether
-`mtx_timedlock`'s polling loop keeps its 200 ms accuracy under the real
-scheduler, and whether `InfoType_CoreMask` is `0xf` in applet mode as
-well as full/game (`t_sysinfo` showed an 8.1× difference in the memory
-limit between the two, so the mask is worth reading in both).
-
-Rebuild them first if the copies on the SD card predate the **second**
-PR #4 review round: both were changed by both rounds. `t_threads` can
-now report a timed call that never returns instead of hanging on it, and
-checks every mutex return in its own workers; `t_ostime`'s sleep bounds
-can now fail for a 2× unit error, which they could not before. The
-current hashes are in "Phase 3 — closing items 1, 2, 4, 5 and 7" below.
-Until their output is in hand:
-
-- item 4 is a cross build, and nothing is claimed about Mesa's C11
-  threads shim on hardware — in particular not the polling
-  `mtx_timedlock`, which is where the implementation can lie;
-- item 5 is a cross build, and `os_time_get_nano`'s unchecked
-  `timespec_get` is an open question, not a known-good path;
-- `mesa-patches/0012`'s effect is a compile result: `u_cpu_detect.c.o`
-  references `sysconf`, and what number it produces on a Switch is
-  unmeasured.
-
-Everything else in Phase 3 is closed with evidence — see "Phase 3 —
-closing items 1, 2, 4, 5 and 7" for the item-by-item disposition and for
-the four things this session deliberately did not do.
-
-Then **Phase 4 — `nvkmd_horizon`**. Two things from this session belong
-at the top of its plan, both measured rather than anticipated:
-
-1. **Six libc symbols are unresolved** in Mesa's built core —
-   `posix_memalign`, `flock`, `getuid`, `geteuid`, `getgid`, `getegid` —
-   and a static archive never resolves anything, so they will stop the
-   first executable link. The list, with the object referencing each, is
-   in the audit above. `posix_memalign` additionally has a configure
-   check that answers `YES` and is wrong.
-2. **`vk_sync_timeline.c` uses `cnd_timedwait`**, so Phase 4's timeline
-   semaphores depend on the timeout path `t_threads` measures.
-
-Already in place: `mesa/` at `MESA_COMMIT` with the patch series
-applying cleanly and idempotently (twelve patches when this was
-written; **fourteen** since Phase 4 step 2),
-`scripts/configure-mesa.sh` and `scripts/build-mesa.sh` as the
-reproducible loop, `compat/` linked into both build paths and policed by
-the layering gate, the cross file no longer corrupting Mesa's configure
-answers, and pkg-config resolving the Switch portlibs.
-
-**Item 1 above is closed** by Phase 4 step 2 — two patches, an
-executable that links with zero undefined symbols, and the two remaining
-symbols measured unreachable. See "Phase 4 — step 2".
-
----
+After that, and only after that, `nvkmd_horizon` itself in
+`docs/milestones.md` order 1..10, taking D9–D12 as they arise.
 
 ## Commit log for Phase 4
 
@@ -3306,6 +3475,7 @@ symbols measured unreachable. See "Phase 4 — step 2".
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
+| `toolchain: build the machine Mesa's nouveau driver needs` | `toolchain/Dockerfile`, `build-toolchain-image.sh`, `fetch-rust-tools.sh`, `fetch-clc-deps.sh`, `fetch-mesa-subprojects.sh`, `build-mesa-clc.sh`, `build-rust-sysroot.sh`, cross file, patch 0015, STATUS — step 4 |
 
 ## Commit log for this phase
 

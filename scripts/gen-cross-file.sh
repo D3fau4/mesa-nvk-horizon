@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Writes the pieces of the Meson cross configuration that cannot be
 # committed: the absolute location of devkitPro on *this* machine, and
-# of the compat archive inside this checkout.
+# of the compat archive and Rust sysroot inside this checkout.
 #
 # toolchain/horizon-aarch64.cross is path-free and references those
 # constants without defining them. Meson shares [constants] across every
@@ -47,6 +47,7 @@ cat > "$tmp" <<EOF
 [constants]
 devkitpro = '$(meson_quote "$HORIZON_DEVKITPRO")'
 horizon_compat_libdir = '$(meson_quote "$PWD/$HORIZON_COMPAT_LIBDIR")'
+rust_sysroot = '$(meson_quote "$HORIZON_RUST_SYSROOT")'
 EOF
 
 if [ -f "$OUT" ] && cmp -s "$tmp" "$OUT"; then

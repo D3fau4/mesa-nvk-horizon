@@ -97,10 +97,34 @@ HORIZON_MESA_TEST_LIBS="src/c11/impl/libmesa_util_c11.a src/util/libmesa_util.a"
 # exist *before* meson setup runs (see build-compat.sh).
 HORIZON_COMPAT_LIBDIR="build/toolchain/lib"
 
+# Where core, alloc and compiler_builtins for $RUST_TARGET live. Its
+# value depends on which toolchain mode is in use and is therefore set
+# below, next to $HORIZON_DEVKITPRO, which is resolved the same way:
+# both are paths *as the compiler sees them*, and in container mode
+# that is a path inside the image, not in this tree.
+#
+# It is needed before meson setup either way — the cross file names it,
+# and Meson's Rust sanity check compiles a program against it.
+#
+# Where bindgen, cbindgen and libclang live is not a variable at all in
+# container mode: the derived image installs them on PATH and in the
+# system library path (toolchain/Dockerfile).
+HORIZON_RUST_SYSROOT_REL="build/toolchain/rust-sysroot"
+
+# Where scripts/build-mesa-clc.sh installs the two *build-machine*
+# binaries the cross build's -Dmesa-clc=system looks for on PATH:
+# mesa_clc and vtn_bindgen2. In the tree rather than in the image
+# because they are built from the pinned Mesa checkout, which is not in
+# the image and changes with MESA_COMMIT.
+HORIZON_NATIVE_TOOLS_DIR="build/toolchain/native-tools"
+
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
     HORIZON_TOOLCHAIN_DESC="local devkitA64 at \$DEVKITPRO"
+    # Built in the tree by scripts/build-rust-sysroot.sh: there is no
+    # image to bake it into in this mode.
+    HORIZON_RUST_SYSROOT="$PWD/$HORIZON_RUST_SYSROOT_REL"
 else
     command -v docker >/dev/null 2>&1 || {
         echo "error: \$DEVKITPRO is not set and docker is unavailable." >&2
@@ -110,6 +134,7 @@ else
     HORIZON_IN_CONTAINER=1
     # Inside the image the prefix is the image's, not this machine's.
     HORIZON_DEVKITPRO="$HORIZON_NX_IMAGE_DEVKITPRO"
+    HORIZON_RUST_SYSROOT="$HORIZON_IMAGE_RUST_SYSROOT"
 
     # The Switch toolchain belongs to the environment (see the
     # ENVIRONMENT header in toolchain/versions.env), so the image is
@@ -119,14 +144,33 @@ else
     # HORIZON_NX_IMAGE overrides the reference entirely — including with
     # a digest, when rebuilding the artefacts behind a recorded hardware
     # run (build/pkg/MANIFEST.txt prints the exact command).
-    HORIZON_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}:${HORIZON_NX_IMAGE_TAG}}"
-    HORIZON_TOOLCHAIN_DESC="$HORIZON_IMAGE"
+    HORIZON_BASE_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}:${HORIZON_NX_IMAGE_TAG}}"
+
+    # Mesa's Rust half needs three things the base image does not have
+    # and a container cannot install for itself (no network): libclang,
+    # bindgen/cbindgen, and a Rust sysroot for a tier-3 target.
+    # scripts/build-toolchain-image.sh adds them in one layer on top of
+    # the base image; toolchain/Dockerfile explains each.
+    #
+    # The derived image is used when it exists, and the base image when
+    # it does not — so everything built before Phase 4 keeps building
+    # with exactly the toolchain it was built with, and the extra layer
+    # is only paid for by the part that needs it.
+    HORIZON_DERIVED_IMAGE="${HORIZON_NX_DERIVED_IMAGE:-$HORIZON_NX_DERIVED_REPO:$HORIZON_NX_IMAGE_TAG}"
+    if docker image inspect "$HORIZON_DERIVED_IMAGE" >/dev/null 2>&1; then
+        HORIZON_IMAGE="$HORIZON_DERIVED_IMAGE"
+        HORIZON_TOOLCHAIN_DESC="$HORIZON_DERIVED_IMAGE (from $HORIZON_BASE_IMAGE)"
+    else
+        HORIZON_IMAGE="$HORIZON_BASE_IMAGE"
+        HORIZON_TOOLCHAIN_DESC="$HORIZON_BASE_IMAGE"
+    fi
 fi
 
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
-export HORIZON_MESA_TEST_LIBS
+export HORIZON_MESA_TEST_LIBS HORIZON_RUST_SYSROOT
+export HORIZON_NATIVE_TOOLS_DIR
 
 # True when every archive tests 12 and 13 link is present. Both build
 # paths decide whether to build those two tests on exactly this
@@ -171,10 +215,15 @@ horizon_mesa_state() {
 # host, so paths in diagnostics, depfiles and Meson's build.ninja are
 # valid on both sides — and no container workdir is hardcoded
 # (scripts/check-no-abs-paths.sh).
+#
+# $HORIZON_IMAGE_RUST_TOOLS_BIN is prepended too. `docker run -e PATH`
+# overrides the image's own ENV PATH, so the Dockerfile setting it is
+# not enough — it has to be repeated here or bindgen is not found.
 horizon_run() {
-    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}"
+    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}:${PWD}/${HORIZON_NATIVE_TOOLS_DIR}/bin"
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
-        # A local install's rustc is already on the developer's PATH.
+        # A local install's rustc, bindgen and cbindgen are already on
+        # the developer's PATH; this mode installs nothing of its own.
         PATH="${_hz_bins}:${PATH}" "$@"
     else
         # The image keeps rustup outside the default PATH; Mesa's build
@@ -182,7 +231,7 @@ horizon_run() {
         # every caller know where it lives.
         docker run --rm \
             -e DEVKITPRO="$HORIZON_DEVKITPRO" \
-            -e "PATH=${_hz_bins}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            -e "PATH=${_hz_bins}:${HORIZON_IMAGE_RUST_TOOLS_BIN}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
             -v "$PWD":"$PWD" -w "$PWD" \
             "$HORIZON_IMAGE" "$@"
     fi
