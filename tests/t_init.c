@@ -86,10 +86,19 @@ static int one_cycle(test_ctx *t, int cycle)
                zc.height_align_pixels, zc.pixel_squares_by_aliquots,
                zc.aliquot_total, zc.subregion_count,
                (unsigned long long)zc.ctx_size);
-        /* The one field that has an independent second source: the
-         * context size is what channel.c reserves a Zcull buffer of. */
-        t_check(t, zc.ctx_size > 0, "cycle %d: zcull context size nonzero",
-                cycle);
+        /* The context size is what channel.c reserves a Zcull buffer of,
+         * so it has to be a size a buffer can have. "Nonzero" was the
+         * first version of this check and it passed on the emulator's
+         * 0x1 — a one-byte Zcull context is not a small answer, it is a
+         * stub. A check that cannot reject an obviously wrong value is
+         * not checking anything.
+         *
+         * One page is the floor: horizon_gpu_mem_create allocates in
+         * pages, so anything under that cannot describe a real buffer.
+         */
+        t_check(t, zc.ctx_size >= 0x1000,
+                "cycle %d: zcull context size is a plausible buffer size "
+                "(0x%llx)", cycle, (unsigned long long)zc.ctx_size);
         t_check(t, zc.width_align_pixels > 0 && zc.height_align_pixels > 0,
                 "cycle %d: zcull alignments nonzero", cycle);
     } else {
