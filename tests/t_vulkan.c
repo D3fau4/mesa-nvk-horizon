@@ -172,6 +172,32 @@ run_test(test_ctx *t)
     */
    setenv("HORIZON_GPU_LOG", "3", 1);
 
+   /* Diagnostic build switch, flipped by hand and never on for a run
+    * that is meant to satisfy Phase 4's exit criterion.
+    *
+    * Submission is asynchronous by design, so a channel fault is
+    * reported at the *next* kickoff, not by the submit that caused it.
+    * The third hardware run of 2026-07-28 showed exactly that: the push
+    * named in the failure was perfectly mapped, and every reservation on
+    * the device had what it should. Something earlier on that channel
+    * faulted — nvk_queue_init_context_state submits the MME microcode
+    * and a privileged-register macro during vkCreateDevice, and nobody
+    * waits on it.
+    *
+    * HORIZON_GPU_SYNC=1 is the documented answer (synchronization.md
+    * § 8): it waits on each submit's fence and logs the notifier, so the
+    * first submit with a non-zero one is the culprit by name.
+    *
+    * It is a diagnostic and it taints the run — "no test may pass only
+    * with the mode enabled" — so the run is failed at the end, exactly
+    * like a degraded syncpoint baseline.
+    */
+#define T_VULKAN_DEBUG_SYNC 1
+
+#if T_VULKAN_DEBUG_SYNC
+   setenv("HORIZON_GPU_SYNC", "1", 1);
+#endif
+
    /* --- the syncpoint probe, before any Vulkan call ------------------
     *
     * The fifth hardware run showed NVK's *first* channel coming back
@@ -205,7 +231,16 @@ run_test(test_ctx *t)
     * .nro is run on both, and to decide whether the rest of this test
     * runs degraded.
     */
-   bool degraded = false;
+   bool degraded = T_VULKAN_DEBUG_SYNC ? true : false;
+   if (T_VULKAN_DEBUG_SYNC) {
+      t_note(t, "DIAGNOSTIC RUN: HORIZON_GPU_SYNC=1. Every submit waits on "
+                "its fence and logs the channel notifier, so the submit that "
+                "faults is named instead of the one after it. The CPU stalls "
+                "that this inserts are not the shipping behaviour, so this "
+                "run cannot satisfy the Phase 4 exit criterion whatever it "
+                "prints.");
+   }
+
    horizon_gpu_device *probe_dev = NULL;
    horizon_gpu_result pres = horizon_gpu_device_create(NULL, &probe_dev);
    if (t_check(t, pres.status == HORIZON_GPU_OK,
@@ -622,7 +657,8 @@ run_test(test_ctx *t)
     * evidence. This is the only check whose failure means "nothing was
     * verified" instead of "something is broken". */
    t_check(t, !degraded,
-                 "the run was not degraded (a degraded run verifies nothing)");
+                 "the run was neither degraded nor diagnostic (such a run "
+                 "verifies nothing)");
 
    /* --- teardown, in reverse order ---------------------------------- */
    vkDestroyFence(dev, fence, NULL);
