@@ -2100,6 +2100,58 @@ Series: **twenty-eight**.
 
 ---
 
+## Correction: the execution platform of the last four runs is unconfirmed (2026-07-28)
+
+**This section corrects a labelling error of mine, not a measurement.**
+
+`CLAUDE.md` requires distinguishing **host build**, **cross build** and
+**verified on real hardware**, and says never to claim Switch behaviour
+from anything weaker. The runs recorded above as "hardware run" —
+the four `t_vulkan` executions of 2026-07-28 — were labelled that way
+**without asking where they were executed**. The owner has since said
+they may have been on an emulator.
+
+What is *not* in doubt, because it is recorded with its own date and
+attribution: the runs of **2026-07-26 and 2026-07-27** are marked
+"real Switch, owner-executed", and that is where `t_channel` reported
+`syncpt id=26` and passed 17/17, and where `t_threads` and `t_ostime`
+passed 67/67 and 43/43.
+
+### Why this matters to the diagnosis, and not only to the bookkeeping
+
+The failure being chased is:
+
+```
+[horizon_gpu:E] initial SyncptRead(1) failed: 0x0000055c
+```
+
+`0x55c` decodes as `Module_LibnxNvidia` description 2 —
+**`LibnxNvidiaError_NotImplemented`**. That is the literal answer an
+emulator gives for an `nvhost-ctrl` ioctl it does not implement, and a
+degenerate syncpoint id of 1 fits the same shape.
+
+So the two readings are very different work:
+
+| If the last runs were… | The syncpoint result means | What follows |
+|---|---|---|
+| **an emulator** | the environment does not implement `SyncptRead`; `horizon_gpu` is not at fault and nothing found in `vkCreateDevice` is a driver bug | record it as an environment limitation, and Phase 4's exit criterion still needs the real console |
+| **a real Switch** | a regression in `horizon/` since 2026-07-27, or something about the 63 MB `t_vulkan` process | four commits to bisect, all of them here |
+
+`t_channel.nro` from the current build separates them: it passed 17/17
+on real hardware, it is 250 KB with no Mesa in it, and it makes the
+same two calls. Sent to the owner for exactly that purpose.
+
+**Until the platform is confirmed, the four `t_vulkan` runs of
+2026-07-28 should be read as "execution platform unconfirmed", and no
+Switch behaviour should be concluded from them.** The findings they
+produced that are *not* platform-dependent stand on their own evidence:
+the NULL dispatch entry was proved by `nm` on the binary, the unflushed
+poison and the stack overflow by reading, and D12 and D14 by the
+interface contracts.
+
+
+---
+
 ## Phase 3 — the state it closed in (previously "Current phase")
 
 **Phase 3 — minimal Horizon support in Mesa. Every milestone item now
