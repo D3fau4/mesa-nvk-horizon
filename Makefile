@@ -216,13 +216,31 @@ $(BUILD)/%.nro: $(BUILD)/%.elf $(BUILD)/%.nacp
 # it collapses repeated slashes, resolves . and .., and strips a trailing
 # slash. scripts/toolchain-env.sh normalises for the script path too;
 # this Makefile does its own because it is also a standalone entry point.
+#
+# An exact match is not enough either. $(wildcard $(BUILD)/*) lists the
+# immediate children of build/, so MESA_BUILD_DIR=build/cache/mesa-probe
+# puts build/cache in that list while the kept set holds only
+# build/cache/mesa-probe — and `rm -rf build/cache` takes the Mesa build
+# with it. Measured with make -n clean. An entry is therefore kept when
+# it *is* one of the paths below or when it *contains* the Mesa build.
+# Keeping a whole intermediate directory is the conservative direction:
+# a nested Mesa build makes clean spare that directory entirely, which
+# is stated here rather than discovered.
 MESA_BUILD_ABS := $(abspath $(MESA_BUILD))
 CLEAN_KEEP := $(MESA_BUILD_ABS) $(MESA_BUILD_ABS).crossid \
               $(abspath $(BUILD)/toolchain)
 
+# Non-empty when $1 must survive clean. $(strip) is load-bearing: the
+# two filters are joined by the line continuation's space, so with both
+# empty this expands to " ", and $(if) reads a lone space as true —
+# which kept every file and made clean delete nothing at all. Measured
+# with make -n clean, which printed a bare `rm -rf`.
+clean_keeps = $(strip $(filter $(abspath $1),$(CLEAN_KEEP)) \
+                      $(filter $(abspath $1)/%,$(MESA_BUILD_ABS)))
+
 clean:
 	rm -rf $(foreach e,$(wildcard $(BUILD)/*),\
-	          $(if $(filter $(abspath $(e)),$(CLEAN_KEEP)),,$(e)))
+	          $(if $(call clean_keeps,$(e)),,$(e)))
 	rm -rf $(COMPAT_LIBDIR) $(BUILD)/toolchain/compat-obj
 
 # The compat depfiles were generated but never included, so a change to a
