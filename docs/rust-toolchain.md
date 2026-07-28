@@ -248,3 +248,73 @@ whole workspace, which depends on 30 crates.io packages even when only
 them on the host against the checksums in Rust's own
 `library/Cargo.lock`. It pins nothing itself, for the same reason
 `versions.env` does not pin libnx.
+
+---
+
+## 7. Update from Phase 4 step 5 (2026-07-28) — the conversion, done
+
+Everything in this section is a **cross build (X)**. The full write-up
+is in `STATUS.md` under "Phase 4 — step 5".
+
+**§ 2's seven sites were right, and all seven are gone.** What § 2 did
+not count was the prelude: without `std` there is no `Vec`, `Box`,
+`String`, `vec!` or `format!` in scope anywhere, which is why the first
+build produced five hundred errors that were one fact. Measured before
+starting: 37 files needing `use alloc::…`, ~210 `std::` paths of which
+the overwhelming majority are `core::` under another name.
+
+Two of § 2's specifics were wrong in detail, and both were found by
+building rather than by reading:
+
+- **`os_get_option()` was not "already reachable through the bindgen
+  bindings".** NAK's allowlist covers `nak_.*`, `nouveau_ws_.*` and
+  `drm.*`; it had to be added.
+- **`FxHashMap` is not a substitution that removes `std`.** § 2 said as
+  much in its own nuance paragraph, but the resolution is not the one
+  it guessed: rustc-hash 2.x defines the aliases *only* under its
+  `std` feature, and Mesa's wrap turned that feature on. The aliases
+  are now rebuilt over hashbrown directly.
+
+Four things were not on the list at all: `eprintln!` (21 sites),
+`f32::round`/`powf`/`log2` (which live on `std`'s float types because
+`core` has no libm), rustc-hash's feature, and bindgen's
+`--use-core`.
+
+### § 4's sub-risk is now closed on NAK and NIL
+
+Step 3 could only measure the TLS question on a probe crate. On the
+real artefact:
+
+```
+R_AARCH64_TLS* relocations in libnouveau_rust_runtime.a : 0
+__aarch64_read_tp references                            : 0
+```
+
+### The allocator question, answered by a link failure
+
+§ 6 left open "where the single `#[global_allocator]` and
+`#[panic_handler]` live". It is not a preference. Two `no_std` Rust
+staticlibs, each with its own, **cannot be linked into one binary**:
+
+```
+ld: libb.a(...): multiple definition of `__rustc::__rust_alloc';
+    liba.a(...): first defined here
+    ... and __rust_dealloc, __rust_realloc, __rust_alloc_zeroed,
+        rust_begin_unwind
+```
+
+Measured with and without `-O`. Upstream Mesa gets away with two Rust
+staticlibs because `std` supplies the shim and the archive member
+holding it is simply not pulled the second time.
+
+So NAK and NIL are rlibs where there is no `std`, and
+`src/nouveau/rust_runtime` is the one staticlib that carries the pair.
+Verified on the artefact: exactly one definition of each of
+`__rust_alloc`, `__rust_alloc_zeroed`, `__rust_alloc_error_handler` and
+`rust_begin_unwind`.
+
+### Still unmeasured
+
+Whether `compiler_builtins` collides with newlib's `memcpy` family at
+link time. Nothing has linked the full driver yet — the build now stops
+on `src/nouveau/winsys`, which is what `nvkmd_horizon` replaces.

@@ -7,7 +7,7 @@
 
 ## Current phase
 
-**Phase 4 — `nvkmd_horizon`. Steps 1, 2, 3 and 4 are done.**
+**Phase 4 — `nvkmd_horizon`. Steps 1 to 5 are done.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -71,6 +71,19 @@ two `no_std` Rust staticlibs cannot be linked into one binary
 (`multiple definition of __rust_alloc`, five symbols), so NAK and NIL
 become rlibs behind a single staticlib that carries the one
 `#[global_allocator]` and `#[panic_handler]`.
+
+**Step 5** built it. **`libnouveau_rust_runtime.a`, 15 292 744 bytes,
+is Mesa's entire Rust half compiled `#![no_std]` for the Switch
+target** — NAK, NIL, `compiler`, `nvidia_headers`, `bitview`,
+`nak_latencies` and both bindgen crates — with **0 TLS relocations** and
+**exactly one** definition of each allocator and panic symbol.
+Reproduced byte-identically from a reset `mesa/` and a re-applied
+series. Patches 0016 and 0017; the series is seventeen.
+
+**What the build stops on now is the right thing:**
+`src/nouveau/winsys` — libdrm talking to the nouveau kernel driver —
+does not compile against newlib, and it is not supposed to. Replacing
+it *is* `nvkmd_horizon`.
 
 ---
 
@@ -1064,6 +1077,132 @@ so it cannot be added offline. bindgen reports
 and emits each generated file as one very long line. The bindings
 compile; the only cost is that a rustc diagnostic in a generated file
 quotes a hundred kilobytes of it.
+
+
+---
+
+## Phase 4 — step 5: Mesa's Rust half, built without `std` (2026-07-28)
+
+**`libnouveau_rust_runtime.a` — 15 292 744 bytes — is NAK, NIL, the
+shared `compiler` crate, `nvidia_headers`, `bitview`, `nak_latencies`
+and both bindgen crates, compiled `#![no_std]` for
+`aarch64-nintendo-switch-freestanding`.** Cross build (X). Reproduced
+from a reset `mesa/` and a re-applied series, byte-identical.
+
+### What it actually took, against what was predicted
+
+`docs/rust-toolchain.md` § 2 listed seven `std` sites and called the
+work "a small, mechanical, plausibly upstreamable patch set". The seven
+were right and all seven are gone. What the document did not count was
+the **prelude**: without `std` there is no `Vec`, `Box`, `String`,
+`vec!` or `format!` in scope anywhere, which is why the first build
+produced five hundred errors that were one fact.
+
+Measured before starting, so the size was known rather than discovered:
+37 files needing `use alloc::…`, ~210 `std::` paths of which the
+overwhelming majority are `core::` under another name.
+
+| The seven | Replaced by |
+|---|---|
+| `std::env::var("NAK_DEBUG")` | `os_get_option()`, Mesa's own accessor for exactly this. It was **not** already reachable through the bindings, as § 2 assumed — it had to be allowlisted |
+| `std::sync::OnceLock<Debug>` | an `AtomicU32` with `u32::MAX` reserved for "not read yet". `Debug` is seven flag bits, so a race recomputes the same answer and `Relaxed` is enough |
+| `std::panic::catch_unwind` ×2 | called directly. It cannot catch anything under `panic = "abort"`, which this target's spec sets |
+| `std::collections::HashMap` | hashbrown — the implementation `std` itself uses — with rustc-hash's `FxBuildHasher` |
+| `save_graphviz`'s `std::fs`/`std::io` | `#[cfg(feature = "std")]`. Dead code, three commented-out call sites, the only filesystem use in NAK |
+| `std::io::Result` over `u_memstream` | a local error type, `src/compiler/rust/io.rs`. No Rust code there reads or writes anything |
+
+### Four things the list did not have
+
+1. **`eprintln!`, 21 sites.** All behind a NAK_DEBUG flag. What `std`'s
+   macro ends up doing is `write(2)` to fd 2, which newlib has, so the
+   macros are reproduced rather than the call sites rewritten.
+2. **`f32::round`, `f32::powf`, `f32::log2`.** These live on `std`'s
+   float types, not in `core` — core has no libm. newlib supplies
+   `roundf`, `powf` and `log2f` and the driver already links `-lm`, so
+   they are called directly rather than adding a Rust libm for three
+   calls.
+3. **rustc-hash defines `FxHashMap`/`FxHashSet` only under its `std`
+   feature**, because there they are `std::collections::HashMap` with a
+   different hasher. Mesa's wrap turned that feature on. It is now off,
+   and the aliases are rebuilt over hashbrown — whose packagefile
+   gained a host-machine build, since Mesa only had a `native : true`
+   one for indexmap.
+4. **bindgen emits `::std::os::raw::c_int`** unless asked for
+   `--use-core`. Measured on the first successful bindgen run, not
+   predicted.
+
+### NAK's bindings no longer drag in the kernel winsys
+
+`nak_bindings.h` included `nouveau_bo.h`, `nouveau_context.h`,
+`nouveau_device.h`, `xf86drm.h` and `drm-uapi/nouveau_drm.h` — for one
+file, `nak/hw_runner.rs`, which is behind `#[cfg(test)]`. That made NAK
+unbuildable wherever the winsys is not, over symbols nothing that would
+be built uses:
+
+```
+nouveau_bo.h:15:10: fatal error: 'sys/mman.h' file not found
+```
+
+The include and the allowlist entries it feeds are now asked for only
+`with_tests`. This is the first piece of the nouveau winsys to come
+out, and it came out for its own reason rather than as part of
+`nvkmd_horizon`.
+
+### D13 in effect: `src/nouveau/rust_runtime`
+
+NAK and NIL are rlibs where there is no `std`, and one new staticlib
+links both and carries the single `#[global_allocator]` (over the C
+library's `memalign`/`free`, so there is one heap rather than two) and
+`#[panic_handler]` (abort, which is what the target's panic strategy
+already means). The condition is `host_machine.kernel()`, which is the
+same property Meson's own Rust compiler reads to decide whether to
+sanity-check a `fn main()` or a `#![no_std] #![no_main]` program — so
+Mesa and Meson agree about the machine instead of each deciding
+separately.
+
+### Verified on the artefact, not argued
+
+```
+R_AARCH64_TLS* relocations in libnouveau_rust_runtime.a : 0
+__aarch64_read_tp references                            : 0
+__rust_alloc                                            : 1 definition
+__rust_alloc_zeroed                                     : 1
+__rust_alloc_error_handler                              : 1
+rust_begin_unwind                                       : 1
+archive members                                         : 57
+```
+
+The first two close `docs/rust-toolchain.md` § 4's open sub-risk **on
+NAK and NIL**, which step 3 could only close on a probe crate. The
+next four are D13 holding.
+
+### Patches 0016 and 0017; the series is seventeen
+
+0016 gates `vk_instance.c`'s `dlfcn.h` include on the RenderDoc
+integration that is its only user — a header a loaderless C library
+does not have, included for code that was already compiled out.
+
+0017 is the `no_std` conversion, and it is large: 74 files. It is one
+patch because the pieces do not stand up separately — the crates cannot
+compile until the prelude, the collections, the floats and the crate
+layout are all answered at once.
+
+### Still open, and now the next thing
+
+The **nouveau winsys** is what the build stops on now:
+
+```
+FAILED: src/nouveau/winsys/libnouveau_ws.a.p/nouveau_bo.c.o
+nouveau_bo.c: fatal error: sys/mman.h: No such file or directory
+```
+
+That is not a gap to patch. `nouveau_ws` is libdrm talking to the
+nouveau kernel driver, and replacing it is the whole point of
+`nvkmd_horizon`. NVK still lists `dep_libdrm` and `idep_nouveau_ws` in
+`nvk_deps`, and both come out when the Horizon backend goes in.
+
+`compiler_builtins` versus newlib's `memcpy` family is still
+**unmeasured**: nothing has linked the full driver yet.
 
 
 ---
@@ -3443,30 +3582,31 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**The `no_std` conversion of Mesa's Rust half**, in the shape D13
-decided: NAK and NIL become rlibs, one new staticlib links both and
-carries the single `#[global_allocator]` and `#[panic_handler]`, and
-every crate root gains `#![no_std]` + `extern crate alloc`.
+**`nvkmd_horizon` itself**, in `docs/milestones.md` order 1..10. Every
+preparatory step is done and the build now stops exactly where the
+backend belongs:
 
-The work is counted, not estimated — 37 files needing `use alloc::…`
-and ~210 `std::` paths, of which the overwhelming majority are `core::`
-under another name (see step 4). The genuinely operating-system ones
-are the seven `docs/rust-toolchain.md` § 2 lists and are unchanged by
-any of this. Two further things belong in the same pass:
+```
+FAILED: src/nouveau/winsys/libnouveau_ws.a.p/nouveau_bo.c.o
+nouveau_bo.c: fatal error: sys/mman.h: No such file or directory
+```
 
-- **`--use-core` in Mesa's `bindgen_output_args`.** The generated
-  bindings currently say `::std::os::raw::c_int`; measured on the first
-  successful bindgen run.
-- **Whether `compiler_builtins` collides with newlib's `memcpy`
-  family** at link time. Still unmeasured on anything large; the step-3
-  probe linked, but it was small.
+`nouveau_ws` is libdrm talking to the nouveau kernel driver. It is not
+a gap to patch — it is the thing being replaced. The first commit of
+the backend therefore does two things at once: adds
+`src/nouveau/vulkan/nvkmd/horizon/` and takes `dep_libdrm` and
+`idep_nouveau_ws` out of `nvk_deps` where the Horizon backend is
+selected.
 
-The measurement that says whether each crate worked is that `rustc`
-compiles it with the sysroot in the image — the same command Meson
-runs.
+Item 1 is the device, and it opens with **D9** — whether one
+`horizon_gpu_device` serves both `nvkmd_pdev` and `nvkmd_dev`, or GM20B
+facts can be queried without a device. nouveau opens the render node
+twice; Horizon's `nv` session is per process, which is the fact that
+decides it.
 
-After that, and only after that, `nvkmd_horizon` itself in
-`docs/milestones.md` order 1..10, taking D9–D12 as they arise.
+Two things stay unmeasured until the driver links: whether
+`compiler_builtins` collides with newlib's `memcpy` family, and what
+the six `horizon_gpu` extensions from step 1 cost in practice.
 
 ## Commit log for Phase 4
 
@@ -3475,6 +3615,7 @@ After that, and only after that, `nvkmd_horizon` itself in
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
+| `mesa-patches: build Mesa's Rust half without a standard library` | patches 0016–0017, STATUS — step 5 |
 | `toolchain: build the machine Mesa's nouveau driver needs` | `toolchain/Dockerfile`, `build-toolchain-image.sh`, `fetch-rust-tools.sh`, `fetch-clc-deps.sh`, `fetch-mesa-subprojects.sh`, `build-mesa-clc.sh`, `build-rust-sysroot.sh`, cross file, patch 0015, STATUS — step 4 |
 
 ## Commit log for this phase
