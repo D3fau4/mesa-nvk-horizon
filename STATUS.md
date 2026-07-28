@@ -5089,6 +5089,89 @@ from EMULATED to ASSISTED across the whole driver, and reordering
 `vk_sync_timeline` to `container_of` — worse than the mismatch it fixes.
 Not done mid-bring-up.
 
+## The push dump, and what is actually in the stream (emulator, 2026-07-28)
+
+`NVK_DEBUG=push_dump,vm` on the emulator produced 4596 lines: every VA
+operation in order, and every push decoded. The emulator reaches
+`vkQueueSubmit -> 0`, so this is the same stream real nvgpu faults on.
+
+Four submits on the queue's channel, matching the fence `(2, 4)` the
+run waited on: `bind_engines`, the queue context init, the queue state
+update, the fill.
+
+**Every address in the stream, checked against the map:**
+
+| Method | Value | Mapped? |
+|---|---|---|
+| `SET_TEX_HEADER_POOL_B`, max index 0x3ff | `0x8002000` | yes — 32 KiB used of 64 KiB bound |
+| `SET_TEX_SAMPLER_POOL_B` | `0xa012000` | yes — two chunks, 128 KiB |
+| `OFFSET_OUT` (the fill) | `0x1_0a064000` | yes — mem\<0x28\>, 128 KiB bound |
+| `SET_SHADER_LOCAL_MEMORY_WINDOW` | `0xff000000` | aperture, see below |
+| `SET_SHADER_SHARED_MEMORY_WINDOW` | `0xfe000000` | aperture, see below |
+| **`SET_PROGRAM_REGION`** (3D and compute) | **`0xa052000`** | **no — `alloc va [0xa052000, 0x10a052000)`, never bound** |
+
+So the fill's destination and the pushes themselves were never the
+problem, and neither were the descriptor pools. Two things came out of
+this that were not visible any other way.
+
+### Finding A — the shader memory windows collide with our address space
+
+`nvk_push_dispatch_state_init` programs the local and shared memory
+windows at fixed addresses, `0xff000000` and `0xfe000000`. They are
+apertures, not allocations: a shader's LDL/STL/LDS/STS go through them.
+Upstream knows nothing protects them and says so:
+
+> "Reduce likelihood of collision with real buffers by placing the hole
+> at the top of the 4G area. This will have to be dealt with for real
+> eventually by blocking off that area from the VM." Really?!? TODO: Fix
+> this for realz.
+
+On this platform it is not a likelihood. The small-page region begins at
+`0x8000000` and NVK's reservations march up through 4 GiB, so the shader
+heap's own reservation `[0xa052000, 0x10a052000)` **covers both
+windows**. The day a shader uses local or shared memory it will read
+whatever the heap has bound there — its own code, most likely.
+
+Detected, not worked around, and patch 0037 logs it precisely.
+`NVGPU_AS_IOCTL_ALLOC_SPACE` has no "place it here" form, so the
+aperture cannot simply be reserved, and every scheme for steering the
+allocator around it costs gigabytes of address space on a guess nobody
+can test without a console. **Open decision**, recorded rather than
+guessed at.
+
+### Finding B — the leading hypothesis for the hardware MMU fault
+
+The queue context init writes **two GPU privileged registers from the
+pushbuffer**, via `CALL_MME_MACRO(23)` = `NVK_MME_SET_PRIV_REG`:
+
+```
+mthd 38b8 NV9097_CALL_MME_MACRO(23) .V = 0x0
+mthd 38bc NV9097_CALL_MME_DATA(23)  .V = 0x8          <- mask, bit 3
+mthd 38bc NV9097_CALL_MME_DATA(23)  .V = 0x419f78     <- gr_gpcs_tpcs_sm_disp_ctrl
+
+mthd 38b8 NV9097_CALL_MME_MACRO(23) .V = 0x0
+mthd 38bc NV9097_CALL_MME_DATA(23)  .V = 0x4000
+mthd 38bc NV9097_CALL_MME_DATA(23)  .V = 0x419e44     <- sms_hww_warp_esp_report_mask
+```
+
+This is the only thing in the whole stream that is not an ordinary
+memory operation, and it is the only one whose success depends on what
+the *kernel* permits a user channel to do. Desktop nouveau allows it;
+Horizon's nvgpu is not going to be as permissive, and an emulator would
+neither implement nor enforce it — which is exactly why the fault does
+not reproduce there.
+
+NVK's own comment says what the writes are for: enabling FP helper
+invocation memory loads, so that one dEQP subgroup test stops failing
+occasionally. Not required for anything Phase 4 does.
+
+**Not fixed, because it cannot be confirmed without a console.** Whether
+nvgpu reports a refused PRI write as notifier 31 specifically is
+unverified, and skipping the writes on a guess would change upstream
+behaviour for a reason nobody has measured. The experiment is one line
+(`cls_eng3d >= MAXWELL_B` guard in `nvk_push_draw_state_init`) and it is
+the first thing to try when hardware returns.
+
 ## Next concrete task
 
 **Reproduce the run-3 MMU fault on the emulator and fix it.** The
