@@ -42,6 +42,14 @@ the flag.
 `mesa-patches/0012` is a measurement now: `util_cpu_detect` reports **4
 CPUs** from a `0xf` core mask, where without the patch it reports 1.
 
+**Codex reviewed a third time after that fix and left 8 findings, all
+8 real.** Three are earlier fixes that stopped one level short — the
+`clean` rule fixed for spelling but not for nesting, stale-`.nro`
+pruning fixed in `build/` but not in `build/pkg`, the unbounded-wait rule
+applied to `t_threads` but not to `t_ostime` — and one is a comment
+claiming a gate was wired when nothing invoked it. See "Codex PR review,
+PR #4, third round" below.
+
 **What is still owed:** a **console** run. Eden answers for its own
 libnx and SVCs, so items 4 and 5 remain cross-build-plus-emulator until
 a Switch log exists. The two sections below have every measurement.
@@ -318,6 +326,80 @@ takes the `RESULT:` line with it and a run that produced 70 results
 should not be unreadable on account of the 71st.
 
 No check was removed or weakened, and nothing was worked around.
+
+---
+
+## Codex PR review, PR #4, third round (2026-07-28) — 8 findings, 8 real
+
+Reviewed after the TLS fix landed. **All eight held up**, six of them
+reproduced with a command before anything was changed and two confirmed
+by reading the code they describe. Three are the same defect class as
+something fixed in an earlier round, arriving one level further out —
+which is the useful thing about this round.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 (P1) | The reconfigure stamp records only *whether* Mesa's archives are present, so pointing `$MESA_BUILD_DIR` at a different directory that also has them reconfigures nothing and the tests keep linking the old build | **Real, reproduced.** `MESA_BUILD_DIR=build/mesa-alt scripts/build-horizon.sh` left `build.ninja` naming `mesa-probe`, silently. The stamp now holds `<present\|absent> <directory>` and is produced by one function, `horizon_mesa_state`, called from both the writer and the reader. Verified in both directions and idempotent on a third run |
+| 2 (P1) | The condvar sections signal before the worker has reached `cnd_wait`, so the already-true predicate lets it finish even against a broken `cnd_signal` — and if it *is* waiting, that same defect blocks `thrd_join` forever | **Real, and both halves matter.** The check could pass for a `cnd_signal` that does nothing, and could hang for one that wakes nobody. Workers now publish `ready` under the mutex immediately before waiting — `cnd_wait` releases the mutex atomically, so a main thread that sees the count and then takes the mutex knows the worker is *inside* the wait — and the main thread awaits `woken` on an atomic with a 2000 ms bound instead of joining, records the failure before the join, and broadcasts as recovery. The post-join wakeup check was dropped: keeping it would report one defect twice, which round 2 fixed elsewhere |
+| 3 (P2) | `make clean`'s keep-set is an exact match, so `MESA_BUILD_DIR=build/cache/mesa-probe` puts `build/cache` in `$(wildcard)` and `rm -rf build/cache` takes the Mesa build with it | **Real, reproduced** with `make -n clean` after creating the nested directory. This is the *same finding as round 2's #1* one level out: that round fixed how the path is spelled, not how deep it is. An entry now survives when it is in the keep-set **or contains** the Mesa build. Keeping a whole intermediate directory is the conservative direction and is stated in the Makefile rather than left to be discovered |
+| 4 (P2) | An absolute `MESA_BUILD_DIR` outside `$PWD` is accepted, but `horizon_run` mounts only `$PWD`, so Meson configures into the container's own filesystem and the directory is gone when it exits | **Real, measured.** A file written to `/var/tmp/...` inside the container is readable there and absent on the host a moment later; the same write under `$PWD` is on the host. Now rejected with the reason, and only in container mode — with a local devkitA64 there is no container and the path works. An absolute path *inside* the tree still works, which is what `meson.build` advertises |
+| 5 (P2) | `configure-mesa.sh`'s comment says `check-tls-relocs.sh` fails the build, and nothing invokes it — so `-Db_staticpic=true`, which the trailing `"$@"` allows on purpose, still ships the miscompile | **Real, and the sharpest of the round.** A comment claiming enforcement that does not exist is exactly what round 2 was about, written into the fix for round 2's own lesson. `build-mesa.sh` now runs the gate over the objects after every build — after, because a gate that runs first inspects the previous build's output |
+| 6 (P1) | `package-horizon.sh` copies the current `.nro` into `build/pkg` but never removes ones the source no longer has, then hashes everything in the destination into a fresh manifest | **Real, reproduced.** *Same defect as round 2's stale-`.nro` finding, one level further out*: that round stopped `build/` from mixing two builds, and the packaging step then did it anyway. Packaged 13, removed the two Mesa tests from the source, packaged again — `build/pkg` kept them and the new manifest claimed them. Now the destination is synchronised first: `dropping t_ostime.nro — not in build/meson`, manifest 11, and back to 13 when they return |
+| 7 (P2) | `once_calls++` is a plain `int`, so if the broken `call_once` being hunted runs the body concurrently the increments race and can lose one, leaving 1 and passing | **Real.** The counter written to detect concurrent execution has to be defined under concurrent execution. Now `atomic_int` |
+| 8 (P2) | `t_ostime` calls `os_time_sleep` and `os_time_nanosleep_until` synchronously, so a sleep that never returns takes the upper-bound check and the verdict with it | **Real, and it is round 1's P1 applied to the file it was not applied to.** `t_threads` was corrected for exactly this; `t_ostime` was not. Each blocking call now runs on a worker awaited against `armGetSystemTick()` with a 2000 ms bound, and the failing check is written before anything that could block. **libnx threads, not Mesa's C11 shim**: that shim is what `t_threads` measures, and building this file's watchdog out of it would make `t_ostime` fail for reasons that are not about `os_time.c`. On the timeout path the worker's thread and context are deliberately leaked — it may still be inside the call and will write to that memory when it returns |
+
+### What this round says about the previous ones
+
+- **Three findings are earlier fixes that stopped one level short.** The
+  clean rule was fixed for spelling and not for nesting; the stale-`.nro`
+  pruning was fixed in `build/` and not in `build/pkg`; the unbounded-wait
+  rule was applied to `t_threads` and not to `t_ostime`. In each case the
+  original finding was fully addressed *as reported*, and the class was
+  not. Reading the next call site outward is cheaper than a review round.
+- **A gate was claimed and not wired.** Finding 5 is a comment asserting
+  enforcement that did not exist — written in the same commit that
+  introduced the gate, and in a round whose own lesson was that a comment
+  is not enforcement.
+
+### A defect this round introduced and closed inside itself
+
+The nesting fix for finding 3 made `clean` delete **nothing at all**:
+
+```
+$ make -n clean
+rm -rf
+rm -rf build/toolchain/lib build/toolchain/compat-obj
+```
+
+The two `$(filter)` calls are joined by a line continuation, so with both
+empty the expression is `" "` — and `$(if)` reads a lone space as true,
+so every entry was kept. `$(strip)` around it, and the reason recorded in
+the Makefile. Caught by running `make -n clean` on all six spellings
+rather than on the one the fix was written for, which is the lesson
+round 2 wrote down.
+
+### Verification
+
+| Check | Command | Result |
+|---|---|---|
+| Stamp records the directory | `MESA_BUILD_DIR=build/mesa-alt scripts/build-horizon.sh`, then back | before: `build.ninja` kept naming `mesa-probe`; after: reconfigures both ways, and a third run does not |
+| `clean`, six path shapes | `make -n clean` × 6 | each keeps exactly the selected Mesa build (or the directory containing it) and `build/toolchain`, and deletes the rest |
+| Absolute path outside the tree | `MESA_BUILD_DIR=/var/tmp/… scripts/build-mesa.sh` | rejected with the reason, exit 1; `configure-horizon.sh` likewise |
+| Absolute path inside the tree | `MESA_BUILD_DIR=$PWD/build/mesa-probe` | accepted |
+| The gate is wired | `scripts/build-mesa.sh` | ends with `check-tls-relocs: OK (3 object(s) use TLS…)` |
+| Packaging drops stale artefacts | package 13, hide the two, package again | `dropping t_ostime.nro`, `dropping t_threads.nro`, 11 in the manifest; 13 again when restored |
+| Both tests compile `-Wall -Wextra -Werror` | `scripts/build-switch.sh` | clean |
+| `make clean && make` | `scripts/build-switch.sh clean && scripts/build-switch.sh` | Mesa and toolchain kept, **13 `.nro`** |
+| Patch series on a reset `mesa/`, ×2 | `git -C mesa reset --hard $MESA_COMMIT && scripts/apply-mesa-patches.sh` | applies 12; second run `all 12 patches already applied` |
+| `.nro` parity | `stat -c%s` over both directories | **13/13 identical sizes** |
+| Host unit tests | `scripts/run-host-tests.sh` | **103/103** |
+| Gates | tls-relocs, mesa-test-parity, layering, abs-paths, rust-target | all OK |
+
+Both `.nro` changed again: `833d14ef…` (`t_threads`), `8c33bccf…`
+(`t_ostime`). The emulator results recorded above were produced by
+`a58e2af8…` / `92899b59…` and stand as measurements of those builds; the
+changes here are to how the tests behave when something does **not**
+answer, which is the case those runs did not exercise.
 
 ---
 
@@ -1021,15 +1103,17 @@ The artefacts handed over, so a console log can be attributed to exactly
 these builds (Makefile path, which is the reference path):
 
 ```
-a58e2af892782a8928afa5c1f5a5dcb419871bb01ffa8e67ab484179cf231945  t_threads.nro
-92899b59cc19d60b34d543fb80b8904865423c43fc25472602de121b5d1a0ecd  t_ostime.nro
+833d14ef5ac2d44c7ed981b44fc45f4b0b8412afb9765935103db1a1de1284d1  t_threads.nro
+8c33bccfff69aff4f2768cdb0fc1f3c8babbd093a47f3d25c80768cd76e4810a  t_ostime.nro
 ```
 
-Both are post-TLS-fix builds: `t_ostime`'s source did not change, but it
-links the same rebuilt Mesa archives, so it is a new binary too. The
-emulator runs of 2026-07-28 used `3f97f5d2…` / `ff999f01…` (first) and
-`00d15baa…` (the staged-probe `t_threads`); `45e49f1e…` and `0ca4b59f…`
-are older still. Only the hashes in the block above should be run. What changed across
+These are the current builds, after the third review round. The
+**passing** emulator runs of 2026-07-28 were `a58e2af8…` / `92899b59…`,
+and those results stand as measurements of those binaries: the third
+round changed how both tests behave when a call does *not* answer, which
+is the case those runs did not reach. Older still, and not to be run:
+`3f97f5d2…` / `ff999f01…` (the first emulator pair), `00d15baa…` (the
+staged-probe `t_threads`), `0ca4b59f…` and `45e49f1e…`. What changed across
 those builds is in the two review sections and the emulator section
 above: no check has ever been removed, several were added, every wait on
 a timed call is bounded, and the second review round tightened three
@@ -2415,6 +2499,16 @@ for the same reason and cites this incident in its header.
 | `build: honour MESA_BUILD_DIR in both build paths` | `meson.options`, `meson.build`, `Makefile`, `toolchain-env.sh`, `configure-horizon.sh`, `configure-mesa.sh`, `build-mesa.sh`, `build-switch.sh`, `check-no-abs-paths.sh` |
 | `build: stop clean and stale artefacts from crossing between builds` | `Makefile` (`clean`, `prune-stale`), `build-horizon.sh` |
 | `docs: record the PR #4 review round` | this update, `tests/README.md` |
+
+## Commit log for the third Codex review round on PR #4
+
+| Commit | Scope |
+|---|---|
+| `build: keep the Mesa build whatever it is nested under, and package one build's artefacts` | `Makefile` (`clean_keeps`), `package-horizon.sh` |
+| `scripts: record which Mesa directory a build was configured for, and wire the TLS gate` | `toolchain-env.sh`, `configure-horizon.sh`, `build-horizon.sh`, `build-mesa.sh`, `configure-mesa.sh` |
+| `tests: synchronise the condvar waiters, and count call_once atomically` | `t_threads.c` |
+| `tests: run every blocking os_time call on a watched worker` | `t_ostime.c` |
+| `docs: record the third PR #4 review round` | this update |
 
 ## Commit log for the second Codex review round on PR #4
 
