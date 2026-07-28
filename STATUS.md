@@ -4712,6 +4712,28 @@ refuses with `ERR_BUSY` for exactly that reason.
   the deadline, so `vkWaitForFences(timeout=0)` polls rather than
   reporting a false timeout.
 
+**The submit path, checked against nouveau's.** `nvkmd_ctx_exec`
+carries a per-entry `incomplete` flag that this backend ignores. That
+is correct, and now verified rather than assumed: nouveau uses it only
+to decide when to flush its batched push array, so that an incomplete
+run is never split across two ioctls
+(`nvkmd_nouveau_ctx.c:179-195`) — it never reaches a GPFIFO entry, and
+only `no_prefetch` becomes a flag. This backend submits every entry of
+a call in one `horizon_gpu_submit`, so the run cannot be split and
+there is nothing to honour.
+
+The same reading did find a half-done guard. `nvkmd_horizon_ctx_exec`
+refuses a push whose byte count is not a multiple of four, with a
+comment about silent truncation — but an entry also carries its address
+with the low two bits unavailable and its length as a 21-bit dword
+count, so a misaligned address or a push of 8 MiB or more truncates the
+same way through two other doors. nouveau asserts both
+(`nvkmd_nouveau_ctx.c:198-199`); patch 0032 refuses both, because an
+assert is enough where the values go on to a validating kernel and this
+is not that. Neither is reachable from NVK today — push memory is
+dword-aligned by construction and command-buffer chunks are far below
+8 MiB — so this closes the class, not an instance.
+
 **One latent hazard found and deliberately not fixed.** Of the fifteen
 ops `nvkmd.c` dispatches, this backend leaves two NULL:
 `alloc_tiled_mem` and `import_dma_buf`. Neither is on the Phase 4 path
@@ -4735,7 +4757,7 @@ real answer. Recorded here so it is found by reading rather than by
 crashing.
 
 Tested: cross build, six gates, host tests 103/103, series re-applied
-twice from the pinned base (31 patches). Not executed.
+twice from the pinned base (32 patches). Not executed.
 
 ## Next concrete task
 
@@ -4765,6 +4787,7 @@ of which blocks the criterion above:
 
 | Commit | Scope |
 |---|---|
+| `mesa-patches: close the push-truncation class in the submit path` | patch 0032, STATUS — the submit half of the audit |
 | `mesa-patches: every nvkmd_mem needs its own VA` | patch 0031, STATUS — the audit of the never-executed path |
 | `tests: t_uncached, and t_sysinfo's hardware failure was a stale binary` | `tests/t_uncached.c`, `meson.build`, `Makefile`, STATUS — D14 and the t_sysinfo diagnosis |
 | `horizon,tests: an opt-in untrusted syncpoint baseline, and a run that admits it` | `horizon/device`, `horizon/channel`, `tests/t_vulkan.c`, synchronization.md § 9 |

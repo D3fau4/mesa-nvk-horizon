@@ -1,0 +1,88 @@
+From c895bbaac08795bb7aba4f1c8fdd4a46346cec0b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 16:01:19 +0000
+Subject: [PATCH] nouveau/vk: nvkmd_horizon, check all three ways a push
+ truncates
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+nvkmd_horizon_ctx_exec already refuses a push whose byte count is not a
+multiple of four, with a comment saying why: a GPFIFO entry counts
+dwords, and a size that is not a whole number of them silently loses
+the tail, which the GPU reports much later as a channel fault with no
+obvious cause.
+
+That reasoning covers two more cases the check did not. An entry
+carries its address in GP_ENTRY0_GET | ENTRY1_GET_HI with the low two
+bits unavailable, and its length as a 21-bit dword count (envytools
+gf100+ GPFIFO entry format). So a misaligned address loses its low bits
+and a push of 2^21 dwords or more wraps its count -- the same
+truncation, through two other doors.
+
+The nouveau backend asserts both (nvkmd_nouveau_ctx.c:198-199). An
+assert is enough there because those values go on to a kernel that
+validates them; here they go straight into an entry whose fields just
+truncate, so they are refused rather than asserted.
+
+Neither is reachable from NVK today: push memory is dword-aligned by
+construction and a command buffer's chunks are far below 8 MiB. This
+closes the class rather than the instance.
+
+mesa-nvk-horizon: Phase 4 item 7 (submit)
+Why: nvkmd hands the backend a byte address and a byte count, while a
+  GPFIFO entry has a dword-aligned address field and a 21-bit dword
+  count, and the narrowing is silent.
+Evidence: nvkmd_nouveau_ctx.c:198-199 asserts (addr % 4) == 0 and
+  size_B < (1u << 23) for the same values, calling it "the hardware
+  limit on all current GPUs".
+Upstream: no — this is the Horizon backend's own submit path.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index f511a98..af736e3 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -135,6 +135,37 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+                           i, execs[i].size_B);
+       }
+ 
++      /* The other two ways the same truncation happens, which the check
++       * above alone does not catch. Both are asserts in the nouveau
++       * backend (nvkmd_nouveau_ctx.c:198-199), where an assert is enough
++       * because that path hands the values to a kernel that validates
++       * them; here they go into a GPFIFO entry whose fields simply
++       * truncate.
++       *
++       * A GPFIFO entry carries the address in GP_ENTRY0_GET | ENTRY1_GET_HI
++       * with the low two bits unavailable, and the length as a 21-bit
++       * dword count (envytools gf100+ GPFIFO entry format). So an address
++       * that is not dword-aligned loses its low bits, and a push of 2^21
++       * dwords or more wraps its count — the GPU then executes a stream
++       * that ends mid-method and reports it much later as a channel fault
++       * with no obvious cause. That is exactly the failure this check
++       * exists to prevent, so it should cover all three doors, not one.
++       */
++      if (execs[i].addr % 4 != 0) {
++         STACK_ARRAY_FINISH(spans);
++         return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                          "nvkmd_horizon: push %" PRIu32 " is at 0x%" PRIx64
++                          ", which is not dword-aligned", i, execs[i].addr);
++      }
++
++      if (execs[i].size_B >= (UINT32_C(1) << 23)) {
++         STACK_ARRAY_FINISH(spans);
++         return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                          "nvkmd_horizon: push %" PRIu32 " is %" PRIu32
++                          " bytes, over the 8 MiB a GPFIFO entry's 21-bit "
++                          "dword count can express", i, execs[i].size_B);
++      }
++
+       spans[i].gpu_va = execs[i].addr;
+       spans[i].num_dwords = execs[i].size_B / 4;
+    }
+-- 
+2.43.0
+
