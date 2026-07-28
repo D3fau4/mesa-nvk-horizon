@@ -26,11 +26,15 @@ physical memory / page size (`compat/sysconf.c` + patches 0009–0010),
 patch). The series stands at **twelve patches**, every one formulated as
 a property of the C library or the compiler rather than as an OS name.
 
-**What is owed:** `t_threads` and `t_ostime`, the twelfth and thirteenth
-`.nro`, have been cross-built and never run. Until the owner runs them,
-items 4 and 5 are cross-build results only — Mesa's C11 threads shim and
-`os_time.c` compile and link, and nothing more is claimed. See "Phase 3
-— closing items 1, 2, 4, 5 and 7" below.
+**What is owed:** `t_threads` and `t_ostime` have now been run **on an
+emulator, not on a console** (2026-07-28). `t_ostime` passed 27/27;
+`t_threads` passed 70 checks and then stopped inside
+`util_get_cpu_caps()` without writing a verdict. Items 4 and 5 stay
+cross-build results as far as hardware is concerned — an emulator answers
+for its own implementation of libnx, not for the console's — but the
+emulator run is real evidence and is written up in "First run of
+`t_threads` and `t_ostime` — emulator" below, together with the open
+failure and the staged probe added to locate it.
 
 **Codex reviewed PR #4 twice.** The first round left 8 findings — 7 real
 and fixed, 1 refuted with the generated `build.ninja` in hand — mostly
@@ -176,6 +180,136 @@ arrives by accident.
 above makes them better at reporting what they find; none of it is a
 measurement of Horizon. The watchdogs in particular have never fired,
 because the code containing them has never executed.
+
+---
+
+## First run of `t_threads` and `t_ostime` — emulator (2026-07-28)
+
+**Class: E (emulator).** The owner ran both `.nro` (`3f97f5d2…`,
+`ff999f01…`) on a Nintendo Switch **emulator**, not on a console. That is
+a fourth class alongside host (H), cross (X) and hardware (HW), and it is
+kept separate on purpose: an emulator answers for its own implementation
+of libnx's syscalls, not for the console's. Nothing below is a hardware
+result and none of it closes items 4 or 5.
+
+### `t_ostime` — PASS 27/27
+
+Every check passed. The measurements, which are the point of the test:
+
+| Quantity | Measured |
+|---|---|
+| `timespec_get(TIME_MONOTONIC)` | returns `TIME_MONOTONIC`; the clock answers |
+| `os_time_get_nano` monotonicity | 22915 samples over 5 ms, **22915 distinct values, 0 backwards** |
+| Resolution | **52 ns** — far finer than the 1 ms the test would have accepted |
+| Rate against the ARM system counter | 100164688 ns measured against 100242500 ns reference over one 100 ms sleep — **0.08 % apart**, against a 10 % tolerance |
+| `os_time_sleep(50000 us)` | 50509 us |
+| `os_time_sleep(0)` | 60 us |
+| `os_time_nanosleep_until(+50 ms)` | 50335 us |
+| Past deadline | 185 us |
+
+So `os_time.c` behaves on this emulator, and the unchecked
+`timespec_get` inside `os_time_get_nano()` is not returning stack
+garbage here. The tightened bounds from the second review round all held
+with room to spare — the sleep landed 1 % long against a −25 % floor.
+
+**One thing the run recorded that no check asserts.** The first note
+reads `ts = 1785229380 s + 81102164 ns`, which is **2026-07-28 09:03:00
+UTC** — wall-clock time, not time since boot. `CLOCK_MONOTONIC` here is
+the real-time clock, so `os_time_get_nano()` would step if the system
+clock were adjusted. Monotonicity held across the 5 ms sample window and
+across the 100 ms reference sleep, which is all this test claims; a clock
+that is monotonic *only while nobody sets the date* is a different
+property from the one Vulkan timeouts want, and Phase 4 needs to know
+which one it has. Recorded as an open question, not a failure.
+
+### `t_threads` — did not finish
+
+70 checks, **all `ok`**, and then the log stops. There is no `RESULT:`
+line, so the process did not reach the end of `run_test`. The last line
+written is
+
+```
+  ok   sysconf(_SC_NPROCESSORS_CONF) = 4 answers as _ONLN (4), the case label it shares
+```
+
+and the next statement in the file is `caps = util_get_cpu_caps();`.
+`testfw` fflushes every line to sdmc, and `t_ostime`'s log from the same
+run is complete, so the missing tail was never written rather than lost
+in writeback. **The process stopped inside `util_get_cpu_caps()`.**
+
+Everything the test set out to measure about Mesa's C11 shim passed
+first:
+
+| | |
+|---|---|
+| `thrd_create` / `thrd_join` / `u_thread_create` | ok, return value carried |
+| `call_once` across 4 threads | body ran exactly once |
+| Shared counter, 4 × 20000 under a mutex | **80000, no update lost** |
+| `mtx_timedlock` on a held mutex | `thrd_timedout` after **200 ms** for a 200 ms deadline |
+| `mtx_timedlock` on a free mutex | `thrd_success`, 0 ms |
+| `cnd_signal` / `cnd_broadcast` | all 4 waiters woke, 0–1 ms |
+| `cnd_timedwait` with nobody signalling | `thrd_timedout` after **200 ms**, watchdog never fired |
+| TSS | per-thread values isolated, destructor ran for all 4 |
+| `InfoType_CoreMask` | **0xf — four cores**, `sysconf` agrees on both names |
+
+That is milestone item 4's whole question answered on this emulator: the
+polling `mtx_timedlock` neither returns at once nor hangs, and it lands
+on its deadline rather than near it.
+
+### What is known about the failure, and what is not
+
+`util_get_cpu_caps()` is an inline function in `u_cpu_detect.h`; it calls
+`call_once(&_util_cpu_caps_state.once_flag, _util_cpu_detect_once)`. On
+aarch64/Horizon that function does, in order: two `sysconf` calls, an
+assignment for NEON, `check_cpu_caps_override()`, `check_max_vector_bits()`
+(an assignment), `get_cpu_topology()` (a `memset` on this arch), and
+`debug_get_option_dump_cpu()`.
+
+Most of that is already known to work in this very run. The two `sysconf`
+calls are the ones logged two lines above. `call_once` passed its own
+section. What has **never** run before this point is the option lookup:
+`debug_get_option_cached` → `os_get_option_cached`, which on first use
+takes a statically initialised `simple_mtx_t` — whose lock goes through a
+`thread_local` in `u_call_once.c` on this platform, because
+`UTIL_FUTEX_SUPPORTED` is 0 here — then builds a hash table with
+`ralloc` and registers an `atexit` handler. `nm` on the linked ELF
+confirms all of it is in the binary (`util_call_once_data_slow`,
+`_simple_mtx_plain_init_once`, `os_get_option_cached`,
+`_mesa_hash_table_create`).
+
+Two hypotheses were checked and **eliminated** rather than left as
+suspicion:
+
+- **`getenv` with a null `environ`.** newlib's `_findenv_r` loads
+  `environ` and branches out on zero before dereferencing it
+  (`ldr x20, [x22]` / `cbz x20, …`, disassembled from
+  `libc_a-getenv_r.o` in the pinned image). It returns NULL; it does not
+  fault.
+- **A `once_flag` ABI mismatch between the test and `libmesa_util.a`.**
+  `u_cpu_detect.h` includes `util/u_thread.h`, which includes
+  `c11/threads.h`, and the test includes the same header. One type.
+
+Not established: whether the process crashed or hung, which the log
+cannot say and the owner can. A hang points at the mutex or `call_once`;
+a fault points at an access. Also not established: whether this is
+emulator-specific. The whole path is libc and libnx — no GPU, no `nv`
+services — which makes an emulator artefact less likely than for the
+Phase 1 tests, and does not exclude one.
+
+### What changed in response
+
+`section_cpu_count` now reaches that call in four named stages, each
+announced before it is entered, so the next log names the step instead of
+the section: plain `getenv`, then `os_get_option`, then
+`os_get_option_cached` (the hash table, `ralloc`, `simple_mtx` and
+`atexit` path), then `util_get_cpu_caps()`. A provisional tally is
+printed before the first of them, because a call that does not return
+takes the `RESULT:` line with it and a run that produced 70 results
+should not be unreadable on account of the 71st.
+
+No check was removed or weakened, and nothing was worked around. New
+`t_threads.nro`: `00d15baa9beca514c39cc566ce60c4b4bc438ef54b8b0507f2b68296704289ff`.
+`t_ostime` is unchanged.
 
 ---
 
@@ -705,17 +839,20 @@ The artefacts handed over, so a console log can be attributed to exactly
 these builds (Makefile path, which is the reference path):
 
 ```
-3f97f5d215a56804be2fb333173843bd767672020e32d3aa1f366152441e66cb  t_threads.nro
+00d15baa9beca514c39cc566ce60c4b4bc438ef54b8b0507f2b68296704289ff  t_threads.nro
 ff999f013acd300f029f13605bad20e70992afa191033d405cfed475b8f2d6c8  t_ostime.nro
 ```
 
-Both were rebuilt by the **second** PR #4 review round and these are the
-current hashes. The earlier ones — `45e49f1e…` / `3ccc2294…` (before any
-review) and `0ca4b59f…` / `f3d29a21…` (after the first round) — must not
-be the ones run. What changed is in the two review sections above: no
-check has ever been removed, several were added, every wait on a timed
-call is bounded, and the second round tightened three bounds that were
-loose enough to pass for the failure they name.
+`t_ostime` is the build the emulator run of 2026-07-28 used and is
+unchanged since. `t_threads` was rebuilt after that run to add the staged
+probe around `util_get_cpu_caps()`; the build that produced the emulator
+log is `3f97f5d2…`, and the two before it — `45e49f1e…` (before any
+review) and `0ca4b59f…` (after the first review round) — are older still.
+Only the hashes in the block above should be run. What changed across
+those builds is in the two review sections and the emulator section
+above: no check has ever been removed, several were added, every wait on
+a timed call is bounded, and the second review round tightened three
+bounds that were loose enough to pass for the failure they name.
 
 The Meson path produces the same **sizes** for all thirteen and
 different sha256 for these two — the inter-object padding difference
@@ -1937,10 +2074,22 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Run `t_threads` and `t_ostime` on a console.** They are the only thing
-Phase 3 owes. Both are in `build/` and `build/meson/` (identical sizes)
-and write their logs to `sdmc:/horizon_gpu_tests/` like the other
-eleven.
+**Find out what stops `t_threads` inside `util_get_cpu_caps()`, then run
+both on a console.**
+
+The emulator run of 2026-07-28 (section above) leaves one open failure
+and one open question. The rebuilt `t_threads.nro`
+(`00d15baa…`) reaches the failing call in four named stages, so the next
+log says which of `getenv`, `os_get_option`, `os_get_option_cached` or
+`util_get_cpu_caps` is the one that does not return. Worth knowing at the
+same time, and only the person at the machine can say: whether the
+application **crashed** or **hung** — a hang points at the statically
+initialised `simple_mtx` or at `call_once`, a fault points at an access.
+
+A console run is still owed regardless: an emulator answers for its own
+libnx, not for the Switch's. Both `.nro` are in `build/` and
+`build/meson/` (identical sizes) and write their logs to
+`sdmc:/horizon_gpu_tests/` like the other eleven.
 
 Rebuild them first if the copies on the SD card predate the **second**
 PR #4 review round: both were changed by both rounds. `t_threads` can

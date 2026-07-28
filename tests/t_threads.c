@@ -101,6 +101,7 @@
 
 /* Mesa's, not newlib's. See the note above. */
 #include "c11/threads.h"
+#include "util/os_misc.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_thread.h"
 
@@ -1046,8 +1047,53 @@ section_cpu_count(test_ctx *t)
      *
      * util_get_cpu_caps() is the public entry point; it runs
      * _util_cpu_detect_once through call_once on first use, so this also
-     * exercises Mesa's call_once on hardware a second time, from inside
-     * Mesa's own code. */
+     * exercises Mesa's call_once a second time, from inside Mesa's own
+     * code.
+     *
+     * REACHED IN STAGES, AND WHY. On the first run of this test (an
+     * emulator, 2026-07-28) the process stopped inside this call: the
+     * log ends at the _SC_NPROCESSORS_CONF check above with no verdict
+     * line, so nothing between here and the note below was written.
+     * util_get_cpu_caps() is not one operation — it is sysconf twice
+     * (already exercised two checks above), then Mesa's option lookup,
+     * which on first use builds a hash table under a statically
+     * initialised simple_mtx whose lock goes through a thread_local in
+     * u_call_once.c, allocates with ralloc and registers an atexit
+     * handler. None of that had ever run here. Naming each stage before
+     * entering it turns "it died somewhere in there" into a line number,
+     * and testfw flushes every line, so the next log says which.
+     *
+     * The tally is printed first for the same reason: a call that never
+     * returns takes the RESULT line with it, and a run that produced 70
+     * results should not be unreadable because of the 71st. */
+    t_note(t, "provisional tally before the staged probe below: %d passed, "
+              "%d failed",
+           t->pass, t->fail);
+
+    t_note(t, "stage 1/4: getenv(\"GALLIUM_OVERRIDE_CPU_CAPS\") — plain newlib");
+    {
+        const char *raw = getenv("GALLIUM_OVERRIDE_CPU_CAPS");
+        t_note(t, "stage 1/4 returned %s", raw ? raw : "(null)");
+    }
+
+    t_note(t, "stage 2/4: os_get_option — Mesa's wrapper over getenv");
+    {
+        const char *opt = os_get_option("GALLIUM_OVERRIDE_CPU_CAPS");
+        t_note(t, "stage 2/4 returned %s", opt ? opt : "(null)");
+    }
+
+    /* The first thing in this file to use ralloc, a hash table, atexit
+     * and a statically initialised simple_mtx — the machinery
+     * _util_cpu_detect_once reaches through debug_get_option_dump_cpu().
+     */
+    t_note(t, "stage 3/4: os_get_option_cached — hash table, ralloc, "
+              "simple_mtx, atexit");
+    {
+        const char *opt = os_get_option_cached("GALLIUM_DUMP_CPU");
+        t_note(t, "stage 3/4 returned %s", opt ? opt : "(null)");
+    }
+
+    t_note(t, "stage 4/4: util_get_cpu_caps");
     caps = util_get_cpu_caps();
     t_note(t, "util_cpu_caps: nr_cpus=%u max_cpus=%u num_cpu_mask_bits=%u",
            caps->nr_cpus, caps->max_cpus, caps->num_cpu_mask_bits);
