@@ -5209,6 +5209,42 @@ the only two operations in the whole stream that are not ordinary memory
 access. That is strong, and it is still not a measurement. The console
 run that confirms it is the same one that closes Phase 4.
 
+## The last unmeasured link: what the readback rests on
+
+Audited by reading, because nothing can execute it. The test picks the
+first HOST_VISIBLE memory type the buffer accepts, and NVK's list for
+this backend puts a `HOST_VISIBLE | HOST_CACHED` type before the
+coherent ones. So the buffer is very likely **cached**, which means:
+
+- `NVKMD_MEM_COHERENT` is not set, so D14's uncached mapping does not
+  apply and the flush/invalidate are **not** no-ops;
+- the poison flush before the submit, and the invalidate before the
+  readback, both have to do real work;
+- and that work is Mesa's `cache_ops_aarch64.c` (`dc cvac` / `dc civac`),
+  because `util_has_cache_ops()` is true on aarch64 and `nvkmd_mem_sync_*`
+  defers to it.
+
+**Nothing has measured those on Horizon, in either direction.**
+`t_uncached` passed on hardware, but it measured the *uncached* path —
+and CPU→GPU at that. The readback needs GPU→CPU through a *cached*
+mapping. The two share no mechanism.
+
+What makes it plausible: the fill's `LAUNCH_DMA` carries
+`FLUSH_ENABLE = TRUE` (read off the push dump), which flushes the GPU's
+side, and `dc civac` cleans to the point of coherency, which on a UMA
+part is DRAM. Plausible is not measured.
+
+So `t_vulkan` now reports the memory type it chose and which mechanism
+the result rests on, in one line, because that is the first question
+anyone will ask if the readback comes back wrong.
+
+**Recorded gap, not built on a guess:** a horizon-level test of GPU→CPU
+visibility would need a GPU command that writes to memory, and
+`horizon_gpu` has only fence-increment, syncpoint-wait, `SET_OBJECT` and
+NOP. Adding a semaphore-release builder to `horizon/` to measure
+something `t_vulkan` already measures end to end is not worth it unless
+`t_vulkan`'s readback actually fails; then it is the right next step.
+
 ## Next concrete task
 
 **Reproduce the run-3 MMU fault on the emulator and fix it.** The

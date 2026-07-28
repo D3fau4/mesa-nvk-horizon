@@ -510,6 +510,33 @@ run_test(test_ctx *t)
    if (type_index == UINT32_MAX)
       return 1;
 
+   /* Which type it turned out to be, spelled out, because it decides
+    * what the readback at the end actually depends on and it is the
+    * first thing anyone will want to know if that readback comes back
+    * wrong.
+    *
+    * COHERENT means nvkmd asks for NVKMD_MEM_COHERENT, which on this
+    * backend is an uncached CPU mapping (D14, proven on hardware by
+    * t_uncached) and makes the flush and invalidate no-ops. CACHED
+    * without COHERENT means the opposite: the mapping is cached and the
+    * whole result rests on Mesa's aarch64 cache ops (dc cvac / dc civac)
+    * reaching the point the GPU reads from — which nothing has measured
+    * on Horizon, in either direction.
+    */
+   {
+      const VkMemoryPropertyFlags f =
+         mprops.memoryTypes[type_index].propertyFlags;
+      t_note(t, "memory type %u: flags 0x%x =%s%s%s%s — the readback %s",
+             type_index, f,
+             (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)  ? " DEVICE_LOCAL"  : "",
+             (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)  ? " HOST_VISIBLE"  : "",
+             (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " HOST_COHERENT" : "",
+             (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)   ? " HOST_CACHED"   : "",
+             (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                ? "rests on the uncached mapping (D14)"
+                : "rests on cache maintenance (D5)");
+   }
+
    const VkMemoryAllocateInfo mai = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = mreq.size,
