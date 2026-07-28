@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <switch.h>
 
@@ -60,6 +61,35 @@ int main(void)
     char path[128];
     snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", test_name);
     t.log = fopen(path, "w");
+
+    /* Everything Mesa says goes into the same file, in order.
+     *
+     * Mesa reports its diagnostics with mesa_logw/mesa_loge and
+     * vk_errorf, all of which end up on stderr. On a console that is
+     * the screen, and the screen is not what gets sent back — so twice
+     * now a hardware run has failed with the reason visible for a few
+     * seconds and absent from the artefact:
+     *
+     *   FAIL vkCreateDevice -> -13
+     *
+     * where -13 is VK_ERROR_UNKNOWN and the driver had already printed
+     * exactly which horizon_gpu call failed and with which libnx
+     * Result.
+     *
+     * dup2 onto the log's descriptor rather than a second file: the
+     * driver's messages then interleave with the test's own lines in
+     * the order they happened, which is most of their value. Unbuffered,
+     * because the interesting case is the one that ends in a crash.
+     * t_vemit flushes after every line, so the two writers stay in
+     * order.
+     */
+    if (t.log) {
+        fflush(stderr);
+        if (dup2(fileno(t.log), STDERR_FILENO) < 0)
+            printf("  note (could not redirect stderr into the log)\n");
+        else
+            setvbuf(stderr, NULL, _IONBF, 0);
+    }
 
     printf("== %s ==\n", test_name);
     if (t.log)
