@@ -5320,6 +5320,34 @@ said "horizon_gpu has no GPU timestamp query yet" and made the function
 `UNREACHABLE`. A survey is only worth what the code built from it
 remembers.
 
+**Extension 6 closed too**, and it is a fourth instance of the same
+pattern. `has_zcull_info` was hardcoded false because "Zcull belongs to
+the channel and nothing in Phase 4 uses it" — but the query is a *device*
+property, libnx caches it at `nvGpuInit` (`nvGpuGetZcullInfo`), and
+`horizon_gpu` already binds Zcull context buffers. Only the wrapper was
+missing.
+
+The mapping is field by field on purpose: the Horizon struct and
+`drm_nouveau_get_zcull_info` carry the same ten numbers in different
+orders — `subregion_count` last in one, third from last in the other — so
+a struct copy would put a count where an alignment belongs and nothing
+would complain. Checked before writing, which is the only reason this
+note exists rather than a bug.
+
+### Where the six extensions stand
+
+| # | Subject | State |
+|---|---|---|
+| 1 | GPU timestamp | **closed** (0041) |
+| 2 | GPFIFO push semantics | retired earlier |
+| 3 | CPU syncpoint increment | exists; deliberately not implemented — see below |
+| 4 | sparse reservation flag | exists; gated by D12, which stands on partial-unbind grounds |
+| 5 | fixed VA | **closed** (0039/0040) |
+| 6 | Zcull geometry | **closed** (0042) |
+
+Three closed in one sitting, none needing hardware, all of them
+previously recorded as blocked by the platform.
+
 **Extension 3 checked and left alone.** CPU syncpoint increment
 (`nvioctlNvhostCtrl_SyncptIncr`) exists too, and
 `nvk_horizon_sync_signal` does a CPU-only signal without it. That is not

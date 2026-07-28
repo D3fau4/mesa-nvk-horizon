@@ -74,6 +74,27 @@ typedef struct horizon_gpu_device_info {
     horizon_gpu_va_region_info va_regions[2];
 } horizon_gpu_device_info;
 
+/* Zcull geometry, as the GPU reports it
+ * (NVGPU_GPU_IOCTL_ZCULL_GET_INFO). Field names follow the ioctl's, and
+ * consumers must map them by name: the same ten numbers appear in a
+ * different order in nouveau's drm_nouveau_get_zcull_info, so copying
+ * the struct wholesale would be quietly wrong. */
+typedef struct horizon_gpu_zcull_info {
+    uint32_t width_align_pixels;
+    uint32_t height_align_pixels;
+    uint32_t pixel_squares_by_aliquots;
+    uint32_t aliquot_total;
+    uint32_t region_byte_multiplier;
+    uint32_t region_header_size;
+    uint32_t subregion_header_size;
+    uint32_t subregion_width_align_pixels;
+    uint32_t subregion_height_align_pixels;
+    uint32_t subregion_count;
+    /* Context buffer size, from nvGpuGetZcullCtxSize; not part of the
+     * geometry ioctl but wanted by the same callers. */
+    uint64_t ctx_size;
+} horizon_gpu_zcull_info;
+
 /* Live-object counters (memory-model § 8). All must be zero for
  * horizon_gpu_device_destroy to succeed. */
 typedef struct horizon_gpu_device_counters {
@@ -134,6 +155,13 @@ bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev);
  * VK_EXT_calibrated_timestamps exists to do. */
 horizon_gpu_result horizon_gpu_device_get_timestamp(horizon_gpu_device *dev,
                                                     uint64_t *out_ts);
+
+/* Zcull geometry. A failure here is not fatal to anything: the query is
+ * advisory and nouveau lets it fail too, so callers are expected to
+ * carry on without it rather than refuse to start. */
+horizon_gpu_result
+horizon_gpu_device_get_zcull_info(horizon_gpu_device *dev,
+                                  horizon_gpu_zcull_info *out_info);
 
 /* Fails with HORIZON_GPU_ERR_LEAK — after logging every non-zero counter —
  * if any child object is still alive; nothing is torn down in that case.
