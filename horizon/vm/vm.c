@@ -27,20 +27,33 @@ static bool vm_page_size_valid(const horizon_gpu_device *dev,
            page_size == dev->info.as_big_page_size;
 }
 
-horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
-                                          uint64_t size, uint32_t page_size,
-                                          uint64_t align,
-                                          horizon_gpu_va_range **out_range)
+/* Shared by the kernel-chooses and caller-chooses forms. `fixed_base`
+ * is the address to place the reservation at, or 0 for "anywhere", in
+ * which case `align` applies instead. ALLOC_SPACE carries both through
+ * the same `align_or_offset` argument, selected by the flags word. */
+static horizon_gpu_result
+vm_reserve_common(horizon_gpu_device *dev, uint64_t size, uint32_t page_size,
+                  uint64_t align, uint64_t fixed_base, bool fixed,
+                  horizon_gpu_va_range **out_range)
 {
     if (!dev || !out_range || size == 0)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     if (!vm_page_size_valid(dev, page_size))
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
-    if (align == 0)
+    if (fixed) {
+        /* The kernel places it exactly; an unaligned base would be
+         * silently rounded or rejected deep in the driver, so it is
+         * refused here where the caller can see why. */
+        if (!horizon_is_aligned_u64(fixed_base, page_size))
+            return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
         align = page_size;
-    if (!horizon_is_pow2_u64(align) || align < page_size)
-        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    } else {
+        if (align == 0)
+            align = page_size;
+        if (!horizon_is_pow2_u64(align) || align < page_size)
+            return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    }
 
     uint64_t rounded;
     if (!horizon_align_up_u64(size, page_size, &rounded))
@@ -55,19 +68,35 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
     if (!range)
         return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
 
-    /* flags = 0: non-fixed, non-sparse; align_or_offset carries the
-     * alignment in that case (Linux nvgpu NVGPU_AS_IOCTL_ALLOC_SPACE
-     * semantics, matched by the reference's hardware-tested usage). */
-    uint64_t base = 0;
+    /* align_or_offset carries the alignment when the kernel chooses and
+     * the base when the caller does; the flags word says which (Linux
+     * nvgpu NVGPU_AS_IOCTL_ALLOC_SPACE semantics). Neither form asks for
+     * NvAllocSpaceFlags_Sparse — sparse address space is decision D12. */
+    const u32 as_flags = fixed ? NvAllocSpaceFlags_FixedOffset : 0;
+    const uint64_t align_or_offset = fixed ? fixed_base : align;
+    uint64_t base = fixed ? fixed_base : 0;
     Result rc = nvioctlNvhostAsGpu_AllocSpace(dev->as.fd, (u32)pages,
-                                              page_size, 0, align, &base);
+                                              page_size, as_flags,
+                                              align_or_offset, &base);
     if (R_FAILED(rc)) {
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                     "AllocSpace(pages=0x%llx page=0x%x align=0x%llx) "
+                     "AllocSpace(pages=0x%llx page=0x%x %s=0x%llx) "
                      "failed: 0x%08x", (unsigned long long)pages, page_size,
-                     (unsigned long long)align, rc);
+                     fixed ? "offset" : "align",
+                     (unsigned long long)align_or_offset, rc);
         free(range);
         return horizon_gpu_err_nv(rc);
+    }
+
+    /* A fixed request that came back somewhere else is a silent wrong
+     * answer, which is the one outcome a fixed request cannot absorb. */
+    if (fixed && base != fixed_base) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "AllocSpace(FixedOffset 0x%llx) returned 0x%llx",
+                     (unsigned long long)fixed_base,
+                     (unsigned long long)base);
+        free(range);
+        return horizon_gpu_err(HORIZON_GPU_ERR_NV);
     }
 
     range->dev = dev;
@@ -84,6 +113,23 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
 
     *out_range = range;
     return horizon_gpu_ok();
+}
+
+horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
+                                          uint64_t size, uint32_t page_size,
+                                          uint64_t align,
+                                          horizon_gpu_va_range **out_range)
+{
+    return vm_reserve_common(dev, size, page_size, align, 0, false,
+                             out_range);
+}
+
+horizon_gpu_result horizon_gpu_vm_reserve_fixed(horizon_gpu_device *dev,
+                                                uint64_t base, uint64_t size,
+                                                uint32_t page_size,
+                                                horizon_gpu_va_range **out_range)
+{
+    return vm_reserve_common(dev, size, page_size, 0, base, true, out_range);
 }
 
 uint64_t horizon_gpu_va_range_base(const horizon_gpu_va_range *range)

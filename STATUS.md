@@ -5132,12 +5132,27 @@ heap's own reservation `[0xa052000, 0x10a052000)` **covers both
 windows**. The day a shader uses local or shared memory it will read
 whatever the heap has bound there — its own code, most likely.
 
-Detected, not worked around, and patch 0037 logs it precisely.
-`NVGPU_AS_IOCTL_ALLOC_SPACE` has no "place it here" form, so the
-aperture cannot simply be reserved, and every scheme for steering the
-allocator around it costs gigabytes of address space on a guess nobody
-can test without a console. **Open decision**, recorded rather than
-guessed at.
+First detected (patch 0037), then **fixed** (patch 0039) — because the
+premise of the detection was wrong. This file said
+`NVGPU_AS_IOCTL_ALLOC_SPACE` has no "place it here" form. It has one:
+`NvAllocSpaceFlags_FixedOffset`, sitting in libnx's `ioctl.h` next to the
+call we were already making. The correction is worth stating plainly:
+the aperture was always reservable, and "open decision" was a conclusion
+drawn from a fact nobody had checked.
+
+`horizon_gpu_vm_reserve_fixed` now exists, and reports a range that came
+back at a different address as a failure rather than accepting it. With
+it:
+
+- the window aperture `[0xfe000000, 0x100000000)` is reserved at device
+  creation and never bound, which is exactly what "blocking off that
+  area from the VM" means. An access through the window still faults;
+  the point is that it can no longer hit somebody's buffer instead.
+  Not fatal if the reservation fails — the collision needs a shader to
+  matter, so refusing to create the device would trade a future wrong
+  answer for an immediate one;
+- **`NVKMD_VA_ALLOC_FIXED` is implemented**, closing extension 5 of the
+  six Phase 4 step 1 enumerated.
 
 ### Finding B — the leading hypothesis for the hardware MMU fault
 
