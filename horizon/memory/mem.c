@@ -22,7 +22,8 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
 {
     if (!dev || !out_mem || size == 0)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
-    if (policy != HORIZON_GPU_MEM_CACHED)
+    if (policy != HORIZON_GPU_MEM_CACHED &&
+        policy != HORIZON_GPU_MEM_UNCACHED)
         return horizon_gpu_err(HORIZON_GPU_ERR_UNSUPPORTED);
 
     if (align == 0)
@@ -59,18 +60,58 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
      * to the GPU. */
     memset(mem->cpu, 0, rounded);
 
+    /* UNCACHED: hand the range to the kernel to remap without CPU
+     * caching. The zeroing above has to reach memory *first* — it went
+     * through the cache, and a dirty line evicted after the remap would
+     * land on top of whatever was written uncached in the meantime.
+     * armDCacheFlush cleans and invalidates, which is both halves of
+     * what is needed here.
+     *
+     * svcSetMemoryAttribute wants a page-aligned range; `align` is at
+     * least HORIZON_GPU_SMALL_PAGE_SIZE and `rounded` is a multiple of
+     * it, so both hold by construction rather than by check.
+     *
+     * Failure is not survivable half-done: the storage would be
+     * allocated with a cache policy that does not match what the caller
+     * asked for, which is exactly the mismatch memory-model § 5 rule 1
+     * exists to forbid. So it unwinds. */
+    if (policy == HORIZON_GPU_MEM_UNCACHED) {
+        armDCacheFlush(mem->cpu, rounded);
+        Result arc = svcSetMemoryAttribute(mem->cpu, rounded,
+                                           MemAttr_IsUncached,
+                                           MemAttr_IsUncached);
+        if (R_FAILED(arc)) {
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "svcSetMemoryAttribute(uncached, %p, 0x%llx) "
+                         "failed: 0x%08x", mem->cpu,
+                         (unsigned long long)rounded, arc);
+            free(mem->cpu);
+            free(mem);
+            return horizon_gpu_err_nv(arc);
+        }
+    }
+
     /* The NvMap kind is NvKind_Pitch here; block-linear layouts are a
      * property of each GPU *mapping* (its PTE kind), never of the memory
-     * object (memory-model § 1 #9). is_cpu_cacheable=true tells nvmap the
-     * truth about heap memory, unlike the reference's cacheable=false at
-     * every call site (drm_shim.c:460). */
+     * object (memory-model § 1 #9). is_cpu_cacheable tells nvmap the
+     * truth about this range — which is now the policy the caller asked
+     * for, not an assumption about heap memory, and unlike the
+     * reference's cacheable=false at every call site (drm_shim.c:460). */
     Result rc = nvMapCreate(&mem->nvmap, mem->cpu, (u32)rounded, (u32)align,
-                            NvKind_Pitch, true);
+                            NvKind_Pitch,
+                            policy == HORIZON_GPU_MEM_CACHED);
     if (R_FAILED(rc)) {
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "nvMapCreate(size=0x%llx align=0x%llx) failed: 0x%08x",
                      (unsigned long long)rounded, (unsigned long long)align,
                      rc);
+        /* Reverse order: the attribute was set after the allocation, so
+         * it comes off before the storage goes back. Returning uncached
+         * memory to the heap would leave every later allocation that
+         * reuses it silently uncached. */
+        if (policy == HORIZON_GPU_MEM_UNCACHED)
+            svcSetMemoryAttribute(mem->cpu, rounded,
+                                  MemAttr_IsUncached, 0);
         free(mem->cpu);
         free(mem);
         return horizon_gpu_err_nv(rc);
@@ -105,10 +146,22 @@ horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem)
      * layer defends against — `mem` is freed below, so any check reading
      * back through the pointer afterwards would itself be a use-after-free. */
     nvMapClose(&mem->nvmap);
+    /* Same reason as the error path in create: the heap gets its pages
+     * back as it lent them, cached. Leaving the attribute on would make
+     * every later allocation that reuses this address silently uncached
+     * — a fault that appears in unrelated code, long afterwards. */
+    if (mem->policy == HORIZON_GPU_MEM_UNCACHED)
+        svcSetMemoryAttribute(mem->cpu, mem->size,
+                              MemAttr_IsUncached, 0);
     free(mem->cpu);
     atomic_fetch_sub(&mem->dev->live_mem, 1);
     free(mem);
     return horizon_gpu_ok();
+}
+
+horizon_gpu_cache_policy horizon_gpu_mem_policy(const horizon_gpu_mem *mem)
+{
+    return mem ? mem->policy : HORIZON_GPU_MEM_CACHED;
 }
 
 void *horizon_gpu_mem_cpu_ptr(const horizon_gpu_mem *mem)

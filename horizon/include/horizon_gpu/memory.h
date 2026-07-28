@@ -39,12 +39,36 @@ typedef struct horizon_gpu_mem horizon_gpu_mem;
  * § 5 rule 1 — the reference registers cached heap memory as uncached at
  * every call site, which we do not repeat).
  *
- * Homebrew heap memory on Horizon is always CPU-cached, so CACHED is the
- * only honest policy this phase offers; uncached backings are a pending
- * decision (D5) blocked on the R6 measurements. */
+ * Homebrew heap memory on Horizon is CPU-cached when it is allocated, so
+ * CACHED describes the storage as it comes. UNCACHED asks the kernel to
+ * change that for the range, with svcSetMemoryAttribute and
+ * MemoryAttribute_Uncached — the same mechanism deko3d uses for its
+ * CpuUncached memory blocks.
+ *
+ * WHY BOTH EXIST, and it is not a preference. Vulkan requires at least
+ * one memory type with HOST_VISIBLE and HOST_COHERENT
+ * (VkPhysicalDeviceMemoryProperties), and NVK advertises one on an SoC
+ * meaning exactly an uncached map:
+ *
+ *   /​* On Tegra, we only have sysmem ... The only difference in memory
+ *      types is between cached and uncached (but coherent) maps. *​/
+ *          -- nvk_physical_device.c:1571-1575
+ *
+ * With only CACHED, that memory type is a promise the platform cannot
+ * keep: NVKMD_MEM_COHERENT makes nvkmd skip cache maintenance entirely
+ * (nvkmd.c:457), so nothing would ever flush or invalidate and neither
+ * side would see the other's writes. Decision D14. */
 typedef enum horizon_gpu_cache_policy {
     HORIZON_GPU_MEM_CACHED = 1,
+    HORIZON_GPU_MEM_UNCACHED = 2,
 } horizon_gpu_cache_policy;
+
+/* Which policy this object was created with. Needed by callers that must
+ * decide whether cache maintenance is required at all — for UNCACHED
+ * memory the flush and invalidate below are no-ops, and doing them would
+ * be wasted work rather than wrong. */
+horizon_gpu_cache_policy
+horizon_gpu_mem_policy(const horizon_gpu_mem *mem);
 
 /* Allocates zero-initialised, page-aligned storage of `size` bytes rounded
  * up to `align` (power of two, >= HORIZON_GPU_SMALL_PAGE_SIZE; 0 means
