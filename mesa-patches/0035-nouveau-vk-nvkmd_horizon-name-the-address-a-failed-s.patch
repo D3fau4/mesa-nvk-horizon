@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 18:10:56 +0000
+Subject: [PATCH] nouveau/vk: nvkmd_horizon, name the address a failed submit
+ handed the GPU
+
+An MMU fault is the one GPU failure that says nothing on its own here.
+nvgpu's error notifier carries the fault type and nothing else, and libnx
+exposes no ioctl for the faulting address, so "notifier 31" is all the
+kernel will ever tell us. The hardware run of 2026-07-28 reached
+vkQueueSubmit and stopped there with exactly that and no way to tell
+which of the two live channels it was, let alone which address.
+
+The addresses are ours, though, and so is the map they were meant to be
+in. nvkmd_horizon_dev now keeps every live VA on a list, and a failed
+submit walks it for each push it submitted, reporting one of three
+answers: the VA and binding that contains it, that it is inside a
+reservation with nothing bound there, or that no reservation covers it.
+
+The middle answer is the diagnosis for a fault like this, on the spot,
+instead of a console round trip per hypothesis.
+
+The submit failure also names its channel now. Two channels are live
+during vkQueueSubmit and the message named neither.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 25 +++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 29 ++++++++--
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  4 ++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 53 +++++++++++++++++++
+ 4 files changed, 108 insertions(+), 3 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index ef93ffe..9b0f7e1 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -78,6 +78,19 @@ struct nvkmd_horizon_dev {
+ 
+    /* Borrowed from the pdev; not owned. See the header comment. */
+    horizon_gpu_device *gpu;
++
++   /* Every live VA of this device, so a GPU address can be named.
++    *
++    * An MMU fault is the one GPU failure that says nothing useful on its
++    * own here: nvgpu's error notifier carries the fault *type* and libnx
++    * exposes no ioctl for the faulting address, so "notifier 31" is all
++    * the kernel will ever tell us. The addresses we handed the GPU are
++    * ours, though, and so is the map they were supposed to be in — this
++    * list is what lets a submit failure answer "was 0x… mapped, and by
++    * what" instead of leaving it to be deduced.
++    */
++   simple_mtx_t va_list_mutex;
++   struct list_head va_list;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(dev, horizon);
+@@ -101,10 +114,22 @@ struct nvkmd_horizon_va {
+     */
+    simple_mtx_t mutex;
+    struct list_head bindings;
++
++   /* Link in nvkmd_horizon_dev::va_list. */
++   struct list_head dev_link;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(va, horizon);
+ 
++/* Writes "0x<addr> is <where>" into `buf`: the VA and binding that
++ * contains `addr`, or that it is inside a reservation but not bound, or
++ * that no reservation covers it at all. Never fails and always
++ * NUL-terminates — it runs on an error path, where a second failure
++ * would cost the message that explains the first.
++ */
++void nvkmd_horizon_describe_addr(struct nvkmd_horizon_dev *dev,
++                                 uint64_t addr, char *buf, size_t buf_size);
++
+ struct nvkmd_horizon_ctx {
+    struct nvkmd_ctx base;
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index af736e3..6d0d64f 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -177,10 +177,33 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+    STACK_ARRAY_FINISH(spans);
+ 
+    if (res.status != HORIZON_GPU_OK) {
++      /* Name every address this submit handed the GPU, and say where it
++       * sits in our own map.
++       *
++       * The reason this is here and not left to be deduced: an MMU fault
++       * is reported by nvgpu's error notifier as a *type* and nothing
++       * else, and libnx exposes no ioctl for the faulting address, so
++       * the kernel will never tell us which address was bad. What we can
++       * say is which addresses we submitted and whether each one was
++       * mapped — and "0x… is inside VA 0x… but NOTHING IS BOUND there"
++       * is the whole diagnosis, on the spot, instead of a console round
++       * trip per hypothesis.
++       */
++      for (uint32_t i = 0; i < exec_count; i++) {
++         char where[160];
++         nvkmd_horizon_describe_addr(nvkmd_horizon_dev(_ctx->dev),
++                                     execs[i].addr, where, sizeof(where));
++         mesa_loge("nvkmd_horizon: channel %p push %" PRIu32 "/%" PRIu32
++                   ": 0x%" PRIx64 " + 0x%" PRIx32 " bytes — %s",
++                   (void *)ctx->chan, i, exec_count, execs[i].addr,
++                   execs[i].size_B, where);
++      }
++
+       return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-                       "horizon_gpu_submit(%" PRIu32 " spans) failed: "
+-                       "status %d, nv 0x%08" PRIx32,
+-                       exec_count, (int)res.status, res.nv);
++                       "horizon_gpu_submit(%" PRIu32 " spans) on channel %p "
++                       "failed: status %d, nv 0x%08" PRIx32,
++                       exec_count, (void *)ctx->chan,
++                       (int)res.status, res.nv);
+    }
+ 
+    ctx->last_fence = fence;
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index f53fd80..58bdefb 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -20,6 +20,7 @@ nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)
+    struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_dev->pdev);
+ 
+    simple_mtx_destroy(&_dev->mems_mutex);
++   simple_mtx_destroy(&dev->va_list_mutex);
+ 
+    simple_mtx_lock(&pdev->mutex);
+    assert(pdev->dev_refcnt > 0);
+@@ -86,6 +87,9 @@ nvkmd_horizon_create_dev(struct nvkmd_pdev *_pdev,
+    dev->base.pdev = _pdev;
+    dev->gpu = pdev->gpu;
+ 
++   list_inithead(&dev->va_list);
++   simple_mtx_init(&dev->va_list_mutex, mtx_plain);
++
+    /* The usable GPU VA range, taken from what the address space
+     * actually reported rather than from a constant. horizon_gpu returns
+     * two regions — small-page and big-page — and nvkmd wants one
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index 2c2c4b1..5a705ed 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -13,6 +13,7 @@
+ #include "util/u_memory.h"
+ 
+ #include <inttypes.h>
++#include <stdio.h>
+ 
+ /*
+  * nvkmd unbinds by (offset, range) and never hands back the object it
+@@ -31,10 +32,58 @@ struct nvkmd_horizon_binding {
+    horizon_gpu_mapping *mapping;
+ };
+ 
++void
++nvkmd_horizon_describe_addr(struct nvkmd_horizon_dev *dev, uint64_t addr,
++                            char *buf, size_t buf_size)
++{
++   simple_mtx_lock(&dev->va_list_mutex);
++
++   list_for_each_entry(struct nvkmd_horizon_va, va, &dev->va_list, dev_link) {
++      if (addr < va->base.addr || addr >= va->base.addr + va->base.size_B)
++         continue;
++
++      const uint64_t off = addr - va->base.addr;
++
++      simple_mtx_lock(&va->mutex);
++      list_for_each_entry(struct nvkmd_horizon_binding, b, &va->bindings,
++                          link) {
++         if (off >= b->va_offset_B && off < b->va_offset_B + b->range_B) {
++            snprintf(buf, buf_size,
++                     "inside VA 0x%" PRIx64 "+0x%" PRIx64 ", bound at "
++                     "+0x%" PRIx64 " for 0x%" PRIx64,
++                     va->base.addr, va->base.size_B, b->va_offset_B,
++                     b->range_B);
++            simple_mtx_unlock(&va->mutex);
++            simple_mtx_unlock(&dev->va_list_mutex);
++            return;
++         }
++      }
++      simple_mtx_unlock(&va->mutex);
++
++      /* The reservation exists and the address is in it, but nothing is
++       * bound there. This is the interesting answer: the GPU was given
++       * an address out of a range we own and never mapped. */
++      snprintf(buf, buf_size,
++               "inside VA 0x%" PRIx64 "+0x%" PRIx64 " at +0x%" PRIx64
++               ", but NOTHING IS BOUND there",
++               va->base.addr, va->base.size_B, off);
++      simple_mtx_unlock(&dev->va_list_mutex);
++      return;
++   }
++
++   simple_mtx_unlock(&dev->va_list_mutex);
++   snprintf(buf, buf_size, "in NO reservation of this device");
++}
++
+ static void
+ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+ {
+    struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_va->dev);
++
++   simple_mtx_lock(&dev->va_list_mutex);
++   list_del(&va->dev_link);
++   simple_mtx_unlock(&dev->va_list_mutex);
+ 
+    /* Freeing a VA that still has memory bound is nvkmd's ordinary path,
+     * not a caller error: nvkmd_horizon_mem_free releases the VA its
+@@ -291,6 +340,10 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+    list_inithead(&va->bindings);
+    simple_mtx_init(&va->mutex, mtx_plain);
+ 
++   simple_mtx_lock(&dev->va_list_mutex);
++   list_addtail(&va->dev_link, &dev->va_list);
++   simple_mtx_unlock(&dev->va_list_mutex);
++
+    *va_out = &va->base;
+ 
+    return VK_SUCCESS;

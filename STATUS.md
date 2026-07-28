@@ -4890,6 +4890,96 @@ and untouched because Phase 4's sequence binds no images.
 Tested: host 103/103, cross build, six gates, series re-applied twice
 from the pinned base. **Not yet run on hardware.**
 
+## Hardware run, 2026-07-28 (second) — `vkCreateDevice` passes, the GPU faults
+
+The page-half fix worked. `vkCreateDevice -> 0`, and the sequence gets
+eleven steps further before stopping:
+
+```
+  ok   probe: the syncpoint baseline is readable (id=26, value=92772)
+  ok   vkCreateDebugUtilsMessengerEXT -> 0 (driver errors will be reported below)
+[horizon_gpu:I] channel 0x274d9296e0: up, syncpt=26 initial=92772 zcull=off
+[horizon_gpu:I] channel 0x274d969020: up, syncpt=27 initial=2 zcull=off
+  ok   vkCreateDevice -> 0
+  ok   vkGetDeviceQueue
+  ok   vkCreateBuffer -> 0
+  ok   a host-visible memory type the buffer accepts
+  ok   vkAllocateMemory -> 0
+  ok   vkBindBufferMemory -> 0
+  ok   vkMapMemory -> 0
+  ok   vkFlushMappedMemoryRanges (poison) -> 0
+  ok   vkCreateCommandPool -> 0
+  ok   vkAllocateCommandBuffers -> 0
+  ok   vkBeginCommandBuffer -> 0
+  ok   vkEndCommandBuffer -> 0
+  ok   vkCreateFence -> 0
+[horizon_gpu:E] Kickoff failed: 0x00000d5c (notifier: 31 'MMU fault')
+  note vk warning [nvkmd_horizon_ctx.c:180]: horizon_gpu_submit(1 spans) failed: status 4, nv 0x00000d5c (VK_ERROR_UNKNOWN)
+  FAIL vkQueueSubmit -> -4
+RESULT: FAIL (51/52) [aborted early]
+```
+
+Two channels came up on this device — the upload queue's (syncpt 26,
+sharing the probe's) and the queue's own (syncpt 27, `initial=2`, a
+fresh counter). Everything through `vkCreateDevice` therefore includes
+successful submits: `horizon_gpu_channel_bind_engines` runs at context
+creation on both, and the descriptor-table uploads went through the
+upload queue. The first submit that fails is NVK's own work.
+
+**The debug-utils messenger paid for itself immediately.** That `note vk
+warning` line is the first driver message this project has ever seen on
+hardware; every previous failure was silent.
+
+`0x00000d5c` decodes as module 348 (`Module_LibnxNvidia`), description 6
+= `LibnxNvidiaError_Timeout`. So the kickoff timed out *and* the error
+notifier had an MMU fault recorded. The fault is the event; the timeout
+is the channel already wedged behind it.
+
+### Why this could not be diagnosed from the log, and what was changed
+
+nvgpu's error notifier carries the fault **type** and nothing else, and
+libnx exposes no ioctl for the faulting address. "Notifier 31" is all
+the kernel will ever say. The message also named neither channel, with
+two live.
+
+The addresses are ours, though, and so is the map they were supposed to
+be in. Patch 0035: `nvkmd_horizon_dev` keeps every live VA on a list,
+and a failed submit walks it for each push it submitted, answering one
+of three things — the VA and binding that contains the address, that it
+is inside a reservation with **nothing bound there**, or that no
+reservation covers it at all. The failure names its channel too.
+
+The middle answer is the diagnosis for a fault of this shape, printed on
+the spot instead of costing a console round trip per hypothesis.
+
+### Hypotheses **not** acted on
+
+Recorded because they were considered and rejected on evidence, not
+shipped as guesses:
+
+- *Engines never bound.* `nvkmd_horizon_create_ctx` calls
+  `horizon_gpu_channel_bind_engines` at creation. Also an unbound
+  subchannel gives notifier 25 (illegal method), not 31.
+- *The small-page half is exhausted by patch 0034.* Measured: the region
+  is `pages=0x3f7fff` × 4 KiB = **15.87 GiB** (`t_init`, run 1), and NVK
+  reserves ≈ 4.03 GiB in it — 4 GiB for the contiguous `shader_heap`
+  (`cls_eng3d` 0xb197 = MAXWELL_B < VOLTA_A), ≈32 MiB for `images`,
+  128 KiB for `samplers`; `event_heap` and `qmd_heap` are not contiguous
+  and reserve nothing. Margin 4:1.
+- *`sync_types[0]` is binary while `nvk_mem_stream_init` asks it for a
+  timeline.* This is real — nouveau's `sync_types[0]` is a DRM syncobj,
+  which is binary *and* timeline, and the `assert` in `vk_sync_init`
+  that would catch the mismatch is compiled out (`-DNDEBUG` confirmed in
+  the build). But the obvious fix is wrong: `nvkmd_horizon_ctx_signal`
+  calls `nvk_horizon_sync_set_fence`, which `container_of`s to
+  `nvk_horizon_sync`. Putting the emulated timeline first would hand it
+  a `vk_sync_timeline` and corrupt memory. As it stands the mismatch
+  degenerates to "wait for the latest fence", which over-waits and is
+  safe. **Pending decision, not a fix to guess at.**
+
+Tested: host 103/103, cross build, six gates, series re-applied twice
+from the pinned base. **Not yet run on hardware.**
+
 ## Next concrete task
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
