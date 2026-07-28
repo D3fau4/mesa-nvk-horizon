@@ -1223,8 +1223,10 @@ nouveau kernel driver, and replacing it is the whole point of
 `nvkmd_horizon`. NVK still lists `dep_libdrm` and `idep_nouveau_ws` in
 `nvk_deps`, and both come out when the Horizon backend goes in.
 
-`compiler_builtins` versus newlib's `memcpy` family is still
-**unmeasured**: nothing has linked the full driver yet.
+`compiler_builtins` versus newlib's `memcpy` family is **measured and
+closed**: the linked `t_vulkan.elf` has exactly one global definition of
+each of `memcpy`, `memmove`, `memset` and `memcmp`, and zero undefined
+symbols. They do not collide.
 
 
 ---
@@ -1754,6 +1756,122 @@ RESULT: FAIL (29/30) [aborted early]
 One more console run of `t_vulkan`. Everything else in Phase 4 is
 built, linked and gated; the exit criterion is a hardware measurement
 and it is the owner's to take.
+
+
+---
+
+## Audit before the second hardware run (2026-07-28)
+
+The console can only answer one question per round trip, so the hour
+after the first run went on reading the path the test takes rather than
+on waiting. Three findings, one of them a defect in the test itself,
+plus one open question that needs a decision.
+
+### 1. The test never flushed its own poison — fixed
+
+`t_vulkan` maps the buffer, writes `~FILL_PATTERN` over it, and
+submits. The memory type it picks is index 0 on this device:
+`DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED`, and **not**
+`HOST_COHERENT`. So the poison sat in the CPU's cache as dirty lines
+with no `vkFlushMappedMemoryRanges` behind it.
+
+Vulkan requires the flush for visibility, but the reason it matters
+here is worse: **a dirty line can be evicted after the GPU's fill has
+landed, overwriting the GPU's result with the poison.** The test would
+have reported that the GPU had not written, and the test would have
+been the thing that was wrong — the most expensive kind of failure,
+because the next hours go into the driver.
+
+Fixed: the poison is flushed before the submit. Without it, it is not a
+poison, it is a landmine.
+
+### 2. A stack overflow in `nvkmd_horizon_ctx_exec` — fixed
+
+The exec loop split its spans into runs whenever nvkmd's per-entry
+`no_prefetch` flag changed, building them in a fixed 16-element array:
+
+```c
+if (n > 0 && !must_continue && (flag_changed || n == 16)) { flush; n = 0; }
+spans[n] = ...;   /* n may be 16 */
+n++;
+```
+
+`must_continue` — set when an entry ends mid-method and its
+continuation must land in the same submit — suppresses the flush.
+Seventeen consecutive `incomplete` entries therefore write past the end
+of the array, and `n` is then 17, so the `n == 16` test never matches
+again and it keeps going. Found by reading; no run has produced it, and
+NVK is unlikely to emit that many in one exec — which is exactly what
+would have made it a bad bug rather than an obvious one.
+
+**And the splitting bought nothing.** `HORIZON_GPU_SUBMIT_DEFAULT` is
+already `NOT_MAIN | NO_PREFETCH` (`submit.h:39`); the only other value
+is the R3 experiment that failed on hardware. So there is no
+prefetching mode to select, every submit already had the conservative
+flags, and both code paths passed `SUBMIT_DEFAULT` regardless of the
+run they had just computed.
+
+Now one submit, one span array sized to `exec_count`.
+`horizon_gpu_submit` takes any number of spans and reports `BUSY` on a
+full ring rather than truncating, so there is nothing to cap.
+
+**This retires extension 2 of the six that step 1 enumerated.**
+Per-span submit flags are not needed, because only one flag combination
+works. Four of the six remain conditional on D9–D12; the timestamp one
+stands.
+
+### 3. Our cache-maintenance ops are dead code here — not a defect
+
+`nvkmd_mem_sync_to_gpu`/`sync_from_gpu` in this backend are never
+called. `nvkmd.c:464` prefers Mesa's own implementation when
+`util_has_cache_ops()` is true, and that returns **true** on aarch64,
+where `cache_ops_aarch64.c` issues `dc cvac`/`dc civac` directly.
+
+That works here: libnx's own `armDCacheFlush` documents that it reads
+the cache line size **from `CTR_EL0`**, so both that register and EL0
+cache maintenance are available on Horizon — `SCTLR_EL1.UCT` and `.UCI`
+are set. The ops stay, because they are what a platform without Mesa's
+architecture support would use, but they are not on this path and
+nothing should be concluded about them from a passing run.
+
+### 4. The `HOST_COHERENT` memory type is a promise this platform cannot keep
+
+**This one is open and needs a decision.**
+
+On an SoC, `nvk_physical_device.c:1571-1592` advertises two memory
+types and says why:
+
+```c
+/* On Tegra, we only have sysmem so we claim it's DEVICE_LOCAL. The
+ * only difference in memory types is between cached and uncached (but
+ * coherent) maps. */
+```
+
+Type 0 is `HOST_CACHED`, type 1 is `HOST_COHERENT`. The coherent one is
+meant to be an **uncached** mapping. `horizon_gpu` has exactly one
+memory policy — `HORIZON_GPU_MEM_CACHED` (`memory.h:46`) — so this
+backend cannot provide it.
+
+The consequence is silent and total: `NVKMD_MEM_COHERENT` makes
+`nvkmd_mem_sync_to_gpu` and `sync_from_gpu` **return before doing
+anything** (`nvkmd.c:457`, `:476`). An application allocating from that
+type gets CPU-cached memory with no cache maintenance anywhere, and
+neither side sees the other's writes. `t_vulkan` avoids it only because
+it takes the first host-visible type it finds, which is type 0.
+
+**Not advertising it is not an option.** Vulkan requires at least one
+memory type with both `HOST_VISIBLE` and `HOST_COHERENT`.
+
+So the fix is an uncached memory policy in `horizon/` — the mechanism
+exists (`svcSetMemoryAttribute` with `MemoryAttribute_Uncached`, which
+is how deko3d gets its uncached blocks) — and that means touching a
+layer this project deliberately freezes. **Raised with the owner rather
+than done.**
+
+Until it is decided, the state is: the driver is correct for the
+`HOST_CACHED` type, which is what the Phase 4 test uses, and wrong for
+the `HOST_COHERENT` one, which nothing here uses yet. That is written
+down rather than left to be discovered.
 
 
 ---
@@ -3739,6 +3857,7 @@ emitters), and found no regression in either mode.
 | D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **closed: moved upstream (items 1-2)** — they are now in `src/nouveau/headers/nv_device_info_chipset.c`, next to the struct they fill, unchanged, and `nouveau_device.c` calls them. Was: — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
 | D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **closed: native (items 6-10)** — a binary vk_sync over a channel fence, with the runtime's timeline emulation on top. The emulation needs a binary type underneath regardless, and a syncpoint fence is what a submit produces. Was: — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
+| D14 | An uncached memory policy in `horizon/` | **open, raised with the owner** — Vulkan requires a `HOST_VISIBLE + HOST_COHERENT` memory type; NVK advertises one on SoC and means an *uncached* map by it; `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED`, and `NVKMD_MEM_COHERENT` makes nvkmd skip cache maintenance entirely. The mechanism exists (`svcSetMemoryAttribute` + `MemoryAttribute_Uncached`, as deko3d does) but it means touching `horizon/` |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 
 ### D2 — Mesa version: `mesa-26.1.5`

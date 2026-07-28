@@ -94,6 +94,7 @@ run_test(test_ctx *t)
    PFN_vkCreateFence vkCreateFence;
    PFN_vkQueueSubmit vkQueueSubmit;
    PFN_vkWaitForFences vkWaitForFences;
+   PFN_vkFlushMappedMemoryRanges vkFlushMappedMemoryRanges;
    PFN_vkInvalidateMappedMemoryRanges vkInvalidateMappedMemoryRanges;
    PFN_vkDestroyFence vkDestroyFence;
    PFN_vkDestroyCommandPool vkDestroyCommandPool;
@@ -168,6 +169,7 @@ run_test(test_ctx *t)
    GET_INSTANCE_PROC(instance, vkCreateFence);
    GET_INSTANCE_PROC(instance, vkQueueSubmit);
    GET_INSTANCE_PROC(instance, vkWaitForFences);
+   GET_INSTANCE_PROC(instance, vkFlushMappedMemoryRanges);
    GET_INSTANCE_PROC(instance, vkInvalidateMappedMemoryRanges);
    GET_INSTANCE_PROC(instance, vkDestroyFence);
    GET_INSTANCE_PROC(instance, vkDestroyCommandPool);
@@ -313,6 +315,33 @@ run_test(test_ctx *t)
    uint32_t *words = map;
    for (uint32_t i = 0; i < FILL_SIZE_B / 4; i++)
       words[i] = ~FILL_PATTERN;
+
+   /* And flush it, which is not a formality.
+    *
+    * The memory type chosen above is HOST_VISIBLE and HOST_CACHED but
+    * NOT HOST_COHERENT, so those writes are sitting in the CPU's cache
+    * as dirty lines. Vulkan requires vkFlushMappedMemoryRanges for them
+    * to become visible to the device — but the reason it matters here
+    * is worse than visibility. A dirty line can be evicted at any time,
+    * including *after* the GPU's fill has landed in memory, and the
+    * eviction would then overwrite the GPU's result with the poison.
+    * The test would report that the GPU had not written, and it would
+    * be the test that was wrong.
+    *
+    * So the poison has to be pushed out of the cache before the submit.
+    * Without this it is not a poison, it is a landmine.
+    */
+   const VkMappedMemoryRange poison_range = {
+      .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+      .memory = mem,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+   };
+   r = vkFlushMappedMemoryRanges(dev, 1, &poison_range);
+   t_check(t, r == VK_SUCCESS, "vkFlushMappedMemoryRanges (poison) -> %d",
+                  (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
 
    /* --- vkCmdFillBuffer --------------------------------------------- */
    const VkCommandPoolCreateInfo cpci = {
