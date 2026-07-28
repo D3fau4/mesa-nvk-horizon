@@ -1,7 +1,7 @@
 From c39eb28b454194f1eaac3b3a06fd57dfc984f655 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:38:12 +0000
-Subject: [PATCH 08/18] util/os_time: sleep with usleep on any POSIX-lite
+Subject: [PATCH 08/19] util/os_time: sleep with usleep on any POSIX-lite
  platform
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

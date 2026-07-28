@@ -8,7 +8,7 @@
 ## Current phase
 
 **Phase 4 — `nvkmd_horizon`. The backend exists and NVK builds.
-Milestone items 1 and 2 are done; 3 to 10 are named gaps.**
+Milestone items 1 to 5 are done; 6 to 10 are named gaps.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -93,8 +93,11 @@ services — `vk_icdGetInstanceProcAddr` and `nvk_CreateInstance` defined,
 `scripts/build-mesa-nvk.sh` in 4 m 17 s. **D9 and D10 are closed**, by
 the hardware and by where the knowledge belongs respectively, and the
 seven rejected designs are checked one by one in the section below.
-Milestone items 3 to 10 return `VK_ERROR_FEATURE_NOT_PRESENT` with their
-item number, so every gap is named. Patch 0018; the series is eighteen.
+**Items 3, 4 and 5 followed** — memory objects, the VA heap and
+bind/unbind — so the driver can now allocate memory, reserve GPU address
+space and map one into the other. Items 6 to 10 return
+`VK_ERROR_FEATURE_NOT_PRESENT` with their item number, so every gap is
+named. Patches 0018 and 0019; the series is nineteen.
 
 ---
 
@@ -1332,6 +1335,60 @@ wrong allocation.
 use their own build directory: `scripts/configure-mesa.sh` is still the
 Phase 3 build — Mesa's non-driver core, no drivers, no Rust — and the
 two answer different questions, so they must not share configured state.
+
+
+---
+
+## Phase 4 — items 3, 4 and 5: memory, VA and binding (2026-07-28)
+
+`libnvk.a` is 94 482 bytes with all five backend objects and 0 TLS
+relocations. The driver can hold a buffer.
+
+**Memory is NvMap-backed, and `map()` has nothing to do.** The storage
+behind an NvMap object is ordinary process memory registered with the
+service, so it has a CPU address for its whole lifetime and every map
+hands back the same pointer; nvkmd core does the reference counting.
+`sync_to_gpu`/`sync_from_gpu` are the cache maintenance homebrew heap
+memory needs, and horizon_gpu decides whether it is required **from the
+policy recorded at creation, not from the call site**. `log_handle` is
+the in-process NvMap handle — the closest thing this platform has to the
+GEM handle the field was named after, and a real identifier rather than
+a number invented to fill it (rejected design 4).
+
+**Six requests fail by name rather than being quietly downgraded:**
+
+| Request | Why not |
+|---|---|
+| `NVKMD_MEM_VRAM` | GM20B has none, and nvk already knows from `type == NV_DEVICE_TYPE_SOC` |
+| `NVKMD_MEM_SHARED` | no dma-buf; `nvkmd_info` says so |
+| `NVKMD_MEM_MAP_FIXED` | NvMap chooses the CPU address. Answering at a different one is worse than failing |
+| `NVKMD_VA_ALLOC_FIXED` | `NVGPU_AS_IOCTL_ALLOC_SPACE` lets the kernel choose the base; there is no "place it here" form. Extension 5 of the six step 1 enumerated |
+| `NVKMD_VA_SPARSE` | decision **D12** — NVK derives `sparseBinding` from `cls_eng3d >= MAXWELL_B` and GM20B's queried class is exactly that |
+| `NVKMD_VA_REPLAY` | capture/replay needs fixed addresses, same as the fourth |
+
+**The address-space half is chosen, not assumed.** Horizon's GPU address
+space has a small-page region and a big-page one, and a reservation
+lives entirely in one — `horizon_gpu_vm_map` uses the reservation's page
+size for every mapping inside it. The big-page half is taken when both
+the size and the alignment are multiples of the big page, which is
+exactly when every mapping inside can satisfy the alignment the map call
+will demand.
+
+**Unbinding needs bookkeeping the interface does not carry.** `nvkmd`
+unbinds by `(offset, range)` and never hands back what `bind_mem`
+returned, while `horizon_gpu_vm_unmap` takes the mapping. So the VA
+keeps a list. An **exact** match is required: horizon_gpu maps and
+unmaps whole mappings, and unbinding half of one would leave the address
+space and that list disagreeing — guessing which half was meant is worse
+than saying the request cannot be met.
+
+**D5 is still open and is now visibly load-bearing.**
+`HORIZON_GPU_MEM_CACHED` is the only policy horizon_gpu offers, which is
+a statement about the platform: homebrew heap memory on Horizon is
+CPU-cached. `NVKMD_MEM_COHERENT` therefore cannot be satisfied by the
+allocation itself — it is satisfied by the flush/invalidate nvk already
+makes around every access. Whether that is enough is exactly what D5
+asks, and it is answered by the first GPU write, not by reading.
 
 
 ---
@@ -3711,26 +3768,27 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Milestone item 3, memory objects**, then 4 (VA heap) and 5
-(bind/unbind) — the three that turn a driver that initialises into one
-that can hold a buffer. They are the smallest complete step towards the
-mandatory sequence, which needs `vkAllocateMemory` and
-`vkBindBufferMemory` before it needs a queue.
+**Milestone items 6 and 7 — queue, channel and submit.** This is where
+the phase's hardest decision lands: `nvkmd_ctx` is what `exec`, `bind`,
+`signal`, `wait`, `flush` and `sync` hang off, and every one of them
+needs a `vk_sync` type, which is **D11**, which depends on **D8**
+(whether this platform's `CLOCK_MONOTONIC` may be relied on, since
+`vk_sync` waits take absolute timeouts built from
+`os_time_get_absolute_timeout`).
 
-`horizon_gpu` already has all three: `horizon_gpu_mem_create`,
-`horizon_gpu_vm_reserve` and `horizon_gpu_vm_map`. What needs deciding
-while doing them is the **cache policy per memory type (D5)**, which has
-been waiting on the first GPU write since Phase 1, and whether
-`nvkmd_mem::map` should hold the NvMap CPU pointer directly or a
-reference-counted view of it — `nvkmd` reference-counts internal maps
-and allows exactly one client map.
+`horizon_gpu` has the channel and the submit path already —
+`horizon_gpu_channel_create`, `horizon_gpu_submit`,
+`horizon_gpu_channel_wait_fence`. The two extensions step 1 named as
+unconditional land here: **per-span submit flags** (`no_prefetch` is per
+entry in `nvkmd` and per submit in `horizon_gpu`) and, if D11 takes the
+native route, a **CPU-side syncpoint increment**.
 
-After that: items 6 and 7 (queue, channel, submit) bring in D11 and the
-`vk_sync` question, which depends on D8.
+Rejected design 6 — no CPU wait after every submit — is a property to
+hold from the first line of this item, not to retrofit.
 
 Still unmeasured: whether `compiler_builtins` collides with newlib's
-`memcpy` family. Nothing has *linked* the driver into an executable yet
-— `libnvk.a` is an archive.
+`memcpy` family. Nothing has *linked* the driver into an executable yet;
+`libnvk.a` is an archive.
 
 ## Commit log for Phase 4
 
@@ -3739,6 +3797,7 @@ Still unmeasured: whether `compiler_builtins` collides with newlib's
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
+| `mesa-patches: nvkmd_horizon memory, VA heap and binding` | patch 0019, STATUS — items 3-5 |
 | `mesa-patches: add the Horizon kernel-mode-driver backend` | patch 0018, `configure-mesa-nvk.sh`, `build-mesa-nvk.sh`, STATUS — items 1-2, D9 and D10 closed |
 | `mesa-patches: build Mesa's Rust half without a standard library` | patches 0016–0017, STATUS — step 5 |
 | `toolchain: build the machine Mesa's nouveau driver needs` | `toolchain/Dockerfile`, `build-toolchain-image.sh`, `fetch-rust-tools.sh`, `fetch-clc-deps.sh`, `fetch-mesa-subprojects.sh`, `build-mesa-clc.sh`, `build-rust-sysroot.sh`, cross file, patch 0015, STATUS — step 4 |

@@ -1,0 +1,666 @@
+From 7e8dcccacfc81cb51d578a35ac1207b33117e7b4 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:36:45 +0000
+Subject: [PATCH 19/19] nouveau/vk: nvkmd_horizon memory objects, VA heap and
+ bind/unbind
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Milestone items 3, 4 and 5. The driver can now hold a buffer: allocate
+memory, reserve GPU address space and map one into the other.
+
+Memory is NvMap-backed through horizon_gpu_mem. map() has nothing to do
+— the storage behind an NvMap object is ordinary process memory that was
+registered with the service, so it has a CPU address for its whole
+lifetime and every map hands back the same pointer; nvkmd core does the
+reference counting. sync_to_gpu and sync_from_gpu are the cache
+maintenance homebrew heap memory needs, and horizon_gpu decides whether
+it is required from the policy recorded at creation rather than from the
+call site. log_handle is the in-process NvMap handle: the closest thing
+this platform has to the GEM handle the field was named after, and a
+real identifier rather than a number invented to fill it.
+
+Three requests are refused by name instead of quietly downgraded:
+NVKMD_MEM_VRAM (GM20B has none), NVKMD_MEM_SHARED (no dma-buf, and
+nvkmd_info already says so) and NVKMD_MEM_MAP_FIXED (NvMap chooses the
+CPU address; honouring the call at a different one would be worse than
+failing).
+
+VA reservation picks the address space half rather than assuming one.
+Horizon's GPU address space has a small-page region and a big-page one,
+and a reservation lives entirely in one: horizon_gpu_vm_map uses the
+reservation's page size for every mapping inside it. The big-page half
+is chosen when both the size and the alignment are multiples of the big
+page, which is exactly when every mapping inside can satisfy the
+alignment the map call will demand.
+
+Three VA flags fail by name for one reason each: ALLOC_FIXED, because
+NVGPU_AS_IOCTL_ALLOC_SPACE lets the kernel choose the base and there is
+no "place it here" form — answering with a different address is the one
+thing a caller asking for a fixed one cannot tolerate; SPARSE, because
+that is decision D12 and NVK would otherwise advertise sparseBinding on
+this chip; and REPLAY, which needs fixed addresses for the same reason
+as the first.
+
+nvkmd unbinds by (offset, range) and never hands back what bind_mem
+returned, so the VA remembers what it mapped where. An exact match is
+required: horizon_gpu maps and unmaps whole mappings, and unbinding half
+of one would leave the address space and that list disagreeing.
+
+mesa-nvk-horizon: Phase 4 items 3-5
+Evidence: libnvk.a is 94 482 bytes with all five backend objects in the
+  archive and 0 TLS relocations; scripts/build-mesa-nvk.sh builds it.
+---
+ src/nouveau/vulkan/meson.build                |   2 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  36 +++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  24 +-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 222 ++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 249 ++++++++++++++++++
+ 5 files changed, 511 insertions(+), 22 deletions(-)
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index 60e2b6c..8599845 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -86,7 +86,9 @@ if host_machine.system() == 'horizon'
+     'nvkmd/horizon/nvkmd_horizon.h',
+     'nvkmd/horizon/nvkmd_horizon_dev.c',
+     'nvkmd/horizon/nvkmd_horizon_enumerate.c',
++    'nvkmd/horizon/nvkmd_horizon_mem.c',
+     'nvkmd/horizon/nvkmd_horizon_pdev.c',
++    'nvkmd/horizon/nvkmd_horizon_va.c',
+   )
+ else
+   nvk_files += files(
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index a87949b..40f55e1 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -67,6 +67,29 @@ struct nvkmd_horizon_dev {
+ 
+ NVKMD_DECL_SUBCLASS(dev, horizon);
+ 
++struct nvkmd_horizon_mem {
++   struct nvkmd_mem base;
++
++   horizon_gpu_mem *gpu_mem;
++};
++
++NVKMD_DECL_SUBCLASS(mem, horizon);
++
++struct nvkmd_horizon_va {
++   struct nvkmd_va base;
++
++   horizon_gpu_va_range *range;
++
++   /* nvkmd unbinds by (offset, range) and never hands back what
++    * bind_mem returned, so the VA remembers what it mapped where; see
++    * nvkmd_horizon_va.c.
++    */
++   simple_mtx_t mutex;
++   struct list_head bindings;
++};
++
++NVKMD_DECL_SUBCLASS(va, horizon);
++
+ VkResult nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+                                    enum nvk_debug debug_flags,
+                                    struct nvkmd_pdev **pdev_out);
+@@ -75,6 +98,19 @@ VkResult nvkmd_horizon_create_dev(struct nvkmd_pdev *pdev,
+                                   struct vk_object_base *log_obj,
+                                   struct nvkmd_dev **dev_out);
+ 
++VkResult nvkmd_horizon_alloc_mem(struct nvkmd_dev *dev,
++                                 struct vk_object_base *log_obj,
++                                 uint64_t size_B, uint64_t align_B,
++                                 enum nvkmd_mem_flags flags,
++                                 struct nvkmd_mem **mem_out);
++
++VkResult nvkmd_horizon_alloc_va(struct nvkmd_dev *dev,
++                                struct vk_object_base *log_obj,
++                                enum nvkmd_va_flags flags, uint8_t pte_kind,
++                                uint64_t size_B, uint64_t align_B,
++                                uint64_t fixed_addr,
++                                struct nvkmd_va **va_out);
++
+ /* horizon_gpu_result -> VkResult, in one place.
+  *
+  * The mapping is deliberately narrow: horizon_gpu reports what failed,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index 14696c0..7720a8a 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -53,27 +53,7 @@ nvkmd_horizon_dev_get_drm_fd(struct nvkmd_dev *_dev)
+    return -1;
+ }
+ 
+-static VkResult
+-nvkmd_horizon_dev_alloc_mem(struct nvkmd_dev *_dev,
+-                            struct vk_object_base *log_obj,
+-                            uint64_t size_B, uint64_t align_B,
+-                            enum nvkmd_mem_flags flags,
+-                            struct nvkmd_mem **mem_out)
+-{
+-   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
+-                    "nvkmd_horizon: memory objects are milestone item 3");
+-}
+ 
+-static VkResult
+-nvkmd_horizon_dev_alloc_va(struct nvkmd_dev *_dev,
+-                           struct vk_object_base *log_obj,
+-                           enum nvkmd_va_flags flags, uint8_t pte_kind,
+-                           uint64_t size_B, uint64_t align_B,
+-                           uint64_t fixed_addr, struct nvkmd_va **va_out)
+-{
+-   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
+-                    "nvkmd_horizon: the VA heap is milestone item 4");
+-}
+ 
+ static VkResult
+ nvkmd_horizon_dev_create_ctx(struct nvkmd_dev *_dev,
+@@ -89,14 +69,14 @@ const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
+    .destroy = nvkmd_horizon_dev_destroy,
+    .get_gpu_timestamp = nvkmd_horizon_dev_get_gpu_timestamp,
+    .get_drm_fd = nvkmd_horizon_dev_get_drm_fd,
+-   .alloc_mem = nvkmd_horizon_dev_alloc_mem,
++   .alloc_mem = nvkmd_horizon_alloc_mem,
+    /* alloc_tiled_mem and import_dma_buf are left NULL on purpose:
+     * nvkmd_info says has_alloc_tiled and has_dma_buf are false, and
+     * nvkmd.h's inline wrappers assert on that before dispatching, so a
+     * caller that ignored the capability faults here rather than
+     * silently getting a wrong allocation.
+     */
+-   .alloc_va = nvkmd_horizon_dev_alloc_va,
++   .alloc_va = nvkmd_horizon_alloc_va,
+    .create_ctx = nvkmd_horizon_dev_create_ctx,
+ };
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+new file mode 100644
+index 0000000..cfcc923
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -0,0 +1,222 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vk_log.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/u_memory.h"
++
++#include <inttypes.h>
++
++static void
++nvkmd_horizon_mem_free(struct nvkmd_mem *_mem)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   horizon_gpu_result res = horizon_gpu_mem_destroy(mem->gpu_mem);
++   if (res.status != HORIZON_GPU_OK) {
++      /* ERR_BUSY here means a GPU mapping of this object is still
++       * alive. nvkmd's own contract is that every VA is unbound before
++       * the memory is freed, so this is a driver bug; saying so is
++       * better than leaking silently or destroying memory the GPU can
++       * still reach.
++       */
++      mesa_loge("horizon_gpu_mem_destroy failed: status %d, nv 0x%08" PRIx32,
++                (int)res.status, res.nv);
++      return;
++   }
++
++   FREE(mem);
++}
++
++static VkResult
++nvkmd_horizon_mem_map(struct nvkmd_mem *_mem,
++                      struct vk_object_base *log_obj,
++                      enum nvkmd_mem_map_flags flags,
++                      void *fixed_addr,
++                      void **map_out)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   /* NVKMD_MEM_MAP_FIXED is refused rather than ignored: nvkmd_info
++    * says has_map_fixed is false, and an NvMap allocation's CPU address
++    * is chosen by the allocator — there is no mmap(MAP_FIXED) to place
++    * it somewhere else. Honouring the call at a different address would
++    * be worse than failing.
++    */
++   if (flags & NVKMD_MEM_MAP_FIXED) {
++      return vk_errorf(log_obj, VK_ERROR_MEMORY_MAP_FAILED,
++                       "nvkmd_horizon: fixed CPU maps are not possible; "
++                       "NvMap chooses the address");
++   }
++   assert(fixed_addr == NULL);
++
++   /* There is no map operation to perform. The storage behind an NvMap
++    * object is ordinary process memory that was registered with the
++    * service, so it has a CPU address for its whole lifetime and every
++    * map hands back the same pointer. nvkmd counts internal maps and
++    * permits one client map on top; that bookkeeping is in nvkmd core,
++    * and this backend only has to answer with the address.
++    */
++   void *ptr = horizon_gpu_mem_cpu_ptr(mem->gpu_mem);
++   if (ptr == NULL) {
++      return vk_errorf(log_obj, VK_ERROR_MEMORY_MAP_FAILED,
++                       "nvkmd_horizon: memory object has no CPU pointer");
++   }
++
++   *map_out = ptr;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_horizon_mem_unmap(struct nvkmd_mem *_mem,
++                        enum nvkmd_mem_map_flags flags,
++                        void *map)
++{
++   /* Nothing to undo: see map() above. The pointer stays valid until
++    * horizon_gpu_mem_destroy, which is what frees the storage.
++    */
++}
++
++static void
++nvkmd_horizon_mem_sync_to_gpu(struct nvkmd_mem *_mem,
++                              uint64_t offset_B, uint64_t range_B)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   /* Homebrew heap memory on Horizon is CPU-cached, so a write the CPU
++    * has made is not necessarily visible to the GPU until the cache is
++    * cleaned. horizon_gpu decides whether the maintenance is needed
++    * from the policy recorded at creation, not from the call site.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_mem_flush(mem->gpu_mem, offset_B, range_B);
++   if (res.status != HORIZON_GPU_OK) {
++      mesa_loge("horizon_gpu_mem_flush(%" PRIu64 ", %" PRIu64 ") failed: "
++                "status %d, nv 0x%08" PRIx32,
++                offset_B, range_B, (int)res.status, res.nv);
++   }
++}
++
++static void
++nvkmd_horizon_mem_sync_from_gpu(struct nvkmd_mem *_mem,
++                                uint64_t offset_B, uint64_t range_B)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   horizon_gpu_result res =
++      horizon_gpu_mem_invalidate(mem->gpu_mem, offset_B, range_B);
++   if (res.status != HORIZON_GPU_OK) {
++      mesa_loge("horizon_gpu_mem_invalidate(%" PRIu64 ", %" PRIu64 ") "
++                "failed: status %d, nv 0x%08" PRIx32,
++                offset_B, range_B, (int)res.status, res.nv);
++   }
++}
++
++static uint32_t
++nvkmd_horizon_mem_log_handle(struct nvkmd_mem *_mem)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   /* The in-process NvMap handle. This is only used for NVK_DEBUG_VM
++    * logging, and it is the closest thing this platform has to the GEM
++    * handle the field was named after — a real identifier of the
++    * object, not a number invented to fill the field.
++    */
++   return horizon_gpu_mem_get_handle(mem->gpu_mem);
++}
++
++const struct nvkmd_mem_ops nvkmd_horizon_mem_ops = {
++   .free = nvkmd_horizon_mem_free,
++   .map = nvkmd_horizon_mem_map,
++   .unmap = nvkmd_horizon_mem_unmap,
++   .sync_to_gpu = nvkmd_horizon_mem_sync_to_gpu,
++   .sync_from_gpu = nvkmd_horizon_mem_sync_from_gpu,
++   .log_handle = nvkmd_horizon_mem_log_handle,
++   /* overmap and export_dma_buf are left NULL: nvkmd_info says
++    * has_overmap and has_dma_buf are false, and nvkmd.h's wrappers
++    * assert on that before dispatching.
++    */
++};
++
++VkResult
++nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
++                        struct vk_object_base *log_obj,
++                        uint64_t size_B, uint64_t align_B,
++                        enum nvkmd_mem_flags flags,
++                        struct nvkmd_mem **mem_out)
++{
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
++
++   /* NVKMD_MEM_VRAM cannot be honoured and is not quietly downgraded:
++    * GM20B has no VRAM, nvk knows that from
++    * nv_device_info::type == NV_DEVICE_TYPE_SOC, and a caller asking
++    * for it anyway has misunderstood the device.
++    */
++   if (flags & NVKMD_MEM_VRAM) {
++      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                       "nvkmd_horizon: there is no VRAM on this device");
++   }
++
++   /* NVKMD_MEM_SHARED means "may be shared with other processes", which
++    * on Linux means dma-buf. nvkmd_info says has_dma_buf is false, so
++    * nothing should ask; refusing is better than handing back memory
++    * that cannot in fact be shared.
++    */
++   if (flags & NVKMD_MEM_SHARED) {
++      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                       "nvkmd_horizon: memory cannot be shared between "
++                       "processes on this platform");
++   }
++
++   struct nvkmd_horizon_mem *mem = CALLOC_STRUCT(nvkmd_horizon_mem);
++   if (mem == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   /* horizon_gpu takes 0 to mean page alignment and requires anything
++    * larger to be a power of two at least the small-page size. nvkmd
++    * callers pass alignments that are already powers of two; raising a
++    * smaller one to the page size is not a workaround but the truth
++    * about the granularity NvMap works in.
++    */
++   uint64_t align = align_B;
++   if (align != 0 && align < HORIZON_GPU_SMALL_PAGE_SIZE)
++      align = HORIZON_GPU_SMALL_PAGE_SIZE;
++
++   /* HORIZON_GPU_MEM_CACHED is the only policy horizon_gpu offers, and
++    * that is a statement about the platform rather than a limitation of
++    * this backend: homebrew heap memory on Horizon is CPU-cached.
++    * NVKMD_MEM_COHERENT therefore cannot be satisfied by the allocation
++    * itself — it is satisfied by the sync_to_gpu/sync_from_gpu calls
++    * nvk already makes around every access, which is decision D5 and is
++    * why that decision is still open.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_mem_create(dev->gpu, size_B, align,
++                             HORIZON_GPU_MEM_CACHED, &mem->gpu_mem);
++   if (res.status != HORIZON_GPU_OK) {
++      FREE(mem);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_mem_create(%" PRIu64 ", %" PRIu64 ") "
++                       "failed: status %d, nv 0x%08" PRIx32,
++                       size_B, align, (int)res.status, res.nv);
++   }
++
++   /* The size horizon_gpu actually allocated, not the size asked for:
++    * it rounds up to the alignment, and nvkmd_mem::size_B is what the
++    * rest of the driver will bind and map.
++    */
++   nvkmd_mem_init(_dev, &mem->base, &nvkmd_horizon_mem_ops, flags,
++                  horizon_gpu_mem_size(mem->gpu_mem),
++                  _dev->pdev->bind_align_B);
++
++   *mem_out = &mem->base;
++
++   return VK_SUCCESS;
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+new file mode 100644
+index 0000000..8e6bc1c
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -0,0 +1,249 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vk_log.h"
++
++#include "util/list.h"
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/u_memory.h"
++
++#include <inttypes.h>
++
++/*
++ * nvkmd unbinds by (offset, range) and never hands back the object it
++ * got from bind_mem, so the VA has to remember what it mapped where.
++ * horizon_gpu_vm_unmap takes the mapping, so the two are joined here.
++ *
++ * A list rather than a tree: an nvkmd_va is one allocation's worth of
++ * address space, bound in a handful of pieces at most — NVK binds a
++ * whole buffer at offset 0 in the ordinary case, and sparse binding,
++ * which is what would make this list long, is not advertised (D12).
++ */
++struct nvkmd_horizon_binding {
++   struct list_head link;
++   uint64_t va_offset_B;
++   uint64_t range_B;
++   horizon_gpu_mapping *mapping;
++};
++
++static void
++nvkmd_horizon_va_free(struct nvkmd_va *_va)
++{
++   struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
++
++   /* nvkmd's contract is that a VA is unbound before it is freed. If
++    * something is still bound, releasing the reservation would fail
++    * with ERR_BUSY and leak both, so the bindings are torn down here
++    * and the fact is logged: it is a driver bug, not an application
++    * one, and it should be visible.
++    */
++   list_for_each_entry_safe(struct nvkmd_horizon_binding, b,
++                            &va->bindings, link) {
++      mesa_loge("nvkmd_horizon: VA 0x%" PRIx64 " freed with 0x%" PRIx64
++                " still bound at +0x%" PRIx64,
++                _va->addr, b->range_B, b->va_offset_B);
++      horizon_gpu_vm_unmap(b->mapping);
++      list_del(&b->link);
++      FREE(b);
++    }
++
++   horizon_gpu_result res = horizon_gpu_vm_release(va->range);
++   if (res.status != HORIZON_GPU_OK) {
++      mesa_loge("horizon_gpu_vm_release failed: status %d, nv 0x%08" PRIx32,
++                (int)res.status, res.nv);
++      return;
++   }
++
++   simple_mtx_destroy(&va->mutex);
++   FREE(va);
++}
++
++static VkResult
++nvkmd_horizon_va_bind_mem(struct nvkmd_va *_va,
++                          struct vk_object_base *log_obj,
++                          uint64_t va_offset_B,
++                          struct nvkmd_mem *_mem,
++                          uint64_t mem_offset_B,
++                          uint64_t range_B)
++{
++   struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   struct nvkmd_horizon_binding *b = CALLOC_STRUCT(nvkmd_horizon_binding);
++   if (b == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   /* GPU L2 caching is on. It is a property of the mapping on this
++    * platform (NVGPU_AS_MAP_BUFFER_FLAGS_CACHEABLE), and every memory
++    * type NVK exposes here is device-local system memory that the GPU
++    * should cache; the CPU side's coherence is handled by the explicit
++    * flush/invalidate in nvkmd_horizon_mem.c.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_vm_map(va->range, va_offset_B, mem->gpu_mem,
++                         mem_offset_B, range_B, _va->pte_kind,
++                         true /* gpu_cacheable */, &b->mapping);
++   if (res.status != HORIZON_GPU_OK) {
++      FREE(b);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_vm_map(+0x%" PRIx64 ", 0x%" PRIx64 ") "
++                       "failed: status %d, nv 0x%08" PRIx32,
++                       va_offset_B, range_B, (int)res.status, res.nv);
++   }
++
++   b->va_offset_B = va_offset_B;
++   b->range_B = range_B;
++
++   simple_mtx_lock(&va->mutex);
++   list_addtail(&b->link, &va->bindings);
++   simple_mtx_unlock(&va->mutex);
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
++                        struct vk_object_base *log_obj,
++                        uint64_t va_offset_B,
++                        uint64_t range_B)
++{
++   struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
++
++   struct nvkmd_horizon_binding *found = NULL;
++
++   simple_mtx_lock(&va->mutex);
++   list_for_each_entry(struct nvkmd_horizon_binding, b, &va->bindings, link) {
++      if (b->va_offset_B == va_offset_B && b->range_B == range_B) {
++         found = b;
++         list_del(&b->link);
++         break;
++      }
++   }
++   simple_mtx_unlock(&va->mutex);
++
++   /* An exact match is required, not an overlapping one. horizon_gpu
++    * maps and unmaps whole mappings; unbinding half of one would leave
++    * the address space and this list disagreeing, and guessing which
++    * half was meant is worse than saying the request cannot be met.
++    */
++   if (found == NULL) {
++      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                       "nvkmd_horizon: nothing bound at +0x%" PRIx64
++                       " for 0x%" PRIx64, va_offset_B, range_B);
++   }
++
++   horizon_gpu_result res = horizon_gpu_vm_unmap(found->mapping);
++   FREE(found);
++   if (res.status != HORIZON_GPU_OK) {
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_vm_unmap(+0x%" PRIx64 ") failed: "
++                       "status %d, nv 0x%08" PRIx32,
++                       va_offset_B, (int)res.status, res.nv);
++   }
++
++   return VK_SUCCESS;
++}
++
++const struct nvkmd_va_ops nvkmd_horizon_va_ops = {
++   .free = nvkmd_horizon_va_free,
++   .bind_mem = nvkmd_horizon_va_bind_mem,
++   .unbind = nvkmd_horizon_va_unbind,
++};
++
++VkResult
++nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
++                       struct vk_object_base *log_obj,
++                       enum nvkmd_va_flags flags, uint8_t pte_kind,
++                       uint64_t size_B, uint64_t align_B,
++                       uint64_t fixed_addr, struct nvkmd_va **va_out)
++{
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
++   struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_dev->pdev);
++
++   /* NVGPU_AS_IOCTL_ALLOC_SPACE lets the kernel choose the base; there
++    * is no "place it here" form. NVKMD_VA_ALLOC_FIXED is therefore
++    * refused rather than answered with a different address, which is
++    * the one thing a caller asking for a fixed address cannot tolerate.
++    * This is extension 5 of the six Phase 4 step 1 enumerated.
++    */
++   if (flags & NVKMD_VA_ALLOC_FIXED) {
++      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                       "nvkmd_horizon: fixed VA allocation is not "
++                       "implemented (Phase 4 step 1, extension 5)");
++   }
++
++   /* Sparse is decision D12 and is not advertised: NVK derives
++    * sparseBinding from cls_eng3d >= MAXWELL_B, and GM20B's queried 3D
++    * class is exactly MAXWELL_B, so the feature would be claimed on
++    * this chip unless the condition gains a kmd capability. Until that
++    * is decided, asking for it here fails by name.
++    */
++   if (flags & NVKMD_VA_SPARSE) {
++      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                       "nvkmd_horizon: sparse VA is decision D12");
++   }
++
++   /* NVKMD_VA_REPLAY is the capture/replay pool for
++    * VK_EXT_buffer_device_address_capture_replay, which needs a fixed
++    * address to replay at. Same reason as above.
++    */
++   if (flags & NVKMD_VA_REPLAY) {
++      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                       "nvkmd_horizon: capture/replay VA needs fixed "
++                       "addresses, which this address space does not give");
++   }
++
++   struct nvkmd_horizon_va *va = CALLOC_STRUCT(nvkmd_horizon_va);
++   if (va == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   /* Which half of the address space. Horizon's GPU address space has a
++    * small-page region and a big-page one, and a reservation lives
++    * entirely in one of them: horizon_gpu_vm_map uses the reservation's
++    * page size for every mapping inside it.
++    *
++    * The big-page half is chosen when both the size and the alignment
++    * are multiples of the big page, because that is exactly when every
++    * mapping inside the reservation can satisfy the alignment the map
++    * call will demand. Otherwise the small-page half, which imposes
++    * less. NVKMD_VA_GART says the caller knows the memory is pinned
++    * system RAM and the lower alignment is enough, which is the same
++    * answer.
++    */
++   const uint32_t big = pdev->gpu_info.as_big_page_size;
++   uint32_t page_size = HORIZON_GPU_SMALL_PAGE_SIZE;
++   if (!(flags & NVKMD_VA_GART) && big != 0 &&
++       (size_B % big) == 0 && (align_B % big) == 0)
++      page_size = big;
++
++   horizon_gpu_result res =
++      horizon_gpu_vm_reserve(dev->gpu, size_B, page_size, align_B,
++                             &va->range);
++   if (res.status != HORIZON_GPU_OK) {
++      FREE(va);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_vm_reserve(0x%" PRIx64 ", %" PRIu32 ", "
++                       "0x%" PRIx64 ") failed: status %d, nv 0x%08" PRIx32,
++                       size_B, page_size, align_B,
++                       (int)res.status, res.nv);
++   }
++
++   va->base.ops = &nvkmd_horizon_va_ops;
++   va->base.dev = _dev;
++   va->base.flags = flags;
++   va->base.pte_kind = pte_kind;
++   va->base.addr = horizon_gpu_va_range_base(va->range);
++   va->base.size_B = horizon_gpu_va_range_size(va->range);
++
++   list_inithead(&va->bindings);
++   simple_mtx_init(&va->mutex, mtx_plain);
++
++   *va_out = &va->base;
++
++   return VK_SUCCESS;
++}
+-- 
+2.43.0
+
