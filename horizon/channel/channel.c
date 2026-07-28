@@ -532,8 +532,44 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
     for (;;) {
         uint32_t hw;
         horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
-        if (horizon_gpu_failed(res))
-            return res;
+        if (horizon_gpu_failed(res)) {
+            if (chan->syncpt_baseline_trusted)
+                return res;
+            /* No counter on this platform (§ 9). The fence's own
+             * question can still be asked, through the wait ioctl that
+             * nvFenceWait drives — a different call, which a platform
+             * can implement while leaving the read out. The notifier is
+             * still re-checked between chunks, so a faulted channel does
+             * not hang here either.
+             *
+             * What this does NOT rescue is the threshold: it was
+             * computed from a baseline nobody read, so "reached" is only
+             * as good as that assumption. The channel stays untrusted
+             * and t_vulkan still refuses to call such a run a pass. */
+            uint64_t used = armTicksToNs(armGetSystemTick() - start);
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT && used >= timeout_ns)
+                return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+
+            int32_t w_us = CHANNEL_WAIT_CHUNK_US;
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
+                int32_t rem =
+                    horizon_timeout_ns_to_us_clamped(timeout_ns - used);
+                if (rem < w_us)
+                    w_us = rem;
+            }
+
+            Result rc = nvFenceWait(&nvf, w_us);
+            if (R_SUCCEEDED(rc))
+                return horizon_gpu_ok();
+            if (rc != KERNELRESULT(TimedOut))
+                return horizon_gpu_err_nv(rc);
+
+            if (channel_check_fault(chan))
+                return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT)
+                return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+            continue;
+        }
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
             return horizon_gpu_ok();
 

@@ -292,3 +292,38 @@ return without the GPU having run, and that is the one answer this
 project must never give. The cost is that nothing is ever recycled on
 such a channel, which a bring-up run can afford and a real one would
 not.
+
+### 9.2 Asking the fence's question a different way
+
+The counter and the fence are two different questions, and a platform can
+answer one and not the other:
+
+- `NVHOST_IOCTL_CTRL_SYNCPT_READ` — "what is the counter now?"
+- `NVHOST_IOCTL_CTRL_SYNCPT_WAIT`, under `nvFenceWait` — "has (id,
+  threshold) been reached?"
+
+Everything in this layer was built on the first, and the emulator
+measured on 2026-07-28 does not implement it — while games on that same
+emulator wait on fences constantly, which is the second. The wait was
+never even reached there: `horizon_gpu_fence_wait` read the counter at
+the top of its loop and returned that error before calling `nvFenceWait`
+at the bottom.
+
+So on a channel whose baseline could not be read, and only there, the
+read's failure falls through to the wait: `nvFenceWait(fence, 0)` for a
+poll, and for the remaining deadline in a wait. The channel notifier is
+still re-checked between chunks, so a faulted channel cannot hang.
+
+**What this does and does not buy.** It is not a weaker answer — it is
+the kernel answering the exact question a fence asks, with no counter and
+no shadow involved. What it cannot rescue is the *threshold*: that was
+computed from a baseline nobody read, so "reached" is only as sound as
+that assumption. Where the real counter starts at zero for a fresh
+channel the assumption holds and the answer is right; where it does not,
+the wait returns early and the data the fence was ordering is not there
+yet — which a readback notices. The channel stays untrusted either way,
+and `t_vulkan` still refuses to call such a run a pass.
+
+Where the read works it stays the primary path. It is one ioctl for any
+number of fences on the same syncpoint, and it feeds the 64-bit shadow,
+which this cannot.
