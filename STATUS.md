@@ -2100,9 +2100,49 @@ Series: **twenty-eight**.
 
 ---
 
-## Correction: the execution platform of the last four runs is unconfirmed (2026-07-28)
+## RESOLVED: the syncpoint failure is the emulator, not the driver (2026-07-28)
 
-**This section corrects a labelling error of mine, not a measurement.**
+**The owner has confirmed it: the four `t_vulkan` runs of 2026-07-28
+were on an emulator, and the same binaries behave differently there
+than on the console.** The comparison is now on the record from both
+sides:
+
+| | real Switch (2026-07-27) | emulator (2026-07-28) |
+|---|---|---|
+| `t_channel` | **PASS 17/17**, `syncpt id=26, value at create=104880`, and a *second* channel got a distinct id (27) | first channel gets `syncpt id=1` |
+| `SyncptRead` on that id | works | `0x55c` = `LibnxNvidiaError_NotImplemented` |
+
+The console logs of eleven tests in both process modes — `normal` and
+`applet` — are all PASS except `t_sysinfo` 18/19, which is a separate
+known item.
+
+**So `horizon_gpu` is not at fault and nothing found inside
+`vkCreateDevice` on those runs is a driver defect.** The error code said
+so literally and it was read too late: `NotImplemented` is what an
+emulator answers for an `nvhost-ctrl` ioctl it does not implement, and
+a syncpoint id of 1 is the degenerate value that goes with it.
+
+**What this does not change:** Phase 4's exit criterion still needs the
+real console, because "the CPU reads the pattern the GPU wrote" cannot
+be certified by an environment that does not implement the syncpoint
+the fence is built on.
+
+**What it does change:** the emulator cannot take `t_vulkan` past
+`vkCreateDevice` as the code stands, because
+`horizon_gpu_channel_create` treats the initial syncpoint read as
+fatal. That read initialises `shadow_target`, which fence arithmetic
+depends on, so degrading it silently would make fences lie. The right
+shape is the one already used for NVK's non-conformance check: the
+*application* opts in to a degraded mode by name, and nothing degrades
+by default. Next task.
+
+### The labelling error this section began as
+
+`CLAUDE.md` requires distinguishing **host build**, **cross build** and
+**verified on real hardware**, and says never to claim Switch behaviour
+from anything weaker. The four runs were recorded as "hardware run"
+**without asking where they were executed**. That was mine, and it is
+corrected here rather than quietly left.
 
 `CLAUDE.md` requires distinguishing **host build**, **cross build** and
 **verified on real hardware**, and says never to claim Switch behaviour
