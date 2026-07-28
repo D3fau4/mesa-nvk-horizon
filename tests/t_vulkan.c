@@ -167,7 +167,16 @@ run_test(test_ctx *t)
     * Created and destroyed immediately so NVK's channel is still the
     * first one alive when it is made, which is the case being
     * compared.
+    *
+    * It answered on 2026-07-27: a real console gives id 26 here and 26
+    * to NVK, and every horizon_gpu test passes; the environment that
+    * reported id 1 and then 0x55c (LibnxNvidiaError_NotImplemented) does
+    * not implement NVHOST_IOCTL_CTRL_SYNCPT_READ at all. So the probe's
+    * job is now to tell those two apart *at run time*, because the same
+    * .nro is run on both, and to decide whether the rest of this test
+    * runs degraded.
     */
+   bool degraded = false;
    horizon_gpu_device *probe_dev = NULL;
    horizon_gpu_result pres = horizon_gpu_device_create(NULL, &probe_dev);
    if (t_check(t, pres.status == HORIZON_GPU_OK,
@@ -175,12 +184,28 @@ run_test(test_ctx *t)
                      (int)pres.status)) {
       horizon_gpu_channel *probe_chan = NULL;
       pres = horizon_gpu_channel_create(probe_dev, NULL, &probe_chan);
-      if (t_check(t, pres.status == HORIZON_GPU_OK,
-                        "probe: horizon_gpu_channel_create -> %d",
-                        (int)pres.status)) {
-         t_note(t, "probe: a bare channel, before any Vulkan, has "
-                   "syncpt id=%u", horizon_gpu_channel_syncpt_id(probe_chan));
+      if (pres.status == HORIZON_GPU_OK) {
+         t_check(t, horizon_gpu_channel_syncpt_baseline_trusted(probe_chan),
+                       "probe: the syncpoint baseline is readable (id=%u, "
+                       "value=%u)",
+                       horizon_gpu_channel_syncpt_id(probe_chan),
+                       horizon_gpu_channel_syncpt_value_at_create(probe_chan));
          horizon_gpu_channel_destroy(probe_chan);
+      } else {
+         /* No syncpoint here. Everything from vkCreateDevice onwards would
+          * stop at the same read, so nothing below this line has ever been
+          * executed anywhere. Opt in to untrusted baselines to get that
+          * code running — and record, right here, that whatever it prints
+          * afterwards is not a measurement. */
+         degraded = true;
+         setenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE", "1", 1);
+         t_note(t, "probe: horizon_gpu_channel_create -> %d; this platform "
+                   "does not implement the syncpoint read",
+                   (int)pres.status);
+         t_note(t, "DEGRADED RUN: untrusted syncpoint baselines enabled so "
+                   "the steps after vkCreateDevice can be exercised. Fences "
+                   "are guesses from here on; this run cannot satisfy the "
+                   "Phase 4 exit criterion whatever it prints.");
       }
       horizon_gpu_device_destroy(probe_dev);
    }
@@ -509,6 +534,15 @@ run_test(test_ctx *t)
       t_note(t, "readback: %u/%u words are 0x%08x — the GPU wrote it",
                 FILL_SIZE_B / 4, FILL_SIZE_B / 4, FILL_PATTERN);
    }
+
+   /* A degraded run waited on a fence built from a baseline nobody read,
+    * so "the GPU wrote it" above is not established even when every word
+    * matches — the wait may simply have believed itself finished. Fail the
+    * run outright rather than let a PASS line be quoted as Phase 4
+    * evidence. This is the only check whose failure means "nothing was
+    * verified" instead of "something is broken". */
+   t_check(t, !degraded,
+                 "the run was not degraded (a degraded run verifies nothing)");
 
    /* --- teardown, in reverse order ---------------------------------- */
    vkDestroyFence(dev, fence, NULL);

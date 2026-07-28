@@ -56,8 +56,18 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan);
 uint32_t horizon_gpu_channel_syncpt_id(const horizon_gpu_channel *chan);
 
 /* Hardware syncpoint value observed when the channel was created —
- * measurement input for the R5 open question (shadow initialisation). */
+ * measurement input for the R5 open question (shadow initialisation).
+ * Meaningless unless horizon_gpu_channel_syncpt_baseline_trusted() below. */
 uint32_t horizon_gpu_channel_syncpt_value_at_create(
+    const horizon_gpu_channel *chan);
+
+/* False only when the initial syncpoint read failed and the device's
+ * allow_untrusted_syncpt_baseline opt-in let the channel come up regardless
+ * (docs/synchronization.md § 9). A caller that reports timing or completion
+ * as observed hardware behaviour must check this first: on such a channel
+ * the shadow baseline is an assumption, so every fence derived from it is
+ * too. */
+bool horizon_gpu_channel_syncpt_baseline_trusted(
     const horizon_gpu_channel *chan);
 
 /* 64-bit shadow of the syncpoint value once every submitted increment has

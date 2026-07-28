@@ -208,7 +208,19 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "initial SyncptRead(%u) failed: 0x%08x",
                      chan->syncpt_id, res.nv);
-        goto fail_channel;
+        if (!dev->allow_untrusted_syncpt_baseline)
+            goto fail_channel;
+        /* Opt-in path only (docs/synchronization.md § 9). The baseline is
+         * whatever calloc left — zero — and it is recorded as untrusted so
+         * no caller can mistake this channel's fences for measurements. */
+        chan->syncpt_value_at_create = 0;
+        atomic_store(&dev->untrusted_syncpt_seen, true);
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "channel %p: continuing with an UNTRUSTED syncpoint "
+                     "baseline of 0 (opt-in); its fences are not "
+                     "measurements", (void *)chan);
+    } else {
+        chan->syncpt_baseline_trusted = true;
     }
     chan->shadow_target = chan->syncpt_value_at_create;
 
@@ -310,9 +322,10 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
 
     atomic_fetch_add(&dev->live_channels, 1);
     horizon_logf(&dev->log, HORIZON_LOG_INFO,
-                 "channel %p: up, syncpt=%u initial=%u zcull=%s",
+                 "channel %p: up, syncpt=%u initial=%u%s zcull=%s",
                  (void *)chan, chan->syncpt_id,
                  chan->syncpt_value_at_create,
+                 chan->syncpt_baseline_trusted ? "" : " (UNTRUSTED)",
                  create_info->bind_zcull ? "bound" : "off");
 
     *out_chan = chan;
@@ -349,6 +362,12 @@ uint32_t
 horizon_gpu_channel_syncpt_value_at_create(const horizon_gpu_channel *chan)
 {
     return chan ? chan->syncpt_value_at_create : 0;
+}
+
+bool
+horizon_gpu_channel_syncpt_baseline_trusted(const horizon_gpu_channel *chan)
+{
+    return chan ? chan->syncpt_baseline_trusted : false;
 }
 
 uint64_t horizon_gpu_channel_shadow_target(const horizon_gpu_channel *chan)

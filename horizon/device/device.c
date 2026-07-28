@@ -78,6 +78,20 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     dev->debug_synchronous = create_info->debug_synchronous ||
                              (sync_env && sync_env[0] == '1');
 
+    const char *untrusted_env = getenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE");
+    dev->allow_untrusted_syncpt_baseline =
+        create_info->allow_untrusted_syncpt_baseline ||
+        (untrusted_env && untrusted_env[0] == '1');
+    if (dev->allow_untrusted_syncpt_baseline) {
+        /* Announced at ERROR level on purpose: this is the one setting that
+         * makes a fence a guess, so it must be impossible to read a log from
+         * such a run and mistake it for a measurement. */
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "untrusted syncpoint baselines are ALLOWED on this "
+                     "device: fences from a degraded channel are not "
+                     "measurements (synchronization.md § 9)");
+    }
+
     horizon_gpu_result res;
     Result rc;
 
@@ -229,6 +243,11 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
     out_counters->live_mappings = atomic_load(&dev->live_mappings);
     out_counters->live_channels = atomic_load(&dev->live_channels);
     return horizon_gpu_ok();
+}
+
+bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev)
+{
+    return dev ? atomic_load(&dev->untrusted_syncpt_seen) : false;
 }
 
 horizon_gpu_result horizon_gpu_device_destroy(horizon_gpu_device *dev)

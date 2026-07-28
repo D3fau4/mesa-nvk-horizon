@@ -237,3 +237,33 @@ Rules:
   taken otherwise.
 - No test may pass only with the mode enabled. If it does, that is the bug.
 - `STATUS.md` records whether a result was obtained with the mode on or off.
+
+## 9. Untrusted syncpoint baselines
+
+Enabled by `HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1` (env) or a device-creation flag.
+Like § 8 it is a diagnostic, but a narrower and more dangerous one, so it is described
+separately.
+
+Channel creation reads the hardware syncpoint once and initialises the 64-bit shadow
+(§ 1.1) from it. That read failing is normally fatal: without a baseline, every threshold
+this channel computes is offset by an unknown amount, and a wait can return "reached"
+before the GPU has done anything. Some environments do not implement
+`NVHOST_IOCTL_CTRL_SYNCPT_READ` at all — the 2026-07-27 comparison in `STATUS.md` has one
+that answers `0x55c` (`LibnxNvidiaError_NotImplemented`) where a real console answers with
+a value. On those, nothing above channel creation can be executed at all.
+
+With the opt-in, such a channel comes up with a baseline of zero, marked untrusted:
+
+- `horizon_gpu_channel_syncpt_baseline_trusted()` is false for that channel.
+- `horizon_gpu_device_untrusted_syncpt_seen()` is true for its device, and stays true.
+- Both the opt-in and each degraded channel are logged at `ERROR` level, so no log from
+  such a run can be mistaken for a clean one.
+
+Rules:
+- Off by default. Nothing degrades unless the application asks for it by name.
+- A degraded channel's fences are arithmetic, not observation. **No result obtained on
+  one may be reported as hardware behaviour**, including a readback that matches: the
+  wait it passed through proves nothing. `t_vulkan` enforces this by failing any run in
+  which it enabled the mode, whatever the readback said.
+- It is not a fallback for a real syncpoint failure on hardware that has syncpoints.
+  There, a failed read is a defect and stays fatal.

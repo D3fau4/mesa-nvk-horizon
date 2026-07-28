@@ -90,6 +90,17 @@ typedef struct horizon_gpu_device_create_info {
     /* Debug-synchronous diagnostic mode (docs/synchronization.md § 8).
      * Also enabled by the HORIZON_GPU_SYNC=1 environment variable. */
     bool debug_synchronous;
+    /* Let a channel come up when the initial syncpoint read fails, with an
+     * untrusted shadow baseline (docs/synchronization.md § 9). Also enabled
+     * by HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1.
+     *
+     * This exists for environments that do not implement
+     * NVHOST_IOCTL_CTRL_SYNCPT_READ at all, so the code above a channel can
+     * still be exercised there. It does not make such a channel usable: a
+     * fence taken from it is arithmetic on a baseline nobody measured, and
+     * anything that waits on one is reporting a guess. Never enable it to
+     * obtain a result that will be reported as hardware behaviour. */
+    bool allow_untrusted_syncpt_baseline;
 } horizon_gpu_device_create_info;
 
 /* Brings up the nv services in order (nvInitialize, fence, map, gpu,
@@ -109,6 +120,13 @@ horizon_gpu_device_get_info(const horizon_gpu_device *dev,
 horizon_gpu_result
 horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
                                 horizon_gpu_device_counters *out_counters);
+
+/* True once at least one channel of this device came up with an untrusted
+ * syncpoint baseline (docs/synchronization.md § 9). Sticky: it stays true
+ * after that channel is destroyed, because results already derived from it
+ * do not become trustworthy again. Always false unless the opt-in above was
+ * requested. */
+bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev);
 
 /* Fails with HORIZON_GPU_ERR_LEAK — after logging every non-zero counter —
  * if any child object is still alive; nothing is torn down in that case.

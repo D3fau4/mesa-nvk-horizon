@@ -49,6 +49,11 @@ struct horizon_gpu_channel {
      * reported by t_channel). */
     uint32_t syncpt_value_at_create;
     uint64_t shadow_target;
+    /* False when the initial read failed and the device's untrusted-baseline
+     * opt-in let the channel come up anyway (docs/synchronization.md § 9).
+     * Every fence this channel produces is then arithmetic on a baseline of
+     * zero that nobody measured. */
+    bool syncpt_baseline_trusted;
 
     /* Retirement list (docs/synchronization.md § 3). */
     horizon_retire_entry *retire;

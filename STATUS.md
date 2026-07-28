@@ -4566,6 +4566,45 @@ Phase 4, which builds directly on `horizon/`.
 
 ---
 
+## The degraded-baseline opt-in (2026-07-28)
+
+The emulator stops at `horizon_gpu_channel_create`, so steps 5–9 of the
+mandatory sequence — buffer, allocation, bind, fill, submit, wait,
+readback — have never been executed anywhere, and the next console run
+would be the first time that code runs at all. This adds the opt-in
+recorded as the previous next task, so that code can be shaken out
+before the console round trip rather than during it.
+
+Shape, following the rule that nothing degrades by default:
+
+- `horizon_gpu_device_create_info::allow_untrusted_syncpt_baseline`, or
+  `HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1`. Off unless asked for by
+  name, exactly like `NVK_I_WANT_A_BROKEN_VULKAN_DRIVER`.
+- With it, a failed initial `SyncptRead` no longer fails channel
+  creation; the shadow baseline becomes 0 and is marked untrusted.
+  `horizon_gpu_channel_syncpt_baseline_trusted()` and
+  `horizon_gpu_device_untrusted_syncpt_seen()` report it, and both the
+  opt-in and each degraded channel are logged at `ERROR` level.
+- `t_vulkan` decides at run time: its bare-channel probe now doubles as
+  the platform test. The read works → nothing is enabled, the run is a
+  normal one. The read fails → the test enables the mode, says so, and
+  **fails the run at the end whatever the readback said**, because a
+  fence built on a baseline nobody measured can report "reached" without
+  the GPU having done anything. One `.nro`, and the real-hardware path
+  is bit-for-bit the previous behaviour.
+
+Documented as `docs/synchronization.md` § 9. No Mesa patch was needed:
+NVK's channels inherit it from the device.
+
+What this does **not** do: it does not let the emulator satisfy
+anything. `horizon_gpu_fence_wait` reads the same syncpoint, so a
+degraded run is expected to fail at `vkWaitForFences` instead of at
+`vkCreateDevice` — four more steps of coverage, and an honest failure.
+
+Tested: host tests 103/103, cross build, six gates, series re-applied
+twice from the pinned base. **Not run on hardware or emulator yet** —
+the artefacts are in `build/pkg`.
+
 ## Next concrete task
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
@@ -4589,6 +4628,7 @@ emulator.
 
 | Commit | Scope |
 |---|---|
+| `horizon,tests: an opt-in untrusted syncpoint baseline, and a run that admits it` | `horizon/device`, `horizon/channel`, `tests/t_vulkan.c`, synchronization.md § 9 |
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
