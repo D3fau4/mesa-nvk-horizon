@@ -629,6 +629,134 @@ Policy and consequences: `LICENSES/README.md`, `docs/known-risks.md` R1.
 
 ---
 
+## 12.5 A second, independent reference: `nxvk` (2026-07-28)
+
+`nxvk` (`github.com/PalindromicBreadLoaf/nxvk`, default branch `switch`, commit
+`02b642f9b996b6149bc68108baed0f064c4291f5`, 2026-07-27) is an unrelated project analysed at
+the owner's request, on **read access only** — a shallow clone of the `switch` branch, with
+the files below read directly. It is not one of the four Phase 0 snapshots and is not
+covered by the rest of this document; it is added here because it is the closest thing to a
+second data point on the same hardware problem, built by a different author with a
+different strategy.
+
+**What it is.** A full fork of Mesa's own repository (not a patch series) with a
+`switch/` directory for build tooling and smoke tests, plus two in-tree Vulkan/NVK
+additions:
+
+- `src/nouveau/vulkan/nvkmd/nvgpu/` — a **native `nvkmd` backend** (`nvkmd_nvgpu_dev.c`,
+  `_mem.c`, `_va.c`, `_ctx.c`, `_sync.c`, `_pdev.c`, 1191 lines total) that calls libnx
+  directly. No DRM/nouveau uAPI emulation anywhere — the same rejection of the `drm_shim.c`
+  strategy this project makes in `CLAUDE.md`.
+- `src/vulkan/wsi/wsi_switch.c` (869 lines) — a `VK_NN_vi_surface` swapchain over
+  `nwindow`.
+
+Its own `switch/README.md` states it does **not** copy GPL source from `switch-nvk` and
+instead re-derives hardware behaviour from documentation — the same policy as this
+project's "Licence hazard" section. File headers throughout (`nvkmd_nvgpu.h:1-4`,
+`wsi_switch.c:1-4`, etc.) carry `SPDX-License-Identifier: MIT`, `Copyright © 2026
+PalindromicBreadLoaf`; the repository itself reports no root `LICENSE` file
+(`license: null` via the GitHub API), so the per-file SPDX header is the only stated
+terms. **No text from `nxvk` is copied into this repository.** What follows is facts about
+its design, verified by reading the cited files in the clone above.
+
+### 12.5.1 Where it lands relative to our layer rules
+
+| | `mesa-nvk-horizon` (this repo, target) | `nxvk` |
+|---|---|---|
+| Mesa tree | pinned checkout, untouched; changes are patches in `mesa-patches/` (`CLAUDE.md` rule 7) | Mesa forked directly; the diff against upstream lives only as this fork's commit history |
+| GPU abstraction below NVK | `nvkmd_horizon` **must not** depend on libnx directly; it calls `horizon_gpu` (Vulkan-free, independently testable) | `nvkmd_nvgpu.h:14-17` includes `<switch/nvidia/{address_space,fence,gpu_channel,map}.h>` directly — no intermediate layer. `nvkmd_nvgpu_dev.c` calls `nvAddressSpaceCreate`, `nvioctlNvhostAsGpu_AllocSpace` etc. inline |
+| Testability without Mesa | `horizon/` is a standalone static library with its own `.nro` tests (Phase 1, done) | no equivalent; `nvgpu/*.c` only builds as part of the full Mesa/NVK build |
+| DRM/nouveau uAPI emulation | rejected outright (`CLAUDE.md` § rejected designs) | also absent — `nvkmd_nvgpu_dev_ops.get_drm_fd = NULL` (`nvkmd_nvgpu_dev.c:117`) |
+
+Two layers vs three is a real trade-off, not just a style difference: `nxvk` gets to a
+running triangle faster because there is nothing to build below NVK first, at the cost of
+not being able to unit-test the GPU bring-up independently of a full Mesa/NIR/NAK build —
+exactly the property Phase 1 of this project (`docs/milestones.md`) exists to buy.
+
+### 12.5.2 Submission model — converges with this project's design, not the `switch-nvk` reference's
+
+`nvkmd_nvgpu_exec_ctx_exec` (`nvkmd_nvgpu_ctx.c:249-283`) appends GPFIFO entries and sets
+`ctx->has_pending = true`; it does not call any wait. `nvkmd_nvgpu_exec_ctx_flush`
+(`:184-217`) kicks the channel off and records the resulting fence — still no wait. A CPU
+wait (`nvFenceWait`, `:321`) happens only in `nvkmd_nvgpu_exec_ctx_sync` (explicit,
+`:308-330`) and in `_destroy` (teardown drain, `:219-234`). This is the asynchronous-submit
+model `docs/synchronization.md` specifies, and the opposite of the `switch-nvk`
+reference's per-submit drain (§ 9.1 above) — independent confirmation that the design is
+buildable, from an author who apparently never saw this project's docs.
+
+One technique here is worth recording as new, not present in the `switch-nvk` audit:
+`nvkmd_nvgpu_warmup_channel` (`nvkmd_nvgpu_ctx.c:49-111`) calibrates a freshly created
+channel by kicking off synthetic fence-only pushbuffers of increasing size (32, 128, 512,
+… 8192 dwords), CPU-waiting each one before trying the next, so a GPFIFO/ring-size fault is
+pinned to the exact size that caused it at channel-creation time rather than surfacing
+later during real submission. This is a bring-up diagnostic, not a per-submit cost, and it
+does not conflict with `CLAUDE.md`'s "no CPU wait after every submit" — it runs once, at
+`create_exec_ctx`.
+
+One gap noted, not yet confirmed as a bug: `nvkmd_nvgpu_exec_ctx_wait`
+(`nvkmd_nvgpu_ctx.c:236-246`) unconditionally returns `VK_SUCCESS` regardless of
+`wait_count`/`waits`, commented as relying on single-channel in-order execution. Since NVK
+on this hardware appears to expose one queue, this may never be exercised with a real
+cross-context dependency — but if it ever is, the wait is silently dropped. **[claim]**,
+not verified against NVK's actual queue-family count in this fork.
+
+### 12.5.3 WSI — one `switch-nvk` defect fixed, the CPU-synchronous-present defect repeated
+
+- **Fixed**: `wsi_switch_init_zero_copy` sets `chain->base.blit.type = WSI_SWAPCHAIN_NO_BLIT`
+  (`wsi_switch.c:575`). The `switch-nvk` reference planned this and never implemented it
+  (§ 8, § 1.2 above), so its "zero-copy" still ran a full `CmdCopyImageToBuffer` every
+  frame. `nxvk`'s zero-copy path has no residual blit.
+- **Repeated**: acquire calls `nwindowDequeueBuffer(chain->window, &slot, NULL)`
+  (`wsi_switch.c:421`), and present does
+  `chain->base.wsi->WaitForFences(..., true, UINT64_MAX)` (`:446-448`) **before**
+  `nwindowQueueBuffer(chain->window, image_index, NULL)` (`:458`) — an unconditional,
+  infinite CPU wait ahead of every present, with `NULL` passed as the fence both times
+  instead of a real `NvMultiFence` the display block could wait on GPU-side. This is the
+  exact pattern `docs/wsi.md` § 4 ("Present") and `docs/synchronization.md` § 7 identify as
+  the reference's defect and design around.
+- **Fixed count, not a range**: `caps->minImageCount = caps->maxImageCount = 3`
+  (`wsi_switch.c:79-80`) — triple buffering only, no double-buffering option and no
+  `nwindowSetBufferCount` call observed. `docs/wsi.md` § 2.3 plans `[2, 4]`, clamped, with
+  both counts measured.
+
+### 12.5.4 Hardware/API facts independently corroborated
+
+These were reached by a different author working from a different codebase and toolchain,
+which makes them stronger evidence than the single `switch-nvk` source:
+
+| Fact | `nxvk` location | Matches § 12.1 entry |
+|---|---|---|
+| GPFIFO entries need `NOT_MAIN \| NO_PREFETCH`; a prefetching main entry faults NVK's streams | `nvkmd_nvgpu_ctx.c:268-272`, comment on the same lines | "Every working GPFIFO entry used `NOT_MAIN | NO_PREFETCH`" |
+| A `FIXED` VA map must land inside a previously reserved non-fixed range | `nvkmd_nvgpu_dev.c:44` comment + `AllocSpace` before any bind | "A `FIXED` VA map is only valid inside a previously reserved non-fixed range" |
+| `nvGpuChannelIncrFence` must be paired with an emitted syncpoint-increment command | `gen_fence_cmdlist` (`nvkmd_nvgpu.h`-adjacent, `nvkmd_nvgpu_ctx.c:27-35`) built and appended on every flush | "must be paired with an emitted syncpoint-increment command" |
+| Timeline semaphores are not natively available; must be emulated | `nvkmd_nvgpu_pdev.c` comment "Timeline semaphores are emulated on top of the binary NvFence syncobj" (`nvkmd_nvgpu.h:31`) | matches this project's own plan in `docs/synchronization.md` § 5 |
+| A large fixed-size VA arena, reserved once at device creation | `NVKMD_NVGPU_VA_ARENA_SIZE_B = 8 GiB` (`nvkmd_nvgpu.h:23`), same order of magnitude as the reference's `8 GiB / 4 KiB` arena (§ 4 above) | independent convergence on arena size |
+
+### 12.5.5 Consequences for this project
+
+| Finding | Response |
+|---|---|
+| Two-layer (`nvkmd_nvgpu` → libnx directly) gets to rendering faster | Accepted trade-off, not adopted: the three-layer split is this project's Phase 1 exit criterion, kept for testability, not abandoned for speed |
+| Async submit design is independently proven buildable | No change — corroborates `docs/synchronization.md` as written |
+| Real `WSI_SWAPCHAIN_NO_BLIT` zero-copy is achievable | `docs/wsi.md` § 3.1 keeps `WSI_SWAPCHAIN_NO_BLIT` as a Phase 6 requirement, not an optional stretch goal |
+| CPU-synchronous present with `NULL` fences, repeating the `switch-nvk` defect | Confirms `docs/wsi.md` § 4's design (pass the real completion fence into `nwindowQueueBuffer`, no CPU wait) is worth the extra work — a second, independent implementation shows the easy path leads back to the same bug |
+| Channel warm-up/calibration ramp | Worth considering for `horizon/channel/` bring-up diagnostics; not yet designed, no `STATUS.md` decision made |
+| `exec_ctx_wait` ignoring cross-context waits | Recorded as a **[claim]**, open question — not a finding about our own code, noted only because `docs/synchronization.md` § 4 identifies cross-channel waits as the one facility no reference implementation gets right yet |
+
+### 12.5.6 Attribution and licence status
+
+| Item | Origin | Licence | Status here |
+|---|---|---|---|
+| `nxvk` (`nvkmd_nvgpu/`, `wsi_switch.c`, `switch/`) | third party, MIT per file SPDX header, no repository-level `LICENSE` | MIT (stated) | studied via a local read-only clone; **no code copied** |
+| Facts in § 12.5.4 | hardware/API behaviour, independently re-derived by a third party | not copyrightable | recorded, to be re-verified against switchbrew/envytools/measurement as with § 12.1 |
+
+Per `LICENSES/README.md`, any future literal reuse of `nxvk` code — even though it is MIT
+and would not carry `switch-nvk`'s GPL/AGPL hazard — still requires a recorded decision in
+`STATUS.md`, the upstream header, and an entry in `LICENSES/README.md`. Nothing here
+proposes that; this section is knowledge, not an import.
+
+---
+
 ## 13. Status claims in the reference — verified vs asserted
 
 **Source-verified by this audit:** the file contents, the call graphs, the constants, the
@@ -685,4 +813,23 @@ grep -E '^diff --git' patches/*.patch                # files touched by each pat
 # extraction of the patch-embedded WSI backend for diffing against the tracked copy
 #   (python: collect '+' lines following '+++ b/src/vulkan/wsi/wsi_common_switch.c')
 diff -u winsys/wsi/wsi_common_switch.c wsi_from_patch.c
+```
+
+## Appendix — commands used for § 12.5 (`nxvk`)
+
+```sh
+# read-only shallow clone of the branch actually used for builds (not 'main')
+git clone --depth 1 --branch switch https://github.com/PalindromicBreadLoaf/nxvk.git
+
+# commit audited
+git -C nxvk log -1 --format='%H %ci'
+# 02b642f9b996b6149bc68108baed0f064c4291f5 2026-07-27 11:55:09 -0400
+
+# files read directly (Read tool, not a summarising fetch) to produce every
+# quoted line number in § 12.5:
+#   src/nouveau/vulkan/nvkmd/nvgpu/nvkmd_nvgpu.h
+#   src/nouveau/vulkan/nvkmd/nvgpu/nvkmd_nvgpu_ctx.c
+#   src/nouveau/vulkan/nvkmd/nvgpu/nvkmd_nvgpu_dev.c
+#   src/nouveau/vulkan/nvkmd/nvgpu/nvkmd_nvgpu_sync.c
+#   src/vulkan/wsi/wsi_switch.c (surface caps, acquire, present, zero-copy init)
 ```

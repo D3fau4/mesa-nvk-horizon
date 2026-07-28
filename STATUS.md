@@ -94,6 +94,27 @@ sides by measurement. **Nothing is owed on hardware.**
 
 ---
 
+## Comparative audit: `nxvk` (2026-07-28)
+
+Owner asked for a comparison against `github.com/PalindromicBreadLoaf/nxvk`, an unrelated
+third-party NVK/Switch port discovered outside Phase 0. Not part of the phase ladder;
+documentation only, no code changed. Method: shallow `git clone --depth 1 --branch switch`
+(default branch is `switch`, not `main`) at commit `02b642f9b9…`, files read directly
+(`nvkmd_nvgpu.{h,c}*`, `wsi_switch.c`) rather than summarised, matching this document's own
+evidentiary standard. Written up as `docs/reference-analysis.md` § 12.5.
+
+Headline findings: `nxvk` is a direct Mesa fork (no `mesa-patches/` equivalent) with a
+native two-layer `nvkmd_nvgpu` backend that calls libnx directly — no DRM/nouveau shim,
+same rejection as this project, but no `horizon/`-equivalent Vulkan-free layer either.
+Its submit path is asynchronous (converges with `docs/synchronization.md`), and one Phase 6
+finding lands here too: its WSI implements real `WSI_SWAPCHAIN_NO_BLIT` zero-copy (something
+the `switch-nvk` reference only planned) but still does a CPU-blocking
+`WaitForFences(..., UINT64_MAX)` before `nwindowQueueBuffer(..., NULL)` at present — the
+exact defect `docs/wsi.md` § 4 designs around. No code was copied; new pending decision
+below.
+
+---
+
 ## Codex PR review, PR #4 (2026-07-27) — 8 findings, 7 real
 
 `chatgpt-codex-connector` reviewed PR #4 at `1b5e0bf` and left **2 × P1
@@ -1982,6 +2003,7 @@ emitters), and found no regression in either mode.
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
 | D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
 | D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. Phase 4's Vulkan timeouts need an answer |
+| D9 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit |
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
