@@ -58,13 +58,10 @@ esac
 horizon_meson setup $HORIZON_SETUP_MODE "$@" "$HORIZON_BUILD_DIR" .
 horizon_record_cross_id
 
-# What meson.build's fs.exists() just decided about tests 12 and 13.
-# scripts/build-horizon.sh compares it against the state on disk then;
-# see the note there for why that comparison has to exist. Beside the
-# build directory for the same reason the cross-id stamp is: --wipe
-# empties the directory itself.
-if horizon_mesa_libs_present; then
-    echo present > "$HORIZON_BUILD_DIR.mesalibs"
-else
-    echo absent > "$HORIZON_BUILD_DIR.mesalibs"
-fi
+# What meson.build's fs.exists() just decided about tests 12 and 13, and
+# which directory it decided it about. scripts/build-horizon.sh compares
+# the same line against the state on disk; see the note there for why
+# that comparison has to exist, and horizon_mesa_state for why the
+# directory is part of it. Beside the build directory for the same
+# reason the cross-id stamp is: --wipe empties the directory itself.
+horizon_mesa_state > "$HORIZON_BUILD_DIR.mesalibs"

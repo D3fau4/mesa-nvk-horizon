@@ -37,11 +37,16 @@ fi
 # closes it. `setup --reconfigure` re-executes meson.build, so fs.exists()
 # is asked again; a missing stamp means the directory predates this
 # check, which is the case that broke.
-if horizon_mesa_libs_present; then now=present; else now=absent; fi
+# The recorded state is "<present|absent> <directory>", not just the
+# first half: -Dmesa_build_dir is baked in at configure time too, so
+# pointing $MESA_BUILD_DIR at a *different* directory that also has the
+# archives has to reconfigure as well. It did not, and the tests went on
+# linking the old one (measured; see horizon_mesa_state).
+now=$(horizon_mesa_state)
 then=$(cat "$HORIZON_BUILD_DIR.mesalibs" 2>/dev/null || true)
 if [ "$now" != "$then" ]; then
-    echo "Mesa archives are $now, $HORIZON_BUILD_DIR was configured with them"
-    echo "${then:-unrecorded}; reconfiguring so meson.build asks again"
+    echo "Mesa state is now [$now], $HORIZON_BUILD_DIR was configured for"
+    echo "[${then:-unrecorded}]; reconfiguring so meson.build asks again"
     scripts/configure-horizon.sh
 fi
 

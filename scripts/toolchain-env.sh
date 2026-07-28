@@ -60,6 +60,30 @@ while [ "${MESA_BUILD_DIR%/}" != "$MESA_BUILD_DIR" ] &&
     MESA_BUILD_DIR="${MESA_BUILD_DIR%/}"
 done
 
+# An absolute path is accepted — meson.build resolves one without a
+# second code path — but only inside the tree when the toolchain is a
+# container. horizon_run bind-mounts $PWD and nothing else, so Meson
+# would configure into the container's own filesystem, which does not
+# survive the run. Measured: a file written to /var/tmp/... inside the
+# container is readable there and absent on the host a moment later,
+# while the same write under $PWD is on the host. The next
+# build-mesa.sh would then find no build.ninja and reconfigure from
+# scratch, forever. Rejected with a reason rather than left to be
+# discovered as "the Mesa build keeps disappearing".
+case "$MESA_BUILD_DIR" in
+    "$PWD" | "$PWD"/*) ;;   # inside the mounted tree
+    /*)
+        if [ -z "${DEVKITPRO:-}" ]; then
+            echo "error: MESA_BUILD_DIR=$MESA_BUILD_DIR is outside $PWD," >&2
+            echo "       and the toolchain container mounts only \$PWD, so" >&2
+            echo "       the build directory would not survive the run." >&2
+            echo "       Use a path inside the tree, or install devkitA64" >&2
+            echo "       locally so no container is involved." >&2
+            return 1 2>/dev/null || exit 1
+        fi
+        ;;
+esac
+
 # The archives tests 12 and 13 link, relative to $MESA_BUILD_DIR. Named
 # here so a script can ask whether Mesa is built without restating them;
 # the Makefile and meson.build carry their own copies, because each
@@ -113,6 +137,29 @@ horizon_mesa_libs_present() {
         [ -f "$MESA_BUILD_DIR/$_hz_lib" ] || return 1
     done
     return 0
+}
+
+# What a configured build directory assumed about Mesa: whether the
+# archives were there AND which directory they were looked for in.
+# configure-horizon.sh records this line, build-horizon.sh compares it,
+# and a difference reconfigures.
+#
+# The directory is half of it, not decoration. With presence alone,
+# switching $MESA_BUILD_DIR between two directories that both hold the
+# archives left both sides reading "present", so nothing reconfigured —
+# and -Dmesa_build_dir stayed at the old value inside build.ninja, so
+# the two tests went on linking the archives of a Mesa build the caller
+# had stopped asking for. Measured: `MESA_BUILD_DIR=build/mesa-alt
+# scripts/build-horizon.sh` left build.ninja naming mesa-probe.
+#
+# One function, called from both sides, so the two cannot record and
+# compare different things.
+horizon_mesa_state() {
+    if horizon_mesa_libs_present; then
+        echo "present $MESA_BUILD_DIR"
+    else
+        echo "absent $MESA_BUILD_DIR"
+    fi
 }
 
 # Run a command with the cross toolchain reachable. The image's default

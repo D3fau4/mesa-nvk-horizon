@@ -91,7 +91,9 @@ scripts/build-compat.sh
 # a shared library — Horizon has no dynamic loader, which patch 0007
 # records — so -fPIC buys nothing on this platform and costs this.
 #
-# scripts/check-tls-relocs.sh fails the build if it ever comes back.
+# scripts/build-mesa.sh runs scripts/check-tls-relocs.sh over the objects
+# after every build, so overriding this option — which the trailing "$@"
+# below deliberately allows — fails there rather than shipping silently.
 set -- \
     --buildtype=plain \
     -Db_staticpic=false \
