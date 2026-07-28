@@ -212,6 +212,44 @@ mesa_test_libs = [
 ]
 mesa_tests = ['t_threads', 't_ostime']
 
+# ---------------------------------------------------------------------
+# Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
+# ---------------------------------------------------------------------
+# It links the whole nouveau Vulkan driver, so it needs a different Mesa
+# build from tests 12 and 13: scripts/configure-mesa-nvk.sh's, which has
+# -Dvulkan-drivers=nouveau. Skipped with a message when that build is
+# not there, exactly as those two are — a bare clone must still produce
+# the tests that need only the toolchain.
+#
+# The order matters here and nowhere else in this file: these are static
+# archives with genuine cycles between them (nvk needs vulkan_runtime,
+# which needs nir, which needs mesa_util, and nvk needs all three), so
+# Meson's --start-group/--end-group around a dependency's link_args is
+# what makes the link resolve rather than left-to-right order.
+nvk_build_dir = get_option('nvk_build_dir')
+nvk_test_libs = [
+  'src/nouveau/vulkan/libnvk.a',
+  'src/nouveau/rust_runtime/libnouveau_rust_runtime.a',
+  'src/nouveau/compiler/libnak.a',
+  'src/nouveau/nil/liblibnil_format_table.a',
+  'src/nouveau/mme/libnouveau_mme.a',
+  'src/nouveau/headers/libnvidia_headers_c.a',
+  'src/vulkan/runtime/libvulkan_runtime.a',
+  'src/vulkan/runtime/libvulkan_instance.a',
+  'src/vulkan/util/libvulkan_util.a',
+  'src/vulkan/wsi/libvulkan_wsi.a',
+  'src/compiler/spirv/libvtn.a',
+  'src/compiler/nir/libnir.a',
+  'src/compiler/libcompiler.a',
+  'src/compiler/rust/libcompiler_c_helpers.a',
+  'src/util/libxmlconfig.a',
+  'src/util/libmesa_util.a',
+  'src/util/libmesa_util_simd.a',
+  'src/util/blake3/libblake3.a',
+  'src/c11/impl/libmesa_util_c11.a',
+]
+nvk_tests = ['t_vulkan']
+
 # meson.project_source_root() / p returns p unchanged when p is absolute,
 # so both an absolute and a source-root-relative option value resolve
 # here without a second code path.
@@ -261,6 +299,33 @@ else
           'scripts/build-mesa.sh first')
 endif
 
+nvk_test_lib_paths = []
+foreach l : nvk_test_libs
+  nvk_test_lib_paths += meson.project_source_root() / nvk_build_dir / l
+endforeach
+
+nvk_libs_present = true
+foreach p : nvk_test_lib_paths
+  if not fs.exists(p)
+    nvk_libs_present = false
+  endif
+endforeach
+
+if nvk_libs_present
+  idep_nvk_driver = declare_dependency(
+    include_directories : include_directories(
+      'mesa/src', 'mesa/include', 'mesa/src/vulkan/util'),
+    # -lstdc++: NVK compiles nvkcl.cpp (the C++ vtn_bindgen2 produces
+    # from the OpenCL shaders), and its exception personality routine
+    # lives there. One C++ file in an otherwise C driver.
+    link_args : nvk_test_lib_paths + ['-lstdc++'],
+  )
+  horizon_tests += nvk_tests
+else
+  message('skipping ' + ' '.join(nvk_tests) + ': no NVK archives in ' +
+          nvk_build_dir + '; run scripts/build-mesa-nvk.sh first')
+endif
+
 foreach t : horizon_tests
   # Tests 12 and 13 additionally see Mesa's headers and archives; the
   # other eleven are built with no Mesa in sight, as before.
@@ -280,6 +345,10 @@ foreach t : horizon_tests
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
     t_link_depends = mesa_test_lib_paths
+  endif
+  if nvk_libs_present and nvk_tests.contains(t)
+    t_deps += idep_nvk_driver
+    t_link_depends = nvk_test_lib_paths
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the

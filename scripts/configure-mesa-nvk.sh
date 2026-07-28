@@ -22,6 +22,12 @@
 #                               scripts/build-mesa-clc.sh supplies it.
 #   -Dhorizon-gpu-dir=...       where this project's horizon_gpu layer
 #                               is, since it lives outside Mesa
+#   -Dxmlconfig=disabled        driconf parses an XML file with expat and
+#                               matches executable names with POSIX
+#                               regex. Neither exists here, and there is
+#                               no per-application configuration file on
+#                               a console anyway; Mesa hardcodes the
+#                               defaults when this is off.
 #
 # Idempotent: reconfigures an existing directory in place, and wipes it
 # when the cross files changed — Meson only reads those on a first
@@ -92,6 +98,7 @@ set -- \
     -Dopengl=false \
     -Dllvm=disabled \
     -Dshader-cache=disabled \
+    -Dxmlconfig=disabled \
     -Dmesa-clc=system \
     -Dprecomp-compiler=system \
     -Dhorizon-gpu-dir="$PWD/$HORIZON_GPU_PREFIX" \

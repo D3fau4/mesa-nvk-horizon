@@ -8,7 +8,8 @@
 ## Current phase
 
 **Phase 4 — `nvkmd_horizon`. The backend exists and NVK builds.
-Milestone items 1 to 5 are done; 6 to 10 are named gaps.**
+All ten milestone items are implemented and the mandatory
+Vulkan sequence links as a .nro. What is owed is a hardware run.**
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -98,6 +99,13 @@ bind/unbind — so the driver can now allocate memory, reserve GPU address
 space and map one into the other. Items 6 to 10 return
 `VK_ERROR_FEATURE_NOT_PRESENT` with their item number, so every gap is
 named. Patches 0018 and 0019; the series is nineteen.
+
+**All ten items are implemented and `t_vulkan.nro` links** — 14 000 184
+bytes, zero undefined symbols, zero multiple definitions. D11 is
+resolved native over syncpoints and D8 where it actually bites: the
+absolute deadline becomes a relative duration exactly once. The
+`compiler_builtins`-versus-newlib question is answered by that link:
+**no collision**. The series is twenty-one.
 
 ---
 
@@ -1389,6 +1397,84 @@ CPU-cached. `NVKMD_MEM_COHERENT` therefore cannot be satisfied by the
 allocation itself — it is satisfied by the flush/invalidate nvk already
 makes around every access. Whether that is enough is exactly what D5
 asks, and it is answered by the first GPU write, not by reading.
+
+
+---
+
+## Phase 4 — items 6 to 10, and the mandatory sequence (2026-07-28)
+
+**`t_vulkan.nro` — 14 000 184 bytes — links with zero undefined symbols
+and zero multiple definitions.** It is the fourteenth `.nro`, shaped
+like the other thirteen, and it contains the whole driver: NVK, the Rust
+half, NIR, SPIR-V, the Vulkan runtime, NIL, NAK and `horizon_gpu`.
+
+### D11, resolved: native over syncpoints
+
+A **binary** `vk_sync` backed by a channel fence — a syncpoint id and a
+threshold — with the runtime's `vk_sync_timeline` emulation on top for
+timeline semaphores. The emulation needs a binary type underneath
+regardless; the only question was whether *that* should be a syncpoint
+fence or a CPU-only event, and a syncpoint fence is what a submit
+actually produces.
+
+### D8, resolved where it actually bites
+
+`vk_sync` waits take an **absolute** deadline built from
+`os_time_get_nano()`, and `t_ostime` measured that clock to be the
+real-time clock. The deadline is therefore converted to a **relative
+duration exactly once**, at the moment the wait starts, and horizon_gpu
+waits with libnx's tick-based sleep, which is monotonic in hardware. A
+date change during the wait cannot move the deadline **because by then
+there is no deadline left to move** — only a remaining duration. One
+place, not everywhere a wait happens.
+
+### Where a CPU stall happens, and where it does not
+
+| | |
+|---|---|
+| `exec()` | never. The submit is asynchronous and stays that way |
+| `sync()` | always, and that is what it is for: `vkQueueWaitIdle` and `vkDeviceWaitIdle` are made of it |
+| `wait()` | on the CPU **for now**, and stated rather than hidden. A GPU-side wait needs a command-stream builder this backend does not have; it runs only when the application asked one submission to wait for another, never after every submit |
+| `flush()` | nothing to flush — `horizon_gpu_submit` appends and kicks off in one call |
+
+### The last unmeasured thing, measured
+
+`docs/rust-toolchain.md` has asked since step 3 whether
+`compiler_builtins` collides with newlib's `memcpy` family. **It does
+not.** The full driver link reports **zero** multiple definitions. That
+question needed a linked executable, and there now is one.
+
+### Three more general fixes the first full link found
+
+- `meson.build` asked whether POSIX regex exists **only on Windows**.
+  Whether `regcomp` exists is a property of the C library, and newlib is
+  another that lacks it. The question is now asked with
+  `cc.has_function()` everywhere, and the `NO_REGEX` fallback
+  `xmlconfig.c` already carries works for the same reason it works on
+  Windows.
+- `nvk_device.c` set `vk.copy_sync_payloads` unconditionally; copying a
+  payload between syncobjs is a DRM operation on a DRM fd.
+- `-Dxmlconfig=disabled`: driconf parses XML with expat and matches
+  executable names with regex, and there is no per-application
+  configuration file on a console anyway.
+
+### The test itself
+
+It enters through `vk_icdGetInstanceProcAddr` — the symbol a loader
+would have called — and fetches every other entry point by name from
+there, so it exercises the same dispatch the real thing would. It
+**poisons the buffer with the complement of the pattern before
+submitting**, so the check cannot pass on memory that already held the
+right value. The only CPU stall is `vkWaitForFences`, with a one-second
+bound: **no `vkQueueWaitIdle`, no `vkDeviceWaitIdle`**, which is the
+phase's exit criterion.
+
+### What Phase 4 still owes, and it is one thing
+
+**A hardware run.** Everything above is a cross build (X). The exit
+criterion is that the sequence runs on a real Switch and the CPU-side
+validation passes, with the console log recorded here. Nothing in this
+environment can produce that.
 
 
 ---
@@ -3369,10 +3455,10 @@ emitters), and found no regression in either mode.
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
 | D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
-| D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open, and now a Phase 4 blocker** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. `vk_sync` waits take *absolute* timeouts built from `os_time_get_absolute_timeout`, so this has to be answered before the sync type is designed |
+| D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **closed by design (items 6-10)** — it may not, so the absolute deadline is converted to a relative duration exactly once, at the start of the wait, and horizon_gpu waits on libnx's monotonic ticks. A date change cannot move a deadline that no longer exists. Was: — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. `vk_sync` waits take *absolute* timeouts built from `os_time_get_absolute_timeout`, so this has to be answered before the sync type is designed |
 | D9 | `nvkmd` pdev/dev split: one `horizon_gpu_device` serving both, or GM20B facts queryable without a device | **closed by the hardware (items 1-2)** — the `nv` session is per process and the GM20B characteristics are only queryable once it is up, so there is no describing the device without opening it. The pdev owns the `horizon_gpu_device`; every `nvkmd_dev` shares it under a reference count. Was: — Phase 4 item 1. nouveau opens the render node twice (`_pdev.c:70`, `_dev.c:40`); Horizon's `nv` session is per process |
 | D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **closed: moved upstream (items 1-2)** — they are now in `src/nouveau/headers/nv_device_info_chipset.c`, next to the struct they fill, unchanged, and `nouveau_device.c` calls them. Was: — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
-| D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **open** — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
+| D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **closed: native (items 6-10)** — a binary vk_sync over a channel fence, with the runtime's timeline emulation on top. The emulation needs a binary type underneath regardless, and a syncpoint fence is what a submit produces. Was: — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 
@@ -3768,27 +3854,22 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Milestone items 6 and 7 — queue, channel and submit.** This is where
-the phase's hardest decision lands: `nvkmd_ctx` is what `exec`, `bind`,
-`signal`, `wait`, `flush` and `sync` hang off, and every one of them
-needs a `vk_sync` type, which is **D11**, which depends on **D8**
-(whether this platform's `CLOCK_MONOTONIC` may be relied on, since
-`vk_sync` waits take absolute timeouts built from
-`os_time_get_absolute_timeout`).
+**Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
+criterion and the only thing left in it:
 
-`horizon_gpu` has the channel and the submit path already —
-`horizon_gpu_channel_create`, `horizon_gpu_submit`,
-`horizon_gpu_channel_wait_fence`. The two extensions step 1 named as
-unconditional land here: **per-span submit flags** (`no_prefetch` is per
-entry in `nvkmd` and per submit in `horizon_gpu`) and, if D11 takes the
-native route, a **CPU-side syncpoint increment**.
+- the sequence runs,
+- the CPU-side validation of the written pattern passes,
+- no wait-idle was inserted to make it pass — there is none in the test
+  and none in `exec()`,
+- the console log is pasted into this file.
 
-Rejected design 6 — no CPU wait after every submit — is a property to
-hold from the first line of this item, not to retrofit.
+`scripts/package-horizon.sh` produces the artefact set and the manifest.
+Nothing in this environment can produce the log; it is a hardware
+measurement and it belongs to whoever holds the console.
 
-Still unmeasured: whether `compiler_builtins` collides with newlib's
-`memcpy` family. Nothing has *linked* the driver into an executable yet;
-`libnvk.a` is an archive.
+Two things are owed alongside it, from Phase 3, and travel in the same
+package: `t_threads` and `t_ostime` on hardware rather than on the
+emulator.
 
 ## Commit log for Phase 4
 
@@ -3797,6 +3878,7 @@ Still unmeasured: whether `compiler_builtins` collides with newlib's
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 | `scripts: vendor the crates -Zbuild-std needs, and compile Rust for Horizon` | `fetch-rust-crates.sh`, STATUS — step 3 |
+| `mesa-patches,tests: the mandatory Vulkan sequence links as a .nro` | patches 0020-0021, `tests/t_vulkan.c`, STATUS — items 6-10, D8 and D11 closed |
 | `mesa-patches: nvkmd_horizon memory, VA heap and binding` | patch 0019, STATUS — items 3-5 |
 | `mesa-patches: add the Horizon kernel-mode-driver backend` | patch 0018, `configure-mesa-nvk.sh`, `build-mesa-nvk.sh`, STATUS — items 1-2, D9 and D10 closed |
 | `mesa-patches: build Mesa's Rust half without a standard library` | patches 0016–0017, STATUS — step 5 |

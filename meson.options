@@ -23,3 +23,15 @@ option(
   value : 'build/mesa-probe',
   description : 'Mesa build directory whose archives tests 12 and 13 link',
 )
+
+option(
+  'nvk_build_dir',
+  type : 'string',
+  value : 'build/mesa-nvk',
+  description : 'Where scripts/build-mesa-nvk.sh built the nouveau ' +
+                'Vulkan driver. Test 14 links its archives; it is ' +
+                'skipped when they are not there. An option rather ' +
+                'than an environment variable for the same reason as ' +
+                'mesa_build_dir: Meson records options in the build ' +
+                'directory, so a reconfigure cannot silently change it.'
+)
