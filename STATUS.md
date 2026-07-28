@@ -5365,6 +5365,41 @@ wrong answer offered as a real one, so a failed read logs and repeats
 the last good value — a clock that stalls is wrong in a way a caller can
 notice, one that jumps to zero is not.
 
+## If the fence wait works, the baseline stops being a guess
+
+Recorded before the run rather than after, because it is the point of
+the experiment and should not read as hindsight.
+
+`nvFenceWait(id, threshold, 0)` is a *predicate*: it returns success iff
+the syncpoint has reached `threshold`. A predicate is enough to recover
+the value. Syncpoint comparison wraps, so for a current value C the
+thresholds it has reached form the half-space `(int32_t)(C - T) >= 0`,
+and a binary search over that half-space finds C in about 32 calls.
+
+That matters because the untrusted baseline is the only thing still
+making a degraded channel's fences unsound. The shadow is initialised
+from the value at creation; with no read, § 9 assumes zero and says so.
+With the search the value is **measured** — through a different ioctl,
+but measured — and the channel can be trusted normally: correct
+thresholds, a correct 64-bit shadow, real fences.
+
+Cost: ~32 ioctls once per channel, only where the read is unavailable.
+Nothing changes on a platform that can read the counter.
+
+**Not built yet, deliberately.** It rests entirely on `nvFenceWait`
+working where `SyncptRead` does not, and that is exactly what the
+pending emulator run measures. Building it first would stack unvalidated
+work on an unvalidated assumption — the mistake the window block-off
+already made once today.
+
+So that run has three outcomes and all three are actionable:
+
+| Result | Meaning | Next |
+|---|---|---|
+| readback validates | the wait works *and* the counter starts at zero there | build the search anyway, so the assumption stops being load-bearing |
+| readback wrong, wait succeeded | the wait works, the threshold is offset | build the search; it fixes exactly this |
+| the wait fails too | that emulator implements neither | the emulator cannot close this loop; back to hardware |
+
 ## Next concrete task
 
 **The emulator is exhausted.** It answered everything it could:
