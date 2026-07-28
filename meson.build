@@ -227,15 +227,57 @@ mesa_tests = ['t_threads', 't_ostime']
 # Meson's --start-group/--end-group around a dependency's link_args is
 # what makes the link resolve rather than left-to-right order.
 nvk_build_dir = get_option('nvk_build_dir')
-nvk_test_libs = [
+# libnvk.a IS PULLED WHOLE, and nothing else is.
+#
+# Upstream's own reason for the flag:
+#
+#   # Instruct users of this library to link with --whole-archive.
+#   # Otherwise, our weak function overloads may not resolve properly.
+#       -- mesa/src/vulkan/runtime/meson.build:250, :327
+#
+# A Vulkan driver reaches its entry points through dispatch tables
+# generated with --weak, so a driver may leave one unimplemented and
+# the linker resolves the gap to zero rather than reporting it. An
+# archive member that nothing but a weak reference points at is
+# therefore never pulled in, and what reaches the binary is a NULL
+# table entry and a `nm -u` that says nothing is wrong.
+#
+# Measured on hardware, at the cost of a console round trip. The first
+# run that reached the driver died at
+#
+#   ok   vkEnumeratePhysicalDevices(list) -> 0
+#   <nothing further, no RESULT line>
+#
+# because vk_common_GetPhysicalDeviceProperties jumps through
+# dispatch_table.GetPhysicalDeviceProperties2, and the binary contained
+# no GetPhysicalDeviceProperties2 at all.
+#
+# Only libnvk.a, because it already contains the rest: upstream builds
+# it with dependencies that link_whole the Vulkan runtime, and Meson
+# propagates that into the static archive — 178 members, including
+# vk_physical_device_properties.c.o and two copies of vk_instance.c.o.
+# Listing libvulkan_runtime.a, libvulkan_lite_runtime.a or
+# libvulkan_instance.a beside it links those objects a second time:
+#
+#   ld: .../libvulkan_instance.a.p/vk_instance.c.o: multiple definition
+#       of `vk_instance_end_renderdoc_capture';
+#       .../src/nouveau/vulkan/../../vulkan/runtime/libvulkan_instance.a.p/
+#       vk_instance.c.o: first defined here
+#
+# — the same object reached by two paths. So they are not in the list
+# at all, and the one archive that carries them is pulled whole.
+nvk_whole_libs = [
   'src/nouveau/vulkan/libnvk.a',
+]
+
+# The rest are ordinary archives: everything needed in them is needed
+# by a strong reference.
+nvk_test_libs = [
   'src/nouveau/rust_runtime/libnouveau_rust_runtime.a',
   'src/nouveau/compiler/libnak.a',
   'src/nouveau/nil/liblibnil_format_table.a',
   'src/nouveau/mme/libnouveau_mme.a',
   'src/nouveau/headers/libnvidia_headers_c.a',
-  'src/vulkan/runtime/libvulkan_runtime.a',
-  'src/vulkan/runtime/libvulkan_instance.a',
   'src/vulkan/util/libvulkan_util.a',
   'src/vulkan/wsi/libvulkan_wsi.a',
   'src/compiler/spirv/libvtn.a',
@@ -299,13 +341,18 @@ else
           'scripts/build-mesa.sh first')
 endif
 
+nvk_whole_lib_paths = []
+foreach l : nvk_whole_libs
+  nvk_whole_lib_paths += meson.project_source_root() / nvk_build_dir / l
+endforeach
+
 nvk_test_lib_paths = []
 foreach l : nvk_test_libs
   nvk_test_lib_paths += meson.project_source_root() / nvk_build_dir / l
 endforeach
 
 nvk_libs_present = true
-foreach p : nvk_test_lib_paths
+foreach p : nvk_whole_lib_paths + nvk_test_lib_paths
   if not fs.exists(p)
     nvk_libs_present = false
   endif
@@ -318,7 +365,14 @@ if nvk_libs_present
     # -lstdc++: NVK compiles nvkcl.cpp (the C++ vtn_bindgen2 produces
     # from the OpenCL shaders), and its exception personality routine
     # lives there. One C++ file in an otherwise C driver.
-    link_args : nvk_test_lib_paths + ['-lstdc++'],
+    #
+    # --whole-archive covers exactly the four archives listed above and
+    # is turned off again immediately: whole-archiving the rest costs
+    # size for nothing, and whole-archiving two archives built from the
+    # same sources collides on every symbol in them.
+    link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
+                ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
+                ['-lstdc++'],
   )
   horizon_tests += nvk_tests
 else

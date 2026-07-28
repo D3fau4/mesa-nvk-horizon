@@ -118,6 +118,12 @@ HORIZON_RUST_SYSROOT_REL="build/toolchain/rust-sysroot"
 # the image and changes with MESA_COMMIT.
 HORIZON_NATIVE_TOOLS_DIR="build/toolchain/native-tools"
 
+# Where scripts/build-mesa-nvk.sh configures and builds the driver.
+# Named here because two scripts and meson.options have to agree on
+# it, and scripts/check-dispatch-complete.sh reads a generated file
+# out of it.
+NVK_BUILD_DIR_DEFAULT="${NVK_BUILD_DIR:-build/mesa-nvk}"
+
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
@@ -170,7 +176,7 @@ export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
 export HORIZON_MESA_TEST_LIBS HORIZON_RUST_SYSROOT
-export HORIZON_NATIVE_TOOLS_DIR
+export HORIZON_NATIVE_TOOLS_DIR NVK_BUILD_DIR_DEFAULT
 
 # True when every archive tests 12 and 13 link is present. Both build
 # paths decide whether to build those two tests on exactly this

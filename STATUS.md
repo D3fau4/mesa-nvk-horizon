@@ -1904,6 +1904,118 @@ be able to pass without it.
 
 ---
 
+## Second hardware run: the driver entered, and died on a NULL dispatch entry (2026-07-28)
+
+```
+  ok   the non-conformance opt-in is set in the environment
+  ok   vkCreateInstance -> 0
+  ...  27 entry points resolved through vk_icdGetInstanceProcAddr
+  ok   vkEnumeratePhysicalDevices -> 0
+  ok   one physical device, got 1
+  ok   vkEnumeratePhysicalDevices(list) -> 0
+<nothing further — no RESULT line>
+```
+
+**One physical device.** The opt-in worked, NVK accepted GM20B, and
+`nvkmd_horizon_create_pdev` and `nvk_create_physical_device` both
+succeeded on hardware. That is the backend's first real measurement and
+it passed.
+
+Then the log stops with no `RESULT:` line. `t_vemit` flushes after
+every line, so line 34 is genuinely the last thing that completed: the
+process died in **`vkGetPhysicalDeviceProperties`**, the next call.
+
+### The cause: a NULL function pointer that no tool reported
+
+`vk_common_GetPhysicalDeviceProperties` does one thing
+(`vk_physical_device.c:136`):
+
+```c
+pdevice->dispatch_table.GetPhysicalDeviceProperties2(physicalDevice, &props2);
+```
+
+and the linked binary contained **no `GetPhysicalDeviceProperties2` at
+all** — neither `nvk_` nor `vk_common_`. Measured on the artefact:
+
+```
+$ aarch64-none-elf-nm t_vulkan.elf | grep -c GetPhysicalDeviceProperties2
+0
+$ aarch64-none-elf-nm -u t_vulkan.elf | wc -l
+0
+```
+
+Zero undefined symbols, and a hole. Mesa generates its dispatch tables
+with `--weak`, so an entry point nothing defines resolves to zero
+rather than becoming an undefined symbol; the link succeeds and the
+call jumps to address 0.
+
+Upstream states the rule and the remedy in one comment:
+
+```
+# Instruct users of this library to link with --whole-archive.
+# Otherwise, our weak function overloads may not resolve properly.
+    -- mesa/src/vulkan/runtime/meson.build:250
+```
+
+Upstream never meets it, because it links the driver into one shared
+object where every archive is pulled whole by construction. Here the
+archives are named by hand.
+
+### Two wrong fixes before the right one, both worth recording
+
+1. **Adding `libvulkan_lite_runtime.a` to the list.** No effect — the
+   member is reached only by weak references, so nothing pulls it.
+   That is the whole trap restated.
+2. **`--whole-archive` around every archive.** Hundreds of duplicate
+   definitions, and the reason is the interesting part:
+
+   ```
+   ld: .../libvulkan_instance.a.p/vk_instance.c.o: multiple definition
+       of `vk_instance_end_renderdoc_capture';
+       .../src/nouveau/vulkan/../../vulkan/runtime/libvulkan_instance.a.p/
+       vk_instance.c.o: first defined here
+   ```
+
+   The same object by two paths. **`libnvk.a` already contains the
+   Vulkan runtime** — upstream builds it with dependencies that
+   `link_whole` the runtime, and Meson propagates that into the static
+   archive: 178 members, including `vk_physical_device_properties.c.o`
+   and two copies of `vk_instance.c.o`.
+
+**The fix is one archive.** `libnvk.a` is pulled whole; the separate
+`libvulkan_runtime.a`, `libvulkan_lite_runtime.a` and
+`libvulkan_instance.a` are not in the list at all, because they are
+already inside it. `t_vulkan.elf` goes from 59 449 576 to 63 358 064
+bytes — the members that used to be dropped.
+
+### A gate, and the first version of it was worthless
+
+`scripts/check-dispatch-complete.sh`.
+
+The obvious check — "no weakly undefined symbols in the executable" —
+**cannot fail**. devkitA64 links with `-z nodynamic-undefined-weak`
+(libnx's `switch.specs`), so such a symbol is resolved to zero and does
+not survive into the symbol table. Written, then tested against a file
+built to have exactly that hole, and it reported OK. A gate that cannot
+fail is not a gate; it was deleted rather than kept as decoration.
+
+What the gate checks instead: every entry point the generated common
+dispatch table names must be implemented by *something* —
+`nvk_<Entry>`, `vk_common_<Entry>`, or the `KHR`/`EXT` alias a promoted
+core entry point is often implemented under. Extension entry points are
+exempt, because an unadvertised extension's NULL is unreachable. One
+core entry point is exempt by name with its reason:
+`EnumerateInstanceLayerProperties` is the loader's job and this
+platform has no loader.
+
+Current state: **825 entry points named, 234 core, 1 allowed absence,
+OK.** And broken on purpose — reverting the `--whole-archive` and
+rebuilding makes it report **19** missing core entry points, including
+the one that killed the console run.
+
+
+---
+
 ## Phase 3 — the state it closed in (previously "Current phase")
 
 **Phase 3 — minimal Horizon support in Mesa. Every milestone item now
