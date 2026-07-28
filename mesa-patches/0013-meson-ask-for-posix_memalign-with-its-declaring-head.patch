@@ -1,0 +1,93 @@
+From 5048f39b6c216a75a80a6b4dbf1ea65cbd13d05e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 10:51:36 +0000
+Subject: [PATCH 13/14] meson: ask for posix_memalign with its declaring header
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+cc.has_function() tries a real link first and, when that fails, falls
+back to __has_builtin(). The fallback is guarded — "in case the user
+provides a header, including the header didn't lead to the function
+being defined ... we assume the builtin is not functional" — but the
+guard is switched off when the call passes no prefix, because Meson has
+no header to have consulted. So a bare has_function('posix_memalign')
+answers YES on any toolchain whose compiler knows the builtin and whose
+C library does not implement the function. The comment this replaces
+names MinGW as that toolchain and works around it by excluding an OS.
+
+Passing the declaring header turns the guard back on, so the check
+reports what the C library has rather than what the compiler knows, and
+it does so on every platform: MinGW gets the right answer from the
+mechanism instead of from a name, MSVC is already answered NO by Meson
+before the builtin fallback runs, and every platform that really has
+posix_memalign is unaffected because its link test succeeds and the
+fallback is never reached.
+
+util/os_memory_aligned.h already carries a complete os_malloc_aligned()
+for platforms without it, so a correct NO costs an aligned-allocation
+implementation, not a build failure.
+
+mesa-nvk-horizon: Phase 4 item 3 (memory objects — the libc gaps the
+  first executable link meets)
+Why: devkitA64's newlib declares posix_memalign in <stdlib.h>
+  (stdlib.h:290) and defines it nowhere, while GCC 15.2.0 knows
+  __builtin_posix_memalign. The check therefore answers YES, -D
+  HAVE_POSIX_MEMALIGN reaches every compile, and util/sparse_array.c
+  ends up referencing a symbol that does not exist. A static archive
+  resolves nothing, so it surfaces at the first executable link — which
+  for this port is the first Vulkan program.
+Evidence: build/mesa-probe/meson-logs/meson-log.txt shows both attempts.
+  The link test:
+    testfile.c:17: undefined reference to `posix_memalign'
+    -> 1
+  then the builtin fallback with `#if !1 && !defined(posix_memalign)`,
+  -> 0, and "Checking for function "posix_memalign" : YES".
+  Reproduced by hand from Meson 1.11.2's template
+  (mesonbuild/compilers/mixins/clike.py:810-831), same flags:
+    no prefix         (what Mesa asks today) -> YES
+    prefix <stdlib.h> (what it should ask)   -> NO
+  and a direct link probe:
+    posix_memalign   FAILS: undefined reference to `posix_memalign'
+  while aligned_alloc and memalign both link, so the C library is not
+  short of aligned allocation — only of this spelling of it.
+Upstream: yes — it is a property of the C library, tested through the
+  header that declares it, and it removes an OS exclusion rather than
+  adding one. It also fixes the MinGW case the existing comment
+  describes, on toolchains where that comment's workaround does not
+  apply because the OS is not Windows.
+---
+ meson.build | 17 +++++++++--------
+ 1 file changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index ef9c244..858c665 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1640,14 +1640,15 @@ if cc.has_header_symbol('math.h', 'issignaling',
+    pre_args += '-DHAVE_ISSIGNALING'
+ endif
+ 
+-# MinGW provides a __builtin_posix_memalign function, but not a posix_memalign.
+-# This means that this check will succeed, but then compilation will later
+-# fail. MSVC doesn't have this function at all, so only check for it on
+-# non-windows platforms.
+-if host_machine.system() != 'windows'
+-  if cc.has_function('posix_memalign')
+-    pre_args += '-DHAVE_POSIX_MEMALIGN'
+-  endif
++# Some toolchains provide a __builtin_posix_memalign but no posix_memalign
++# in the C library. Asked without a prefix, has_function() falls back to
++# __has_builtin() when the link fails, so it answers yes on exactly those
++# toolchains and compilation fails later. Asking with the declaring header
++# makes Meson's own guard apply, so the answer is the C library's rather
++# than the compiler's — on every platform, which is why no OS needs
++# excluding here.
++if cc.has_function('posix_memalign', prefix : '#include <stdlib.h>')
++  pre_args += '-DHAVE_POSIX_MEMALIGN'
+ endif
+ 
+ if cc.has_member('struct dirent', 'd_type', prefix: '''#include <sys/types.h>
+-- 
+2.43.0
+

@@ -7,17 +7,24 @@
 
 ## Current phase
 
-**Phase 4 — `nvkmd_horizon`. Step 1 of the plan is done and is the
-section below: the interface `nvkmd` requires, operation by operation,
-with its semantics, against what `horizon_gpu` already provides.**
+**Phase 4 — `nvkmd_horizon`. Steps 1 and 2 are done; step 3 (Rust) is
+next.**
 
-Nothing has been built or written in this step. It is a reading of the
-pinned Mesa tree (`mesa-26.1.5` @ `6a02618ccf6c`) and of the libnx
-headers inside the pinned image, and it exists to answer one question
-before any code: **is Phase 4 implementation, or also an extension of
-`horizon/`?** The answer is *both*, and the extensions are six, small,
-and enumerated — three of them conditional on Vulkan-side decisions that
-are named and deliberately not taken yet.
+**Step 1** is the interface reading: what `nvkmd` requires, operation by
+operation, with its semantics, against what `horizon_gpu` already
+provides. It exists to answer one question before any code: **is Phase 4
+implementation, or also an extension of `horizon/`?** The answer is
+*both*, and the extensions are six, small, and enumerated — four of them
+conditional on Vulkan-side decisions that are named (D9–D12) and
+deliberately not taken yet.
+
+**Step 2** closed the six unresolved libc symbols, and the result is an
+artefact rather than an argument: **an executable that pulls NIR,
+SPIR-V, `nir_print`, `mesa_log` and `util_sparse_array` out of Mesa's
+built core links, with zero undefined symbols.** Two new patches (0013,
+0014 — the series is now **fourteen**), nothing added to `compat/`, and
+the two symbols that remain unresolved in the archives are in members
+nothing references, which the link demonstrates rather than assumes.
 
 **Phase 3 is closed except for one thing, unchanged:** `t_threads` and
 `t_ostime` have never run on a console (they pass on Eden — 67/67 and
@@ -25,10 +32,10 @@ are named and deliberately not taken yet.
 Phase 3 state is kept verbatim below under "Phase 3 — the state it
 closed in".
 
-The three known blockers carried into this phase are unchanged and are
-*not* addressed by step 1: six unresolved libc symbols that will stop the
-first executable link, Rust (no sysroot built, `std` required), and
-`-Db_staticpic=false` being mandatory. They are steps 2 and 3.
+Of the three known blockers carried into this phase, one is closed (the
+libc symbols, step 2). Rust is untouched — no sysroot built, `std`
+required — and is step 3. `-Db_staticpic=false` remains mandatory and
+its gate runs after every Mesa build.
 
 ---
 
@@ -344,6 +351,241 @@ requires.
 - `nc_atom_size_B`, and whether `dc cvac`/`CTR_EL0` are permitted at EL0
   under Horizon, are **unmeasured**. They are named above rather than
   assumed.
+
+---
+
+## Phase 4 — step 2: the six libc symbols, closed (2026-07-28)
+
+**Class: cross build (X) and host (H).** Nothing here is a hardware or
+emulator result. The headline is an artefact, not an argument: **an
+executable that pulls NIR, SPIR-V, `nir_print`, `mesa_log`,
+`util_sparse_array`, `ralloc` and `util_get_cpu_caps` out of Mesa's
+built core now links, with zero undefined symbols.** Before this session
+the same link was impossible.
+
+Two new patches — **0013** and **0014**, the series is now fourteen —
+and **nothing went into `compat/`**. The reason for that is given below;
+it is not an oversight.
+
+### The disposition, symbol by symbol
+
+| Symbol | Referenced by | Disposition |
+|---|---|---|
+| `posix_memalign` | `sparse_array.c.o` | **patch 0013** — the configure check answers YES and is wrong; asked properly it answers NO and Mesa's own fallback takes over |
+| `geteuid`, `getgid`, `getegid` | `log.c.o`, `perf_u_trace.c.o` | **patch 0014** — `__normal_user()` gated on the C library trait instead of on `_WIN32` |
+| `getuid` | `log.c.o`, `perf_u_trace.c.o` (patch 0014) — and `anon_file.c.o` | patch 0014 for the first two; the third is **unreachable**, measured below |
+| `flock` | `mesa_cache_db.c.o` | **unreachable**, measured below — no patch, no `compat/` |
+
+### Why none of them went to `compat/`
+
+`CLAUDE.md` opens that door for a function newlib genuinely lacks **and
+Mesa genuinely needs**. Neither half holds here:
+
+- `posix_memalign` — `util/os_memory_aligned.h:55-96` already carries a
+  complete `os_malloc_aligned()` for platforms without it. Mesa does not
+  need the function; it needed a truthful answer about it.
+- the uid/gid family — the question `__normal_user()` asks has no
+  meaning on a system with no users and no set-user-ID bit. A
+  `compat/getuid` returning 0 would be **inventing an answer to a
+  question the platform does not have**, which is the opposite of what
+  `compat/sysconf.c` does: there the answer existed (`InfoType_CoreMask`,
+  `InfoType_TotalMemorySize`) and was measurable.
+- `flock` — dead code, and the link proves it.
+
+### `posix_memalign`: the check answers YES, and here is the mechanism
+
+`mesa/meson.build:1643-1651` asks `cc.has_function('posix_memalign')`
+with **no prefix**, and carries a comment naming exactly this failure for
+MinGW while working around it with `host_machine.system() != 'windows'`.
+
+Meson 1.11.2 tries a real link first, and it fails
+(`build/mesa-probe/meson-logs/meson-log.txt`):
+
+```
+testfile.c:17: undefined reference to `posix_memalign'
+-> 1
+```
+
+then falls back to a builtin test whose guard is **switched off when the
+call passes no prefix** — `no_includes = '#include' not in prefix`
+(`mesonbuild/compilers/mixins/clike.py:806`), which makes the
+`#error` line read `#if !1 && …`:
+
+```
+#if !1 && !defined(posix_memalign) && !0
+    #error "No definition for __builtin_posix_memalign found in the prefix"
+#endif
+-> 0
+Checking for function "posix_memalign" : YES
+```
+
+Reproduced by hand from that template, same flags, both ways:
+
+```
+no prefix       (what Mesa asks today)   -> YES
+prefix <stdlib.h> (what it should ask)   -> NO
+```
+
+and newlib is honest about it: `stdlib.h:290` declares
+`posix_memalign` and nothing defines it. A direct link probe:
+
+```
+posix_memalign   FAILS: undefined reference to `posix_memalign'
+aligned_alloc    LINKS
+memalign         LINKS
+```
+
+so the C library is not short of aligned allocation, only of that
+spelling. **Patch 0013 passes the declaring header**, which turns
+Meson's own guard back on. The OS exclusion then has nothing left to do
+and goes away — the patch removes a platform test rather than adding
+one, and fixes MinGW by the mechanism instead of by the name.
+
+After it: `Checking for function "posix_memalign" : NO`, and
+`HAVE_POSIX_MEMALIGN` occurrences in `build/mesa-probe/build.ninja`
+drop from 352 to **0**.
+
+### The uid/gid family: a question this platform does not have
+
+All four are reached through one inline function
+(`util/u_debug.h:401-410`):
+
+```c
+#if defined(_WIN32)
+   return true;
+#else
+   return geteuid() == getuid() && getegid() == getgid();
+#endif
+```
+
+`__normal_user()` asks whether the process gained privileges its invoker
+did not have, and thirteen call sites across Mesa consult it before
+trusting a filename from the environment. A C library with no
+set-user-ID concept cannot have raised anything, so `true` is correct
+for that whole class — and it is already the answer Windows gets.
+
+**Patch 0014** tests `HAVE_GETEUID` instead of the OS. Windows keeps
+`true` because it has no `geteuid`; every POSIX platform keeps the
+comparison because it has one. Measured: all four fail to link, and none
+of the four is a compiler builtin, so the check answers NO honestly with
+or without a prefix (all four `-> NO` from Meson's own template).
+
+`log.c.o` is not optional — `nir_print.c.o` references it, and every
+Vulkan driver logs — so this one really would have stopped the link.
+
+### The two that are unreachable, measured rather than hoped
+
+An archive member only joins a link when something references one of its
+symbols. Both remaining symbols live in members nothing references:
+
+```
+=== anon_file.c.o defines:
+    os_create_anonymous_file
+    referenced from elsewhere in the core by:
+        (nothing)
+
+=== mesa_cache_db.c.o
+    referenced from elsewhere in the core by:
+        mesa_cache_db_* <- mesa_cache_db_multipart.c.o   (only)
+
+mesa_cache_db_multipart.c.o is referenced by:
+        (nothing)
+
+disk_cache.c.o:    0 defined symbols, 1424 bytes
+disk_cache_os.c.o: 0 defined symbols, 2936 bytes
+```
+
+The last two lines are why: `-Dshader-cache=disabled` empties those
+translation units, so the chain that would reach `flock` is cut at its
+root. And `os_create_anonymous_file` is called nowhere in
+`src/nouveau/`, `src/vulkan/runtime/` or `src/compiler/` — checked by
+grep, because those are the trees a Horizon link pulls from.
+
+### The link that proves it
+
+Reference-graph analysis is not a link, so the claim was tested by
+linking. `build/probe/libc-symbols/link_probe.c` calls into the parts of
+the core NVK reaches — `mesa_logi`, `util_sparse_array_*`, `ralloc`,
+`nir_shader_create`, `nir_print_shader`, `_mesa_blake3_init`,
+`util_get_cpu_caps()`, and takes the address of `spirv_to_nir` — and is
+linked against all ten archives with `--start-group`, `libhorizon_compat`
+and `-lnx`:
+
+```
+=== pulled into the link:
+    mesa_log                     yes
+    mesa_log_v                   yes
+    util_sparse_array_get        yes
+    _mesa_hash_table_create      yes
+    nir_print_shader             yes
+    spirv_to_nir                 yes
+    _util_cpu_caps_state         yes   (and _util_cpu_detect_once)
+=== NOT pulled in:
+    os_create_anonymous_file     absent
+    mesa_cache_db_open           absent
+    mesa_db_wipe_path            absent
+=== unresolved in the executable:
+    (0 undefined symbols)
+=== the six from the audit, by name:
+    posix_memalign   not referenced anywhere in the executable
+    flock            not referenced anywhere in the executable
+    getuid           not referenced anywhere in the executable
+    geteuid          not referenced anywhere in the executable
+    getgid           not referenced anywhere in the executable
+    getegid          not referenced anywhere in the executable
+```
+
+15 703 488 bytes of ELF, zero undefined symbols. That is the first
+executable this project has produced from Mesa's core, and it is the
+answer to "these will stop the first executable link".
+
+### The audit, before and after
+
+Same script both times: every undefined reference in the ten archives,
+resolved first against the core itself and then against all 158
+toolchain archives (libc, libm, libsysbase, libpthread, libstdc++,
+libnx, portlibs, libgcc, `libhorizon_compat`).
+
+| | Before | After |
+|---|---|---|
+| core undefined refs | 1462 | 1458 |
+| resolved inside the core | 1287 | 1287 |
+| resolved by the toolchain | 169 | 169 |
+| **UNRESOLVED** | **6** | **2** |
+
+and the two that remain are the two the link above does not touch.
+
+### Commands run and results
+
+| Command | Class | Result |
+|---|---|---|
+| `scripts/fetch-mesa.sh` | H | `mesa-26.1.5`, HEAD verified `6a02618ccf6c…`, 503 MB |
+| link probes, 8 functions | X | the six fail; `aligned_alloc`, `memalign` link |
+| Meson `has_function` template by hand, `posix_memalign` | X | no prefix → YES; `<stdlib.h>` prefix → NO |
+| the same for the uid/gid family | X | all four → NO both ways, and none links |
+| unresolved-symbol audit | X | **6 → 2** |
+| reachability of `anon_file.c.o` / `mesa_cache_db.c.o` | X | nothing in the core references either |
+| **executable link probe** | X | **links, 0 undefined symbols** |
+| `scripts/configure-mesa.sh` after the patches | X | `posix_memalign : NO`, `geteuid : NO`; `HAVE_POSIX_MEMALIGN` in `build.ninja`: **0** |
+| `scripts/build-mesa.sh` | X | **359/359 edges**, 0 failures, 10/10 libraries |
+| `git -C mesa reset --hard $MESA_COMMIT && scripts/apply-mesa-patches.sh` ×2 | H | applies **14**; second run `all 14 patches already applied` |
+| `scripts/build-switch.sh all -j4` | X | **13 `.nro`** |
+| `scripts/run-host-tests.sh` | H | **103/103** (6 suites) |
+| Five gates | H | layering, abs-paths, rust-target, mesa-test-parity, tls-relocs — all OK |
+
+### What step 2 did NOT do
+
+- **`getuid` and `flock` are still unresolved in the archives.** They are
+  unreachable *today*, with `-Dshader-cache=disabled` and with nothing
+  calling `os_create_anonymous_file`. If a later phase enables the
+  shader cache — which `scripts/configure-mesa.sh` records as a decision,
+  not a workaround — `flock` comes back and needs an answer then.
+- The `rand_xor` weak-seed finding from Phase 3 is untouched: still
+  Mesa's own documented fallback, still not a `compat/getrandom`.
+- No Rust was compiled. That is step 3, and it is next.
+- Regenerating the series rewrote the twelve existing patch files. The
+  diff was read before committing: only the `From <sha>` line and the
+  `[PATCH n/12]` → `[PATCH n/14]` counter changed, in all twelve.
 
 ---
 
@@ -2721,21 +2963,21 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Phase 4 step 2: close the six unresolved libc symbols**
-(`posix_memalign`, `flock`, `getuid`, `geteuid`, `getgid`, `getegid`),
-deciding for each between `compat/` with its own individual
-justification and a Mesa patch that removes the dependency. Measure
-first: `posix_memalign`'s configure check answers `YES` and is wrong
-(GCC has a `__builtin_posix_memalign`, so Meson's snippet links), while
-a direct link probe says `undefined reference`. A static archive resolves
-nothing, so these stop the **first executable link** of Phase 4 — which
-is the `.nro` the mandatory Vulkan sequence has to become.
+**Phase 4 step 3: Rust.** Configure Mesa with
+`-Dvulkan-drivers=nouveau` and record where it actually fails, before
+designing anything. What is known going in: `docs/rust-toolchain.md`
+answered R13 — `std` **is** required, because NAK and NIL are linked as
+staticlibs — the target `aarch64-nintendo-switch-freestanding` ships
+with rustc (tier 3) and `scripts/check-rust-target.sh` watches it for
+drift, and **no sysroot has been built**. Phase 2 reproduced the failure
+deliberately: `error[E0463]: can't find crate for 'std'`. This is
+probably the largest single piece of the phase; it is not to be left
+until last.
 
-Then step 3 (Rust: configure Mesa with `-Dvulkan-drivers=nouveau` and
-record where it actually fails, before designing anything), and only
-then the backend itself in the milestone's 1..10 order.
+Then the backend itself, in the milestone's 1..10 order, with D9–D12
+taken as they come up.
 
-Step 1 is done and is written up above under "Phase 4 — step 1".
+Steps 1 and 2 are done and are written up above.
 
 **Still owed from Phase 3, unchanged: run `t_threads` and `t_ostime` on
 a console.**
@@ -2785,14 +3027,26 @@ at the top of its plan, both measured rather than anticipated:
 2. **`vk_sync_timeline.c` uses `cnd_timedwait`**, so Phase 4's timeline
    semaphores depend on the timeout path `t_threads` measures.
 
-Already in place: `mesa/` at `MESA_COMMIT` with the **twelve**-patch
-series applying cleanly and idempotently, `scripts/configure-mesa.sh`
-and `scripts/build-mesa.sh` as the reproducible loop, `compat/` linked
-into both build paths and policed by the layering gate, the cross file
-no longer corrupting Mesa's configure answers, and pkg-config resolving
-the Switch portlibs.
+Already in place: `mesa/` at `MESA_COMMIT` with the patch series
+applying cleanly and idempotently (twelve patches when this was
+written; **fourteen** since Phase 4 step 2),
+`scripts/configure-mesa.sh` and `scripts/build-mesa.sh` as the
+reproducible loop, `compat/` linked into both build paths and policed by
+the layering gate, the cross file no longer corrupting Mesa's configure
+answers, and pkg-config resolving the Switch portlibs.
+
+**Item 1 above is closed** by Phase 4 step 2 — two patches, an
+executable that links with zero undefined symbols, and the two remaining
+symbols measured unreachable. See "Phase 4 — step 2".
 
 ---
+
+## Commit log for Phase 4
+
+| Commit | Scope |
+|---|---|
+| `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
+| `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |
 
 ## Commit log for this phase
 

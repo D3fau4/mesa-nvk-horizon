@@ -1,0 +1,94 @@
+From 451be9a6302ffee94bb958945dd3d4e3c22dada6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 10:52:29 +0000
+Subject: [PATCH 14/14] util/u_debug: decide __normal_user from the C library,
+ not from the OS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+__normal_user() answers "did this process gain privileges its invoker
+did not have", and everything that trusts a filename from the
+environment consults it: the log file, the trace file, the disk cache,
+several shader-override paths. Its implementation compares the real and
+effective ids, guarded by `#if defined(_WIN32)` — an OS name standing in
+for the property that actually matters, which is whether the C library
+has the set-user-ID concept at all.
+
+A C library that does not have it cannot have raised the process's
+privileges, so `true` is the correct answer for that whole class, and it
+is the answer Windows already gets. Testing HAVE_GETEUID says so
+directly: Windows keeps `true` because it has no geteuid, every POSIX
+platform keeps the comparison because it has one, and a freestanding
+libc stops failing to link over a question it cannot be asked.
+
+POSIX.1 groups geteuid/getuid/getegid/getgid together under process
+identification, and no C library implements a subset, so one check
+covers the expression.
+
+mesa-nvk-horizon: Phase 4 item 3 (memory objects — the libc gaps the
+  first executable link meets)
+Why: devkitA64's newlib declares all four in <unistd.h> and defines none
+  of them. Horizon has no users, no set-user-ID bit and no way for a
+  homebrew process to acquire privileges, so the question has no
+  meaning here; the code still has to link, because util/log.c reaches
+  __normal_user() while initialising the logger, and every Vulkan driver
+  logs.
+Evidence: link probes against switch.specs, one translation unit each:
+    geteuid  FAILS: undefined reference to `geteuid'
+    getuid   FAILS: undefined reference to `getuid'
+    getgid   FAILS: undefined reference to `getgid'
+    getegid  FAILS: undefined reference to `getegid'
+  and none of the four is a compiler builtin, so cc.has_function()
+  answers NO honestly with or without a prefix (measured from Meson
+  1.11.2's own template, all four -> NO). An nm audit of Mesa's built
+  non-driver core — 10 archives, every undefined symbol resolved against
+  the core itself and then against the whole toolchain — leaves six
+  unresolved, four of which are these, referenced from log.c.o and
+  perf_u_trace.c.o. log.c.o is reachable: nir_print.c.o references it.
+Upstream: yes — it replaces an OS test with the trait that test was
+  standing in for, changes no behaviour on any platform that has the
+  function, and keeps Windows on the branch it is already on.
+---
+ meson.build        |  1 +
+ src/util/u_debug.h | 11 ++++++++---
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 858c665..3347046 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1573,6 +1573,7 @@ functions_to_detect = {
+   'posix_fallocate': '',
+   'secure_getenv': '',
+   'sysconf': '#include <unistd.h>',
++  'geteuid': '#include <unistd.h>',
+ }
+ 
+ foreach f, prefix: functions_to_detect
+diff --git a/src/util/u_debug.h b/src/util/u_debug.h
+index 9608e97..f74612e 100644
+--- a/src/util/u_debug.h
++++ b/src/util/u_debug.h
+@@ -402,10 +402,15 @@ debug_get_option_ ## suffix (void) \
+ static inline bool
+ __normal_user(void)
+ {
+-#if defined(_WIN32)
+-   return true;
+-#else
++#ifdef HAVE_GETEUID
+    return geteuid() == getuid() && getegid() == getgid();
++#else
++   /* A C library with no set-user-ID concept cannot have raised this
++    * process's privileges, so there is nothing here to distrust.
++    * Windows is the platform this branch was written for and it keeps
++    * the same answer.
++    */
++   return true;
+ #endif
+ }
+ 
+-- 
+2.43.0
+
