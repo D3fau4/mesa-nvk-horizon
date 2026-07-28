@@ -1874,6 +1874,34 @@ the `HOST_COHERENT` one, which nothing here uses yet. That is written
 down rather than left to be discovered.
 
 
+### 5. Does D14 block the Phase 4 exit criterion? No — traced
+
+The worry raised by finding 4 is that `NVKMD_MEM_COHERENT` disables all
+cache maintenance, and the driver allocates some of its *own* memory
+with that flag. If any of it were on the fill path, the test could not
+pass no matter what. Traced, allocation by allocation:
+
+| Memory the fill touches | Flags | Maintained? |
+|---|---|---|
+| Command-buffer push memory (`nvk_cmd_pool.c:24`) | `NVKMD_MEM_LOCAL` or `GART`, **not COHERENT** | yes — `nvk_cmd_buffer.c:381` flushes the whole block |
+| The zero page (`nvk_device.c:284`) | — | yes, flushed explicitly |
+| Heap-backed allocations (`nvk_mem_arena.c:173`) | shader/qmd heaps are `NVKMD_MEM_LOCAL`, not COHERENT | yes, flushed |
+| The destination buffer | `HOST_CACHED` type — the app's choice, type 0 | yes: the test flushes the poison and invalidates before reading |
+| The event heap (`nvk_device.c:351`) | `NVKMD_MEM_LOCAL \| **COHERENT**` | no — and it is not on this path |
+| The printf buffer (`nvk_device.c:137`) | `GART \| **COHERENT**` | no — and it is not on this path |
+
+And `vkCmdFillBuffer` is not a shader at all: `nvk_cmd_copy.c:897`
+pushes NV90B5 methods — the DMA copy engine — with a constant remap. No
+QMD, no shader heap, no event heap.
+
+**So D14 is real but it does not block Phase 4's exit criterion.** The
+two COHERENT allocations the driver makes are the printf buffer and the
+event heap, and the mandatory sequence uses neither. It has to be fixed
+before anything uses events, `debugPrintfEXT`, or a `HOST_COHERENT`
+memory type — which is to say before Phase 5 — but the fill test should
+be able to pass without it.
+
+
 ---
 
 ## Phase 3 — the state it closed in (previously "Current phase")
@@ -3857,7 +3885,7 @@ emitters), and found no regression in either mode.
 | D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **closed: moved upstream (items 1-2)** — they are now in `src/nouveau/headers/nv_device_info_chipset.c`, next to the struct they fill, unchanged, and `nouveau_device.c` calls them. Was: — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
 | D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **closed: native (items 6-10)** — a binary vk_sync over a channel fence, with the runtime's timeline emulation on top. The emulation needs a binary type underneath regardless, and a syncpoint fence is what a submit produces. Was: — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
-| D14 | An uncached memory policy in `horizon/` | **open, raised with the owner** — Vulkan requires a `HOST_VISIBLE + HOST_COHERENT` memory type; NVK advertises one on SoC and means an *uncached* map by it; `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED`, and `NVKMD_MEM_COHERENT` makes nvkmd skip cache maintenance entirely. The mechanism exists (`svcSetMemoryAttribute` + `MemoryAttribute_Uncached`, as deko3d does) but it means touching `horizon/` |
+| D14 | An uncached memory policy in `horizon/` | **open, raised with the owner; does NOT block Phase 4** (traced: the fill path touches no COHERENT allocation, and vkCmdFillBuffer is DMA-engine methods, not a shader) — Vulkan requires a `HOST_VISIBLE + HOST_COHERENT` memory type; NVK advertises one on SoC and means an *uncached* map by it; `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED`, and `NVKMD_MEM_COHERENT` makes nvkmd skip cache maintenance entirely. The mechanism exists (`svcSetMemoryAttribute` + `MemoryAttribute_Uncached`, as deko3d does) but it means touching `horizon/` |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 
 ### D2 — Mesa version: `mesa-26.1.5`
