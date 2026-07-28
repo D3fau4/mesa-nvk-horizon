@@ -5304,12 +5304,29 @@ together, because the pattern cost more than any one of them:
 |---|---|---|
 | "`ALLOC_SPACE` has no place-it-here form" | `NvAllocSpaceFlags_FixedOffset` | `NVKMD_VA_ALLOC_FIXED` implemented — **extension 5 closed** |
 | "NVGPU_AS has no sparse reservation" (D12's reason) | `NvAllocSpaceFlags_Sparse` | D12's decision stands, on a true basis: partial unbind is what is missing |
-| "horizon_gpu has no GPU timestamp query" | `nvGpuGetTimestamp` | implemented — **milestone item 8, extension 6 closed** |
+| "horizon_gpu has no GPU timestamp query" | `nvGpuGetTimestamp` | implemented — **milestone item 8, extension 1 closed** |
 
 All three sat in libnx's `ioctl.h`, in the same file the code was
 already calling into. The sweep that found them was mechanical: list
 every `nvioctl*` libnx exports, then grep this tree for statements that
 the platform lacks something.
+
+The timestamp one is the worst of the three, because **this file already
+knew**. Step 1's interface table says of `get_gpu_timestamp`: "libnx has
+the same clock: `nvGpuGetTimestamp` (`nvidia/gpu.h:16`) over
+`nvioctlNvhostCtrlGpu_GetGpuTime` (`nvidia/ioctl.h:262`) → extension 1".
+The survey was correct; the implementation comment written afterwards
+said "horizon_gpu has no GPU timestamp query yet" and made the function
+`UNREACHABLE`. A survey is only worth what the code built from it
+remembers.
+
+**Extension 3 checked and left alone.** CPU syncpoint increment
+(`nvioctlNvhostCtrl_SyncptIncr`) exists too, and
+`nvk_horizon_sync_signal` does a CPU-only signal without it. That is not
+a defect: `nvkmd_horizon_ctx_wait` is *also* CPU-side, so a CPU signal is
+observed by every wait that can see it. Implementing the increment would
+add an unused path until Phase 5 builds GPU-side waits. Verified rather
+than assumed — which is the whole point of this section.
 
 Two of the six extensions Phase 4 step 1 enumerated are now closed that
 were previously recorded as blocked, and neither needed hardware.
