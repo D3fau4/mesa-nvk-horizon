@@ -4662,6 +4662,59 @@ freed would notice a `destroy` that forgot to clear the attribute.
 Tested: cross build clean under `-Werror`, six gates, host tests
 103/103. **Never executed** — it is a hardware measurement.
 
+## Audit of the never-executed path — one crash found (2026-07-28)
+
+Steps 5–9 of the mandatory sequence have never run anywhere, so the
+console run would have been their first execution. Reading them first
+was worth one round trip, and it found a null dereference that would
+have ended the run inside `vkCreateDevice` with no log line at all.
+
+**The defect.** `nvkmd_horizon_alloc_mem` never filled
+`nvkmd_mem::va`. NVK reads that field directly and not as a special
+case: `nvk_CreateBuffer` allocates a VA for a buffer only when it is
+sparse or capture/replay (`nvk_buffer.c:119-121`), so every ordinary
+buffer takes the memory's —
+
+```
+buffer->vk.device_address = mem->mem->va->addr + memoryOffset;
+                                 -- nvk_buffer.c:271
+```
+
+— and it is not confined to `vkBindBufferMemory` either.
+`nvk_device.c:295` reads `dev->zero_page->va->addr` while
+`vkCreateDevice` is still running, and `nvk_cmd_buffer.c:195` and
+`:261` read it for every push and every upload. `nvkmd_mem_init`
+(`nvkmd.c:66-83`) zeroes the field and nothing in nvkmd core fills it;
+the nouveau backend allocates the VA and binds the memory inside its
+own `alloc_mem` (`nvkmd_nouveau_mem.c:56-66`). Patch 0031 does the
+same here, and frees the VA before the memory because releasing a
+reservation unmaps what is bound in it while `horizon_gpu_mem_destroy`
+refuses with `ERR_BUSY` for exactly that reason.
+
+**What else the audit checked, and cleared:**
+
+- `vkCmdFillBuffer` needs no shader: it drives the NV90B5 copy engine
+  (`nvk_cmd_copy.c:897-957`), so NAK is not on this path.
+- NVK's subchannel table (`nv_push.h:68-96`) is 0=3D, 1=compute,
+  2=NV9039, 3=NV902D, 4=NV90B5 — identical to
+  `horizon_cmds_set_objects`. And NVK does not emit the binds itself;
+  `nvk_queue_subchannels_from_engines` is annotated *"these line up with
+  nouveau_ws_context_create"*, i.e. on nouveau the kernel does it. Ours
+  is the in-stream replacement (R7), and `t_submit` has it passing on
+  console: *"SET_OBJECT list completed without fault"*, *"no error
+  notification after engine binds"*.
+- `nvkmd_horizon_ctx_wait` passes a NULL `vk_device` into the sync
+  type's `wait()`. Safe: `__vk_log_impl` returns early on a NULL
+  instance when `MESA_DEBUG=0`, which this build is
+  (`-DMESA_DEBUG=0`, confirmed in `build.ninja`). It does mean the
+  error text is dropped — a diagnostics gap, not a fault.
+- `horizon_gpu_channel_wait_fence` reads the syncpoint before testing
+  the deadline, so `vkWaitForFences(timeout=0)` polls rather than
+  reporting a false timeout.
+
+Tested: cross build, six gates, host tests 103/103, series re-applied
+twice from the pinned base (31 patches). Not executed.
+
 ## Next concrete task
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
@@ -4690,6 +4743,7 @@ of which blocks the criterion above:
 
 | Commit | Scope |
 |---|---|
+| `mesa-patches: every nvkmd_mem needs its own VA` | patch 0031, STATUS — the audit of the never-executed path |
 | `tests: t_uncached, and t_sysinfo's hardware failure was a stale binary` | `tests/t_uncached.c`, `meson.build`, `Makefile`, STATUS — D14 and the t_sysinfo diagnosis |
 | `horizon,tests: an opt-in untrusted syncpoint baseline, and a run that admits it` | `horizon/device`, `horizon/channel`, `tests/t_vulkan.c`, synchronization.md § 9 |
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
