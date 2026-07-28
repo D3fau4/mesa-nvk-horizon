@@ -1540,6 +1540,46 @@ The exit criterion is not "it does not crash":
 `RESULT: PASS (n/n)` / `RESULT: FAIL (k/n)`, to stdout and to
 `sdmc:/horizon_gpu_tests/t_vulkan.log`, like the other thirteen.
 
+### Who runs it — decided with the owner (2026-07-28)
+
+Asked directly how to tackle the one thing this environment cannot do,
+the owner chose: **the owner runs it and returns the log.** That is the
+same arrangement every hardware measurement in this project has used —
+Phase 1's ten tests and Phase 3's two were all owner-executed — so it is
+continuity rather than a new exception.
+
+What that makes the handover:
+
+```
+build/pkg/            14 .nro + MANIFEST.txt (sha256 each, toolchain
+                      image digest, live package versions)
+t_vulkan.nro          14 008 376 bytes — the Phase 4 exit criterion
+t_threads.nro         owed by Phase 3 on hardware (emulator only so far)
+t_ostime.nro          same
+```
+
+Each prints one line per check and a machine-checkable
+`RESULT: PASS (n/n)` / `RESULT: FAIL (k/n)`, to stdout and to
+`sdmc:/horizon_gpu_tests/<name>.log`.
+
+### Three failures found by reading, because running was not available
+
+The only progress available without a console is to walk the paths the
+first run will take. It found three, and none of them would have been
+obvious from the crash:
+
+1. **The timeline sync type was missing.** `vkCreateSemaphore` would
+   have failed for every timeline semaphore.
+2. **Block-linear mappings landed in the small-page half.** Maxwell's
+   MMU only fills those kinds in big pages, so the map succeeds and the
+   fault arrives later, somewhere else.
+3. **A push whose size is not a multiple of four truncated the command
+   stream mid-method.** The submit succeeds; the GPU reports it much
+   later as a channel fault with no obvious cause.
+
+All three are the same shape: they do not fail where they are caused.
+Patches 0022, 0023 and 0024; the series is twenty-four.
+
 ### Said plainly
 
 **The test has never been executed.** That it compiles and links says
