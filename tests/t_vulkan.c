@@ -36,6 +36,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>   /* setenv, getenv */
 #include <string.h>
 
 #define VK_NO_PROTOTYPES
@@ -101,6 +102,35 @@ run_test(test_ctx *t)
    PFN_vkDestroyDevice vkDestroyDevice;
    PFN_vkDestroyInstance vkDestroyInstance;
 
+   /* --- opting in to an untested driver, on purpose ------------------
+    *
+    * nvk_is_conformant() opens with
+    *
+    *     "Tegra is not currently supported"
+    *     if (info->type != NV_DEVICE_TYPE_DIS)
+    *        return false;
+    *
+    * and GM20B is NV_DEVICE_TYPE_SOC, which is what it is. NVK then
+    * refuses the device with VK_ERROR_INCOMPATIBLE_DRIVER, and under
+    * NDEBUG it does so with no message at all — so vkEnumeratePhysical-
+    * Devices returns VK_SUCCESS and no devices. Measured on console:
+    * the first hardware run of this test failed at exactly that line.
+    *
+    * NVK supplies the escape hatch and this is what it is for. Setting
+    * it here rather than patching nvk_is_conformant() is deliberate:
+    * the check is telling the truth. NVK is not conformant on this
+    * chip, nobody has run the CTS on it, and saying otherwise in the
+    * patch series would be a claim this project cannot support. The
+    * application is the right place to say "I know, proceed" —
+    * vk_warn_non_conformant_implementation() still fires.
+    *
+    * Before vkCreateInstance, because the flag is read while the
+    * physical device is being created.
+    */
+   setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
+   t_check(t, getenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER") != NULL,
+                  "the non-conformance opt-in is set in the environment");
+
    GET_INSTANCE_PROC(VK_NULL_HANDLE, vkCreateInstance);
 
    /* --- vkCreateInstance -------------------------------------------- */
@@ -153,8 +183,17 @@ run_test(test_ctx *t)
                   (int)r);
    t_check(t, pdev_count == 1, "one physical device, got %u",
                   pdev_count);
-   if (pdev_count == 0)
+   if (pdev_count == 0) {
+      /* Vulkan says an empty list, not an error, so the call above
+       * succeeded and there is nothing in the result to say why. The
+       * driver logs the reason to the screen — it cannot reach this
+       * log file — so point at it rather than leave the reader to
+       * guess.
+       */
+      t_note(t, "the driver found no GPU; its reason is on screen, "
+                "above this list, as an \"nvkmd_horizon:\" line");
       return 1;
+   }
 
    VkPhysicalDevice pdev = VK_NULL_HANDLE;
    pdev_count = 1;

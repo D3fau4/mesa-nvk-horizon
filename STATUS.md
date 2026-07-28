@@ -1592,6 +1592,172 @@ hardware rather than on the emulator.
 
 ---
 
+## First hardware run of the Phase 4 sequence (2026-07-28)
+
+Owner-executed on a real Switch. Three `.nro`, three logs, pasted in
+full below the analysis.
+
+### Phase 3's two remaining hardware measurements: both PASS
+
+| Test | Result | What it closes |
+|---|---|---|
+| `t_threads` | **PASS (67/67)** | The last open Phase 3 item. It had only ever been run under an emulator, where it did not finish |
+| `t_ostime` | **PASS (43/43)** | Same |
+
+**Phase 3 owes nothing further.** Two facts worth carrying forward:
+
+- `t_threads` ran the four-stage probe to the end — `getenv`,
+  `os_get_option`, `os_get_option_cached` (hash table, ralloc,
+  `simple_mtx`, `atexit`) and `util_get_cpu_caps` — all four returning
+  cleanly, with `util_cpu_caps: nr_cpus=4 max_cpus=4`. That is the
+  path the `-mtp=soft -fPIC` TLS miscompile used to hang on, exercised
+  on console and not hanging.
+- `t_ostime` measured the clock at **52 ns** resolution, agreeing with
+  the ARM system counter to 79 981 ns over a 100 ms sleep — 0.08 %.
+  `timespec_get(TIME_MONOTONIC)` still returns wall-clock seconds
+  (1785247609 s), which is **D8**, unchanged and still open.
+
+### `t_vulkan`: FAIL (29/30), and the reason is not the backend
+
+```
+  ok   vkCreateInstance -> 0
+  ...  27 entry points resolved through vk_icdGetInstanceProcAddr
+  ok   vkEnumeratePhysicalDevices -> 0
+  FAIL one physical device, got 0
+RESULT: FAIL (29/30) [aborted early]
+```
+
+Everything up to enumeration worked on real hardware, first time:
+`vkCreateInstance` succeeded, and all 27 entry points resolved through
+`vk_icdGetInstanceProcAddr` — which is the no-loader arrangement
+(patch 0015) working exactly as designed.
+
+`vkEnumeratePhysicalDevices` then returned **VK_SUCCESS with a count of
+zero**. Not an error — an empty list is a legal answer — and that is
+the problem: nothing anywhere said why.
+
+**The cause, found by reading rather than by guessing.**
+`nvk_physical_device.c:91-106`:
+
+```c
+static bool
+nvk_is_conformant(const struct nv_device_info *info)
+{
+   /* Tegra is not currently supported */
+   if (info->type != NV_DEVICE_TYPE_DIS)
+      return false;
+   ...
+}
+```
+
+and `nvk_physical_device.c:1442-1453`:
+
+```c
+if (!nvk_is_conformant(&nvkmd->dev_info) &&
+    !debug_get_bool_option("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", false)) {
+#ifdef NDEBUG
+   result = VK_ERROR_INCOMPATIBLE_DRIVER;      /* silently */
+#else
+   result = vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER, ...);
+#endif
+```
+
+`nvkmd_horizon_pdev.c:129` sets `info->type = NV_DEVICE_TYPE_SOC`,
+which is what GM20B is. So NVK declines the device, and because the
+build is `--buildtype=plain` (`-DNDEBUG`) it declines it with no
+message. `nvk_horizon_enumerate_physical_devices` turned that into an
+empty list, also silently.
+
+**So the driver was never entered.** Nothing below `nvk_create_physical_device`
+ran — not the VA heap, not a channel, not a submit. This run says
+nothing at all about whether `nvkmd_horizon` works; it says the
+application never got as far as asking.
+
+### Two changes, and why each is where it is
+
+1. **`t_vulkan` sets `NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1`** before
+   `vkCreateInstance`. NVK supplies this flag for exactly this case and
+   this is what it is for.
+
+   **Not** a patch to `nvk_is_conformant()`, deliberately. That check
+   is telling the truth: NVK is not conformant on this chip, nobody has
+   run the CTS on it, and a patch saying otherwise would be a claim
+   this project cannot support. The application is the right place to
+   say "I know, proceed" — and
+   `vk_warn_non_conformant_implementation("NVK")` still fires.
+
+2. **Patch 0025 makes the enumeration say why it found nothing.**
+   Both paths that produce an empty list now log which one it was: the
+   nv services could not be opened, or the GPU was found and NVK
+   declined it. Swallowing that silently is what turned a one-line
+   answer into a console round trip, and it was a defect in code
+   written in this phase.
+
+The series is **twenty-five**.
+
+### Console logs, verbatim
+
+```
+== t_ostime ==
+  note timespec_get(TIME_MONOTONIC) returned 2 (TIME_MONOTONIC=2), ts = 1785247609 s + 64292332 ns
+  ok   the monotonic clock is available to timespec_get
+  ok   the realtime clock is available to timespec_get
+  note os_time_get_nano: first=1785247609067607332 last=1785247609072664956 over 41426 samples spanning 5 ms by the ARM counter, 41003 distinct values
+  ok   os_time_get_nano never went backwards in 41426 samples (0 did)
+  note smallest observed step: 52 ns
+  ok   clock resolution is 1 ms or finer (52 ns)
+  note over one 100 ms sleep: system counter 100233593 ns, os_time_get_nano 100153612 ns, difference 79981 ns
+  ok   os_time_get_nano agrees with the ARM counter within 10% (79981 ns of 10023359 ns allowed)
+  note os_time_sleep(50000 us) took 50341 us
+  note os_time_sleep(0) took 1 us
+  note os_time_nanosleep_until(+50000 us) took 50217 us
+  ok   a deadline in the past returns at once (103 us, bound 10000 us)
+  ok   an overflowing timeout saturates to OS_TIMEOUT_INFINITE
+RESULT: PASS (43/43)
+```
+
+(elided: the 30 further `ok` lines; the full log is the artefact.)
+
+```
+== t_threads ==
+  ok   call_once ran the body exactly once across 4 threads (1)
+  note shared counter: 4 threads x 20000 increments, 80000 performed
+  ok   counter is exactly 80000, no update lost (got 80000)
+  note mtx_timedlock(200 ms) returned 1 after 200 ms
+  ok   cnd_broadcast woke every waiter within 2000 ms (4 of 4)
+  note cnd_timedwait(200 ms) returned 1 after 200 ms
+  ok   cnd_timedwait ended on its own, without the 2000 ms watchdog having to signal it
+  note tss destructor calls after 4 workers: 4
+  note InfoType_CoreMask = 0xf, 4 core(s) allowed
+  ok   sysconf(_SC_NPROCESSORS_ONLN) = 4 is the popcount of the mask it is computed from (4)
+  note stage 1/4: getenv("GALLIUM_OVERRIDE_CPU_CAPS") — plain newlib -> (null)
+  note stage 2/4: os_get_option -> (null)
+  note stage 3/4: os_get_option_cached — hash table, ralloc, simple_mtx, atexit -> (null)
+  note stage 4/4: util_get_cpu_caps
+  note util_cpu_caps: nr_cpus=4 max_cpus=4 num_cpu_mask_bits=32
+  ok   util_cpu_detect reports 4 CPUs, matching the core mask (4)
+RESULT: PASS (67/67)
+```
+
+```
+== t_vulkan ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> 0
+  ... 26 further GetInstanceProcAddr lines, all ok ...
+  ok   vkEnumeratePhysicalDevices -> 0
+  FAIL one physical device, got 0
+RESULT: FAIL (29/30) [aborted early]
+```
+
+### What is owed now
+
+One more console run of `t_vulkan`. Everything else in Phase 4 is
+built, linked and gated; the exit criterion is a hardware measurement
+and it is the owner's to take.
+
+
+---
+
 ## Phase 3 — the state it closed in (previously "Current phase")
 
 **Phase 3 — minimal Horizon support in Mesa. Every milestone item now
@@ -3562,7 +3728,7 @@ emitters), and found no regression in either mode.
 | # | Decision | State |
 |---|---|---|
 | D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
-| D4 | Switch available | **yes — closed.** Full run + confirmation re-run done |
+| D4 | Switch available | **yes — closed.** Full run, confirmation re-run, and the Phase 4 hardware run all done |
 | D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592` |
 | D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |

@@ -1,7 +1,7 @@
 From f9b0b6c112cee0450b67f8b00fdc4a8b20e652aa Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:07:50 +0000
-Subject: [PATCH 16/24] vulkan/runtime: include dlfcn.h only where it is
+Subject: [PATCH 16/25] vulkan/runtime: include dlfcn.h only where it is
  actually used
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
