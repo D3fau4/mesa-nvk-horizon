@@ -1,0 +1,50 @@
+From 0a13f0de8609b610963245dad00f3fc00ee4bc14 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:59:20 +0000
+Subject: [PATCH 24/24] nouveau/vk: refuse a push that is not a whole number of
+ dwords
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A GPFIFO entry counts dwords and nvkmd counts bytes, so a size that is
+not a multiple of four silently lost the last bytes of a push: the
+submit succeeded and the command stream was truncated mid-method, which
+the GPU reports much later as a channel fault with no obvious cause.
+
+Refused where the cause is still in view. Third of the failures found by
+reading the paths the first hardware run will take.
+
+mesa-nvk-horizon: Phase 4 — reducing avoidable first-run failures
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c       | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index d73e5e4..77fe102 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -124,6 +124,20 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+          run_no_prefetch = execs[i].no_prefetch;
+       }
+ 
++      /* A GPFIFO entry counts dwords, and nvkmd counts bytes. A size
++       * that is not a multiple of four would silently lose the last
++       * bytes of a push — the submit would succeed and the command
++       * stream would be truncated mid-method, which the GPU reports
++       * much later as a channel fault with no obvious cause. Refused
++       * here instead, where the cause is still in view.
++       */
++      if (execs[i].size_B % 4 != 0) {
++         return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                          "nvkmd_horizon: push %" PRIu32 " is %" PRIu32
++                          " bytes, not a whole number of dwords",
++                          i, execs[i].size_B);
++      }
++
+       spans[n].gpu_va = execs[i].addr;
+       spans[n].num_dwords = execs[i].size_B / 4;
+       n++;
+-- 
+2.43.0
+
