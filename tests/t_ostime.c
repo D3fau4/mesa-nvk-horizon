@@ -32,12 +32,18 @@
  * nothing, and the rate check below is what would catch os_time_get_nano
  * reporting the wrong unit.
  *
+ * And every blocking call is made on a worker thread and awaited with a
+ * bound (see run_bounded below), because "usleep never returns" is one
+ * of the outcomes this file exists to catch and a synchronous call would
+ * take the upper-bound check and the verdict with it.
+ *
  * Uses no horizon_gpu and needs no nv services.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -119,6 +125,119 @@ static uint64_t
 ms_since(uint64_t start_tick)
 {
     return ticks_to_ns(armGetSystemTick() - start_tick) / 1000000u;
+}
+
+/* ---------------------------------------------------------------- */
+/* Bounded blocking calls                                            */
+/* ---------------------------------------------------------------- */
+
+/* NEVER WAIT WITHOUT A BOUND. os_time_sleep() is usleep() here and
+ * os_time_nanosleep_until() is built on it, through the POSIX-lite
+ * branch patch 0008 added. Neither has ever run on this platform, and
+ * "it never returns" is one of the outcomes this file exists to catch —
+ * called straight from the main thread it would take the upper-bound
+ * check and the RESULT line with it, which is the same defect
+ * tests/t_threads.c was corrected for.
+ *
+ * So each blocking call is made on a worker and awaited against
+ * armGetSystemTick(), the counter that is not under test.
+ *
+ * libnx threads and not Mesa's C11 shim, deliberately: that shim is what
+ * t_threads measures, and a watchdog built out of the thing the
+ * neighbouring test is still establishing would fail here for reasons
+ * that have nothing to do with os_time.c. */
+
+/* Comfortably above WAIT_MAX_US, so a merely slow implementation is
+ * reported as slow — a FAIL on the upper bound — rather than as hung. */
+#define WATCHDOG_MS 2000
+#define WATCHDOG_POLL_NS 1000000LL /* 1 ms */
+
+#define CALL_SLEEP_US    0 /* os_time_sleep(arg) microseconds */
+#define CALL_UNTIL_DELTA 1 /* os_time_nanosleep_until(now + arg) ns */
+
+typedef struct bounded_call {
+    int which;
+    int64_t arg;
+    uint64_t elapsed_us; /* measured by the ARM counter, inside the worker */
+    atomic_int done;     /* set last, after elapsed_us */
+} bounded_call;
+
+static void
+bounded_worker(void *arg)
+{
+    bounded_call *c = arg;
+    uint64_t start = armGetSystemTick();
+
+    if (c->which == CALL_SLEEP_US)
+        os_time_sleep(c->arg);
+    else
+        os_time_nanosleep_until(os_time_get_nano() + c->arg);
+
+    c->elapsed_us = ticks_to_ns(armGetSystemTick() - start) / 1000u;
+    atomic_store(&c->done, 1);
+}
+
+/* Returns the context when the call returned within WATCHDOG_MS, NULL
+ * when it did not — the failing check is already written in that case.
+ *
+ * On the NULL path the thread and its context are BOTH left alone on
+ * purpose. The worker may still be inside the call and will write
+ * elapsed_us when it finally returns, so neither the stack nor the
+ * context may be reclaimed while this process lives. A test that is
+ * reporting a sleep which never returned can afford one leaked stack;
+ * reusing that memory could not be made safe. The caller frees the
+ * context on the ordinary path. */
+static bounded_call *
+run_bounded(test_ctx *t, int which, int64_t arg, const char *what)
+{
+    bounded_call *c;
+    Thread thr;
+    Result rc;
+    s32 prio = 0x2C; /* libnx's default, used only if the query fails */
+    uint64_t start;
+
+    c = calloc(1, sizeof(*c));
+    if (!t_check(t, c != NULL, "allocated the context for %s", what))
+        return NULL;
+
+    c->which = which;
+    c->arg = arg;
+
+    /* This thread's own priority: a worker running at a different one
+     * would be starved or favoured, and that would surface as a timing
+     * error attributed to the call under test. */
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+
+    rc = threadCreate(&thr, bounded_worker, c, NULL, 0x4000, prio, -2);
+    if (!t_check(t, R_SUCCEEDED(rc), "created the worker for %s (0x%08x)",
+                 what, (unsigned)rc)) {
+        free(c);
+        return NULL;
+    }
+
+    rc = threadStart(&thr);
+    if (!t_check(t, R_SUCCEEDED(rc), "started the worker for %s (0x%08x)",
+                 what, (unsigned)rc)) {
+        threadClose(&thr);
+        free(c);
+        return NULL;
+    }
+
+    start = armGetSystemTick();
+    while (!atomic_load(&c->done) && ms_since(start) < WATCHDOG_MS)
+        svcSleepThread(WATCHDOG_POLL_NS);
+
+    /* Written before threadWaitForExit, which is what would block. */
+    if (!t_check(t, atomic_load(&c->done) != 0,
+                 "%s returned on its own within %d ms", what, WATCHDOG_MS)) {
+        t_note(t, "its thread and context are deliberately left alone — the "
+                  "call may still return and write to them");
+        return NULL;
+    }
+
+    threadWaitForExit(&thr);
+    threadClose(&thr);
+    return c;
 }
 
 int
@@ -302,31 +421,32 @@ run_test(test_ctx *t)
     /* ---- os_time_sleep: it must sleep, and not too long ---------- */
 
     {
-        uint64_t start = armGetSystemTick();
-        os_time_sleep(SLEEP_US);
-        uint64_t elapsed_us = ticks_to_ns(armGetSystemTick() - start) / 1000u;
-
-        t_note(t, "os_time_sleep(%d us) took %llu us", SLEEP_US,
-               (unsigned long long)elapsed_us);
-        t_check(t, elapsed_us >= WAIT_MIN_US(SLEEP_US),
-                "it slept at least %d us (%llu us)", WAIT_MIN_US(SLEEP_US),
-                (unsigned long long)elapsed_us);
-        t_check(t, elapsed_us <= WAIT_MAX_US(SLEEP_US),
-                "it woke within %d us (%llu us)", WAIT_MAX_US(SLEEP_US),
-                (unsigned long long)elapsed_us);
+        bounded_call *c = run_bounded(t, CALL_SLEEP_US, SLEEP_US,
+                                      "os_time_sleep(50000 us)");
+        if (c) {
+            t_note(t, "os_time_sleep(%d us) took %llu us", SLEEP_US,
+                   (unsigned long long)c->elapsed_us);
+            t_check(t, c->elapsed_us >= WAIT_MIN_US(SLEEP_US),
+                    "it slept at least %d us (%llu us)", WAIT_MIN_US(SLEEP_US),
+                    (unsigned long long)c->elapsed_us);
+            t_check(t, c->elapsed_us <= WAIT_MAX_US(SLEEP_US),
+                    "it woke within %d us (%llu us)", WAIT_MAX_US(SLEEP_US),
+                    (unsigned long long)c->elapsed_us);
+            free(c);
+        }
     }
 
     /* A zero-length sleep must return promptly rather than blocking. */
     {
-        uint64_t start = armGetSystemTick();
-        os_time_sleep(0);
-        uint64_t elapsed_us = ticks_to_ns(armGetSystemTick() - start) / 1000u;
-
-        t_note(t, "os_time_sleep(0) took %llu us",
-               (unsigned long long)elapsed_us);
-        t_check(t, elapsed_us < PROMPT_MAX_US,
-                "os_time_sleep(0) did not block (%llu us, bound %d us)",
-                (unsigned long long)elapsed_us, PROMPT_MAX_US);
+        bounded_call *c = run_bounded(t, CALL_SLEEP_US, 0, "os_time_sleep(0)");
+        if (c) {
+            t_note(t, "os_time_sleep(0) took %llu us",
+                   (unsigned long long)c->elapsed_us);
+            t_check(t, c->elapsed_us < PROMPT_MAX_US,
+                    "os_time_sleep(0) did not block (%llu us, bound %d us)",
+                    (unsigned long long)c->elapsed_us, PROMPT_MAX_US);
+            free(c);
+        }
     }
 
     /* ---- os_time_nanosleep_until -------------------------------- */
@@ -336,33 +456,34 @@ run_test(test_ctx *t)
      * a deadline base — which is exactly what the monotonicity check
      * above establishes. */
     {
-        int64_t deadline = os_time_get_nano() + UNTIL_US * 1000LL;
-        uint64_t start = armGetSystemTick();
-
-        os_time_nanosleep_until(deadline);
-        uint64_t elapsed_us = ticks_to_ns(armGetSystemTick() - start) / 1000u;
-
-        t_note(t, "os_time_nanosleep_until(+%d us) took %llu us", UNTIL_US,
-               (unsigned long long)elapsed_us);
-        t_check(t, elapsed_us >= WAIT_MIN_US(UNTIL_US),
-                "it waited at least %d us (%llu us)", WAIT_MIN_US(UNTIL_US),
-                (unsigned long long)elapsed_us);
-        t_check(t, elapsed_us <= WAIT_MAX_US(UNTIL_US),
-                "and returned within %d us (%llu us)", WAIT_MAX_US(UNTIL_US),
-                (unsigned long long)elapsed_us);
+        bounded_call *c = run_bounded(t, CALL_UNTIL_DELTA, UNTIL_US * 1000LL,
+                                      "os_time_nanosleep_until(+50 ms)");
+        if (c) {
+            t_note(t, "os_time_nanosleep_until(+%d us) took %llu us", UNTIL_US,
+                   (unsigned long long)c->elapsed_us);
+            t_check(t, c->elapsed_us >= WAIT_MIN_US(UNTIL_US),
+                    "it waited at least %d us (%llu us)", WAIT_MIN_US(UNTIL_US),
+                    (unsigned long long)c->elapsed_us);
+            t_check(t, c->elapsed_us <= WAIT_MAX_US(UNTIL_US),
+                    "and returned within %d us (%llu us)",
+                    WAIT_MAX_US(UNTIL_US), (unsigned long long)c->elapsed_us);
+            free(c);
+        }
     }
 
-    /* A deadline already in the past must not wait at all. */
+    /* A deadline already in the past must not wait at all. The deadline
+     * is computed inside the worker, so it is 1 ms in the past at the
+     * moment of the call and not at the moment this section started. */
     {
-        int64_t deadline = os_time_get_nano() - 1000000LL; /* 1 ms ago */
-        uint64_t start = armGetSystemTick();
-
-        os_time_nanosleep_until(deadline);
-        uint64_t elapsed_us = ticks_to_ns(armGetSystemTick() - start) / 1000u;
-
-        t_check(t, elapsed_us < PROMPT_MAX_US,
-                "a deadline in the past returns at once (%llu us, bound %d us)",
-                (unsigned long long)elapsed_us, PROMPT_MAX_US);
+        bounded_call *c = run_bounded(t, CALL_UNTIL_DELTA, -1000000LL,
+                                      "os_time_nanosleep_until(1 ms ago)");
+        if (c) {
+            t_check(t, c->elapsed_us < PROMPT_MAX_US,
+                    "a deadline in the past returns at once (%llu us, bound "
+                    "%d us)",
+                    (unsigned long long)c->elapsed_us, PROMPT_MAX_US);
+            free(c);
+        }
     }
 
     /* ---- os_time_get_absolute_timeout --------------------------- */
