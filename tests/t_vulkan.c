@@ -172,6 +172,32 @@ run_test(test_ctx *t)
     */
    setenv("HORIZON_GPU_LOG", "3", 1);
 
+   /* NVK's own instrumentation, which turns out to be exactly what the
+    * hardware MMU fault needs and costs no driver code at all.
+    *
+    * `push_dump` decodes every push nvkmd_ctx_exec submits — methods and
+    * the addresses inside them — through nvkmd_ctx_exec_dump, which
+    * finds the memory by VA (working here only because patch 0031 gives
+    * every allocation one) and prints it with vk_push_print. `vm` logs
+    * every VA reservation and bind as it happens.
+    *
+    * Together they answer the question the console could not: the
+    * emulator reaches vkQueueSubmit successfully, so the push stream it
+    * builds is the same one that faults on real nvgpu, and every address
+    * in it can be checked against the map by reading — no hardware in
+    * the loop.
+    *
+    * Both are print-only. Unlike HORIZON_GPU_SYNC below they change no
+    * behaviour and insert no CPU stall, so a run with them on is still a
+    * valid run — just a very verbose one. Off by default because the
+    * MME microcode upload alone decodes to thousands of lines.
+    */
+#define T_VULKAN_PUSH_DUMP 1
+
+#if T_VULKAN_PUSH_DUMP
+   setenv("NVK_DEBUG", "push_dump,vm", 1);
+#endif
+
    /* Diagnostic build switch, flipped by hand and never on for a run
     * that is meant to satisfy Phase 4's exit criterion.
     *
