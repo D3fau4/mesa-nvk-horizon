@@ -44,6 +44,9 @@
 
 #include "common/testfw.h"
 
+#include "horizon_gpu/device.h"
+#include "horizon_gpu/channel.h"
+
 const char *const test_name = "t_vulkan";
 
 /* The one symbol the driver exports for a loader to find. Declared
@@ -139,6 +142,48 @@ run_test(test_ctx *t)
     * and it is the test that wants more.
     */
    setenv("HORIZON_GPU_LOG", "3", 1);
+
+   /* --- the syncpoint probe, before any Vulkan call ------------------
+    *
+    * The fifth hardware run showed NVK's *first* channel coming back
+    * with syncpoint id 1, which nvhost-ctrl then refuses to read, while
+    * t_channel gets 26 on this same console. Both call
+    * horizon_gpu_device_create(NULL, ...) and
+    * horizon_gpu_channel_create(dev, NULL, ...) — the same function
+    * with the same arguments — so the difference is what the process
+    * did in between. In NVK's path that is Mesa's instance and
+    * physical-device creation and the device's heaps and VA
+    * reservations, all before its first channel exists.
+    *
+    * This creates one channel with none of that behind it and reports
+    * its id. Two answers, both useful:
+    *
+    *   a real id (26-ish) -> the process is fine here and something
+    *                         between this point and NVK's channel
+    *                         breaks it
+    *   1                  -> the difference is the process or the nv
+    *                         session, not the ordering
+    *
+    * Created and destroyed immediately so NVK's channel is still the
+    * first one alive when it is made, which is the case being
+    * compared.
+    */
+   horizon_gpu_device *probe_dev = NULL;
+   horizon_gpu_result pres = horizon_gpu_device_create(NULL, &probe_dev);
+   if (t_check(t, pres.status == HORIZON_GPU_OK,
+                     "probe: horizon_gpu_device_create -> %d",
+                     (int)pres.status)) {
+      horizon_gpu_channel *probe_chan = NULL;
+      pres = horizon_gpu_channel_create(probe_dev, NULL, &probe_chan);
+      if (t_check(t, pres.status == HORIZON_GPU_OK,
+                        "probe: horizon_gpu_channel_create -> %d",
+                        (int)pres.status)) {
+         t_note(t, "probe: a bare channel, before any Vulkan, has "
+                   "syncpt id=%u", horizon_gpu_channel_syncpt_id(probe_chan));
+         horizon_gpu_channel_destroy(probe_chan);
+      }
+      horizon_gpu_device_destroy(probe_dev);
+   }
    t_check(t, getenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER") != NULL,
                   "the non-conformance opt-in is set in the environment");
 
