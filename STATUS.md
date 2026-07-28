@@ -26,19 +26,25 @@ physical memory / page size (`compat/sysconf.c` + patches 0009–0010),
 patch). The series stands at **twelve patches**, every one formulated as
 a property of the C library or the compiler rather than as an OS name.
 
-**What is owed:** `t_threads` and `t_ostime` have now been run **on an
-emulator, not on a console** (2026-07-28). `t_ostime` passed 27/27;
-`t_threads` passed 70 checks and hung, and locating that hang **found a
-miscompile**: devkitA64 gcc 15.2.0 generates wrong code for every
-`_Thread_local` access under `-mtp=soft -fPIC`, doubling the thread
-pointer instead of adding the variable's offset and emitting no
+**Both new tests now pass — on an emulator (Eden), not on a console:**
+`t_ostime` **27/27**, `t_threads` **65/65** (2026-07-28). Getting there
+found a **miscompile**: devkitA64 gcc 15.2.0 generates wrong code for
+every `_Thread_local` access under `-mtp=soft -fPIC`, doubling the
+thread pointer instead of adding the variable's offset and emitting no
 relocation at all. Meson was appending that `-fPIC` to every
 static-library object in the Mesa build, so all three objects there that
-use TLS were affected, silently. Fixed with `-Db_staticpic=false` —
-already used in this project's own `meson.build` for a smaller reason —
-and gated by `scripts/check-tls-relocs.sh`, which fails on the property
-rather than on the flag. Items 4 and 5 stay cross-build results as far as
-hardware is concerned; the two sections below have the measurements.
+use TLS were affected, silently, and one of them hung `t_threads`. Fixed
+with `-Db_staticpic=false` — already used in this project's own
+`meson.build` for a smaller reason — and gated by
+`scripts/check-tls-relocs.sh`, which fails on the property rather than on
+the flag.
+
+`mesa-patches/0012` is a measurement now: `util_cpu_detect` reports **4
+CPUs** from a `0xf` core mask, where without the patch it reports 1.
+
+**What is still owed:** a **console** run. Eden answers for its own
+libnx and SVCs, so items 4 and 5 remain cross-build-plus-emulator until
+a Switch log exists. The two sections below have every measurement.
 
 **Codex reviewed PR #4 twice.** The first round left 8 findings — 7 real
 and fixed, 1 refuted with the generated `build.ninja` in hand — mostly
@@ -441,12 +447,51 @@ the fix and 0 after.
 Both `.nro` changed: `t_ostime` links the same rebuilt archives, so it is
 a new binary too even though its source did not change.
 
-### What this does not establish
+### Confirmed by re-running: both tests pass (2026-07-28, emulator)
 
-That the fix makes `t_threads` finish. It removes a defect that is
-sufficient to explain the hang and that had to be removed regardless;
-whether anything else stops that test is a question for the next run.
-The emulator run remains class E either way.
+The same two `.nro` rebuilt against the repaired archives
+(`a58e2af8…`, `92899b59…`), run on Eden:
+
+```
+RESULT: PASS (27/27)   t_ostime
+RESULT: PASS (65/65)   t_threads
+```
+
+The test source did not change between the hanging run and this one —
+the staged probe is the same code — so the only difference is the Mesa
+rebuild with `b_staticpic=false`. Stage 3/4 now returns:
+
+```
+note stage 3/4: os_get_option_cached — hash table, ralloc, simple_mtx, atexit
+note stage 3/4 returned (null)
+note stage 4/4: util_get_cpu_caps
+note util_cpu_caps: nr_cpus=4 max_cpus=4 num_cpu_mask_bits=32
+ok   util_cpu_detect reports 4 CPUs, matching the core mask (4)
+```
+
+That closes the causal question: the TLS miscompile was what stopped it,
+and nothing else was.
+
+**`mesa-patches/0012` is now a measurement rather than a compile
+result.** `util_cpu_detect` reports **4 CPUs** from a `0xf` core mask.
+Without the patch its counting block is under `DETECT_OS_POSIX`, which
+Horizon is not, so `available_cpus` stays 0 and `nr_cpus` falls to
+`MAX2(1, 0)` — `util/u_queue.c` would have sized its thread pool for a
+single-core machine on a four-core one. That is the number the patch
+exists to fix, read off a running system.
+
+Milestone items 4 and 5 now have a **behavioural** result behind them
+and not only a link: Mesa's polling `mtx_timedlock` returns
+`thrd_timedout` after 200 ms for a 200 ms deadline, `cnd_timedwait` the
+same with its watchdog never firing, and `os_time.c` tracks the ARM
+system counter to 0.08 % with 52 ns resolution.
+
+**Still class E.** Eden is not a Switch: it answers for its own
+implementation of libnx and of the SVCs beneath it. Items 4 and 5 stay
+cross-build-plus-emulator until a console log exists. What an emulator
+run *does* settle is everything that is a property of the compiled code
+rather than of the machine — which is exactly what the TLS miscompile
+was, and why finding it here was worth the two rounds.
 
 ---
 
@@ -1034,8 +1079,8 @@ from archive ordering), not a behavioural difference.
 | 1 | OS detection | patch 0007 (identity) + patch 0012 (CPU count). Audit above says where the `#else` still assumes more libc than exists |
 | 2 | Meson `host_machine.system()` | **no patch** — 54 sites classified, all 54 correct in the `else`; the 3 that name the OS are `auto`-default errors we already pass options for |
 | 3 | newlib/libnx gaps | patches 0001–0006. **Six link-time gaps remain**, listed above, deliberately not reopened |
-| 4 | threads | patch 0003 + patch 0011; decision to keep `threads_posix.c` recorded with the disassembly behind it. `t_threads` **not yet run** |
-| 5 | timers / clocks | patch 0008; `t_ostime` **not yet run** |
+| 4 | threads | patch 0003 + patch 0011; decision to keep `threads_posix.c` recorded with the disassembly behind it. `t_threads` **PASS 65/65 on an emulator** (Eden, 2026-07-28) — the polling `mtx_timedlock` and `cnd_timedwait` both land on their deadline. Not yet run on a console |
+| 5 | timers / clocks | patch 0008; `t_ostime` **PASS 27/27 on an emulator** (Eden, 2026-07-28) — 52 ns resolution, 0.08 % rate agreement with the ARM counter. Not yet run on a console |
 | 6 | physical memory / page size | `compat/sysconf.c` + patches 0009–0010, hardware-verified 2026-07-27 |
 | 7 | endianness | patch 0004, **closed on the cross build** — it is a compile-time property |
 | 8 | build ID | closed in Phase 2 without a patch: `-Wl,--build-id=sha1` is supported |
@@ -1817,6 +1862,8 @@ emitters), and found no regression in either mode.
 | D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
 | D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | Phase 4 |
+| D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
+| D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **open** — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. Phase 4's Vulkan timeouts need an answer |
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
@@ -2210,25 +2257,19 @@ Phase 4, which builds directly on `horizon/`.
 
 ## Next concrete task
 
-**Re-run `t_threads` against the TLS fix, then run both on a console.**
+**Run `t_threads` and `t_ostime` on a console**, and then Phase 4.
 
-The 2026-07-28 emulator runs found and located a real miscompile: every
-`_Thread_local` access in the Mesa build was reading and writing a wild
-address, because Meson was appending `-fPIC` to static-library objects
-and devkitA64 gcc 15.2.0 generates wrong code for `-mtp=soft -fPIC`. It
-is fixed and gated (`scripts/check-tls-relocs.sh`), and both `.nro` were
-rebuilt against the repaired archives — `a58e2af8…` and `92899b59…`.
-
-What is not established is whether that was the *only* thing stopping
-`t_threads`. The staged probe is still in the test, so if it stops again
-the log names the stage. A verdict line — `RESULT: PASS (n/n)` — is what
-closes it.
-
-A console run is owed regardless: an emulator answers for its own libnx,
-not for the Switch's, and both items 4 and 5 stay cross-build results
-until a Switch log exists. Both `.nro` are in `build/` and `build/meson/`
-(identical sizes) and write their logs to `sdmc:/horizon_gpu_tests/` like
-the other eleven.
+They pass on Eden — 65/65 and 27/27 — with the exact binaries recorded
+above (`a58e2af8…`, `92899b59…`), which are in `build/` and
+`build/meson/` and write their logs to `sdmc:/horizon_gpu_tests/` like
+the other eleven. That is the last thing Phase 3 owes, and it is now a
+confirmation rather than an investigation: an emulator settles what is a
+property of the compiled code, a console settles what is a property of
+the machine. The two questions still open on hardware are whether
+`mtx_timedlock`'s polling loop keeps its 200 ms accuracy under the real
+scheduler, and whether `InfoType_CoreMask` is `0xf` in applet mode as
+well as full/game (`t_sysinfo` showed an 8.1× difference in the memory
+limit between the two, so the mask is worth reading in both).
 
 Rebuild them first if the copies on the SD card predate the **second**
 PR #4 review round: both were changed by both rounds. `t_threads` can
