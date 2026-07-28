@@ -5247,15 +5247,27 @@ something `t_vulkan` already measures end to end is not worth it unless
 
 ## Next concrete task
 
-**Reproduce the run-3 MMU fault on the emulator and fix it.** The
-console is gone (see the blocker above), so the loop is now: run
-`t_vulkan.nro` there, read where it stops, fix, repeat. The degraded
-baseline carries the run past `vkCreateDevice`; everything after that is
-the same code the console was executing.
+**The emulator is exhausted.** It answered everything it could:
 
-If the fault does not reproduce, that is information too — it would mean
-the fault is specific to real nvgpu, and the work moves to the parts the
-emulator can exercise until a console is available.
+- `vkCreateDevice -> 0`, then every step through `vkQueueSubmit -> 0`;
+- it stops at `vkWaitForFences`, which is where a platform with no
+  syncpoint read *must* stop — waits are deliberately not degraded;
+- the MMU fault does **not** reproduce there, which is itself the
+  finding: it is specific to real nvgpu;
+- and with `NVK_DEBUG=push_dump,vm` it handed over the whole push stream,
+  which is how R18 and the shader-window collision were found without a
+  console in the loop.
+
+There is no further question the emulator can answer about this
+sequence. Five defects were found and fixed since the last console run —
+patches 0034 (page half), 0036 (`get_value`, a call through NULL), 0037
+(window collision, detected), 0038 (R18), plus the degraded reap in
+`horizon/` — and **none of the five has been executed on hardware.**
+
+So the next step is one console run, and it is the same run either way:
+it closes Phase 4 or it produces a complete diagnosis, because the build
+now carries the debug-utils messenger, the VA-map dump on failure, the
+decoded push dump and the memory-type line.
 
 Held for the console, unchanged:
 
