@@ -27,7 +27,8 @@ patch). The series stands at **twelve patches**, every one formulated as
 a property of the C library or the compiler rather than as an OS name.
 
 **Both new tests now pass — on an emulator (Eden), not on a console:**
-`t_ostime` **27/27**, `t_threads` **65/65** (2026-07-28). Getting there
+`t_ostime` **43/43**, `t_threads` **67/67** (2026-07-28, after three
+review rounds; 27/27 and 65/65 before the third round added checks). Getting there
 found a **miscompile**: devkitA64 gcc 15.2.0 generates wrong code for
 every `_Thread_local` access under `-mtp=soft -fPIC`, doubling the
 thread pointer instead of adding the variable's offset and emitting no
@@ -396,10 +397,43 @@ round 2 wrote down.
 | Gates | tls-relocs, mesa-test-parity, layering, abs-paths, rust-target | all OK |
 
 Both `.nro` changed again: `833d14ef…` (`t_threads`), `8c33bccf…`
-(`t_ostime`). The emulator results recorded above were produced by
-`a58e2af8…` / `92899b59…` and stand as measurements of those builds; the
-changes here are to how the tests behave when something does **not**
-answer, which is the case those runs did not exercise.
+(`t_ostime`).
+
+### Re-run on the emulator after this round (2026-07-28, Eden)
+
+```
+RESULT: PASS (43/43)   t_ostime    (was 27/27)
+RESULT: PASS (67/67)   t_threads   (was 65/65)
+```
+
+Every check the round added passes, and two of them make the verdict
+mean more than it did:
+
+```
+ok   the cnd_wait worker reached the wait within 2000 ms (1 of 1)
+ok   cnd_signal woke the waiter within 2000 ms (1 of 1)
+ok   every broadcast worker reached the wait within 2000 ms (4 of 4)
+ok   cnd_broadcast woke every waiter within 2000 ms (4 of 4)
+```
+
+The waiters were confirmed **inside** `cnd_wait` before the signal went
+out, so "the waiter woke" is now a statement about `cnd_signal` rather
+than one the predicate could have satisfied on its own. The previous
+PASS could not distinguish the two.
+
+The four bounded `os_time` calls all returned by themselves — no
+watchdog fired and no worker was abandoned — and moving the measurement
+inside the worker sharpened one figure: `os_time_sleep(0)` took **6 µs**,
+against 50–60 µs when it was timed around a call on the main thread.
+
+Two measurements are worth recording as *ranges* rather than constants,
+because three runs now exist: `mtx_timedlock(200 ms)` returned after
+**199–200 ms**, and the smallest observed clock step was **52 ns** in
+two runs and **156 ns** in this one, on 13029 samples instead of 25310 —
+the emulator was busier. Both are far inside their bounds; neither is
+the rounded constant a single run made them look like.
+
+Still class E. A console run is the only thing left.
 
 ---
 
@@ -1163,8 +1197,8 @@ from archive ordering), not a behavioural difference.
 | 1 | OS detection | patch 0007 (identity) + patch 0012 (CPU count). Audit above says where the `#else` still assumes more libc than exists |
 | 2 | Meson `host_machine.system()` | **no patch** — 54 sites classified, all 54 correct in the `else`; the 3 that name the OS are `auto`-default errors we already pass options for |
 | 3 | newlib/libnx gaps | patches 0001–0006. **Six link-time gaps remain**, listed above, deliberately not reopened |
-| 4 | threads | patch 0003 + patch 0011; decision to keep `threads_posix.c` recorded with the disassembly behind it. `t_threads` **PASS 65/65 on an emulator** (Eden, 2026-07-28) — the polling `mtx_timedlock` and `cnd_timedwait` both land on their deadline. Not yet run on a console |
-| 5 | timers / clocks | patch 0008; `t_ostime` **PASS 27/27 on an emulator** (Eden, 2026-07-28) — 52 ns resolution, 0.08 % rate agreement with the ARM counter. Not yet run on a console |
+| 4 | threads | patch 0003 + patch 0011; decision to keep `threads_posix.c` recorded with the disassembly behind it. `t_threads` **PASS 67/67 on an emulator** (Eden, 2026-07-28) — the polling `mtx_timedlock` and `cnd_timedwait` both land on their deadline, and the condvar wakeups are measured with the waiters confirmed inside the wait. Not yet run on a console |
+| 5 | timers / clocks | patch 0008; `t_ostime` **PASS 43/43 on an emulator** (Eden, 2026-07-28) — 52–156 ns resolution, 0.08–0.09 % rate agreement with the ARM counter, every blocking call bounded. Not yet run on a console |
 | 6 | physical memory / page size | `compat/sysconf.c` + patches 0009–0010, hardware-verified 2026-07-27 |
 | 7 | endianness | patch 0004, **closed on the cross build** — it is a compile-time property |
 | 8 | build ID | closed in Phase 2 without a patch: `-Wl,--build-id=sha1` is supported |
@@ -2343,8 +2377,8 @@ Phase 4, which builds directly on `horizon/`.
 
 **Run `t_threads` and `t_ostime` on a console**, and then Phase 4.
 
-They pass on Eden — 65/65 and 27/27 — with the exact binaries recorded
-above (`a58e2af8…`, `92899b59…`), which are in `build/` and
+They pass on Eden — 67/67 and 43/43 — with the exact binaries recorded
+above (`833d14ef…`, `8c33bccf…`), which are in `build/` and
 `build/meson/` and write their logs to `sdmc:/horizon_gpu_tests/` like
 the other eleven. That is the last thing Phase 3 owes, and it is now a
 confirmation rather than an investigation: an emulator settles what is a
