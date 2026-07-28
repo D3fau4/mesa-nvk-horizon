@@ -17,10 +17,33 @@ cd "$(dirname "$0")/.."
 . scripts/toolchain-env.sh
 
 MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
+# Same path configure-mesa-nvk.sh stages into.
+HORIZON_GPU_PREFIX=build/toolchain/horizon-gpu
 
 if [ ! -f "$MESA_NVK_BUILD_DIR/build.ninja" ]; then
     scripts/configure-mesa-nvk.sh
 fi
+
+# Re-stage horizon_gpu before every build, not only at configure time.
+#
+# The NVK build compiles against a *copy* of horizon/include/horizon_gpu
+# and links a *copy* of libhorizon_gpu.a, both placed by
+# configure-mesa-nvk.sh. Staging them only there means an edit to the
+# layer's headers or a rebuild of its archive never reaches this build
+# until someone happens to reconfigure — and the symptom is a compile
+# error about a symbol that plainly exists, or worse, a link against
+# yesterday's library with no symptom at all.
+#
+# Measured: adding HORIZON_GPU_MEM_UNCACHED to horizon/include and
+# rebuilding here failed with
+#   error: 'HORIZON_GPU_MEM_UNCACHED' undeclared ... did you mean
+#          'HORIZON_GPU_MEM_CACHED'?
+# with the enumerator sitting in the header the whole time.
+scripts/build-horizon.sh
+rm -rf "$HORIZON_GPU_PREFIX"
+mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
+cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
+cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
 
 horizon_meson compile -C "$MESA_NVK_BUILD_DIR" "$@"
 
