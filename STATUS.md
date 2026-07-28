@@ -5378,16 +5378,44 @@ notice, one that jumps to zero is not.
   which is how R18 and the shader-window collision were found without a
   console in the loop.
 
-There is no further question the emulator can answer about this
-sequence. Five defects were found and fixed since the last console run —
+There is no further question the emulator can answer about *this
+sequence*. Five defects were found and fixed since the last console run —
 patches 0034 (page half), 0036 (`get_value`, a call through NULL), 0037
 (window collision, detected), 0038 (R18), plus the degraded reap in
 `horizon/` — and **none of the five has been executed on hardware.**
 
-So the next step is one console run, and it is the same run either way:
-it closes Phase 4 or it produces a complete diagnosis, because the build
-now carries the debug-utils messenger, the VA-map dump on failure, the
-decoded push dump and the memory-type line.
+### Two runs are pending, and they are different runs
+
+**1. `t_init.nro` on the emulator — thirty seconds, and it owes nothing
+to a console.** The GPU timestamp and Zcull geometry (extensions 1 and 6)
+were closed by *reading libnx's headers*. That code has never executed
+anywhere. `t_init` now calls both: the timestamp for being non-zero and
+not going backwards across two reads, Zcull for a context size that
+`channel.c` independently agrees with. If either closure is wrong, this
+says so without spending the console.
+
+**2. `t_vulkan.nro` on a real Switch — the criterion.** One run, and it
+goes either way usefully: it closes Phase 4, or it produces a complete
+diagnosis, because the build carries the debug-utils messenger, the
+VA-map dump on failure, the decoded push dump and the memory-type line.
+
+### Why the tree stops adding changes here
+
+A deliberate call, recorded because it is a decision and not an
+omission. Today's window block-off looked obviously right — the premise
+was true, the mechanism existed, the overlap warning duly disappeared —
+and it broke `vkCreateDevice` outright. One emulator run said so.
+
+There are now five fixes and three extension closures in this tree that
+no hardware has executed, and Phase 4 turns on a *single* console run
+whenever one is available. Each further unvalidated change raises the
+chance that that run fails on something introduced today rather than on
+what is left to find. The marginal value of more Phase 4-path changes is
+negative until one of the two runs above lands.
+
+Work that does *not* touch the Phase 4 path — WSI (Phase 6), or
+documentation — carries no such cost. Phase 5's GPU-side waits do touch
+it, through `nvkmd_horizon_ctx_wait`, and are held for the same reason.
 
 Held for the console, unchanged:
 
