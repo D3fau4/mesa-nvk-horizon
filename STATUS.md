@@ -5294,6 +5294,32 @@ NOP. Adding a semaphore-release builder to `horizon/` to measure
 something `t_vulkan` already measures end to end is not worth it unless
 `t_vulkan`'s readback actually fails; then it is the right next step.
 
+## The unchecked-premise audit (2026-07-28)
+
+Three claims in this tree about what the platform cannot do turned out
+to be about what `horizon_gpu` had not wrapped. They are worth listing
+together, because the pattern cost more than any one of them:
+
+| Claim | Reality | Outcome |
+|---|---|---|
+| "`ALLOC_SPACE` has no place-it-here form" | `NvAllocSpaceFlags_FixedOffset` | `NVKMD_VA_ALLOC_FIXED` implemented — **extension 5 closed** |
+| "NVGPU_AS has no sparse reservation" (D12's reason) | `NvAllocSpaceFlags_Sparse` | D12's decision stands, on a true basis: partial unbind is what is missing |
+| "horizon_gpu has no GPU timestamp query" | `nvGpuGetTimestamp` | implemented — **milestone item 8, extension 6 closed** |
+
+All three sat in libnx's `ioctl.h`, in the same file the code was
+already calling into. The sweep that found them was mechanical: list
+every `nvioctl*` libnx exports, then grep this tree for statements that
+the platform lacks something.
+
+Two of the six extensions Phase 4 step 1 enumerated are now closed that
+were previously recorded as blocked, and neither needed hardware.
+
+The GPU timestamp has one wrinkle worth stating: nvkmd's
+`get_gpu_timestamp` cannot report failure. Returning zero would be a
+wrong answer offered as a real one, so a failed read logs and repeats
+the last good value — a clock that stalls is wrong in a way a caller can
+notice, one that jumps to zero is not.
+
 ## Next concrete task
 
 **The emulator is exhausted.** It answered everything it could:

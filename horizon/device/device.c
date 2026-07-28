@@ -278,3 +278,20 @@ horizon_gpu_result horizon_gpu_device_destroy(horizon_gpu_device *dev)
     free(dev);
     return horizon_gpu_ok();
 }
+
+horizon_gpu_result horizon_gpu_device_get_timestamp(horizon_gpu_device *dev,
+                                                    uint64_t *out_ts)
+{
+    if (!dev || !out_ts)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* /dev/nvhost-ctrl-gpu, open since bring-up step 4 (nvGpuInit).
+     * libnx wraps NVGPU_GPU_IOCTL_GET_GPU_TIME as nvGpuGetTimestamp. */
+    Result rc = nvGpuGetTimestamp(out_ts);
+    if (R_FAILED(rc)) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "nvGpuGetTimestamp failed: 0x%08x", rc);
+        return horizon_gpu_err_nv(rc);
+    }
+    return horizon_gpu_ok();
+}

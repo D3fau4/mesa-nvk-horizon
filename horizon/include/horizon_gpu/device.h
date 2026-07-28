@@ -128,6 +128,13 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
  * requested. */
 bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev);
 
+/* The GPU's own timestamp counter, in nanoseconds
+ * (NVGPU_GPU_IOCTL_GET_GPU_TIME). This is the GPU's clock, not the CPU's
+ * — the point of asking for it is to correlate the two, which is what
+ * VK_EXT_calibrated_timestamps exists to do. */
+horizon_gpu_result horizon_gpu_device_get_timestamp(horizon_gpu_device *dev,
+                                                    uint64_t *out_ts);
+
 /* Fails with HORIZON_GPU_ERR_LEAK — after logging every non-zero counter —
  * if any child object is still alive; nothing is torn down in that case.
  * On success the nv services are released in reverse bring-up order and
