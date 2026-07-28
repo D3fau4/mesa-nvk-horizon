@@ -187,6 +187,19 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
 
     chan->syncpt_id = nvGpuChannelGetSyncpointId(&chan->gc);
 
+    /* Logged at creation, not only on failure. The fourth hardware run
+     * of the Phase 4 sequence failed here with syncpoint id 1, where
+     * t_channel had reported 26 on the same console — so the channel
+     * came back from libnx reporting success without a real syncpoint.
+     * NVK creates two or three channels during vkCreateDevice (upload
+     * queue, exec, and bind when the queue family advertises sparse),
+     * and one line per creation is what says which one degrades. Cheap,
+     * and the alternative is another console round trip per guess. */
+    horizon_logf(&dev->log, HORIZON_LOG_INFO,
+                 "channel %p: created, syncpt id=%u (live channels now %u)",
+                 (void *)chan, chan->syncpt_id,
+                 atomic_load(&dev->live_channels) + 1u);
+
     /* Shadow initialisation from the observed hardware value; whether
      * Horizon resets the counter at channel creation is the R5 open
      * question — t_channel reports this number. */

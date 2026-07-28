@@ -129,6 +129,16 @@ run_test(test_ctx *t)
     * physical device is being created.
     */
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
+
+   /* And ask horizon_gpu to say what it is doing. Its default level is
+    * WARN, which is right for a driver in use and wrong for a bring-up
+    * test: the fourth hardware run failed inside channel creation and
+    * the one number that would have identified which channel — its
+    * syncpoint id — is logged at INFO. This is set here rather than
+    * lowered in the library, because the library's default is correct
+    * and it is the test that wants more.
+    */
+   setenv("HORIZON_GPU_LOG", "3", 1);
    t_check(t, getenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER") != NULL,
                   "the non-conformance opt-in is set in the environment");
 
