@@ -2014,6 +2014,26 @@ rebuilding makes it report **19** missing core entry points, including
 the one that killed the console run.
 
 
+
+### One more, found in the same reading: `GPU_MULTI_WAIT`
+
+`vk_sync_timeline` validates the type it is built on
+(`vk_sync_timeline.c:51-60`) and requires
+`VK_SYNC_FEATURE_GPU_MULTI_WAIT`. `nvk_horizon_sync_type` did not
+declare it. Both that check and `vk_sync.c:74` are **asserts**, so it
+was silent in this `NDEBUG` build and would abort inside
+`vkCreateDevice` in a debug one — the sync type registered for timeline
+emulation did not meet the contract of the thing emulating over it.
+
+The flag is also simply true: `nvkmd_horizon_ctx_wait` takes a
+`wait_count` and waits on every entry, so the declaration was
+describing less than the code does. Declared. No runtime behaviour
+changes in this build; every use of the flag is an assert, which is
+exactly why it needed reading rather than running to find.
+
+Series: **twenty-seven**.
+
+
 ---
 
 ## Phase 3 — the state it closed in (previously "Current phase")

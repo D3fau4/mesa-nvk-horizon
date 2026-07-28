@@ -1,7 +1,7 @@
 From 7e8dcccacfc81cb51d578a35ac1207b33117e7b4 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:36:45 +0000
-Subject: [PATCH 19/26] nouveau/vk: nvkmd_horizon memory objects, VA heap and
+Subject: [PATCH 19/27] nouveau/vk: nvkmd_horizon memory objects, VA heap and
  bind/unbind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
