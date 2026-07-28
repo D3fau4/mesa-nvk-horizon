@@ -4605,6 +4605,63 @@ Tested: host tests 103/103, cross build, six gates, series re-applied
 twice from the pinned base. **Not run on hardware or emulator yet** —
 the artefacts are in `build/pkg`.
 
+## `t_sysinfo` 18/19 on hardware — the binary was stale (2026-07-28)
+
+The 2026-07-27 console logs fail exactly one check in both process
+modes: every rung of the `svcMapMemory` ladder is rejected with
+`0x0000dc01`. That is not a new failure and it needs no further console
+time to explain — it is the **already-fixed** one, run again from an
+older `.nro`.
+
+The proof is in the log's own text:
+
+```
+note svcMapMemory(0x1000): rejected 0x0000dc01
+```
+
+Commit `1857448` (2026-07-27, *"tests: map the granularity probe into
+the stack region"*) changed that probe to use `virtmemFindStack` instead
+of `virtmemFindAslr`, and added a decoder that appends the kernel
+description to exactly that line — `0xdc01` is kernel description 110,
+`KernelError_InvalidMemoryRange`, i.e. wrong region, not a granularity
+refusal. The logged line carries no decoded suffix, and the current
+source cannot print it without one. So the `.nro` that produced this log
+predates the fix.
+
+Status: the fix exists in the tree and has **never been run on
+hardware**. `t_sysinfo.nro` travels in the next package; if the region
+was the whole story it goes to 19/19, and if it does not, the new line
+names the kernel description and that is a different investigation with
+a real starting point.
+
+## D14 closed on the build side — `t_uncached` (2026-07-28)
+
+D14's remaining debt was a hardware test for the UNCACHED policy.
+`tests/t_uncached.c` is that test, registered in both build paths. It
+asks the three questions the kernel alone can answer, separately, so a
+failure names which:
+
+1. **Does `svcSetMemoryAttribute` accept our allocations?** A CACHED
+   allocation of identical size and alignment runs first as the control,
+   so an allocator problem cannot be read as a D14 problem.
+2. **Is the result usable by ordinary C?** Uncached on AArch64 is
+   Normal-NC if the kernel is generous and Device-nGnRE if it is not,
+   and multi-register accesses to Device memory fault. A dword loop and
+   a `memcpy` are the check, preceded by a note — if the log stops
+   there, that *is* the answer.
+3. **Do CPU writes reach the GPU with no cache maintenance?** The test
+   builds a NOP command list in uncached memory, **never calls
+   `horizon_gpu_mem_flush`**, submits and waits. Completion means the
+   GPU read what the CPU wrote. The missing flush is the test, not an
+   oversight, and it needs no new engine emitters — the list the GPU
+   fetches is the CPU write being measured.
+
+Teardown is checked too: a second uncached allocation after the first is
+freed would notice a `destroy` that forgot to clear the attribute.
+
+Tested: cross build clean under `-Werror`, six gates, host tests
+103/103. **Never executed** — it is a hardware measurement.
+
 ## Next concrete task
 
 **Run `t_vulkan.nro` on a real Switch.** That is Phase 4's exit
@@ -4620,14 +4677,20 @@ criterion and the only thing left in it:
 Nothing in this environment can produce the log; it is a hardware
 measurement and it belongs to whoever holds the console.
 
-Two things are owed alongside it, from Phase 3, and travel in the same
-package: `t_threads` and `t_ostime` on hardware rather than on the
-emulator.
+Four things are owed alongside it and travel in the same package, none
+of which blocks the criterion above:
+
+- `t_threads` and `t_ostime` on hardware rather than on the emulator
+  (Phase 3).
+- `t_uncached`, D14's measurement, never executed anywhere.
+- `t_sysinfo` re-run from a current binary; the 18/19 above was a stale
+  `.nro`.
 
 ## Commit log for Phase 4
 
 | Commit | Scope |
 |---|---|
+| `tests: t_uncached, and t_sysinfo's hardware failure was a stale binary` | `tests/t_uncached.c`, `meson.build`, `Makefile`, STATUS — D14 and the t_sysinfo diagnosis |
 | `horizon,tests: an opt-in untrusted syncpoint baseline, and a run that admits it` | `horizon/device`, `horizon/channel`, `tests/t_vulkan.c`, synchronization.md § 9 |
 | `docs: record what nvkmd requires, against what horizon_gpu has` | STATUS — step 1, the interface tables and D9–D12 |
 | `mesa-patches: close the libc gaps the first executable link meets` | patches 0013–0014, STATUS — step 2 |

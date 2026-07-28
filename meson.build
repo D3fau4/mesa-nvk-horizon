@@ -160,6 +160,9 @@ horizon_tests = [
   't_syncpt',
   't_fence_wait',
   't_teardown',
+  # Phase 4, decision D14: the UNCACHED cache policy. Uses no Mesa, so it
+  # lives with the horizon_gpu tests rather than the NVK ones.
+  't_uncached',
   # Phase 3 item 6: compat/sysconf.c against the real kernel. Uses no
   # horizon_gpu — the C library and svcGetInfo only — but it is built
   # and packaged with the others because it is a hardware measurement,
