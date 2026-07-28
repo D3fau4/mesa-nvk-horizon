@@ -105,7 +105,7 @@ bytes, zero undefined symbols, zero multiple definitions. D11 is
 resolved native over syncpoints and D8 where it actually bites: the
 absolute deadline becomes a relative duration exactly once. The
 `compiler_builtins`-versus-newlib question is answered by that link:
-**no collision**. The series is twenty-one.
+**no collision**. The series is twenty-two.
 
 ---
 
@@ -1475,6 +1475,64 @@ phase's exit criterion.
 criterion is that the sequence runs on a real Switch and the CPU-side
 validation passes, with the console log recorded here. Nothing in this
 environment can produce that.
+
+
+---
+
+## Phase 4 — the hardware run, and what is ready for it (2026-07-28)
+
+**This is the only thing Phase 4 still owes, and it cannot be done in
+this environment: there is no console attached to it.** Everything
+recorded above is a cross build (X). What follows is what has been done
+instead — packaging it, and removing the first-run failures that could
+be found by reading rather than by running.
+
+### The package
+
+`scripts/package-horizon.sh` wrote **fourteen `.nro`** to `build/pkg/`
+with `MANIFEST.txt` beside them: each artefact's sha256, the resolved
+toolchain image digest and the live package versions, so a result
+measured on console stays attributable to a specific build.
+
+`t_vulkan.nro` is 14 008 376 bytes.
+
+### One avoidable failure found by reading, and fixed
+
+NVK advertises `KHR_timeline_semaphore` and `timelineSemaphore`
+**unconditionally** (`nvk_physical_device.c:212,439`) and passes
+`nvkmd->sync_types` straight through. The backend registered only the
+binary syncpoint type, so `vkCreateSemaphore` would have failed to find
+a type for every timeline semaphore an application asked for — a
+failure that would have looked like a driver bug and was a missing list
+entry. The runtime's `vk_sync_timeline` emulation over the binary type
+is now registered beside it, which is what the nouveau backend does when
+the kernel has no timeline either. Patch 0022; the series is
+twenty-two.
+
+### What the hardware run has to show
+
+The exit criterion is not "it does not crash":
+
+1. the sequence runs — `vkCreateInstance` through `vkWaitForFences`;
+2. the **CPU-side validation of the written pattern passes** — the test
+   poisons the buffer with `~0xa5c3f00d` before submitting, so it cannot
+   pass on memory that already held the right value;
+3. **no wait-idle was inserted to make it pass** — there is none in the
+   test and none in `exec()`;
+4. the console log is pasted into this file.
+
+`t_vulkan` prints one line per check and a machine-checkable
+`RESULT: PASS (n/n)` / `RESULT: FAIL (k/n)`, to stdout and to
+`sdmc:/horizon_gpu_tests/t_vulkan.log`, like the other thirteen.
+
+### Said plainly
+
+**The test has never been executed.** That it compiles and links says
+only that nothing is missing, not that anything works. A first run that
+fails is the expected outcome, not a surprise, and the log is what turns
+either result into knowledge. Two Phase 3 measurements travel in the
+same package and are owed alongside it: `t_threads` and `t_ostime` on
+hardware rather than on the emulator.
 
 
 ---

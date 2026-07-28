@@ -1,0 +1,76 @@
+From 292808d73b8c16f4aa441aaad31ac65989d78277 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:55:01 +0000
+Subject: [PATCH 22/22] nouveau/vk: register the emulated timeline sync type on
+ Horizon
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NVK advertises KHR_timeline_semaphore and timelineSemaphore
+unconditionally, so a timeline vk_sync type has to be in the pdev's
+list or vkCreateSemaphore fails to find one for every timeline
+semaphore an application asks for. The syncpoint fence is binary, so
+the timeline is the runtime's emulation over it — which is what the
+nouveau backend does as well when the kernel has no timeline.
+
+Found by reading the paths the first hardware run will take, not by
+running it: this environment has no console. It is the kind of failure
+that would have looked like a driver bug and was a missing list entry.
+
+mesa-nvk-horizon: Phase 4 — reducing avoidable first-run failures
+---
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h      | 11 ++++++++++-
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c |  5 ++++-
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 47fe880..ef93ffe 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -17,6 +17,7 @@
+ 
+ #include "util/simple_mtx.h"
+ #include "vk_sync.h"
++#include "vk_sync_timeline.h"
+ 
+ /*
+  * The Horizon OS kernel-mode-driver backend.
+@@ -58,8 +59,16 @@ struct nvkmd_horizon_pdev {
+ 
+    /* NULL-terminated, as nvkmd_pdev::sync_types wants. Owned here so
+     * the list outlives no one and is not a global.
++    *
++    * Two entries, not one. NVK advertises KHR_timeline_semaphore and
++    * timelineSemaphore unconditionally, so a timeline type has to be in
++    * this list or vkCreateSemaphore fails to find one for every timeline
++    * semaphore an application asks for. The syncpoint fence is binary,
++    * so the timeline is the runtime's emulation over it — which is what
++    * the nouveau backend does too when the kernel has no timeline.
+     */
+-   const struct vk_sync_type *sync_types[2];
++   struct vk_sync_timeline_type timeline_sync_type;
++   const struct vk_sync_type *sync_types[3];
+ };
+ 
+ NVKMD_DECL_SUBCLASS(pdev, horizon);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 8147a1a..8486180 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -280,8 +280,11 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+     * goes on top of it for timeline semaphores, which is what NVK does
+     * on every backend whose kernel driver has no timeline of its own.
+     */
++   pdev->timeline_sync_type =
++      vk_sync_timeline_get_type(&nvk_horizon_sync_type);
+    pdev->sync_types[0] = &nvk_horizon_sync_type;
+-   pdev->sync_types[1] = NULL;
++   pdev->sync_types[1] = &pdev->timeline_sync_type.sync;
++   pdev->sync_types[2] = NULL;
+    pdev->base.sync_types = pdev->sync_types;
+ 
+    *pdev_out = &pdev->base;
+-- 
+2.43.0
+
