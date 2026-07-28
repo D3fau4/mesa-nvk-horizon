@@ -28,21 +28,40 @@ scripts/build-compat.sh
 # readable; Meson shares [constants] across all of them. Passing the
 # generated one first keeps the reading order the same as the
 # dependency order.
+#
+# -Dmesa_build_dir is how $MESA_BUILD_DIR reaches meson.build: Meson runs
+# inside the toolchain container, which receives only the variables
+# horizon_run names, so reading the environment from meson.build would
+# see nothing there. Tests 12 and 13 link the archives in that directory
+# and are skipped when it holds none.
 set -- \
     --cross-file "$HORIZON_CROSS_CONST_FILE" \
     --cross-file "$HORIZON_CROSS_FILE" \
+    -Dmesa_build_dir="$MESA_BUILD_DIR" \
     "$@"
 
-mode=$(horizon_setup_mode "$HORIZON_BUILD_DIR")
-case "$mode" in
+# meson.options is part of this directory's identity as well: a -D for an
+# option added after the directory was configured is rejected before
+# Meson re-reads the file that declares it.
+horizon_setup_mode "$HORIZON_BUILD_DIR" meson.options
+case "$HORIZON_SETUP_MODE" in
     --wipe)
-        echo "cross files changed since $HORIZON_BUILD_DIR was configured;"
-        echo "wiping it — Meson only reads them on a first configure"
+        echo "cross files or meson.options changed since $HORIZON_BUILD_DIR"
+        echo "was configured; wiping it — Meson only reads them on a first"
+        echo "configure"
         ;;
     --reconfigure) echo "reconfiguring $HORIZON_BUILD_DIR" ;;
     *)             echo "configuring $HORIZON_BUILD_DIR" ;;
 esac
 
-# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
-horizon_meson setup $mode "$@" "$HORIZON_BUILD_DIR" .
-horizon_record_cross_id "$HORIZON_BUILD_DIR"
+# shellcheck disable=SC2086 # one flag or deliberately empty
+horizon_meson setup $HORIZON_SETUP_MODE "$@" "$HORIZON_BUILD_DIR" .
+horizon_record_cross_id
+
+# What meson.build's fs.exists() just decided about tests 12 and 13, and
+# which directory it decided it about. scripts/build-horizon.sh compares
+# the same line against the state on disk; see the note there for why
+# that comparison has to exist, and horizon_mesa_state for why the
+# directory is part of it. Beside the build directory for the same
+# reason the cross-id stamp is: --wipe empties the directory itself.
+horizon_mesa_state > "$HORIZON_BUILD_DIR.mesalibs"

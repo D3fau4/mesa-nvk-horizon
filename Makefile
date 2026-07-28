@@ -62,11 +62,65 @@ OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/)
 TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
          t_syncpt t_fence_wait t_teardown t_sysinfo
 
+# Tests 12 and 13 measure Mesa's own code on hardware (Phase 3 items 4
+# and 5): the C11 threads shim Mesa selects here, and os_time.c. They
+# link the archives Mesa's build produced rather than recompiling those
+# sources with flags of our own — the object under test has to be the
+# object Mesa builds, or the measurement is about a different build.
+#
+# -DHAVE_PTHREAD and -DHAVE_STRUCT_TIMESPEC are not choices: they are
+# what Mesa's own configure decided here, copied so the headers declare
+# the same types. Both are visible in build/mesa-probe/build.ninja.
+#
+# meson.build states these same four things for the other build path,
+# and scripts/check-mesa-test-parity.sh fails if the two ever disagree.
+# They are duplicated on purpose: this file is the path whose output was
+# verified on hardware and it has to be readable without a script.
+#
+# Conditional because they need `scripts/configure-mesa.sh &&
+# scripts/build-mesa.sh` first, and a bare clone must still build the
+# eleven tests that need nothing but the toolchain.
+# $(MESA_BUILD_DIR) is what scripts/{configure,build}-mesa.sh honour and
+# what scripts/toolchain-env.sh defaults; looking anywhere else would
+# report "Mesa is not built" about a directory the caller never used.
+# scripts/build-switch.sh forwards it into the container.
+MESA_BUILD  := $(or $(MESA_BUILD_DIR),build/mesa-probe)
+MESA_LIBS   := $(MESA_BUILD)/src/c11/impl/libmesa_util_c11.a \
+               $(MESA_BUILD)/src/util/libmesa_util.a
+MESA_CFLAGS := -Imesa/src -Imesa/include -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC
+MESA_TESTS  := t_threads t_ostime
+
+ifeq ($(words $(wildcard $(MESA_LIBS))),$(words $(MESA_LIBS)))
+TESTS += $(MESA_TESTS)
+STALE_MESA :=
+else
+$(info Makefile: skipping $(MESA_TESTS) — no Mesa archives in $(MESA_BUILD);)
+$(info Makefile: run scripts/configure-mesa.sh && scripts/build-mesa.sh first.)
+# Anything an earlier build left behind when Mesa *was* present. It has
+# to go: scripts/package-horizon.sh copies every $(BUILD)/*.nro it finds
+# and records its sha256 in a manifest whose whole job is to attribute an
+# artefact to one build. Leaving these would ship the previous build's
+# binaries under this build's manifest, right after this build said it
+# was skipping them.
+STALE_MESA := $(wildcard $(MESA_TESTS:%=$(BUILD)/%.nro) \
+                         $(MESA_TESTS:%=$(BUILD)/%.elf) \
+                         $(MESA_TESTS:%=$(BUILD)/%.nacp) \
+                         $(MESA_TESTS:%=$(BUILD)/%.t.o))
+endif
+
 TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 
-.PHONY: all lib clean
-all: lib $(TEST_NROS)
+.PHONY: all lib clean prune-stale
+all: prune-stale lib $(TEST_NROS)
 lib: $(LIB)
+
+# Safe under -j: $(STALE_MESA) is non-empty only for tests this build is
+# not producing, so nothing else has these files as a target.
+prune-stale:
+ifneq ($(STALE_MESA),)
+	@echo "removing stale Mesa test artefacts: $(STALE_MESA)"
+	rm -f $(STALE_MESA)
+endif
 
 $(OBJ_DIRS):
 	mkdir -p $@
@@ -95,13 +149,27 @@ $(BUILD)/testfw.o: tests/common/testfw.c | $(BUILD)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/%.t.o: tests/%.c | $(BUILD)/
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -MMD -MP -c $< -o $@
 
 # $(COMPAT_LIB) is a prerequisite but not in $^: it is reached through
 # -lhorizon_compat in $(LIBS), which is where it has to be so the linker
-# resolves it after the objects that reference it.
+# resolves it after the objects that reference it. $(EXTRA_LIBS) is the
+# same idea for the Mesa archives — before -lhorizon_compat and -lnx,
+# because it is Mesa's objects that reference sysconf and libnx.
+#
+# This is a plain left-to-right link, so that order is the whole
+# mechanism. The Meson path arrives at the same result differently and
+# says how, in meson.build beside idep_mesa_core; the two are not
+# expected to emit the same link line.
 $(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
-	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) $(LIBS) -o $@
+	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) \
+	    $(EXTRA_LIBS) $(LIBS) -o $@
+
+# Target-specific, so only tests 12 and 13 see the Mesa include path and
+# archives; the other eleven keep building with no Mesa in sight.
+$(MESA_TESTS:%=$(BUILD)/%.t.o): EXTRA_CFLAGS := $(MESA_CFLAGS)
+$(MESA_TESTS:%=$(BUILD)/%.elf): EXTRA_LIBS := $(MESA_LIBS)
+$(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)
 
 $(BUILD)/%.nacp: | $(BUILD)/
 	$(NACPTOOL) --create "$*" "mesa-nvk-horizon" "phase1" $@
@@ -109,8 +177,71 @@ $(BUILD)/%.nacp: | $(BUILD)/
 $(BUILD)/%.nro: $(BUILD)/%.elf $(BUILD)/%.nacp
 	$(ELF2NRO) $< $@ --nacp=$(BUILD)/$*.nacp
 
+# The rule is NOT "only what this Makefile produces" — build/meson is
+# Meson's and it goes. It is: anything cheap to regenerate from this tree
+# is removed; anything that costs minutes of compilation or a network
+# fetch is kept, because `make clean` is a request to start the build
+# over, not to pay for the toolchain again.
+#
+# Removed although it is not ours: the Meson build directory and its
+# stamp. It holds this project's own sources, reconfigures in seconds
+# through scripts/configure-horizon.sh, and a stale cross build
+# directory is a hazard rather than an asset.
+#
+# Kept:
+#
+#   $(MESA_BUILD)  — scripts/{configure,build}-mesa.sh produce it, it
+#     costs minutes to rebuild, and its presence is what selects tests 12
+#     and 13. Deleting it made `make clean && make` drop those two tests
+#     without the caller having asked for anything of the sort.
+#     $(MESA_BUILD).crossid goes with it: scripts/toolchain-env.sh keeps
+#     the stamp beside the directory (--wipe empties the directory
+#     itself) and treats a configured directory with no stamp as stale,
+#     so removing the stamp alone forces a full Mesa reconfigure.
+#
+#   $(BUILD)/toolchain — the pinned Meson and Mesa's Python generator
+#     deps are installed there from the network, which CLAUDE.md
+#     documents as the thing that may not be reachable. `make clean`
+#     uninstalling the build system is not what anyone asks for by
+#     typing it. The parts of it this Makefile does produce are removed
+#     explicitly below; the generated cross file is regenerated by
+#     scripts/gen-cross-file.sh on the next configure.
+#
+# $(filter) is a literal string comparison, so the kept set has to be
+# spelled the same way $(wildcard) spells it. It was not: measured with
+# `make -n clean`, MESA_BUILD_DIR=build/mesa-probe/ — and ./build/mesa-probe,
+# and build//mesa-probe — all failed to match and put the Mesa build in
+# the rm -rf, which is the loss this rule exists to prevent.
+# $(abspath) normalises both sides without requiring the path to exist:
+# it collapses repeated slashes, resolves . and .., and strips a trailing
+# slash. scripts/toolchain-env.sh normalises for the script path too;
+# this Makefile does its own because it is also a standalone entry point.
+#
+# An exact match is not enough either. $(wildcard $(BUILD)/*) lists the
+# immediate children of build/, so MESA_BUILD_DIR=build/cache/mesa-probe
+# puts build/cache in that list while the kept set holds only
+# build/cache/mesa-probe — and `rm -rf build/cache` takes the Mesa build
+# with it. Measured with make -n clean. An entry is therefore kept when
+# it *is* one of the paths below or when it *contains* the Mesa build.
+# Keeping a whole intermediate directory is the conservative direction:
+# a nested Mesa build makes clean spare that directory entirely, which
+# is stated here rather than discovered.
+MESA_BUILD_ABS := $(abspath $(MESA_BUILD))
+CLEAN_KEEP := $(MESA_BUILD_ABS) $(MESA_BUILD_ABS).crossid \
+              $(abspath $(BUILD)/toolchain)
+
+# Non-empty when $1 must survive clean. $(strip) is load-bearing: the
+# two filters are joined by the line continuation's space, so with both
+# empty this expands to " ", and $(if) reads a lone space as true —
+# which kept every file and made clean delete nothing at all. Measured
+# with make -n clean, which printed a bare `rm -rf`.
+clean_keeps = $(strip $(filter $(abspath $1),$(CLEAN_KEEP)) \
+                      $(filter $(abspath $1)/%,$(MESA_BUILD_ABS)))
+
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(foreach e,$(wildcard $(BUILD)/*),\
+	          $(if $(call clean_keeps,$(e)),,$(e)))
+	rm -rf $(COMPAT_LIBDIR) $(BUILD)/toolchain/compat-obj
 
 # The compat depfiles were generated but never included, so a change to a
 # newlib or libnx header did not rebuild compat/ on this path either.

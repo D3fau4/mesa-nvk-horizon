@@ -27,8 +27,8 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=toolchain-env.sh
 . scripts/toolchain-env.sh
-
-MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+# $MESA_BUILD_DIR comes from there now, so meson.build and the Makefile
+# resolve it to the same directory this script builds in.
 
 [ -f mesa/meson.build ] || {
     echo "error: mesa/ is not populated (no meson.build)." >&2
@@ -65,8 +65,38 @@ scripts/build-compat.sh
 # "$@" comes last so a caller can override any of these, and so the
 # options a given measurement was taken with are visible on the command
 # line rather than buried here.
+# -Db_staticpic=false is not a preference. Meson otherwise appends -fPIC
+# to every static-library object, after the cross file's -fPIE, and on
+# this toolchain `-mtp=soft -fPIC` MISCOMPILES thread-local storage.
+# Measured, on devkitA64 gcc 15.2.0, from a four-line file:
+#
+#   -mtp=soft -fPIE   bl __aarch64_read_tp
+#                     add x0, x0, #0x0, lsl #12  R_AARCH64_TLSLE_ADD_TPREL_HI12
+#                     add x0, x0, #0x0           R_AARCH64_TLSLE_ADD_TPREL_LO12_NC
+#   -mtp=soft -fPIC   bl __aarch64_read_tp
+#                     lsl x0, x0, #1             <- no relocation at all
+#
+# The second form doubles the thread pointer instead of adding the
+# variable's offset to it, and carries no TLS relocation for the linker
+# to fix up. Every access to a _Thread_local reads and writes a wild
+# address. All three objects in the Mesa build that use TLS —
+# u_call_once.c.o, u_debug.c.o, u_qsort.cpp.o — were built that way, and
+# it is what hung t_threads on the first run: os_get_option_cached()
+# takes a statically initialised simple_mtx whose lock goes through the
+# thread_local in u_call_once.c.
+#
+# The same option is already in this project's own meson.build
+# default_options, where it was added for a smaller reason (matching the
+# hardware-verified Makefile output byte for byte). Nothing built here is
+# a shared library — Horizon has no dynamic loader, which patch 0007
+# records — so -fPIC buys nothing on this platform and costs this.
+#
+# scripts/build-mesa.sh runs scripts/check-tls-relocs.sh over the objects
+# after every build, so overriding this option — which the trailing "$@"
+# below deliberately allows — fails there rather than shipping silently.
 set -- \
     --buildtype=plain \
+    -Db_staticpic=false \
     --cross-file "$HORIZON_CROSS_CONST_FILE" \
     --cross-file "$HORIZON_CROSS_FILE" \
     -Dgallium-drivers= \
@@ -77,8 +107,8 @@ set -- \
     -Dshader-cache=disabled \
     "$@"
 
-mode=$(horizon_setup_mode "$MESA_BUILD_DIR")
-case "$mode" in
+horizon_setup_mode "$MESA_BUILD_DIR"
+case "$HORIZON_SETUP_MODE" in
     --wipe)
         echo "cross files changed since $MESA_BUILD_DIR was configured;"
         echo "wiping it — Meson only reads them on a first configure"
@@ -87,6 +117,6 @@ case "$mode" in
     *)             echo "configuring $MESA_BUILD_DIR" ;;
 esac
 
-# shellcheck disable=SC2086 # $mode is one flag or deliberately empty
-horizon_meson setup $mode "$@" "$MESA_BUILD_DIR" mesa
-horizon_record_cross_id "$MESA_BUILD_DIR"
+# shellcheck disable=SC2086 # one flag or deliberately empty
+horizon_meson setup $HORIZON_SETUP_MODE "$@" "$MESA_BUILD_DIR" mesa
+horizon_record_cross_id

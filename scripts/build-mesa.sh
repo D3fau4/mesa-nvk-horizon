@@ -23,8 +23,8 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=toolchain-env.sh
 . scripts/toolchain-env.sh
-
-MESA_BUILD_DIR="${MESA_BUILD_DIR:-build/mesa-probe}"
+# $MESA_BUILD_DIR comes from there now, so meson.build and the Makefile
+# resolve it to the same directory this script builds in.
 
 # src/meson.build builds these subdirectories unconditionally — every
 # driver is behind a with_* condition — so this list *is* the non-driver
@@ -66,3 +66,14 @@ if [ "$#" -eq 0 ]; then
 fi
 
 horizon_meson compile -C "$MESA_BUILD_DIR" "$@"
+
+# Run here, on the objects, because this is where they exist. The flag
+# that produced the miscompile is set in scripts/configure-mesa.sh, but a
+# comment there saying "the gate catches it" was not enforcement: nothing
+# invoked the gate, so `configure-mesa.sh -Db_staticpic=true` — which the
+# trailing "$@" allows on purpose — followed by this script succeeded
+# with every thread-local access broken. It now fails here instead.
+#
+# After the build, not before: a gate that runs before the objects are
+# produced inspects the previous build's.
+scripts/check-tls-relocs.sh

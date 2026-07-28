@@ -23,6 +23,13 @@
  * nvk_physical_device_create() return VK_ERROR_INITIALIZATION_FAILED,
  * so no Vulkan device is enumerated at all.
  *
+ * Mesa's src/util/u_cpu_detect.c is the second caller: it counts
+ * processors with sysconf(_SC_NPROCESSORS_ONLN), and util/u_queue.c
+ * sizes its thread pool from the result. Answering it here rather than
+ * inside Mesa is what keeps <switch.h> out of Mesa's generic src/util —
+ * a layering rule of this project, and the reason such a patch could
+ * never go upstream.
+ *
  * Layer rules (CLAUDE.md): compat/ may use newlib and libnx, and must
  * not touch Mesa, NVK or horizon/. This file uses exactly libnx's svc.h
  * and newlib.
@@ -121,6 +128,67 @@ sysconf(int name)
         if (!horizon_process_info(InfoType_TotalMemorySize, &total))
             break;
         return bytes_to_pages(total);
+
+    /* WHERE THE PROCESSOR COUNT COMES FROM.
+     *
+     * InfoType_CoreMask is "Bitmask of allowed Core IDs" (libnx
+     * switch/kernel/svc.h:185) — the set of CPU cores this process may
+     * be scheduled on, which is what svcSetThreadCoreMask validates a
+     * thread's affinity against. Its population count is therefore the
+     * number of processors usable by this process, which is exactly the
+     * quantity _SC_NPROCESSORS_ONLN names.
+     *
+     * ONLN and CONF get the same answer, deliberately, and the reason
+     * is a measurement rather than an argument. The kernel's only
+     * unprivileged answer about cores is this mask; the wider question —
+     * "cores the SoC has, whether or not you may use them" — has no
+     * query behind it. svcGetSystemInfo is the candidate, and libnx
+     * enumerates everything it accepts:
+     *
+     *   SystemInfoType_TotalPhysicalMemorySize  = 0
+     *   SystemInfoType_UsedPhysicalMemorySize   = 1
+     *   SystemInfoType_InitialProcessIdRange    = 2
+     *
+     * (switch/kernel/svc.h:222-225 in the pinned toolchain image; read
+     * out of the image itself, not from documentation.) None of the
+     * three is a processor count, so there is nothing to report for CONF
+     * that ONLN does not already answer.
+     *
+     * Reporting the SoC's four Cortex-A57s instead would be a constant
+     * nobody queried, and the only caller in sight — Mesa's
+     * util_cpu_detect, which uses CONF to size a CPU mask — is better
+     * served by a number that is true than by one that is larger. The
+     * cost of sharing the case is real and is stated rather than hidden:
+     * a caller cannot distinguish "the SoC has four, you may use three",
+     * which is the ordinary applet situation on this console. Nothing
+     * this project builds needs that distinction, and inventing an
+     * answer for it would be worse than not offering it.
+     *
+     * tests/t_threads.c prints the raw mask, so a console log records
+     * the bitmask itself and not only its population count, and it is
+     * the place that knows the SoC has four cores — a test may know
+     * which console it was launched on; a C library function may not
+     * hand a caller a number nobody asked the kernel for. What that test
+     * checks about ONLN and CONF is the wiring of this function, not the
+     * core count; it says so.
+     *
+     * Not clamped to any expected value: if a future firmware hands a
+     * process more or fewer cores, the measurement should say so.
+     */
+    case _SC_NPROCESSORS_ONLN:
+    case _SC_NPROCESSORS_CONF: {
+        u64 core_mask;
+
+        if (!horizon_process_info(InfoType_CoreMask, &core_mask))
+            break;
+        /* A mask of zero would mean the process may run on no core at
+         * all, which cannot be true of a process that is running. Treat
+         * it as a failed query rather than reporting zero processors,
+         * which callers read as "unknown" only if it is negative. */
+        if (core_mask == 0)
+            break;
+        return (long)__builtin_popcountll(core_mask);
+    }
 
     case _SC_AVPHYS_PAGES:
         if (!horizon_process_info(InfoType_TotalMemorySize, &total))

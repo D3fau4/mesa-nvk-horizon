@@ -10,11 +10,14 @@
 # edits. A machine-specific path baked into a script or a cross file is
 # the failure mode this gate exists to catch.
 #
-# Scope: toolchain/ and scripts/ are the criterion. Makefile and
-# meson.build are checked too — they are build inputs subject to the same
-# rule, and they are clean today, so including them costs nothing and
-# stops the rule being silently bypassed by putting the path there
-# instead. mesa-patches/ likewise: a patch is a build input, and
+# Scope: toolchain/ and scripts/ are the criterion. Makefile,
+# meson.build and meson.options are checked too — they are build inputs
+# subject to the same rule, and they are clean today, so including them
+# costs nothing and stops the rule being silently bypassed by putting the
+# path there instead. meson.options in particular holds a *default*
+# directory, which is exactly the shape a machine-specific path takes
+# when it arrives by accident. mesa-patches/ likewise: a patch is a
+# build input, and
 # `git diff` output is a place an absolute path arrives without anyone
 # typing it (a --src-prefix, a generated-file path, a quoted build log).
 #
@@ -36,7 +39,7 @@ fail=0
 # This script necessarily contains every pattern it searches for.
 EXCL=(--exclude=check-no-abs-paths.sh)
 
-TARGETS=(toolchain scripts mesa-patches Makefile meson.build)
+TARGETS=(toolchain scripts mesa-patches Makefile meson.build meson.options)
 
 # Drop targets that do not exist yet: the gate is added before the Meson
 # build and before toolchain/ has content, and a missing file must not be

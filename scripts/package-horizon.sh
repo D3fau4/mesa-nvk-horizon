@@ -45,6 +45,28 @@ fi
 mkdir -p "$OUT"
 copied=0
 kept=0
+dropped=0
+
+# Anything in the destination that the source no longer has, before
+# copying. The manifest below hashes every .nro *in $OUT*, and its whole
+# job is attributing an artefact to one build — so a leftover from a
+# previous packaging run would be listed under this run's toolchain and
+# image digest.
+#
+# It is not hypothetical: tests 12 and 13 exist only while Mesa's
+# archives do. Package 13, remove the archives, build again (the
+# Makefile now prunes the two stale .nro from build/), package again —
+# without this, $OUT keeps the previous run's t_threads.nro and
+# t_ostime.nro and the new manifest claims them.
+for old in "$OUT"/*.nro; do
+    [ -e "$old" ] || continue
+    name=$(basename "$old")
+    if [ ! -f "$SRC/$name" ]; then
+        echo "package-horizon: dropping $name — not in $SRC"
+        rm -f "$old"
+        dropped=$((dropped + 1))
+    fi
+done
 
 for nro in "$SRC"/*.nro; do
     name=$(basename "$nro")
@@ -105,4 +127,5 @@ else
     manifest_state="written"
 fi
 
-echo "package-horizon: $OUT — $copied copied, $kept already current, manifest $manifest_state"
+echo "package-horizon: $OUT — $copied copied, $kept already current," \
+     "$dropped dropped, manifest $manifest_state"
