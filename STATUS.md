@@ -5141,18 +5141,52 @@ the aperture was always reservable, and "open decision" was a conclusion
 drawn from a fact nobody had checked.
 
 `horizon_gpu_vm_reserve_fixed` now exists, and reports a range that came
-back at a different address as a failure rather than accepting it. With
-it:
+back at a different address as a failure rather than accepting it. Two
+things were built on it; **one worked and one did not**, and the
+emulator said which within one run.
 
-- the window aperture `[0xfe000000, 0x100000000)` is reserved at device
-  creation and never bound, which is exactly what "blocking off that
-  area from the VM" means. An access through the window still faults;
-  the point is that it can no longer hit somebody's buffer instead.
-  Not fatal if the reservation fails — the collision needs a shader to
-  matter, so refusing to create the device would trade a future wrong
-  answer for an immediate one;
-- **`NVKMD_VA_ALLOC_FIXED` is implemented**, closing extension 5 of the
-  six Phase 4 step 1 enumerated.
+**Kept: `NVKMD_VA_ALLOC_FIXED` is implemented**, closing extension 5 of
+the six Phase 4 step 1 enumerated.
+
+**Backed out (patch 0040): reserving the window aperture.** Patch 0039
+reserved `[0xfe000000, 0x100000000)` at device creation so nothing else
+could be given it. It worked — the overlap warning stopped — and it
+broke device creation:
+
+```
+vk warning: horizon_gpu_vm_reserve(0x100000000, 4096, 0x0) failed:
+            nv 0x00000f5c   (LibnxNvidiaError_InsufficientMemory)
+FAIL vkCreateDevice -> -13
+```
+
+The window sits at 3.97 GiB and NVK's shader heap wants a **contiguous
+4 GiB**, so blocking the aperture splits the small-page region at
+precisely the wrong address and the heap no longer fits below it.
+
+Weighed honestly: the heap reserves 4 GiB but binds 64 KiB chunks from
+the bottom, so a chunk only reaches the window after roughly 3.9 GiB of
+shader code — a real defect, and an unreachable one. Against that, the
+reservation is an immediate and total failure. Detection stays, the
+block-off goes.
+
+This is the emulator earning its keep: a fix that read as obviously
+correct was wrong, and one run said so.
+
+### D12's recorded reason was wrong too
+
+The same paragraph that claimed `ALLOC_SPACE` had no fixed form also
+justified D12 with "NVGPU_AS has no sparse reservation".
+`NvAllocSpaceFlags_Sparse` sits in the same enum. A sparse reservation
+**is** expressible.
+
+The decision stands, on a true basis now: what is missing is **partial
+unbind**. Sparse binding rebinds and unbinds arbitrary sub-ranges of a
+reservation over its lifetime; `horizon_gpu` maps and unmaps whole
+mappings, which is exactly why `nvkmd_horizon_va_unbind` demands an
+exact `(offset, range)` match. `nvkmd_horizon_ctx_bind` is implemented
+and does binds immediately, so that half is not the obstacle either.
+Sparse needs the split implemented in `horizon_gpu`, plus the bind
+context's third channel. Known, bounded, and not needed by Phase 4.
 
 ### Finding B — the leading hypothesis for the hardware MMU fault
 
