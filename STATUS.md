@@ -4196,7 +4196,7 @@ emitters), and found no regression in either mode.
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **closed: the capability (patch 0029)** — `nvkmd_info` gains `has_sparse`; nouveau answers true, horizon false, and the nine sparse features plus `VK_QUEUE_SPARSE_BINDING_BIT` follow it. **The reason first recorded for this was wrong** and the correction stands with the decision: it was not that `NVGPU_AS` has no sparse reservation — `NvAllocSpaceFlags_Sparse` exists. What is missing is *partial* unbind, which is what sparse residency needs. Was: — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 | D14 | An uncached memory policy in `horizon/` | **closed on hardware — `t_uncached` PASS 19/19** (`docs/hw-logs/t_uncached.log`). `horizon/memory/mem.c` implements `HORIZON_GPU_MEM_UNCACHED` with `svcSetMemoryAttribute(MemAttr_IsUncached)` over the rounded range, undone on every error path and at destroy; patch 0030 maps `NVKMD_MEM_COHERENT` onto it. All three unknowns the test separates were answered on console: the kernel accepts our heap allocations, the resulting mapping is Normal-NC (ordinary loads, stores and `memcpy` work — Device memory would have faulted), and the GPU reads an un-flushed command list written through it. Was: — open, raised with the owner; does NOT block Phase 4. `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED` — no longer true, and this row said so long after the code and the log had landed |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
-| D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **open, raised with the owner (Codex P1, PR #6)** — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
+| D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **closed: block (patch 0044)** — owner said address it now. A `mtx_t` and `cnd_t` in `nvk_horizon_sync`, broadcast from `signal()`, `set_fence()` and `move()` — the three transitions that can release a waiter — and deliberately not from `reset()`, which makes the object *less* reachable. The condvar wait is chunked at 100 ms rather than handed the caller's deadline, because `cnd_timedwait` takes an absolute `TIME_UTC` deadline and D8 measured that clock to be the real-time clock: chunking bounds how far a date change can move a wait, and costs no wake-up latency because a broadcast ends the chunk immediately. `move()` needed care of its own — it copies the payload struct, which would have copied the destination's live mutex and condvar over with the source's, including one held on that line. Primitives verified on console rather than assumed (`t_threads`, 67/67, exercises `cnd_wait`/`signal`/`broadcast`/`timedwait`). `t_vulkan` gained the check that discriminates the fix from the bug. **Not yet run on hardware.** Was: — open, raised with the owner (Codex P1, PR #6) — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit. **Was numbered D9 on `main`**; renumbered on merge, see the note below |
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
@@ -6106,6 +6106,82 @@ currently express: a submit whose channel fence block omits the writeback.
 That is an instrument to build if the finding is ever doubted, not a gap in
 what is deployed — recorded here so the limit is found by reading rather than
 by someone trusting a degenerate matrix.
+
+## D16 closed — a wait may arrive before there is a fence (2026-08-04)
+
+The twelfth Codex finding, and the one held back as a decision. Owner said
+address it now, so patch 0044 does.
+
+**The old reasoning had the right premise and the wrong conclusion.** It read:
+"nothing submitted and nothing signalled: this can only ever become signalled
+by someone else, so waiting is waiting for the deadline." True — and then it
+returned `VK_TIMEOUT` instead of waiting for that deadline, instantly, and for
+`OS_TIMEOUT_INFINITE` too. "Someone else" is not a reason to stop waiting; it
+is the thing being waited for. The type advertises `CPU_WAIT` and `CPU_SIGNAL`
+together, so another thread signalling or submitting mid-wait is a pattern
+Vulkan permits, and waiting on a fence no queue has touched is explicitly
+legal.
+
+**Shape of the fix.** `mtx_t` + `cnd_t` in the sync. Broadcast from the three
+transitions that can release a waiter — `signal()`, `set_fence()`, `move()` —
+and pointedly *not* from `reset()`, which makes the object less reachable and
+has nobody to release. `wait()` loops on the condvar until the sync acquires a
+fence, then hands the remaining timeout to `horizon_gpu` exactly as before.
+
+**Where the two decisions collide.** `cnd_timedwait` takes an *absolute*
+`TIME_UTC` deadline — precisely what D8 was closed by getting rid of, since
+`t_ostime` measured that clock to be the real-time clock. Handing it the
+caller's whole deadline would have reintroduced the bug D8 fixed, inside the
+fix for D16. So the condvar waits in **100 ms chunks**, each one's absolute
+deadline built from now and discarded, with the remaining time tracked as a
+duration. A date change can perturb the chunk in flight and nothing else. It
+costs no latency: a broadcast ends a chunk immediately, and a wait shorter
+than a chunk is not rounded up to one. Same shape and same figure as
+`horizon/channel/channel.c`, for the same reason.
+
+**`move()` was a trap.** It copies the payload struct wholesale. With the two
+new members that would have copied the destination's live mutex and condvar
+over with the source's — including the mutex held on that very line — and then
+destroyed the wrong pair in `finish()`. They are preserved across the copy the
+way `base` already was, and the two objects are locked in address order so
+concurrent moves between the same pair cannot deadlock.
+
+**The primitives were checked, not assumed.** `t_threads` already exercises
+`cnd_wait`, `cnd_signal`, `cnd_broadcast` and `cnd_timedwait` against their
+deadlines and passed **67/67** on console — `cnd_timedwait(200 ms)` returned
+`thrd_timedout` at 200 ms, and a broadcast woke four waiters in 7 ms. This
+introduces no untested dependency.
+
+### The test, and why it is single-threaded
+
+`t_vulkan` gained a D16 block after the exit criterion, so it cannot perturb
+it. A fresh unsignalled fence is waited on for 200 ms.
+
+**Both versions return `VK_TIMEOUT`. Only the clock separates them** — the old
+code executed no blocking call at all between entry and its return, so it
+answered in microseconds; the fixed one answers when asked. The check is
+therefore on elapsed time (`>= 150 ms`, `< 2000 ms`), measured with
+`armGetSystemTick`, which is the monotonic clock and the one thing here a date
+change cannot move.
+
+Traced to be sure the check reaches the code it is aimed at: `vkWaitForFences`
+→ `vk_common_WaitForFences` → `vk_sync_wait_many` → `__vk_sync_wait_many`,
+which for `wait_count == 1` calls `sync->type->wait` directly. No runtime
+short-circuit stands between the test and `nvk_horizon_sync_wait`.
+
+**Its discriminating power is established by construction, not by a measured
+failing run** — I cannot run the old binary on the console to watch it fail.
+That is weaker evidence than the TLS gate's break-test, and is stated as such.
+
+### Verified
+
+Cross build only. **Nothing in D16 has run on hardware.**
+
+- NVK rebuilt from a `mesa/` reset to the pinned commit; the series is now 44
+  patches, applies cleanly, and a second run is a no-op
+- `check-tls-relocs`: OK, 4 of 845 use TLS, all with relocations
+- Meson path: 16 `.nro` including `t_vulkan` with the D16 check compiled in
+- host tests 132/132 and the four source gates OK
 
 ## Next concrete task
 
