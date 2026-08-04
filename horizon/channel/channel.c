@@ -33,8 +33,8 @@
 /* The fence-increment list and the SET_OBJECT list must not overlap
  * inside the shared cmdbuf page; catch it at compile time rather than as
  * a GPU fault the first time either list's size grows. */
-_Static_assert((HORIZON_CMDS_MEM_OP_DWORDS + HORIZON_CMDS_FENCE_INCR_DWORDS)
-               * 4 <= CHANNEL_SETOBJ_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET,
+_Static_assert(HORIZON_CMDS_FENCE_INCR_DWORDS * 4 <=
+               CHANNEL_SETOBJ_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET,
                "fence-increment list would overrun the SET_OBJECT list");
 _Static_assert(CHANNEL_SETOBJ_CMDS_OFFSET +
                HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
@@ -274,34 +274,18 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     /* Write the per-submit fence block once; its content only depends on
      * the syncpoint id.
      *
-     * It begins with a dirty-L2 writeback, and that is not a precaution —
-     * it is the difference between a fence that means something and one
-     * that lies. A GPU write lands in the GPU's L2 first, and nothing
-     * about a syncpoint increment obliges that L2 to reach the memory a
-     * CPU reads. Measured on hardware 2026-08-04 (t_gpuwrite, four arms):
-     * an L2-cacheable mapping with no flush never showed the write at
-     * all, a MEMBAR did not help either, and only L2_FLUSH_DIRTY made it
-     * visible — in exactly this order, write then MEM_OP then the WFI and
-     * increment that horizon_cmds_fence_incr emits.
-     *
-     * Unconditional, because this layer cannot know which submits a CPU
-     * will read from and a fence that is only sometimes truthful is
-     * worse than one that always costs three dwords. The cost is real
-     * and the narrower placement is a recorded follow-up, not a thing to
-     * guess at now.
+     * horizon_cmds_fence_incr emits wait-for-idle (SCOPE_ALL), then a
+     * dirty-L2 writeback, then the increment — see its comment for the
+     * hardware measurement that put the flush there and for why the order
+     * is load-bearing. The consequence here is the one that matters: on
+     * this channel a fence means the work is done *and* its writes are
+     * visible to a CPU, which is the only thing a fence can usefully
+     * mean.
      */
     uint32_t *cmds = horizon_gpu_mem_cpu_ptr(chan->cmdbuf_mem);
-    uint32_t *fence_cmds = cmds + CHANNEL_FENCE_CMDS_OFFSET / 4;
-    uint32_t nflush = horizon_cmds_mem_op(fence_cmds,
-                                          HORIZON_MEM_OP_L2_FLUSH_DIRTY);
-    if (nflush == 0) {
-        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                     "L2 flush operation rejected by the encoder");
-        res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
-        goto fail_cmdbuf_map;
-    }
     chan->fence_cmds_dwords =
-        horizon_cmds_fence_incr(fence_cmds + nflush, chan->syncpt_id);
+        horizon_cmds_fence_incr(cmds + CHANNEL_FENCE_CMDS_OFFSET / 4,
+                                chan->syncpt_id);
     if (chan->fence_cmds_dwords == 0) {
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "syncpoint id %u out of encoding range",
@@ -309,7 +293,6 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
         goto fail_cmdbuf_map;
     }
-    chan->fence_cmds_dwords += nflush;
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
                                 chan->fence_cmds_dwords * 4);
     if (horizon_gpu_failed(res))

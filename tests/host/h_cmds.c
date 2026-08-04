@@ -29,10 +29,20 @@ int main(void)
     uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS];
     uint32_t n = horizon_cmds_fence_incr(buf, 42);
     H_CHECK(n == HORIZON_CMDS_FENCE_INCR_DWORDS, "incr dword count");
-    H_CHECK(buf[0] == 0x2001001E && buf[1] == 0, "incr: WFI first");
-    H_CHECK(buf[2] == 0x2001001C && buf[3] == 0, "incr: payload 0");
-    H_CHECK(buf[4] == 0x2001001D, "incr: SYNCPOINTB header");
-    H_CHECK(buf[5] == ((42u << 8) | 1u), "incr: (id<<8) | OPERATION_INCR");
+    /* WFI first, and SCOPE must be ALL (1). It was 0 — CURRENT_SCG_TYPE
+     * per clb06f.h:141-143 — under a comment claiming 0 meant "all", and
+     * a copy-engine transfer is not in the graphics scheduling class
+     * group, so the narrower scope never waited for it. */
+    H_CHECK(buf[0] == 0x2001001E, "incr: WFI first");
+    H_CHECK(buf[1] == 1, "incr: WFI SCOPE_ALL, not CURRENT_SCG_TYPE");
+    /* Then the dirty-L2 writeback, and *after* the wait: flushing before
+     * it would leave anything that completed during the wait in L2. */
+    H_CHECK(buf[2] == 0x2002000C && buf[3] == 0,
+            "incr: MEM_OP_C/D after the WFI");
+    H_CHECK(buf[4] == (0x10u << 27), "incr: L2_FLUSH_DIRTY");
+    H_CHECK(buf[5] == 0x2001001C && buf[6] == 0, "incr: payload 0");
+    H_CHECK(buf[7] == 0x2001001D, "incr: SYNCPOINTB header");
+    H_CHECK(buf[8] == ((42u << 8) | 1u), "incr: (id<<8) | OPERATION_INCR");
     H_CHECK(horizon_cmds_fence_incr(buf, 0x1000) == 0,
             "id beyond 12-bit index rejected");
 

@@ -5178,6 +5178,74 @@ kept in `docs/hw-logs/`. That is also the "break the gate on purpose"
 evidence for this fix: the failing measurement already exists and is
 recorded, rather than being simulated after the fact.
 
+### Run 3: the fix works, and t_vulkan still fails — which localises it again
+
+`t_gpuwrite` **51/51**, all four arms, arm A included: the L2 writeback in
+the channel's fence block does make a GPU write visible to the CPU. And it
+cost nothing elsewhere — `t_submit` 30/30, `t_syncpt` 48/48,
+`t_fence_wait` 14/14, with the flush now on every submit's fence path.
+
+`t_vulkan` failed **identically**: 55/56, 1024/1024 words, same value.
+
+That pair is more informative than either log alone. GPU→CPU visibility
+now works below Vulkan and NVK's readback still does not, and NVK submits
+through `horizon_gpu_submit` (`nvkmd_horizon_ctx.c:175`), so it *is*
+getting the flush. The difference is what does the writing:
+
+- `t_gpuwrite` writes with a **host** semaphore release, executed inline
+  by the PBDMA.
+- `vkCmdFillBuffer` writes with **NV90B5**, the copy engine
+  (`nvk_cmd_copy.c:897`) — asynchronous engine work on subchannel 4.
+
+The copy engine is bound: `nvkmd_horizon_create_ctx` calls
+`horizon_gpu_channel_bind_engines`, which does all five subchannels with
+queried class numbers, and `cls_copy` is reported to NVK
+(`nvkmd_horizon_pdev.c:158`). So the fill is dispatched. What was wrong is
+that nothing waited for it.
+
+### Two defects in our own fence block, both found by reading the header
+
+**1. The WFI scope was the wrong constant, under a comment asserting the
+opposite of the header.** `horizon_cmds_fence_incr` emitted
+
+```c
+buf[n++] = 0; /* WFI scope: all preceding work in this channel */
+```
+
+`clb06f.h:141-143` says `SCOPE` 0 is `CURRENT_SCG_TYPE` and `ALL` is 1. A
+copy-engine transfer is not in the graphics scheduling class group, so the
+narrower scope never waited for it — and no test could see that, because
+every test below `t_vulkan` used host methods only, which are inline and
+need no waiting.
+
+**2. The L2 writeback was emitted before the wait, not after.** The fence
+block was flush → WFI → increment. Anything that completed *during* the
+wait was therefore never flushed. For host methods this is invisible —
+they finish before the flush is even fetched — which is exactly why
+`t_gpuwrite` passed 51/51 with the order wrong.
+
+The two compose into one symptom and one fix: **WFI(SCOPE_ALL) → dirty-L2
+writeback → syncpoint increment**, which is what the emitter now produces.
+The flush moved out of `channel.c` into `horizon_cmds_fence_incr`, where
+the ordering is one unit and documented as load-bearing rather than
+incidental.
+
+Host checks cover both, and the scope was broken back to 0 on purpose to
+confirm the check fails (`38/39`).
+
+**Honesty about what this is.** The L2 flush was measured. **This fix is
+reasoned, not measured** — the constant is certainly wrong because the
+header says so, and flushing before waiting is certainly wrong ordering,
+but that these two are what break `vkCmdFillBuffer` is inference from the
+host-method/engine-work split, not an observation. `t_vulkan` is the
+measurement, and it is the next run.
+
+If it still fails, the localisation continues rather than restarts: the
+next instrument is a copy-engine arm in `t_gpuwrite` — a real NV90B5 fill
+at the horizon level, reproducing `vkCmdFillBuffer` with no Mesa in the
+picture. Deliberately not built yet, for the reason that has held all
+week: one measured change at a time.
+
 ### The measurement this still owes
 
 `t_vulkan` has **not** been re-run since the fix. The chain from "the

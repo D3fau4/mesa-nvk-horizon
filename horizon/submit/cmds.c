@@ -15,9 +15,26 @@ uint32_t horizon_cmds_fence_incr(uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS],
 
     uint32_t n = 0;
     /* Wait-for-idle first, so the increment means "work done", not
-     * "methods fetched" (nvgpu gk20a job-end precedent). */
+     * "methods fetched" (nvgpu gk20a job-end precedent).
+     *
+     * SCOPE must be ALL. This was 0 with a comment claiming 0 meant "all
+     * preceding work in this channel"; clb06f.h:141-143 says 0 is
+     * CURRENT_SCG_TYPE and ALL is 1, so the comment asserted the opposite
+     * of the header. A copy-engine transfer is not in the graphics
+     * scheduling class group, so the narrower scope does not wait for it
+     * — which is invisible to any test that only uses host methods.
+     */
     buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_WFI, 1);
-    buf[n++] = 0; /* WFI scope: all preceding work in this channel */
+    buf[n++] = HORIZON_WFI_SCOPE_ALL;
+    /* Then the dirty-L2 writeback, and the order is the whole point: a
+     * GPU write lands in the GPU's L2 first (measured on hardware
+     * 2026-08-04, t_gpuwrite), and flushing before the wait would leave
+     * anything that completed *during* the wait sitting in L2. Wait
+     * first, then flush, then say it is done.
+     */
+    buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_MEM_OP_C, 2);
+    buf[n++] = 0; /* operand unused by a non-TLB operation */
+    buf[n++] = HORIZON_MEM_OP_L2_FLUSH_DIRTY << HORIZON_MEM_OP_D_OP_SHIFT;
     buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_SYNCPOINTA, 1);
     buf[n++] = 0; /* payload is unused for an increment */
     buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_SYNCPOINTB, 1);

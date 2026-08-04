@@ -31,6 +31,11 @@ extern "C" {
 #define HORIZON_NVA06F_SYNCPOINTA  UINT32_C(0x0070) /* PAYLOAD 31:0        */
 #define HORIZON_NVA06F_SYNCPOINTB  UINT32_C(0x0074) /* OPERATION/INDEX     */
 #define HORIZON_NVA06F_WFI         UINT32_C(0x0078)
+
+/* WFI SCOPE is bit 0: CURRENT_SCG_TYPE = 0, ALL = 1 (clb06f.h:141-143).
+ * The narrower scope does not cover a copy-engine transfer, which is not
+ * in the graphics scheduling class group. */
+#define HORIZON_WFI_SCOPE_ALL      UINT32_C(1)
 #define HORIZON_NVA06F_SEMAPHOREA  UINT32_C(0x0010) /* OFFSET_UPPER 7:0    */
 #define HORIZON_NVA06F_SEMAPHOREB  UINT32_C(0x0014) /* OFFSET_LOWER 31:2   */
 #define HORIZON_NVA06F_SEMAPHOREC  UINT32_C(0x0018) /* PAYLOAD 31:0        */
@@ -72,7 +77,7 @@ extern "C" {
 #define HORIZON_CMDS_NUM_SUBCHANNELS 5u
 
 /* Emitted dword counts. */
-#define HORIZON_CMDS_FENCE_INCR_DWORDS   6u
+#define HORIZON_CMDS_FENCE_INCR_DWORDS   9u
 #define HORIZON_CMDS_SET_OBJECTS_DWORDS  (2u * HORIZON_CMDS_NUM_SUBCHANNELS)
 #define HORIZON_CMDS_SYNCPT_WAIT_DWORDS  4u
 #define HORIZON_CMDS_SEM_RELEASE_DWORDS  5u
@@ -92,10 +97,23 @@ static inline uint32_t horizon_cmd_hdr_incr(uint32_t subch, uint32_t method,
            ((subch & 0x7u) << 13) | ((method >> 2) & 0x1FFFu);
 }
 
-/* WFI + syncpoint increment (the shape Linux nvgpu submits for every job
- * end on gk20a/gm20b: wait-for-idle so completion means the work is done,
- * then SYNCPOINTA payload + SYNCPOINTB incr). Returns the dword count, or
- * 0 when syncpt_id exceeds the 12-bit index field. */
+/* The fence block: wait-for-idle (SCOPE_ALL), dirty-L2 writeback, then
+ * SYNCPOINTA payload + SYNCPOINTB incr.
+ *
+ * The shape is nvgpu's gk20a/gm20b job end plus the one thing this
+ * hardware needs and a desktop part does not. A GPU write lands in the
+ * GPU's L2 first and nothing about a syncpoint increment obliges that L2
+ * to reach the memory a CPU reads — measured on hardware 2026-08-04
+ * (t_gpuwrite: no flush never showed the write, a MEMBAR did not help,
+ * L2_FLUSH_DIRTY did). So the fence means "done *and* visible", which is
+ * the only thing a fence can usefully mean here.
+ *
+ * The order is load-bearing. Flushing before the wait would leave
+ * anything that completed during the wait sitting in L2, which is exactly
+ * how asynchronous engine work escapes a flush that host methods do not.
+ *
+ * Returns the dword count, or 0 when syncpt_id exceeds the 12-bit index
+ * field. */
 uint32_t horizon_cmds_fence_incr(uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS],
                                  uint32_t syncpt_id);
 
