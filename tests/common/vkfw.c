@@ -404,7 +404,49 @@ bool vkfw_buffer_poison(vkfw *fw, vkfw_buffer *b, uint32_t pattern)
     * forget: poison left in the CPU's cache is not poison in memory,
     * and a GPU write that never happened would then be read back as the
     * *expected* value out of a dirty cache line. */
-   return vkfw_buffer_flush(fw, b);
+   if (!vkfw_buffer_flush(fw, b))
+      return false;
+
+   /* AND THEN IT IS CHECKED, because every readback in this suite rests
+    * on it and nothing was measuring it.
+    *
+    * Hardware run 2, 2026-08-04: t_vk_transfer case B and probe F issued
+    * the *same* copy of [1028, 3480) in the same process and disagreed
+    * about which bytes changed — B saw four bytes before the region and
+    * eight after holding the source's pattern, F saw neither. A copy
+    * cannot be non-deterministic in that way, but a destination whose
+    * poison never reached memory can look exactly like one: the scan
+    * then finds whatever the *previous* case left there and reports it
+    * as this case's overrun.
+    *
+    * So the poison is invalidated and read back before it is trusted. A
+    * failure here says the measurement is invalid, which is a different
+    * and much more useful statement than the wrong conclusion it would
+    * otherwise support — and this is the exact shape of the mistake this
+    * project keeps finding: a step that reports success without having
+    * verified anything.
+    */
+   if (!vkfw_buffer_invalidate(fw, b))
+      return false;
+
+   uint64_t wrong = 0, first = 0;
+   for (uint64_t i = 0; i < n; i++) {
+      if (w[i] != pattern) {
+         if (wrong == 0)
+            first = i;
+         wrong++;
+      }
+   }
+   if (!t_check(fw->t, wrong == 0,
+                "the poison reached memory (%llu/%llu words)",
+                (unsigned long long)(n - wrong), (unsigned long long)n)) {
+      t_note(fw->t, "poison: first surviving word %llu is 0x%08x, not "
+             "0x%08x — every readback after this measures something else",
+             (unsigned long long)first, w[first], pattern);
+      return false;
+   }
+
+   return true;
 }
 
 bool vkfw_image_supported(vkfw *fw, VkFormat format, VkImageType type,

@@ -153,6 +153,7 @@ static void warm_shader_heap(vkfw *fw)
    test_ctx *t = fw->t;
 
    VkShaderModule module = VK_NULL_HANDLE;
+   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
    VkPipelineLayout layout = VK_NULL_HANDLE;
    VkPipeline pipeline = VK_NULL_HANDLE;
 
@@ -166,11 +167,42 @@ static void warm_shader_heap(vkfw *fw)
                 vkfw_result_str(r)))
       return;
 
-   /* No descriptor set layout: the shader declares a storage buffer, but
+   /* THE LAYOUT HAS TO MATCH THE SHADER, and the first version of this
+    * function said otherwise: "the shader declares a storage buffer, but
     * nothing is dispatched, and an empty pipeline layout is enough to
-    * compile and upload. */
+    * compile and upload". That was an assumption about the driver, it was
+    * wrong, and it took a console down with it — run 2 stopped dead after
+    * "warm-up: vkCreatePipelineLayout -> VK_SUCCESS" with no further
+    * output and no RESULT line.
+    *
+    * comp_write_id declares DescriptorSet 0, Binding 0 as a storage
+    * buffer. A pipeline layout with no sets is inconsistent with that
+    * (VUID-VkComputePipelineCreateInfo-layout-07987), there are no
+    * validation layers here to say so, and NVK resolves the binding
+    * against a set that does not exist. Nothing is dispatched, so the
+    * layout costs nothing — it just has to be true.
+    */
+   const VkDescriptorSetLayoutBinding binding = {
+      .binding = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      .descriptorCount = 1,
+      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+   };
+   const VkDescriptorSetLayoutCreateInfo dslci = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .bindingCount = 1,
+      .pBindings = &binding,
+   };
+   r = fw->vk.vkCreateDescriptorSetLayout(fw->dev, &dslci, NULL, &set_layout);
+   if (!t_check(t, r == VK_SUCCESS,
+                "warm-up: vkCreateDescriptorSetLayout -> %s",
+                vkfw_result_str(r)))
+      goto out;
+
    const VkPipelineLayoutCreateInfo plci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = 1,
+      .pSetLayouts = &set_layout,
    };
    r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL, &layout);
    if (!t_check(t, r == VK_SUCCESS, "warm-up: vkCreatePipelineLayout -> %s",
@@ -203,6 +235,8 @@ out:
       fw->vk.vkDestroyPipeline(fw->dev, pipeline, NULL);
    if (layout != VK_NULL_HANDLE)
       fw->vk.vkDestroyPipelineLayout(fw->dev, layout, NULL);
+   if (set_layout != VK_NULL_HANDLE)
+      fw->vk.vkDestroyDescriptorSetLayout(fw->dev, set_layout, NULL);
    fw->vk.vkDestroyShaderModule(fw->dev, module, NULL);
 }
 

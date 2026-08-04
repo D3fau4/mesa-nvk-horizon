@@ -14,11 +14,11 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | 5 in progress. **Item 2 (compute dispatch) met on hardware, 2026-08-04.** Items 1, 3, 4 have tests and known defects; 5–9 not started |
 | **What runs on a Switch** | The mandatory Vulkan sequence (`t_vulkan` **PASS 62/62**) and **a compute shader compiled by NAK** (`t_vk_compute` **PASS 35/35**, 4096/4096 words verified by CPU readback). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | **Hardware batch 2**: the MMU-fault experiment (`t_vk_image`), the copy-granularity sweep (`t_vk_transfer` probe F), and revalidation with the window blocked off |
-| **Known failures** | Item 3/4: the first 3D render pass MMU-faults, no shader having been uploaded (hypothesis under test). Item 1: `vkCmdCopyBuffer` writes outside an unaligned region, granularity 16 bytes or finer |
+| **Next concrete task** | **Hardware batch 3**: `t_vk_image` with the crash fixed, so the MMU-fault experiment finally runs; `t_vk_transfer` with the poison verified |
+| **Known failures** | Item 3/4: the first 3D render pass MMU-faults, no shader having been uploaded — the experiment is written but has not run, batch 2 crashed before it. Item 1: something writes outside an unaligned copy's region, **cause unknown** — the batch-1 "16-byte granularity" reading is withdrawn, two measurements of one region disagreed |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | Everything after batch 1: the window block-off (patch 0047), the fence/notifier fix in `horizon/channel`, `alloc_tiled_mem` (patch 0045), the extension gating (patch 0046) |
+| **Never verified on hardware** | `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,85 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## HARDWARE BATCH 2 — the window fix holds, and two of my own defects (2026-08-04)
+
+**Class: hardware (HW).** Logs: `t_vulkan-run8-window-blocked-PASS.log`,
+`t_vk_compute-run2-window-blocked-PASS.log`,
+`t_vk_transfer-run2-FAIL.log`, `t_vk_image-run2-CRASH.log`.
+
+| | result | |
+|---|---|---|
+| `t_vulkan` | **PASS 62/62** | unchanged with the window blocked and the fence fix |
+| `t_vk_compute` | **PASS 35/35** | unchanged. Item 2 stays met |
+| `t_vk_transfer` | FAIL 167/174 | probe F contradicts case B — see below |
+| `t_vk_image` | **CRASHED THE CONSOLE** | my bug, not the driver's |
+
+### Patch 0047 is verified on hardware
+
+The overlap message appeared once per log in batch 1 and **appears zero
+times in all four logs of batch 2**, while `vkCreateDevice` succeeds in
+every one of them and both passing tests are bit-for-bit as good as
+before. The shader local/shared window is now reserved and no
+reservation lands on it. Strategy A works; the emulator's answer was the
+only thing that ever said otherwise.
+
+### The console crash is mine
+
+`t_vk_image` stops dead after
+
+```
+ok   warm-up: vkCreateShaderModule -> VK_SUCCESS
+ok   warm-up: vkCreatePipelineLayout -> VK_SUCCESS
+```
+
+with no further output and no `RESULT` line. The next call is
+`vkCreateComputePipelines`, and the warm-up handed it a pipeline layout
+with **no descriptor sets** while `comp_write_id` declares
+`DescriptorSet 0, Binding 0`. That is invalid usage
+(`VUID-VkComputePipelineCreateInfo-layout-07987`); there are no
+validation layers here to say so, and NVK resolves the binding against a
+set that does not exist.
+
+The comment that justified it said: "the shader declares a storage
+buffer, but nothing is dispatched, and an empty pipeline layout is enough
+to compile and upload." **That was an assumption about the driver
+written as a fact, in the same commit that fixed two other instances of
+exactly that mistake.** Fixed: the warm-up now builds the descriptor set
+layout the shader actually declares. It still dispatches nothing, so the
+layout costs nothing — it just has to be true.
+
+**The MMU-fault experiment therefore never ran.** Items 3 and 4 are
+exactly where they were.
+
+### The transfer result withdraws a conclusion instead of confirming one
+
+Probe F's last entry is case B's region, byte for byte, in the same
+process — and the two disagree:
+
+```
+FAIL B words before the region untouched: first mismatch at word 256
+FAIL B words after  the region untouched: 2 wrong
+ok   F [1028, 3480): exactly case B, so the two must agree
+```
+
+A copy engine does not answer one request two ways. So at least one of
+them was measuring something other than the copy, and the only
+assumption underneath both is that **the poison reached memory before
+the GPU ran**. Nothing checked it. The batch-1 conclusion drawn from
+case B alone — "the copy engine's transfer granularity is 16 bytes" — is
+**withdrawn**; it rested on one unverified data point, and the other F
+results do not fit it either (a start of 16 rounding down to 0, a
+4-byte copy touching 32 bytes, and a 32-byte start landing exactly).
+
+`vkfw_buffer_poison` now writes, flushes, **invalidates and reads back**,
+and fails loudly if a single word of poison did not survive. Every
+readback in this suite rests on that step and nothing was measuring it —
+the same shape as the fence that reported success without consulting the
+notifier, one level further down, and found the same way: by two
+measurements of one thing disagreeing.
 
 ---
 

@@ -191,9 +191,22 @@ out:
  * regions at all".
  *
  * The check per probe is the one Vulkan requires and which nothing about
- * the hardware excuses: a copy writes its region and nothing else. It is
- * expected to fail on the unaligned probes; the notes beside it say by
- * how much.
+ * the hardware excuses: a copy writes its region and nothing else.
+ *
+ * RUN 2 MADE THIS SWEEP THE THING THAT NEEDED FIXING. Probe [1028, 3480)
+ * is case B's region exactly, and in the same process the two disagreed:
+ * B saw four bytes before and eight after carrying the source's pattern,
+ * F saw a copy that landed exactly where it was asked. A copy engine
+ * does not behave two ways for one request, so at least one of the two
+ * was measuring something other than the copy — and the only shared
+ * assumption underneath both is that the poison reached memory before
+ * the GPU ran. Nothing checked it. vkfw_buffer_poison now does, so a
+ * probe whose foundation did not hold says so instead of reporting an
+ * overrun that never happened.
+ *
+ * The batch-1 conclusion drawn from case B alone — "the copy engine's
+ * transfer granularity is 16 bytes" — is therefore withdrawn. It rested
+ * on one unverified data point.
  */
 struct copy_probe {
    uint32_t off_B;
