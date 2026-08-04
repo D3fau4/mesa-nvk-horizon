@@ -232,6 +232,103 @@ and the NULL pointer has to go regardless.
 
 ---
 
+## Phase 5 — step 0c: the fixture, the shaders, and a bring-up that only worked by hand (2026-08-04)
+
+**Class: cross build (X).** 16 `.nro` from the Meson path, 14 from the
+Makefile path, all gates green. Nothing run on a console.
+
+### `tests/common/vkfw`
+
+Seven Phase 5 binaries need the same forty lines before they can ask
+anything: no loader, so entry points come through
+`vk_icdGetInstanceProcAddr`; a debug messenger, because a release build
+drops every `vk_errorf` unless one is registered; the non-conformance
+opt-in; a queue; a pool. `vkfw` is that, once, with the dispatch table
+inside the fixture rather than at file scope.
+
+**What it deliberately does not do is wrap submission.** Item 9 has to
+put two submits in flight with no CPU wait between them, so a
+submit-and-wait helper would be the one thing the exit criterion
+forbids. The pieces are separate — `vkfw_cmd_begin`,
+`vkfw_cmd_end_submit`, `vkfw_submit_and_wait` — and only the last one
+waits.
+
+`vkfw_buffer_poison` is Phase 4's lesson made structural: fill the
+destination with something the GPU will not write, **and flush it**, so
+a later match can only have come from the GPU. Poison left in a dirty
+cache line is not poison in memory, and that failure would read back as
+success.
+
+### Shaders as SPIR-V assembly
+
+`tests/shaders/*.spvasm` → `spirv-as` → `spirv-val` → a C array, by
+`scripts/spv-embed.py`. The tools are already in the derived image,
+which builds SPIRV-Tools with `SPIRV_SKIP_EXECUTABLES=OFF` for
+`mesa_clc`; the container has no network and the base image has no
+glslang, so this costs nothing and pins nothing new.
+
+Validation is a build failure, not a warning: NAK has never compiled a
+shader that then ran, so when the first one misbehaves the question will
+be "driver or shader", and `spirv-val` answers half of it before the
+`.nro` exists. Broken both ways to check the step can fail — a dropped
+operand is rejected by `spirv-as`, a missing `Block` decoration by
+`spirv-val` (`VUID-StandaloneSpirv-OpTypeRuntimeArray-04680`).
+
+### The bring-up only ever worked because someone did it by hand
+
+Following the documented sequence on a clean tree,
+`scripts/build-mesa-nvk.sh` reports success and **six of the seventeen
+archives the tests link do not exist**: `libnir.a`, `libvtn.a`,
+`libcompiler.a`, `libvulkan_util.a`, `libvulkan_wsi.a`,
+`libxmlconfig.a`. Mesa marks an internal static library
+`build_by_default` only where something in the configuration links it,
+and this configuration links nothing — it produces archives for a test
+in another build directory. `meson compile` with no arguments therefore
+stops after `libnvk.a` and the Rust runtime.
+
+`meson.build` then asks `fs.exists()` over all seventeen, answers "no",
+and leaves `t_vulkan` out of `build.ninja` with no message anyone would
+see. The Makefile path does not build the NVK tests at all, so nothing
+contradicted it.
+
+**And the check that was supposed to notice could not.**
+`HORIZON_NVK_TEST_LIBS` held two archives with a comment calling them
+"the pair whose absence means that answer will be no" — true, and the
+wrong direction, because callers use `horizon_nvk_libs_present()` to
+predict `meson.build`'s answer and their *presence* proved nothing.
+Measured here: the two sentinels present, six others absent, the
+function said yes, `meson.build` said no.
+
+Fixed in three places: the list becomes all seventeen;
+`build-mesa-nvk.sh` builds them (through a new `horizon_ninja`, because
+`meson compile src/compiler/nir/libnir.a` answers "target not found"
+while ninja takes the path verbatim); and
+`check-mesa-test-parity.sh` gains a sixth comparison so the two copies
+of the list cannot drift. Broken three ways to check it can fail —
+an entry dropped from one side, an entry added to the other, and the
+extraction itself breaking, which reports "extracted nothing" rather
+than agreement.
+
+`check-dispatch-complete.sh` had the same shape of blind spot: its
+default was `t_vulkan.elf`, and the NULL-dispatch hole it exists to
+catch is a property of one link line. With six more tests coming, it now
+defaults to every driver-linking ELF in the build directory. Verified in
+both directions: a non-driver ELF fails the check, and a failure inside
+the loop propagates.
+
+### Item 1's test exists
+
+`t_vk_transfer` — five copies, because they are different machinery:
+whole buffer→buffer; a region, with the words outside it checked to
+still hold their poison, which is the only way to catch a copy that
+ignores its bounds; `vkCmdUpdateBuffer`, where the data rides in the
+command stream; and the buffer→image→buffer round trip in both tilings.
+The optimal-tiling round trip is the first thing this project asks the
+GPU to interpret a surface layout for, and it is self-checking: whatever
+the layout is, reading it back the same way must return what went in.
+
+---
+
 ## Phase 5 — step 0b: the NULL op, and the two more like it (2026-08-04)
 
 **Class: cross build (X).** `libnvk.a` builds with both patches and

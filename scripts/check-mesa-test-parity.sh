@@ -125,8 +125,24 @@ op_dir=$(sed -n "/^ *'mesa_build_dir',/,/^)/{ s/^ *value *: *'\(.*\)',*$/\1/p; }
 compare "default mesa build dir" "Makefile:$mk_dir" \
         "scripts/toolchain-env.sh:$sh_dir" "meson.options:$op_dir"
 
+# 6. The archives the NVK tests link. Only two files state this one —
+#    there is no Makefile path for the NVK tests — but the two must
+#    agree for a reason the sentinel version of this list demonstrated:
+#    horizon_nvk_libs_present() is what the scripts use to predict
+#    meson.build's fs.exists() answer, and a shorter list makes it
+#    predict "yes" while meson.build says "no", which leaves t_vulkan out
+#    of build.ninja with nothing reporting anything.
+ms_nvk_libs=$( { sed -n '/^nvk_whole_libs  *= *\[/,/^\]/p' meson.build
+                 sed -n '/^nvk_test_libs  *= *\[/,/^\]/p' meson.build; } |
+               grep -o "'[^']*\.a'" | tokens)
+sh_nvk_libs=$(sed -n "/^HORIZON_NVK_TEST_LIBS=\"/,/\"\$/p" \
+              scripts/toolchain-env.sh |
+              sed 's/^HORIZON_NVK_TEST_LIBS="//; s/"$//' | tokens)
+compare "NVK archive paths" "meson.build:$ms_nvk_libs" \
+        "scripts/toolchain-env.sh:$sh_nvk_libs"
+
 if [ "$fail" -eq 0 ]; then
     echo "check-mesa-test-parity: OK (tests, archives, defines, includes," \
-         "default build dir)"
+         "default build dir, NVK archives)"
 fi
 exit "$fail"

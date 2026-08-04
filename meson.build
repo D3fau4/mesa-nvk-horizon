@@ -303,7 +303,24 @@ nvk_test_libs = [
   'src/util/blake3/libblake3.a',
   'src/c11/impl/libmesa_util_c11.a',
 ]
-nvk_tests = ['t_vulkan']
+nvk_tests = [
+  't_vulkan',
+  # Phase 5 item 1. Everything later in the phase reads its result back
+  # through a copy, so this is the one that has nothing behind it.
+  't_vk_transfer',
+]
+
+# Shaders each NVK test needs, by test name. An entry is the stem of
+# tests/shaders/<stem>.spvasm; scripts/spv-embed.py assembles it with
+# spirv-as, validates it with spirv-val and writes <stem>.spv.h into the
+# build directory, which the test includes.
+#
+# Assembly rather than GLSL because the container has no network and the
+# base image has no glslang, while SPIRV-Tools is already in the derived
+# image for mesa_clc. See scripts/spv-embed.py for the trade.
+nvk_test_shaders = {
+  't_vulkan' : [],
+}
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
 # so both an absolute and a source-root-relative option value resolve
@@ -393,6 +410,40 @@ else
           nvk_build_dir + '; run scripts/build-mesa-nvk.sh first')
 endif
 
+# Shader assembly. Gated on the same condition as the tests that use the
+# headers: spirv-as and spirv-val live in the derived toolchain image,
+# which is also the only thing that can have produced the NVK archives,
+# so a tree with the archives has the tools and a tree without them
+# needs neither.
+nvk_shader_headers = {}
+if nvk_libs_present
+  spirv_as = find_program('spirv-as')
+  spirv_val = find_program('spirv-val')
+  spv_embed = find_program('scripts/spv-embed.py')
+
+  foreach t : nvk_tests
+    t_headers = []
+    foreach s : nvk_test_shaders.get(t, [])
+      t_headers += custom_target(
+        s + '.spv.h',
+        input : files('tests/shaders' / (s + '.spvasm')),
+        output : s + '.spv.h',
+        # --target-env vulkan1.1 is SPIR-V 1.3, which is where
+        # StorageBuffer becomes a core storage class. Higher would work
+        # on this device and buy nothing the tests need.
+        command : [
+          spv_embed,
+          '--spirv-as', spirv_as.full_path(),
+          '--spirv-val', spirv_val.full_path(),
+          '--target-env', 'vulkan1.1',
+          '-o', '@OUTPUT@', '@INPUT@',
+        ],
+      )
+    endforeach
+    nvk_shader_headers += { t : t_headers }
+  endforeach
+endif
+
 foreach t : horizon_tests
   # Tests 12 and 13 additionally see Mesa's headers and archives; the
   # other eleven are built with no Mesa in sight, as before.
@@ -409,6 +460,7 @@ foreach t : horizon_tests
   # when this directory was configured, which is what the guess requires
   # and scripts/build-horizon.sh now detects separately.
   t_link_depends = []
+  t_sources = [files('tests' / (t + '.c'))]
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
     t_link_depends = mesa_test_lib_paths
@@ -416,13 +468,22 @@ foreach t : horizon_tests
   if nvk_libs_present and nvk_tests.contains(t)
     t_deps += idep_nvk_driver
     t_link_depends = nvk_test_lib_paths
+    # The Vulkan fixture, compiled into each test that has a driver to
+    # talk to rather than built as a library: it needs Mesa's Vulkan
+    # headers, which only these tests have on their include path, and a
+    # per-test object keeps the tests that predate it unchanged.
+    #
+    # Its generated shader headers are listed as sources so ninja
+    # produces them before the test compiles; nothing links from them.
+    t_sources += files('tests/common/vkfw.c')
+    t_sources += nvk_shader_headers.get(t, [])
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the
   # intermediate distinguishable from the .nro in the build directory.
   t_elf = executable(
     t,
-    files('tests' / (t + '.c')),
+    t_sources,
     include_directories : [horizon_gpu_inc, tests_inc],
     link_with : testfw,
     dependencies : t_deps,
