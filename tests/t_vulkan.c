@@ -39,6 +39,13 @@
 #include <stdlib.h>   /* setenv, getenv */
 #include <string.h>
 
+/* For the D16 timing check at the end: a test binary may call libnx
+ * directly — the layer rule that forbids it applies to nvkmd_horizon,
+ * not to tests — and the tick counter is the monotonic clock here,
+ * which is the whole point of measuring with it rather than with
+ * anything derived from the date (decision D8). */
+#include <switch.h>
+
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
@@ -743,6 +750,49 @@ run_test(test_ctx *t)
    t_check(t, !degraded,
                  "the run was neither degraded nor diagnostic (such a run "
                  "verifies nothing)");
+
+   /* --- D16: a wait on a fence nothing has submitted ------------------
+    *
+    * After the exit criterion, so it cannot perturb it, and single
+    * threaded, because the defect it catches does not need a second
+    * thread to show itself.
+    *
+    * nvk_horizon_sync_wait used to sample the sync's state once and
+    * report VK_TIMEOUT when nothing had been submitted with it — which
+    * is a legal thing to wait on, and which Vulkan says must block until
+    * the timeout. The result was still VK_TIMEOUT, so only the *clock*
+    * distinguishes the fix from the bug: the old code returned in
+    * microseconds, the new one returns when the caller said to.
+    *
+    * A fresh unsignalled fence is exactly that object. 200 ms asked for,
+    * and the bound below is deliberately loose at both ends: over 150 ms
+    * says it really blocked, under 2 s says it did not block forever.
+    */
+   VkFence idle_fence = VK_NULL_HANDLE;
+   r = vkCreateFence(dev, &fci, NULL, &idle_fence);
+   if (t_check(t, r == VK_SUCCESS, "D16: vkCreateFence (unsignalled) -> %d",
+               (int)r)) {
+      const uint64_t d16_timeout_ns = UINT64_C(200000000);
+      const uint64_t t0 = armTicksToNs(armGetSystemTick());
+      r = vkWaitForFences(dev, 1, &idle_fence, VK_TRUE, d16_timeout_ns);
+      const uint64_t waited_ns = armTicksToNs(armGetSystemTick()) - t0;
+      const uint64_t waited_ms = waited_ns / UINT64_C(1000000);
+
+      t_note(t, "D16: vkWaitForFences(200 ms) on a never-submitted fence "
+                "returned %d after %llu ms", (int)r,
+             (unsigned long long)waited_ms);
+      t_check(t, r == VK_TIMEOUT,
+              "D16: waiting on a never-submitted fence times out (%d)",
+              (int)r);
+      t_check(t, waited_ms >= 150,
+              "D16: it waited rather than answering at once (%llu ms, "
+              "expected >= 150)", (unsigned long long)waited_ms);
+      t_check(t, waited_ms < 2000,
+              "D16: and it stopped waiting when asked (%llu ms, expected "
+              "< 2000)", (unsigned long long)waited_ms);
+
+      vkDestroyFence(dev, idle_fence, NULL);
+   }
 
    /* --- teardown, in reverse order ---------------------------------- */
    vkDestroyFence(dev, fence, NULL);
