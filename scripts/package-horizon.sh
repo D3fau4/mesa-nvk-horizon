@@ -81,12 +81,18 @@ done
 manifest="$OUT/MANIFEST.txt"
 tmp="$manifest.tmp.$$"
 
+# Once, not per use. It shells out to `docker image inspect`, and it was
+# called twice inside this one manifest — two independent answers that
+# can disagree, in a file whose entire purpose is saying which single
+# toolchain produced these artefacts.
+_pkg_img=$(horizon_image_digest)
+
 {
     echo "mesa-nvk-horizon — packaged .nro artefacts"
     echo
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
-    echo "image      : $(horizon_image_digest)"
+    echo "image      : $_pkg_img"
     echo
     echo "# Switch toolchain, as READ from the environment at packaging"
     echo "# time. This project neither pins nor updates it — libnx and"
@@ -100,7 +106,6 @@ tmp="$manifest.tmp.$$"
     # resolved is worse than an honest refusal to print one — which is
     # what the old <base-repo>@unknown was, for the derived image that
     # nearly every build since Phase 4 has actually used.
-    _pkg_img=$(horizon_image_digest)
     case "$_pkg_img" in
     local)
         echo "#   (built against the local devkitA64 at \$DEVKITPRO; there is"

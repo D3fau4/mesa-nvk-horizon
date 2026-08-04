@@ -92,19 +92,39 @@ fetch_lockfile() {
 # own version string does.
 TOOLCHAIN_ID_FILE="$LOCKFILE.toolchain"
 
+# Empty means "no usable identity", which is different from a new one.
+# horizon_image_digest answers `unknown` when docker cannot describe the
+# image at all, and `unknown` never equals the recorded value — so
+# keying on it verbatim would make every run look like a toolchain
+# change and re-download the whole vendor closure over the network, in
+# the one script that exists so the build needs no network.
 rust_toolchain_id() {
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
-        rustc --version 2>/dev/null || echo "rustc-unavailable"
+        rustc --version 2>/dev/null || true
     else
-        echo "$HORIZON_IMAGE $(horizon_image_digest)"
+        _rc_dig=$(horizon_image_digest)
+        case "$_rc_dig" in
+        unknown|"") ;;
+        *) echo "$HORIZON_IMAGE $_rc_dig" ;;
+        esac
+        unset _rc_dig
     fi
 }
 
 toolchain_now=$(rust_toolchain_id)
 toolchain_then=$(cat "$TOOLCHAIN_ID_FILE" 2>/dev/null || true)
 
+# An unidentifiable toolchain does not invalidate the cache: it says
+# nothing about whether the compiler moved, and acting on it would be
+# guessing in the expensive direction. The lockfile is still fetched
+# when it is missing, and --force still overrides everything.
+if [ -z "$toolchain_now" ] && [ -f "$LOCKFILE" ] && [ "$FORCE" -eq 0 ]; then
+    echo "fetch-rust-crates: cannot identify the toolchain; keeping the" \
+         "cached lockfile (pass --force to re-read it)"
+fi
+
 if [ ! -f "$LOCKFILE" ] || [ "$FORCE" -eq 1 ] ||
-   [ "$toolchain_now" != "$toolchain_then" ]; then
+   { [ -n "$toolchain_now" ] && [ "$toolchain_now" != "$toolchain_then" ]; }; then
     if [ -f "$LOCKFILE" ] && [ "$FORCE" -eq 0 ] &&
        [ -n "$toolchain_then" ]; then
         echo "fetch-rust-crates: toolchain is now [$toolchain_now], the"
@@ -112,7 +132,14 @@ if [ ! -f "$LOCKFILE" ] || [ "$FORCE" -eq 1 ] ||
     fi
     echo "fetch-rust-crates: reading library/Cargo.lock from the toolchain"
     fetch_lockfile
-    printf '%s\n' "$toolchain_now" > "$TOOLCHAIN_ID_FILE"
+    # Only stamp an identity that means something. Writing an empty one
+    # would make the next run see a "change" from empty to whatever it
+    # can then read, and re-fetch again.
+    if [ -n "$toolchain_now" ]; then
+        printf '%s\n' "$toolchain_now" > "$TOOLCHAIN_ID_FILE"
+    else
+        rm -f "$TOOLCHAIN_ID_FILE"
+    fi
 fi
 
 # --- 2. the package list: name, version and Rust's own checksum -------

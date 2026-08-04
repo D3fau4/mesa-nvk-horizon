@@ -122,7 +122,23 @@ HORIZON_NATIVE_TOOLS_DIR="build/toolchain/native-tools"
 # Named here because two scripts and meson.options have to agree on
 # it, and scripts/check-dispatch-complete.sh reads a generated file
 # out of it.
-NVK_BUILD_DIR_DEFAULT="${NVK_BUILD_DIR:-build/mesa-nvk}"
+# $MESA_NVK_BUILD_DIR is the name, because it is the one the scripts
+# that actually build there already read (build-mesa-nvk.sh:19,
+# configure-mesa-nvk.sh:88). This used to read $NVK_BUILD_DIR, which
+# nothing sets — so the moment a caller pointed MESA_NVK_BUILD_DIR
+# somewhere else, everything here went on describing build/mesa-nvk: a
+# state string naming a directory the build never used, which is
+# precisely the failure horizon_mesa_state exists to prevent, one layer
+# further down.
+#
+# Exported so a caller who sets neither gets the same answer from every
+# script, and so the value a function reads is the value the build used
+# rather than whatever was in scope when this file happened to be
+# sourced.
+MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
+# Kept as the old name for anything still reading it; same value, one
+# source of truth.
+NVK_BUILD_DIR_DEFAULT="$MESA_NVK_BUILD_DIR"
 
 # The NVK equivalent of $HORIZON_MESA_TEST_LIBS, and a sentinel for the
 # same reason: meson.build decides whether to build t_vulkan by asking
@@ -184,16 +200,17 @@ export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
 export HORIZON_MESA_TEST_LIBS HORIZON_RUST_SYSROOT
-export HORIZON_NATIVE_TOOLS_DIR NVK_BUILD_DIR_DEFAULT
+export HORIZON_NATIVE_TOOLS_DIR NVK_BUILD_DIR_DEFAULT MESA_NVK_BUILD_DIR
 
 # True when every archive tests 12 and 13 link is present. Both build
 # paths decide whether to build those two tests on exactly this
 # question; they just ask it at different times, which is what
 # scripts/build-horizon.sh has to reconcile.
 horizon_mesa_libs_present() {
-    for _hz_lib in $HORIZON_MESA_TEST_LIBS; do
-        [ -f "$MESA_BUILD_DIR/$_hz_lib" ] || return 1
+    for _hz_mesa_lib in $HORIZON_MESA_TEST_LIBS; do
+        [ -f "$MESA_BUILD_DIR/$_hz_mesa_lib" ] || return 1
     done
+    unset _hz_mesa_lib
     return 0
 }
 
@@ -216,9 +233,10 @@ horizon_mesa_libs_present() {
 # horizon_mesa_libs_present because they live in a different build
 # directory, produced by a different script, at a different time.
 horizon_nvk_libs_present() {
-    for _hz_lib in $HORIZON_NVK_TEST_LIBS; do
-        [ -f "$NVK_BUILD_DIR_DEFAULT/$_hz_lib" ] || return 1
+    for _hz_nvk_lib in $HORIZON_NVK_TEST_LIBS; do
+        [ -f "$MESA_NVK_BUILD_DIR/$_hz_nvk_lib" ] || return 1
     done
+    unset _hz_nvk_lib
     return 0
 }
 
@@ -240,11 +258,12 @@ horizon_nvk_libs_present() {
 # comment in build-horizon.sh describes for core Mesa: the fix landed
 # there for one directory and this is the second one.
 horizon_mesa_state() {
-    _hz_mesa=absent
-    _hz_nvk=absent
-    horizon_mesa_libs_present && _hz_mesa=present
-    horizon_nvk_libs_present && _hz_nvk=present
-    echo "$_hz_mesa $MESA_BUILD_DIR $_hz_nvk $NVK_BUILD_DIR_DEFAULT"
+    _hz_st_mesa=absent
+    _hz_st_nvk=absent
+    horizon_mesa_libs_present && _hz_st_mesa=present
+    horizon_nvk_libs_present && _hz_st_nvk=present
+    echo "$_hz_st_mesa $MESA_BUILD_DIR $_hz_st_nvk $MESA_NVK_BUILD_DIR"
+    unset _hz_st_mesa _hz_st_nvk
 }
 
 # Run a command with the cross toolchain reachable. The image's default
@@ -445,13 +464,27 @@ horizon_image_digest() {
         echo "local"
         return 0
     fi
-    _hz_ref=$(docker image inspect \
-                  --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-                  "$HORIZON_IMAGE" 2>/dev/null | grep -m1 '@')
-    if [ -n "$_hz_ref" ]; then
-        echo "$_hz_ref"
-        return 0
-    fi
+    # Prefer a digest for one of the repositories this project actually
+    # names. The first attempt at this widened the match to any '@',
+    # which was more than the problem needed: the derived image fails
+    # because it has no RepoDigests at all, and the .Id branch below is
+    # what answers that. All the widening changed was the multi-tagged
+    # case, where it would hand back whichever repository docker listed
+    # first — possibly one the reader has no access to — in the field
+    # whose whole job is telling them how to reproduce the build.
+    for _hz_repo in "$HORIZON_NX_DERIVED_REPO" "$HORIZON_NX_IMAGE_REPO"; do
+        [ -n "$_hz_repo" ] || continue
+        _hz_ref=$(docker image inspect \
+                      --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+                      "$HORIZON_IMAGE" 2>/dev/null |
+                  grep -m1 "^${_hz_repo}@")
+        if [ -n "$_hz_ref" ]; then
+            echo "$_hz_ref"
+            unset _hz_repo _hz_ref
+            return 0
+        fi
+    done
+    unset _hz_repo _hz_ref
     _hz_id=$(docker image inspect --format '{{.Id}}' "$HORIZON_IMAGE" \
                  2>/dev/null | grep -m1 .)
     if [ -n "$_hz_id" ]; then
