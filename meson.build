@@ -308,6 +308,14 @@ nvk_tests = [
   # Phase 5 item 1. Everything later in the phase reads its result back
   # through a copy, so this is the one that has nothing behind it.
   't_vk_transfer',
+  # Phase 5 items 3 and 4. One test because an off-screen image is only
+  # observable once something renders to it, and the smallest thing that
+  # does is a clear — which NVK implements as a render pass, not a blit.
+  't_vk_image',
+  # Phase 5 item 2 — the first shader this project runs. NAK and NIL
+  # have been linked since Phase 4 and have never produced machine code
+  # that executed.
+  't_vk_compute',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -320,6 +328,9 @@ nvk_tests = [
 # image for mesa_clc. See scripts/spv-embed.py for the trade.
 nvk_test_shaders = {
   't_vulkan' : [],
+  't_vk_transfer' : [],
+  't_vk_image' : [],
+  't_vk_compute' : ['comp_write_id'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

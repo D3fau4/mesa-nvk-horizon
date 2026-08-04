@@ -407,7 +407,24 @@ bool vkfw_buffer_poison(vkfw *fw, vkfw_buffer *b, uint32_t pattern)
    return vkfw_buffer_flush(fw, b);
 }
 
+bool vkfw_image_supported(vkfw *fw, VkFormat format, VkImageType type,
+                          VkImageTiling tiling, VkImageUsageFlags usage,
+                          const char *what)
+{
+   VkImageFormatProperties props;
+   VkResult r = fw->vk.vkGetPhysicalDeviceImageFormatProperties(
+      fw->pdev, format, type, tiling, usage, 0, &props);
+
+   /* The query answering "not supported" is a legitimate answer and the
+    * query failing some other way is not, so they are told apart here
+    * rather than folded into one boolean. */
+   t_check(fw->t, r == VK_SUCCESS || r == VK_ERROR_FORMAT_NOT_SUPPORTED,
+           "%s: image format query -> %s", what, vkfw_result_str(r));
+   return r == VK_SUCCESS;
+}
+
 bool vkfw_image_create(vkfw *fw, VkFormat format, VkExtent3D extent,
+                       uint32_t mip_levels, uint32_t array_layers,
                        VkImageUsageFlags usage, VkImageTiling tiling,
                        vkfw_image *out)
 {
@@ -416,14 +433,16 @@ bool vkfw_image_create(vkfw *fw, VkFormat format, VkExtent3D extent,
    out->format = format;
    out->extent = extent;
    out->tiling = tiling;
+   out->mip_levels = mip_levels;
+   out->array_layers = array_layers;
 
    const VkImageCreateInfo ici = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = extent.depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
       .format = format,
       .extent = extent,
-      .mipLevels = 1,
-      .arrayLayers = 1,
+      .mipLevels = mip_levels,
+      .arrayLayers = array_layers,
       .samples = VK_SAMPLE_COUNT_1_BIT,
       .tiling = tiling,
       .usage = usage,
@@ -431,8 +450,10 @@ bool vkfw_image_create(vkfw *fw, VkFormat format, VkExtent3D extent,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
    };
    VkResult r = fw->vk.vkCreateImage(fw->dev, &ici, NULL, &out->img);
-   if (!t_check(t, r == VK_SUCCESS, "vkCreateImage(%d, %ux%ux%u, %s) -> %s",
+   if (!t_check(t, r == VK_SUCCESS,
+                "vkCreateImage(%d, %ux%ux%u, %u mip, %u layer, %s) -> %s",
                 (int)format, extent.width, extent.height, extent.depth,
+                mip_levels, array_layers,
                 tiling == VK_IMAGE_TILING_LINEAR ? "linear" : "optimal",
                 vkfw_result_str(r)))
       return false;
@@ -440,6 +461,7 @@ bool vkfw_image_create(vkfw *fw, VkFormat format, VkExtent3D extent,
    VkMemoryRequirements mreq;
    fw->vk.vkGetImageMemoryRequirements(fw->dev, out->img, &mreq);
    out->alloc_B = mreq.size;
+   out->align_B = mreq.alignment;
 
    /* DEVICE_LOCAL, not host visible: an off-screen image is read back
     * through a copy to a buffer, which is what the hardware does well

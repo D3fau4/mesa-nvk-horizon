@@ -115,7 +115,7 @@ static bool image_round_trip(vkfw *fw, VkImageTiling tiling,
 
    vkfw_image img;
    if (!vkfw_image_create(fw, VK_FORMAT_R8G8B8A8_UNORM,
-                          (VkExtent3D){ IMG_W, IMG_H, 1 },
+                          (VkExtent3D){ IMG_W, IMG_H, 1 }, 1, 1,
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                           tiling, &img))

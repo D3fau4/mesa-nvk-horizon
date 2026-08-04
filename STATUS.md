@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 started: step 0, de-mining, before any item |
 | **What runs on a Switch** | The full mandatory Vulkan sequence, CPU readback verified: `t_vulkan` **PASS 60/60** (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`). All 15 `horizon/` tests pass on console |
-| **Next concrete task** | Phase 5 step 0c: the Vulkan test fixture, then item 1 (transfers). `t_va_window` is built and **not yet run** |
+| **Next concrete task** | **The first hardware batch**: `t_vulkan`, `t_va_window`, `t_vk_transfer`, `t_vk_image`, `t_vk_compute`. Items 1, 2, 3 and 4 have tests; none has run on a console |
 | **Known failures** | None outstanding on hardware |
 | **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); the L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
@@ -229,6 +229,79 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Phase 5 — items 2, 3 and 4 have tests, and the first batch is ready (2026-08-04)
+
+**Class: cross build (X).** 18 `.nro` from the Meson path, packaged with
+a manifest. **None of this has run on a console**, which is the whole
+point of the batch below.
+
+### `t_vk_image` — items 3 and 4
+
+One test for two items, because an off-screen image is not observable on
+its own: creating one and binding memory produces nothing a readback can
+look at, and writing to it with a copy is item 1. What makes an image
+*off-screen* is being rendered to, and the smallest thing that renders
+to one is a clear — which in NVK is not a blit and not a shader but a
+render pass (`nvk_cmd_clear.c:298-325` builds a `VkRenderingInfo` with
+`LOAD_OP_CLEAR` and calls `nvk_CmdBeginRendering`). **So this is the
+first time the 3D engine is asked to bind a render target on this
+platform, and it asks without a shader in the picture** — which is why
+it goes before item 2 rather than after.
+
+Three cases, each for something a single case would let through:
+
+| case | what only it can catch |
+|---|---|
+| optimal 64×64, two layers | a clear that ignores its subresource range — layer 1 gets a second colour and layer 0 must still hold the first |
+| optimal 67×53 | a stride bug. An all-powers-of-two extent has no padding for NIL to get wrong |
+| linear 64×64 | the linear-tiled shadow, i.e. `nvkmd_dev_alloc_tiled_mem` — the NULL pointer patch 0045 replaced. **This case is what executes it** |
+
+Plus, on every case, the words past the last texel must still hold their
+poison: a copy that used the image's padded stride instead of the packed
+one would fill the region *and* spill past it.
+
+### `t_vk_compute` — item 2, and the real unknown
+
+Two failure points nothing before it could have:
+`vkCreateComputePipelines`, where NAK compiles, and `vkCmdDispatch`,
+where the result runs. They are separate check lines on purpose — a
+pipeline that fails to create is a compiler problem and says so before
+anything is submitted.
+
+The shader computes `out[id] = (id * 2654435769) ^ 0xa5c3f00d`. Not a
+constant, because a dispatch that ran and computed nothing would still
+fill a buffer with a constant; every word differs from every other, so a
+shader that wrote the right value at the wrong index fails on the index.
+The buffer is 64 words longer than the dispatch and the shader has no
+bounds test of its own, so the tail catches a dispatch of the wrong size
+or a local size that disagrees with `OpExecutionMode`.
+
+It touches no local and no shared memory, deliberately: the shader
+local/shared window stays out of the first shader ever executed here, so
+a failure has one fewer possible cause.
+
+The dispatch ends with a barrier to `VK_PIPELINE_STAGE_HOST_BIT` /
+`VK_ACCESS_HOST_READ_BIT`. `horizon_gpu`'s fence increment flushes dirty
+L2 on every submit, so the readback would very likely work without it —
+which is exactly why it is there. The test should measure the dispatch,
+not that one unconditional writeback covers for a missing dependency.
+
+### The first hardware batch
+
+Five `.nro`, in this order, because each one's failure would explain the
+next one's:
+
+1. **`t_vulkan`** — revalidation. Everything committed after
+   `t_vulkan-run6` has never run: the second review round's fixes and the
+   sub-chunk D16 check. It is also the control: if this no longer passes,
+   nothing below it means anything.
+2. **`t_va_window`** — the allocator probe. Decides the window strategy.
+3. **`t_vk_transfer`** — item 1.
+4. **`t_vk_image`** — items 3 and 4, and the first render-target bind.
+5. **`t_vk_compute`** — item 2, and the first shader.
 
 ---
 

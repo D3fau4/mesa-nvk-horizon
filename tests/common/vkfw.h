@@ -219,13 +219,27 @@ typedef struct vkfw_image {
    VkFormat format;
    VkExtent3D extent;
    VkImageTiling tiling;
+   uint32_t mip_levels;
+   uint32_t array_layers;
    VkDeviceSize alloc_B;
+   VkDeviceSize align_B;     /* what the requirement asked for */
 } vkfw_image;
 
 bool vkfw_image_create(vkfw *fw, VkFormat format, VkExtent3D extent,
+                       uint32_t mip_levels, uint32_t array_layers,
                        VkImageUsageFlags usage, VkImageTiling tiling,
                        vkfw_image *out);
 void vkfw_image_destroy(vkfw *fw, vkfw_image *i);
+
+/* True when the driver supports this image configuration at all. An
+ * unsupported combination is a fact about the device, not a failure, so
+ * a caller uses this to say "skipped, and why" instead of reporting a
+ * bug it did not find. Passes one check: that the query itself
+ * succeeded, since VK_ERROR_FORMAT_NOT_SUPPORTED and a broken query are
+ * different answers. */
+bool vkfw_image_supported(vkfw *fw, VkFormat format, VkImageType type,
+                          VkImageTiling tiling, VkImageUsageFlags usage,
+                          const char *what);
 
 /* Allocates and begins a primary command buffer with ONE_TIME_SUBMIT. */
 bool vkfw_cmd_begin(vkfw *fw, VkCommandBuffer *cb_out);
