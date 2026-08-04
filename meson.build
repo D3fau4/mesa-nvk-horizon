@@ -324,6 +324,9 @@ nvk_tests = [
   # Phase 5 item 7 — the depth test, and the depth buffer read back as
   # a value rather than trusted because the colours came out right.
   't_vk_depth',
+  # Phase 5 item 8 — twelve colour formats, each checked against the
+  # bytes its encoding says it must hold.
+  't_vk_format',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -355,6 +358,10 @@ nvk_test_shaders = {
   # One pair for all four draws: what differs between them is twenty
   # bytes of push constant and a scissor rectangle.
   't_vk_depth' : ['depth_vert_z', 'depth_frag_pc'],
+  # Three fragment shaders because a fragment output's numeric type has
+  # to match its attachment's.
+  't_vk_format' : ['fmt_vert_fullscreen', 'fmt_frag_float',
+                   'fmt_frag_uint', 'fmt_frag_sint'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
