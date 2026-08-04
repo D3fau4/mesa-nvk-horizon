@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Items 1, 2, 3 and 4 met on hardware, 2026-08-04**, each by CPU readback. Items 5–9 not started |
+| **Phase** | 5 in progress. **Items 1, 2, 3 and 4 met on hardware, 2026-08-04**, each by CPU readback. Items 5–9 are written and cross-built, and have never run |
 | **What runs on a Switch** | Transfers (`t_vk_transfer` **202/202**), a compute shader compiled by NAK (`t_vk_compute` **37/37**), off-screen images and clears through the 3D engine (`t_vk_image` **76/76**), the mandatory sequence (`t_vulkan` **62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Item 5, the triangle: the first draw call this project runs |
-| **Known failures** | None outstanding on hardware. The shader-heap defect items 3/4 were leaning on is fixed in the driver (patch 0048) and the test workaround is gone, but that pairing has not run on a console yet |
+| **Next concrete task** | Run batch 5 on console. Every remaining Phase 5 item now has a test; none of the five new ones has executed |
+| **Known failures** | None outstanding on hardware. Nothing in batch 5 has been measured — five new tests and patch 0048 all go to the console for the first time together |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | Patch 0048 and the `t_vk_image` that now depends on it; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | Patch 0048 and the `t_vk_image` that now depends on it; `t_vk_triangle`, `t_vk_texture`, `t_vk_depth`, `t_vk_format` and `t_vk_submits` in their entirety; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,98 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Items 5 to 9 written; the whole phase is now measurable (2026-08-04)
+
+**Class: cross build (CB).** Five new tests, none of them run on
+hardware yet. They go out as batch 5 together with the four that
+already pass, because `t_vk_image` now depends on patch 0048 and has to
+be re-measured.
+
+| Test | Item | What it measures |
+|---|---|---|
+| `t_vk_triangle` | 5 | the first draw call: vertex processing, rasterisation, the ROP |
+| `t_vk_texture` | 6 | descriptors, samplers, mip levels, and the filter unit |
+| `t_vk_depth` | 7 | the depth test, and the depth buffer read back as a value |
+| `t_vk_format` | 8 | twelve colour formats against the bytes their encodings require |
+| `t_vk_submits` | 9 | several submits in flight at once, twice, in two currencies |
+
+**What makes each of them a measurement rather than a smoke test.**
+
+*Item 5.* The triangle is stated in pixels — (4,4), (59.5,4), (4,59.5)
+— with its three edges half a pixel away from every sample point, so
+coverage is decided by geometry and not by the top-left fill rule:
+exactly **1540** of 4096 pixels. The test evaluates the same edge
+functions the rasteriser must and checks its own model against that
+count *before* asking the GPU anything, then compares every pixel
+positionally. Case B draws the same triangle from a vertex buffer with
+interpolated colours and a dynamic viewport, so a failure in B alone
+names attribute fetch, interpolation or dynamic state.
+
+*Item 6.* The full-target triangle makes a pixel centre sample at texel
+coordinate `(px+0.5)/8`, never within a sixteenth of a texel boundary,
+so the nearest-filtered cases are **exact**: output pixel `(px,py)`
+holds source texel `(px/8, py/8)` at level 0 and `(px/16, py/16)` at
+level 1. The linear case's expected values are computed from the same
+four texels the filter unit weighs; the fractional position is always
+an odd sixteenth, so the weights are exact in any subtexel format with
+four or more bits and only the final round to UNORM8 is inexact —
+tolerance 2 of 255, with the largest deviation actually seen reported
+either way.
+
+*Item 7.* Four draws, one render pass, differing only in twenty bytes
+of push constant and a scissor rectangle. Draw 3 is behind everything
+and covers everything, so a degenerate depth test paints the whole
+target rather than failing subtly. Draw 4 passes the test with
+`depthWriteEnable` off, which is the case that separates the two halves
+of the depth state: **a driver that ignored it passes every colour
+check and fails on one depth value.** D32_SFLOAT, so 0.75 and 0.25 are
+exact and the depth comparison is an equality.
+
+*Item 8.* Each format entry carries the value the shader writes and the
+texel that must result, with the conversion derived in its comment
+rather than computed from a format-description table — a table would be
+another thing that can be wrong in the same direction as the driver.
+The load op is `DONT_CARE`, not `CLEAR`: the draw covers every texel, so
+a clear would give the attachment a second writer and a correct texel
+could have come from either. A format the driver does not claim is
+skipped with its `optimalTilingFeatures` printed, and **how many of the
+twelve were claimed is reported** — "twelve formats passed" and "the
+ones this chip supports passed" are different statements.
+
+*Item 9.* Eight calibrated compute jobs submitted back to back with
+nothing between them; the first job's fence is read the instant the
+eighth `vkQueueSubmit` returns and must be `VK_NOT_READY`. `VK_SUCCESS`
+there is reported as a **failure**, because it would mean the
+measurement never got to observe what it came for. The second currency
+is wall clock: sixteen empty submits batched against the same sixteen
+serialised, which synchronous submission would make equal. The
+serialised figure divided by sixteen is also the first measurement of
+this project's per-submit overhead, L2-invalidate prologue and
+syncpoint epilogue included.
+
+**Two things worth recording about how these were built.**
+
+`vkfw_gfx_create` now holds the graphics-pipeline boilerplate that
+items 5 to 8 all need, with the state it fixes justified where it is
+set (cull mode NONE because winding in framebuffer space depends on
+Vulkan's y-down NDC and a culled triangle comes back as the clear
+colour, which says nothing about what is being measured). `t_vk_triangle`
+was moved onto it in the same commit that introduced it, so the helper
+never existed without a caller.
+
+And nothing prints inside a timed region in `t_vk_submits`: `t_check`
+writes to the SD card, so a check inside the loop being timed would
+have been measuring the SD card. Every timed loop calls Vulkan directly
+and stores its results in an array.
+
+**Batch 5 is eleven binaries.** Nine Vulkan tests and the two
+`horizon_gpu` ones that cover the submit path item 9 leans on.
+
+Gates 4/4, host tests 6/6, cross build 23 `.nro`, series of **48**
+patches applying from a reset `mesa/` and idempotent on the second run.
 
 ---
 
