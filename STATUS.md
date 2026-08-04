@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Items 1, 2, 3, 4, 5, 7, 8 and 9 met on hardware, 2026-08-04**, each by CPU readback. **Item 6 is the only one open**: its test passes now, but a failure it produced once has not been explained |
-| **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), **a rasterised triangle with interpolated vertex colours** (**84/84**), **the depth test with the depth buffer read back** (**66/66**), **twelve colour formats** (**282/282**), **eight submits outstanding at once** (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console. Sampling is the one thing that does not |
-| **Next concrete task** | Run `t_vk_texture` with the repeated variants — 24 fresh iterations of the configuration that failed once — since the call sequence has been ruled out and only intermittency is left |
-| **Known failures** | **Item 6, unexplained and not reproducible.** Run 1: rows 4 and 5 of an 8x8 tiled source read as transparent black. Runs 2 and 3: the same configuration passes, including run 1's exact call sequence with no `TRANSFER_SRC` and no readback. The usage flag, the early readback and L2 coherence are all ruled out; only intermittency is left, and the next run repeats the configuration 24 times to test it |
+| **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
+| **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
+| **Next concrete task** | Phase 6. Phase 5 is closed |
+| **Known failures** | None outstanding. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | `t_vk_texture`'s repeated variants; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,73 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## PHASE 5 COMPLETE — item 6 met, with one failure recorded as unexplained (2026-08-04)
+
+**Class: hardware (HW).** `t_vk_texture` **PASS 1685/1685**. Twenty-four
+fresh iterations of the configuration that failed once — sixteen in run
+1's exact shape, eight attributable — plus the three characterised
+baselines. **Zero failing iterations.**
+
+    53 nearest checks, 4096/4096 pixels each
+    27 linear checks, 4096/4096 within 2 (largest deviation 1 of 255,
+       and 0 on the 64x64)
+    21 source readbacks, every texel of every level as it went in
+
+**Item 6 is met.** Every measurement item 6 requires — the descriptor,
+the sampler, addressing, texel fetch, mip selection by explicit LOD, the
+filter unit, and the source's own integrity — passes by CPU readback,
+across three surface layouts and 24 independent builds of the one that
+once failed.
+
+### And the failure that was seen once stays on the record
+
+Batch 5, `t_vk_texture` run 1: level 0 texel rows 4 and 5 of an 8x8
+tiled source read as transparent black. Rows 0-3, rows 6-7 and the
+whole of mip level 1 were correct. Two independent cases agreed on it
+to the byte — case A missed exactly those two texel rows, case C missed
+exactly the pixels whose bilinear footprint touched them, and its first
+bad pixel is what blending 15/16 of texel (0,3) with 1/16 of a *zero*
+texel gives. That is not a misread log. Something returned zeros.
+
+**What has been ruled out, each by a run that would have shown it:**
+
+| candidate | ruled out by |
+|---|---|
+| the source's usage flags (NIL layout) | run-1 shape has no `TRANSFER_SRC` and passes |
+| the readback and barriers added in run 2 | "checked after" has none before sampling and passes |
+| the upload versus the texture unit | "checked after" copies the source out afterwards; intact every time |
+| surfaces narrower than a GOB | the 64x64 baseline passes, and so does the 8x8 |
+| tiling itself | the 8x8 linear baseline passes |
+| L2 coherence | closed by construction: `horizon_cmds_fence_incr` emits wait-for-idle, dirty writeback, then the increment |
+| a fixed trigger in the call sequence | 24 fresh iterations of it, zero failures |
+
+**What is not ruled out:** something intermittent, or something about
+console state that a single binary does not reproduce — run 1 was the
+sixth of eleven binaries on a console that had been working for a while.
+Allocation order and the addresses that follow from it were not
+isolated either, because run 3 made that experiment unnecessary by
+ruling out the mechanism it would have tested.
+
+**The decision, recorded as a decision and not an omission.** Phase 5
+does not stall on a defect that has resisted 32 attempts and whose
+mechanism every available experiment has excluded. What stays behind is
+the machinery to diagnose it if it recurs: the source is verified on
+the way in, failures report a range rather than a first, the source
+pattern names its own position so a wrong texel says which one it was,
+and the "checked after" variant distinguishes the upload from the
+texture unit without changing the shape of the run. The next occurrence
+is diagnosed, not merely seen.
+
+### Phase 5 exit criteria
+
+All nine items verified on hardware by CPU readback of the result, not
+by absence of errors. Item 9's additional requirement — two or more
+submits in flight with no intervening CPU wait — was met with eight,
+demonstrated twice: an unsignalled fence at the instant the last submit
+returned, and issuing costing 681 us against 540827 us of execution.
 
 ---
 

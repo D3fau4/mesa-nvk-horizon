@@ -46,11 +46,19 @@
  * and — for the attributable variant — whether the image was right all
  * along.
  *
- * If they all pass again, the honest conclusion is that a real failure
- * was observed once and has resisted thirty-two further attempts, and
- * that the machinery to attribute it stays in place for the next time
- * it appears. It is not a conclusion that item 6 works and it is not a
- * conclusion that it is broken.
+ * They all passed: run 4 is 1685/1685, twenty-four fresh iterations
+ * with zero failures. So the record is that a real failure was observed
+ * once, with a signature two independent cases agreed on to the byte,
+ * and it has resisted thirty-two further attempts under the same
+ * configuration. Every mechanism that could produce it has been
+ * excluded by a run that would have shown it; intermittency has not.
+ *
+ * The repetitions stay, and so does everything that would attribute a
+ * recurrence: the source verified on the way in, failures reporting a
+ * range rather than a first, a pattern whose texels name their own
+ * position, and a variant that separates the upload from the texture
+ * unit without changing the shape of the run. The next occurrence is
+ * diagnosed, not merely seen.
  *
  * THE OTHER THREE ROWS ARE THE CHARACTERISED BASELINE, and they still
  * separate the candidates if a repeated iteration ever does fail. A
