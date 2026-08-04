@@ -117,7 +117,18 @@ vm_reserve_common(horizon_gpu_device *dev, uint64_t size, uint32_t page_size,
                          (unsigned long long)base, frc,
                          (unsigned long long)rounded);
         free(range);
-        return horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        /* Not HORIZON_GPU_ERR_NV, which this used to return. That status
+         * means "an nv service call failed; see .nv" — and nothing
+         * failed: AllocSpace succeeded and answered the wrong address.
+         * There is no Result to put in .nv, so the caller was handed an
+         * NV-flavoured error with an empty nv field and nothing to look
+         * up.
+         *
+         * VA_EXHAUSTED is the accurate one: "no space in the requested
+         * VA interval" is the only reason a FixedOffset request comes
+         * back somewhere else. The two addresses are in the log above,
+         * which is where the detail belongs. */
+        return horizon_gpu_err(HORIZON_GPU_ERR_VA_EXHAUSTED);
     }
 
     range->dev = dev;

@@ -80,7 +80,24 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
                                           horizon_gpu_mem **out_mem);
 
 /* Fails with HORIZON_GPU_ERR_BUSY while GPU mappings of this object are
- * alive. Closing invalidates the CPU pointer (memory-model § 7). */
+ * alive. Closing invalidates the CPU pointer (memory-model § 7).
+ *
+ * TWO FAILURES WITH OPPOSITE MEANINGS, because the caller must not treat
+ * them alike:
+ *
+ *   HORIZON_GPU_ERR_BUSY — nothing happened. The object is intact and
+ *     still owned by the caller; unmap its mappings and call again.
+ *
+ *   HORIZON_GPU_ERR_NV — the object is GONE and must NOT be passed here
+ *     again; a second call is a use-after-free, since `mem` has exactly
+ *     one owner (memory-model § 7). It reports that restoring an
+ *     UNCACHED range's cacheability failed, so the backing pages were
+ *     deliberately leaked rather than returned to the heap uncached,
+ *     where they would corrupt whatever allocated them next. Only an
+ *     UNCACHED object can answer this.
+ *
+ * BUSY is therefore the only retryable one. Everything else means the
+ * destroy completed, and the error describes what it cost. */
 horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem);
 
 void *horizon_gpu_mem_cpu_ptr(const horizon_gpu_mem *mem);

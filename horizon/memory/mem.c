@@ -122,15 +122,22 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
             Result arc = svcSetMemoryAttribute(mem->cpu, rounded,
                                                MemAttr_IsUncached, 0);
             if (R_FAILED(arc)) {
+                /* Logged, not returned. The caller asked why the
+                 * allocation failed, and the answer is `rc` from
+                 * nvMapCreate; returning the cleanup's error instead
+                 * would replace the diagnosis with a footnote about the
+                 * unwind. Both appear here, and the one that answers
+                 * the caller's question is the one that propagates. */
                 horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                              "svcSetMemoryAttribute(restore cached, %p, "
                              "0x%llx) failed: 0x%08x — leaking 0x%llx "
                              "bytes rather than returning uncached pages "
-                             "to the heap", mem->cpu,
+                             "to the heap (unwinding an nvMapCreate that "
+                             "failed with 0x%08x)", mem->cpu,
                              (unsigned long long)rounded, arc,
-                             (unsigned long long)rounded);
+                             (unsigned long long)rounded, rc);
                 free(mem);
-                return horizon_gpu_err_nv(arc);
+                return horizon_gpu_err_nv(rc);
             }
         }
         free(mem->cpu);
