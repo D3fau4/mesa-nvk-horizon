@@ -4196,6 +4196,7 @@ emitters), and found no regression in either mode.
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **closed: the capability (patch 0029)** — `nvkmd_info` gains `has_sparse`; nouveau answers true, horizon false, and the nine sparse features plus `VK_QUEUE_SPARSE_BINDING_BIT` follow it. **The reason first recorded for this was wrong** and the correction stands with the decision: it was not that `NVGPU_AS` has no sparse reservation — `NvAllocSpaceFlags_Sparse` exists. What is missing is *partial* unbind, which is what sparse residency needs. Was: — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 | D14 | An uncached memory policy in `horizon/` | **closed on hardware — `t_uncached` PASS 19/19** (`docs/hw-logs/t_uncached.log`). `horizon/memory/mem.c` implements `HORIZON_GPU_MEM_UNCACHED` with `svcSetMemoryAttribute(MemAttr_IsUncached)` over the rounded range, undone on every error path and at destroy; patch 0030 maps `NVKMD_MEM_COHERENT` onto it. All three unknowns the test separates were answered on console: the kernel accepts our heap allocations, the resulting mapping is Normal-NC (ordinary loads, stores and `memcpy` work — Device memory would have faulted), and the GPU reads an un-flushed command list written through it. Was: — open, raised with the owner; does NOT block Phase 4. `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED` — no longer true, and this row said so long after the code and the log had landed |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
+| D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **open, raised with the owner (Codex P1, PR #6)** — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit. **Was numbered D9 on `main`**; renumbered on merge, see the note below |
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
@@ -5947,6 +5948,126 @@ So that run has three outcomes and all three are actionable:
 | readback validates | the wait works *and* the counter starts at zero there | build the search anyway, so the assumption stops being load-bearing |
 | readback wrong, wait succeeded | the wait works, the threshold is offset | build the search; it fixes exactly this |
 | the wait fails too | that emulator implements neither | the emulator cannot close this loop; back to hardware |
+
+## Codex PR review, PR #6 (2026-08-04) — 12 findings, 12 real
+
+`chatgpt-codex-connector` reviewed PR #6 at `8fdade7`: **5 × P1, 7 × P2, and
+every one of them held up.** The PR #4 review scored 7 real out of 8; this one
+did not produce a single false positive, which is worth recording before
+anything else, because it changes how much weight the next one gets.
+
+Each was checked against the code before it was touched. Eleven are fixed
+below. One is a design change and is a **pending decision** rather than a
+commit — see D16.
+
+### The one that mattered: the four-arm matrix was not waiting
+
+`tests/t_gpuwrite.c` embedded its own `horizon_cmds_fence_incr` in the span it
+submitted, while `horizon_gpu_submit()` **unconditionally appends the
+channel's own fence block** and advances `shadow_target` by exactly one. So
+every arm advanced the hardware counter twice and the accounting once, and
+the hardware ran permanently one increment ahead.
+
+The consequence is specific, and it is this test's own measurement it
+destroys:
+
+| Arm | Threshold waited on | Hardware at that moment | Wait |
+|---|---|---|---|
+| A | `S+1` | `S+1` after A's own increment | **correct** — returns after the release |
+| B | `S+2` | already `S+2`, from A's extra increment | returns **immediately** |
+| C | `S+3` | already `S+4` | returns immediately |
+| D | `S+4` | already `S+6` | returns immediately |
+
+Arms B, C and D read the target while the GPU was still working on it. They
+did not measure cache behaviour; they raced it.
+
+**What this does and does not cost the Phase 4 conclusion.** The two
+load-bearing observations survive, because they are the two the race cannot
+manufacture:
+
+- **A failed** — and A is the one arm whose wait was correct. "No flush → not
+  visible" stands on a sound observation.
+- **D passed** — and D was the arm *most* exposed to the early return, since
+  it had the largest gap between threshold and hardware. A payload that is
+  already present when you look early is present. "L2 flush → visible"
+  stands.
+
+What is weakened is the middle: **B failing was read as "identical with CPU
+caching on and off", and C failing as "MEMBAR does not help".** Both of those
+arms raced, so neither failure is now evidence of anything. The
+cache-irrelevance claim in particular rested on A-versus-B and now rests on A
+alone.
+
+That claim is not retracted — `t_uncached` tests the same property from the
+other side and passes — but it is no longer supported by the experiment that
+was cited for it, and `docs/hw-logs/t_gpuwrite-run2-matrix.log` should be read
+with this in mind. **The corrected test has not been run on hardware.** Until
+it has, the matrix's middle two arms are unmeasured, not re-confirmed.
+
+Also worth saying plainly: this defect was introduced by me, in the very test
+written to be the instrument that settled the question, and it survived four
+hardware runs because the arm it cannot affect is the first one.
+
+### The rest, and what each was hiding
+
+| Finding | Real? | Why it was invisible |
+|---|---|---|
+| P1 `meson.build:368` — `t_vulkan` never rebuilt once NVK archives appear | yes | `build-mesa-nvk.sh` runs `build-horizon.sh` *before* compiling NVK, so `fs.exists()` is asked at the one moment the archives are guaranteed absent; `horizon_mesa_state` compared only core Mesa, so no later run reconfigured. Unnoticed because the hardware `.nro` came from the **Makefile** path, which re-evaluates `$(wildcard)` every time |
+| P1 `build-mesa-nvk.sh:60` — TLS relocations counted, not gated | yes | The miscompile's signature is **zero** relocations, so the broken build printed the same reassuring `0` as a clean one. `build-mesa.sh` has always run the real gate; this path never did |
+| P1 `channel.c:647` — degraded destroy skips the in-flight check | yes | "Unknowable" was too strong: the counter cannot be *read* on that platform, but the fence can still be *asked* through `nvFenceWait` — which this file's own wait path already relies on for exactly that case |
+| P2 `channel.c:579` — degraded wait returns after one chunk | yes | Any finite timeout became 100 ms. A two-second wait failed with 1.9 s left to signal in |
+| P2 `vm.c:99` — mismatched fixed-VA reservation leaked | yes | `AllocSpace` *succeeded*; only the userspace wrapper was freed, so the kernel reservation became unreachable. An anomaly path that has never fired — which is why nothing caught it |
+| P2 `mem.c:155` — uncached restore result discarded | yes | A direct CLAUDE.md violation ("never discard a libnx `Result`"), in the one place where discarding it hands uncached pages back to `malloc` — corruption in unrelated code, far from the cause |
+| P2 `t_vulkan.c:658` — null fence after a failed create | yes | `vkQueueSubmit` accepts `VK_NULL_HANDLE` legitimately, so the existing guard could not fire, and `vkWaitForFences` would then take the process down before the framework could print FAIL |
+| P2 patch 0019 — binding freed before the unmap result is checked | yes | `horizon_gpu_vm_unmap` keeps the mapping alive on failure *so it can be retried*; its only pointer had already been freed. One failed unmap stranded a VA range permanently |
+| P2 `toolchain-env.sh:168` — manifest digest unusable | yes | `RepoDigests` was filtered for the **base** repo while `$HORIZON_IMAGE` is normally the locally built **derived** image, which has no RepoDigests at all. Every manifest since Phase 4 recorded `<base-repo>@unknown` |
+| P2 `fetch-rust-crates.sh:77` — vendored crates never refreshed | yes | The script's header says it pins nothing and cannot drift. True of the contents, false of the caching |
+
+### Gate coverage this exposed, beyond the finding
+
+Applying the TLS gate to the NVK build showed the gate itself had a hole:
+`find -name '*.o'` finds **821** objects under `build/mesa-nvk` and **none**
+under `src/nouveau/rust_runtime`, whose members exist only inside
+`libnouveau_rust_runtime.a`. The Rust staticlib — "one more place TLS could
+appear", the reason that code was looking at all — was scanned by nothing.
+The gate now takes archives too (845 items).
+
+**Broken on purpose, per the rule that an untested gate is not a gate.**
+Compiled the four-line reproducer from the script's own header both ways,
+archived the `-fPIC` one and deleted its loose object:
+
+```
+$ ./scripts/check-tls-relocs.sh build/probe/tlsgate-badonly
+MISCOMPILED THREAD-LOCAL ACCESS in 1 object(s):
+  build/probe/tlsgate-badonly/libbad.a
+exit=1
+$ find build/probe/tlsgate-badonly -name '*.o' | wc -l
+0          <- what the gate used to look for: it would have exited 0
+$ ./scripts/check-tls-relocs.sh build/probe/tlsgate-good
+check-tls-relocs: OK (2 object(s)/archive(s) use TLS, all with relocations, 2 scanned)
+exit=0
+```
+
+Both directions: it fails on the real miscompile and does not fire on the
+clean form. The build-state fix was checked the same way — it reconfigured and
+produced `t_vulkan` (16 `.nro` on the Meson path, up from 15), and a second
+run did **not** reconfigure.
+
+### What was verified, and what was not
+
+**Host build and cross build only. Nothing here has run on hardware.**
+
+- host tests 132/132; `check-layering`, `check-mesa-test-parity`,
+  `check-no-abs-paths`, `check-dispatch-complete` all OK
+- cross build, Makefile path: 15 `.nro`, `-Werror` clean
+- cross build, Meson path: 16 `.nro` including `t_vulkan`
+- `scripts/apply-mesa-patches.sh` from the pinned commit: 43 patches apply
+  cleanly, and a second run is a no-op
+- NVK rebuilt end to end; patch 0043 compiles; the new TLS gate passes over it
+
+**The corrected `t_gpuwrite` and `t_vulkan` have not been run on a Switch.**
+Every claim about what the fixed test *will* measure is a prediction, stated
+as one before the run rather than after it.
 
 ## Next concrete task
 
