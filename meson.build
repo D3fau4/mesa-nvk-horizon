@@ -329,9 +329,10 @@ nvk_tests = [
 nvk_test_shaders = {
   't_vulkan' : [],
   't_vk_transfer' : [],
-  # Not for what it computes: the test creates a throwaway pipeline to
-  # make the driver upload a shader before the first render pass.
-  't_vk_image' : ['comp_write_id'],
+  # None on purpose: t_vk_image must reach its first render pass without
+  # anything having been uploaded to the shader heap, or it stops being
+  # able to catch the regression patch 0048 fixed.
+  't_vk_image' : [],
   't_vk_compute' : ['comp_write_id'],
 }
 

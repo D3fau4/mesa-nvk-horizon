@@ -40,7 +40,7 @@
  * that cleared everything to black, or ignored the second clear, is
  * caught by the value and not only by the position.
  *
- * RUN 1 FAILED WITH AN MMU FAULT, AND THIS VERSION IS THE EXPERIMENT.
+ * WHY THIS TEST MUST NOT COMPILE ANYTHING BEFORE ITS FIRST RENDER PASS.
  * On 2026-08-04 the first render pass this project ever submitted
  * MMU-faulted: nothing was written, the fault surfaced one case later at
  * the next kickoff, and vkWaitForFences had already returned VK_SUCCESS
@@ -48,24 +48,31 @@
  * syncpoints are force-incremented by nvgpu's recovery, so a reached
  * threshold is not evidence the work ran).
  *
- * The leading hypothesis is in the VA map that run printed:
+ * The cause was in the VA map that run printed:
  *
  *   map VA 0xa14a000+0x100000000 page 0x1000  (nothing bound)
  *
- * That is NVK's shader heap — 4 GiB of contiguous VA reserved at device
- * creation, with its first chunk bound only when a shader is first
- * uploaded. SET_PROGRAM_REGION points at its base. Nothing in this test
- * compiled a shader, so the 3D engine began a render pass with a program
- * region pointing at unbacked address space; t_vk_compute, which does
- * compile one, ran on the same console without faulting.
+ * NVK's shader heap — 4 GiB of contiguous VA reserved at device
+ * creation, whose first chunk was bound only when a shader was first
+ * uploaded, and whose base is handed to the engines as
+ * SET_PROGRAM_REGION. Nothing in this test compiled a shader, so the 3D
+ * engine began a render pass with a program region pointing at unbacked
+ * address space, and the instruction cache's pre-fetch of that address
+ * is a read of nothing. t_vk_compute, which does compile a shader, ran
+ * on the same console without faulting; run 3 of this test compiled a
+ * throwaway one on purpose and passed 76/76, which is the controlled
+ * experiment that named the cause. Patch 0048 fixes it in the driver:
+ * the heap binds its first chunk in vkCreateDevice.
  *
- * So this version creates a throwaway compute pipeline before the first
- * clear, purely to make NVK upload something to the shader heap and bind
- * that first chunk. It is an experiment and not a fix — if it is what
- * the fault was, the fix belongs in the driver — and it is stated in the
- * log so the run cannot be misread as an unmodified pass.
+ * That is why this test compiles no shader, creates no pipeline and no
+ * descriptor set layout (which also uploads to the shader heap,
+ * nvk_descriptor_set_layout.c:399) before the first clear. The
+ * throwaway compute pipeline that used to stand here is gone. Adding
+ * any of them back would make the driver bind that chunk as a side
+ * effect and this test would stop being able to catch the regression —
+ * which is the whole reason it is arranged this way.
  *
- * The cases are also reordered simplest-first. Run 1 started with the
+ * The cases are also ordered simplest-first. Run 1 started with the
  * two-layer image, which confounded "layered rendering" with "the first
  * render pass at all".
  *
@@ -76,10 +83,6 @@
 #include <string.h>
 
 #include "common/vkfw.h"
-
-/* Only to make the driver upload a shader; what it computes is
- * irrelevant here. See the header comment. */
-#include "comp_write_id.spv.h"
 
 const char *const test_name = "t_vk_image";
 
@@ -142,102 +145,6 @@ static void image_barrier(vkfw *fw, VkCommandBuffer cb, VkImage img,
    };
    fw->vk.vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0,
                                0, NULL, 0, NULL, 1, &b);
-}
-
-/* Creates and destroys a compute pipeline for no reason except its side
- * effect: NVK uploads the compiled shader into dev->shader_heap, which
- * binds that heap's first chunk. See the header comment for why this is
- * the experiment rather than a fix. */
-static void warm_shader_heap(vkfw *fw)
-{
-   test_ctx *t = fw->t;
-
-   VkShaderModule module = VK_NULL_HANDLE;
-   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
-   VkPipelineLayout layout = VK_NULL_HANDLE;
-   VkPipeline pipeline = VK_NULL_HANDLE;
-
-   const VkShaderModuleCreateInfo smci = {
-      .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-      .codeSize = sizeof(comp_write_id_spv),
-      .pCode = comp_write_id_spv,
-   };
-   VkResult r = fw->vk.vkCreateShaderModule(fw->dev, &smci, NULL, &module);
-   if (!t_check(t, r == VK_SUCCESS, "warm-up: vkCreateShaderModule -> %s",
-                vkfw_result_str(r)))
-      return;
-
-   /* THE LAYOUT HAS TO MATCH THE SHADER, and the first version of this
-    * function said otherwise: "the shader declares a storage buffer, but
-    * nothing is dispatched, and an empty pipeline layout is enough to
-    * compile and upload". That was an assumption about the driver, it was
-    * wrong, and it took a console down with it — run 2 stopped dead after
-    * "warm-up: vkCreatePipelineLayout -> VK_SUCCESS" with no further
-    * output and no RESULT line.
-    *
-    * comp_write_id declares DescriptorSet 0, Binding 0 as a storage
-    * buffer. A pipeline layout with no sets is inconsistent with that
-    * (VUID-VkComputePipelineCreateInfo-layout-07987), there are no
-    * validation layers here to say so, and NVK resolves the binding
-    * against a set that does not exist. Nothing is dispatched, so the
-    * layout costs nothing — it just has to be true.
-    */
-   const VkDescriptorSetLayoutBinding binding = {
-      .binding = 0,
-      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      .descriptorCount = 1,
-      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-   };
-   const VkDescriptorSetLayoutCreateInfo dslci = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .bindingCount = 1,
-      .pBindings = &binding,
-   };
-   r = fw->vk.vkCreateDescriptorSetLayout(fw->dev, &dslci, NULL, &set_layout);
-   if (!t_check(t, r == VK_SUCCESS,
-                "warm-up: vkCreateDescriptorSetLayout -> %s",
-                vkfw_result_str(r)))
-      goto out;
-
-   const VkPipelineLayoutCreateInfo plci = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = 1,
-      .pSetLayouts = &set_layout,
-   };
-   r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL, &layout);
-   if (!t_check(t, r == VK_SUCCESS, "warm-up: vkCreatePipelineLayout -> %s",
-                vkfw_result_str(r)))
-      goto out;
-
-   const VkComputePipelineCreateInfo cpci = {
-      .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-      .stage = {
-         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-         .module = module,
-         .pName = "main",
-      },
-      .layout = layout,
-   };
-   r = fw->vk.vkCreateComputePipelines(fw->dev, VK_NULL_HANDLE, 1, &cpci,
-                                       NULL, &pipeline);
-   t_check(t, r == VK_SUCCESS,
-           "warm-up: a shader is uploaded, so the shader heap has its "
-           "first chunk bound (vkCreateComputePipelines -> %s)",
-           vkfw_result_str(r));
-   t_note(t, "EXPERIMENT: this run compiles a throwaway shader before the "
-             "first render pass. Run 1 MMU-faulted with the shader heap "
-             "reservation carrying nothing bound. If the clears pass now, "
-             "that was why.");
-
-out:
-   if (pipeline != VK_NULL_HANDLE)
-      fw->vk.vkDestroyPipeline(fw->dev, pipeline, NULL);
-   if (layout != VK_NULL_HANDLE)
-      fw->vk.vkDestroyPipelineLayout(fw->dev, layout, NULL);
-   if (set_layout != VK_NULL_HANDLE)
-      fw->vk.vkDestroyDescriptorSetLayout(fw->dev, set_layout, NULL);
-   fw->vk.vkDestroyShaderModule(fw->dev, module, NULL);
 }
 
 struct image_case {
@@ -391,7 +298,10 @@ int run_test(test_ctx *t)
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &dst))
       goto out;
 
-   warm_shader_heap(&fw);
+   t_note(t, "no shader, pipeline or descriptor set layout has been created "
+             "on this device: the first render pass below reaches the 3D "
+             "engine with a program region the driver had to make valid on "
+             "its own (patch 0048)");
 
    /* Simplest first. Run 1 began with the two-layer image, so a failure
     * there could not distinguish layered rendering from the first render

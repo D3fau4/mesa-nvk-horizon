@@ -14,11 +14,11 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | 5 in progress. **Items 1, 2, 3 and 4 met on hardware, 2026-08-04**, each by CPU readback. Items 5–9 not started |
 | **What runs on a Switch** | Transfers (`t_vk_transfer` **202/202**), a compute shader compiled by NAK (`t_vk_compute` **37/37**), off-screen images and clears through the 3D engine (`t_vk_image` **76/76**), the mandatory sequence (`t_vulkan` **62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | The NVK fix for the shader heap, so items 3 and 4 stop leaning on a test workaround; then item 5, the triangle |
-| **Known failures** | None outstanding on hardware. Items 3/4 pass only because the test uploads a shader the driver should upload itself — a driver defect with a known fix, not a failing measurement |
+| **Next concrete task** | Item 5, the triangle: the first draw call this project runs |
+| **Known failures** | None outstanding on hardware. The shader-heap defect items 3/4 were leaning on is fixed in the driver (patch 0048) and the test workaround is gone, but that pairing has not run on a console yet |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | Patch 0048 and the `t_vk_image` that now depends on it; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,64 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Patch 0048 — the shader heap's first chunk, and the workaround comes out (2026-08-04)
+
+**Class: cross build (CB).** Not verified on hardware yet; it goes out
+with the next batch.
+
+Items 3 and 4 were met in batch 4, but with a caveat that was written
+down every time they were reported: `t_vk_image` passed **because the
+test compiled a shader it never used**. That is a workaround living in a
+test for a defect in the driver, and it hides the defect from every
+other test that will ever render.
+
+**What the defect is.** Pre-Volta, `SET_PROGRAM_REGION` is programmed
+once, from the queue's init push buffer, with
+`nvk_heap_contiguous_base_address(&dev->shader_heap)`. That heap is
+contiguous on these chips: `nvk_mem_arena_init` reserves the whole 4 GiB
+up front and binds **nothing** until the first upload. So between
+`vkCreateDevice` and the first compiled shader, the address the engines
+have been given is a valid VA that maps nothing. The instruction cache
+pre-fetches — NVK's own comment at `nvk_device.c:337` says so, which is
+why shader BOs are overallocated by 2 KiB — and a pre-fetch from that
+base is a read of unmapped address space. nvgpu faults on it.
+
+**The evidence is a controlled experiment, not a reading.** Run 1:
+clear-only command buffer, fresh device, MMU fault, nothing written.
+Run 3: the same test with a throwaway compute pipeline compiled first
+and nothing else changed, PASS 76/76. `t_vk_compute`, which compiles a
+shader before anything else, never faulted on any run.
+
+**The fix** is `nvk_heap_ensure_first_chunk()`, called from
+`nvk_device.c` under the same `cls_eng3d < VOLTA_A` that decides the
+heap is contiguous two lines above. It costs one 64 KiB allocation
+(`NVK_MEM_ARENA_MIN_SIZE`) on a device that was going to make it as soon
+as anything was compiled.
+
+**And the test now proves it.** `warm_shader_heap()` is gone, and so is
+`t_vk_image`'s `#include "comp_write_id.spv.h"` and its entry in
+`nvk_test_shaders`. The test reaches its first render pass having
+created no shader module, no pipeline and no descriptor set layout —
+that last one matters, because `nvk_descriptor_set_layout.c:399` also
+uploads to the shader heap, so creating one would have bound the chunk
+just as effectively and just as invisibly.
+
+**What was not measuring this.** Nothing stopped anyone from putting an
+`#include "…spv.h"` back into `t_vk_image`: every generated header lands
+in one build directory, so a test can include a header meson did not
+give it and still compile, as long as some other test in the same build
+asked for that shader. `check-mesa-test-parity.sh` grew a seventh
+comparison — per test, `nvk_test_shaders` against the test's own
+`#include` lines — and it was broken three ways to prove it fails: a
+test including a shader meson does not list, meson listing a shader the
+test does not include, and the extraction itself returning nothing. All
+three fail; restored, it passes.
+
+Gates 4/4, host tests 6/6, cross build 18 `.nro`, series **48** patches
+applying from a reset `mesa/` and idempotent on the second run.
 
 ---
 

@@ -141,8 +141,53 @@ sh_nvk_libs=$(sed -n "/^HORIZON_NVK_TEST_LIBS=\"/,/\"\$/p" \
 compare "NVK archive paths" "meson.build:$ms_nvk_libs" \
         "scripts/toolchain-env.sh:$sh_nvk_libs"
 
+# 7. Which shaders each NVK test compiles in. Two files state it:
+#    meson.build's nvk_test_shaders decides which headers are assembled
+#    and added to that test's sources, and the test's own #include lines
+#    decide which it uses.
+#
+#    Neither direction of a disagreement is caught by building. All the
+#    generated headers land in one build directory, so a test that
+#    includes a header meson did not give it still compiles — as long as
+#    some *other* test in the same build asked for that shader. And a
+#    test that lists a shader it does not include just assembles it for
+#    nothing, which is invisible.
+#
+#    That matters beyond tidiness for t_vk_image, which must reach its
+#    first render pass with nothing uploaded to NVK's shader heap or it
+#    stops being the regression test for patch 0048 (see its header
+#    comment). "This test includes no shader" is a property of the test,
+#    and this is what makes it fail out loud when it stops being true.
+ms_nvk_tests=$(sed -n '/^nvk_tests  *= *\[/,/^\]/p' meson.build |
+               grep -o "'[^']*'" | tr -d "'" | LC_ALL=C sort -u)
+if [ -z "$ms_nvk_tests" ]; then
+    echo "MESA TEST PARITY (test shaders): extracted no NVK tests from"
+    echo "  meson.build. The extraction in this script no longer matches"
+    echo "  that file. Fix the extraction — an empty set must never be"
+    echo "  reported as agreement."
+    fail=1
+fi
+
+# The dict is read once; a per-test sed over the whole file would be the
+# same answer six times over.
+nvk_shader_dict=$(sed -n '/^nvk_test_shaders  *= *{/,/^}/p' meson.build)
+
+for t in $ms_nvk_tests; do
+    # "(none)" rather than the empty string: compare() treats empty as a
+    # broken extraction, and "this test uses no shader" is a real value
+    # here — in fact the one worth guarding.
+    ms_sh=$(printf '%s\n' "$nvk_shader_dict" |
+            sed -n "s/^ *'$t' *: *\[\(.*\)\] *,* *$/\1/p" |
+            grep -o "'[^']*'" | tr -d "'" | LC_ALL=C sort -u | tr '\n' ' ')
+    src_sh=$(grep -o '^#include "[A-Za-z0-9_]*\.spv\.h"' "tests/$t.c" |
+             sed 's/^#include "\(.*\)\.spv\.h"$/\1/' |
+             LC_ALL=C sort -u | tr '\n' ' ')
+    compare "shaders for $t" \
+            "meson.build:${ms_sh:-(none)}" "tests/$t.c:${src_sh:-(none)}"
+done
+
 if [ "$fail" -eq 0 ]; then
     echo "check-mesa-test-parity: OK (tests, archives, defines, includes," \
-         "default build dir, NVK archives)"
+         "default build dir, NVK archives, test shaders)"
 fi
 exit "$fail"
