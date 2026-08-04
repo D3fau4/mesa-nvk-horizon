@@ -54,6 +54,8 @@
 #include "comp_spin.spv.h"
 
 const char *const test_name = "t_vk_submits";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define WORDS        4096u                  /* per job */
 #define BUF_B        (WORDS * 4u)

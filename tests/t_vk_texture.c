@@ -110,6 +110,8 @@
 #include "tex_frag_lod1.spv.h"
 
 const char *const test_name = "t_vk_texture";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define W            64u          /* render target */
 #define H            64u

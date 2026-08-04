@@ -46,6 +46,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_va_window";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* The aperture, as NVK programs it on Maxwell. Two 16 MiB windows that
  * happen to be adjacent, so the range to keep clear is one 32 MiB span

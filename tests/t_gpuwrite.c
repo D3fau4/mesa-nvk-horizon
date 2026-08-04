@@ -74,6 +74,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_gpuwrite";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define WAIT_NS   UINT64_C(2000000000) /* 2 s bound for every wait here */
 #define ALLOC_B   UINT64_C(0x1000)

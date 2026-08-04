@@ -44,6 +44,8 @@
 #include "comp_write_id.spv.h"
 
 const char *const test_name = "t_vk_compute";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* Must match OpExecutionMode LocalSize in the shader. Stated here
  * because the group count below is derived from it, and a disagreement

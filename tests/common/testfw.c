@@ -49,7 +49,8 @@ void t_note(test_ctx *t, const char *fmt, ...)
 
 int main(void)
 {
-    consoleInit(NULL);
+    if (!test_uses_display)
+        consoleInit(NULL);
 
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
@@ -97,6 +98,15 @@ int main(void)
     else
         printf("  note (sdmc log unavailable: %s)\n", path);
 
+    /* Stated in the artefact, because a log with no console output in
+     * it and a log from a run whose console never started look the
+     * same otherwise. */
+    if (test_uses_display && t.log) {
+        fprintf(t.log, "  note this test owns the display: no console was "
+                       "started, and this file is the whole record\n");
+        fflush(t.log);
+    }
+
     int aborted = run_test(&t);
 
     int total = t.pass + t.fail;
@@ -114,9 +124,11 @@ int main(void)
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
             break;
-        consoleUpdate(NULL);
+        if (!test_uses_display)
+            consoleUpdate(NULL);
     }
 
-    consoleExit(NULL);
+    if (!test_uses_display)
+        consoleExit(NULL);
     return (t.fail == 0 && !aborted) ? 0 : 1;
 }

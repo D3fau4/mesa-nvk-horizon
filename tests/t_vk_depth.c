@@ -67,6 +67,8 @@
 #include "depth_frag_pc.spv.h"
 
 const char *const test_name = "t_vk_depth";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define W            64u
 #define H            64u

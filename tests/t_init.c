@@ -11,6 +11,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_init";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 static int one_cycle(test_ctx *t, int cycle)
 {

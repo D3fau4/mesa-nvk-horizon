@@ -85,6 +85,8 @@
 #include "common/vkfw.h"
 
 const char *const test_name = "t_vk_image";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define POISON        0xdeadbeefu
 

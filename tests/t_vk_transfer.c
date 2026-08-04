@@ -37,6 +37,8 @@
 #include "common/vkfw.h"
 
 const char *const test_name = "t_vk_transfer";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* 64 x 64 RGBA8 is 16 KiB, and so is the buffer. The two sizes are the
  * same on purpose: with tightly packed rows the image round trip is an

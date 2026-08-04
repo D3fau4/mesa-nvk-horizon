@@ -77,6 +77,8 @@
 #include "tri_frag_interp.spv.h"
 
 const char *const test_name = "t_vk_triangle";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define W            64u
 #define H            64u

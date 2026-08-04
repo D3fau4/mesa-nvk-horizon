@@ -118,6 +118,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_threads";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* How many worker threads the shared-counter and broadcast sections
  * use. Four is one per Cortex-A57 on a Tegra X1, so the counter section

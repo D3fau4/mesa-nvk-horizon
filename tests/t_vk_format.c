@@ -49,6 +49,8 @@
 #include "fmt_frag_sint.spv.h"
 
 const char *const test_name = "t_vk_format";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* Small on purpose: a 16-byte-per-texel format at 64x64 would be 64 KiB
  * of readback for an answer that is the same in every texel. 16x16 is

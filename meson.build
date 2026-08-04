@@ -178,6 +178,22 @@ horizon_tests = [
   # for a reason nobody measured. Uses no Mesa, on purpose: the question
   # is about the address space, not about the driver.
   't_va_window',
+  # A deliberate MMU fault, and the wait that must not report success
+  # for it. The fence/notifier fix was written because of a real fault
+  # and has never had one since — a check that has never fired is not a
+  # check. Destroys its own channel on purpose, which is also the only
+  # place teardown-after-a-fault is exercised.
+  't_fault',
+  # Decision D15: how large a single GPFIFO entry this hardware will
+  # actually execute. nxvk ramps the size at every channel creation to
+  # pin a ring-size fault; this measures the number once instead, so
+  # horizon_gpu_submit can bound the span rather than let a channel find
+  # the limit.
+  't_pbsize',
+  # Phase 6 groundwork: the first test that owns the display and runs
+  # with no console, so the reporting path a swapchain test will depend
+  # on is measured before anything depends on it.
+  't_display',
 ]
 
 testfw = static_library(
@@ -330,6 +346,11 @@ nvk_tests = [
   # Phase 5 item 9 — several submits in flight at once, demonstrated by
   # an unsignalled fence and by wall clock, not by absence of errors.
   't_vk_submits',
+  # Not an item: the two things this project's own patches changed and
+  # nothing had ever measured — patch 0046's extension gating, checked
+  # in both directions, and patch 0045's alloc_tiled_mem, reached
+  # through the one path that can reach it.
+  't_vk_caps',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -368,6 +389,10 @@ nvk_test_shaders = {
   # A compute job whose duration the test controls, so it can still be
   # running when the next submit is issued.
   't_vk_submits' : ['comp_spin'],
+  # Shared with t_vk_format: the same full-target triangle and the same
+  # push-constant colour, because what t_vk_caps measures is where the
+  # pixels land, not what draws them.
+  't_vk_caps' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

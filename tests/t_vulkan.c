@@ -55,6 +55,8 @@
 #include "horizon_gpu/channel.h"
 
 const char *const test_name = "t_vulkan";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* The one symbol the driver exports for a loader to find. Declared
  * rather than included: vk_icd.h is the loader's header and this is not

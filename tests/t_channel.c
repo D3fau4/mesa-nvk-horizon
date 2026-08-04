@@ -12,6 +12,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_channel";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define NUM_CHANNELS 4
 
