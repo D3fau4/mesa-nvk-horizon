@@ -319,6 +319,8 @@ nvk_tests = [
   # Phase 5 item 5 — the first draw call. Vertex processing,
   # rasterisation and the ROP, none of which any earlier item reaches.
   't_vk_triangle',
+  # Phase 5 item 6 — sampling: descriptors, samplers and mip levels.
+  't_vk_texture',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -343,6 +345,10 @@ nvk_test_shaders = {
   # names attribute fetch or interpolation.
   't_vk_triangle' : ['tri_vert_index', 'tri_frag_const',
                      'tri_vert_attrib', 'tri_frag_interp'],
+  # One vertex shader for all three cases; two fragment shaders because
+  # implicit and explicit LOD are different instructions.
+  't_vk_texture' : ['tex_vert_fullscreen', 'tex_frag_sample',
+                    'tex_frag_lod1'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
