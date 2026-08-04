@@ -4186,15 +4186,15 @@ emitters), and found no regression in either mode.
 | D4 | Switch available | **yes — closed.** Full run, confirmation re-run, and the Phase 4 hardware run all done |
 | D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592` |
 | D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
-| D5 | Cache policy per memory type | blocked on R6 (first GPU write) |
-| D6 | Timeline semaphores vs upload queue | Phase 4 |
+| D5 | Cache policy per memory type | **closed by the hardware, and not the way it was framed** — one policy per advertised type: type 0 (`DEVICE_LOCAL HOST_VISIBLE HOST_CACHED`) is `HORIZON_GPU_MEM_CACHED` with nvkmd's own maintenance, which it performs because `util_has_cache_ops()` is true on AArch64; type 1 (`HOST_VISIBLE HOST_COHERENT`) is UNCACHED, see D14. The framing that was wrong: this row assumed the first GPU write would be made visible *by* CPU cache maintenance. R6 measured the opposite — the four-arm `t_gpuwrite` matrix failed identically with the CPU mapping cached and uncached, and what made the write appear was a GPU-side L2 writeback. The policy is real and still required; it was never what blocked the readback. Was: — blocked on R6 (first GPU write) |
+| D6 | Timeline semaphores vs upload queue | **closed: advertise, by emulation (patch 0022)** — the runtime's `vk_sync_timeline` is registered over the binary syncpoint fence D11 settled on, so timelines are advertised without touching the upload queue. Was: — Phase 4. Original wording, `docs/known-risks.md:403`: advertise timeline semaphores, or fix the upload queue instead |
 | D7 | Report the devkitA64 TLS miscompile upstream | **open** — `-mtp=soft -fPIC` generates a TLS access with no relocation on gcc 15.2.0 (see the section on it). This tree no longer triggers it, so nothing here is blocked; a four-line reproducer exists and devkitPro should have it |
 | D8 | Whether `CLOCK_MONOTONIC` here may be relied on as monotonic | **closed by design (items 6-10)** — it may not, so the absolute deadline is converted to a relative duration exactly once, at the start of the wait, and horizon_gpu waits on libnx's monotonic ticks. A date change cannot move a deadline that no longer exists. Was: — `t_ostime` measured `TIME_MONOTONIC` returning wall-clock time (epoch seconds), so it is the real-time clock. Monotonic across both measured intervals; a date change would step it. `vk_sync` waits take *absolute* timeouts built from `os_time_get_absolute_timeout`, so this has to be answered before the sync type is designed |
 | D9 | `nvkmd` pdev/dev split: one `horizon_gpu_device` serving both, or GM20B facts queryable without a device | **closed by the hardware (items 1-2)** — the `nv` session is per process and the GM20B characteristics are only queryable once it is up, so there is no describing the device without opening it. The pdev owns the `horizon_gpu_device`; every `nvkmd_dev` shares it under a reference count. Was: — Phase 4 item 1. nouveau opens the render node twice (`_pdev.c:70`, `_dev.c:40`); Horizon's `nv` session is per process |
 | D10 | The four chipset-derived `nv_device_info` fields (`sm`, `mp_per_tpc`, `max_warps_per_mp`, shared-memory sizes) | **closed: moved upstream (items 1-2)** — they are now in `src/nouveau/headers/nv_device_info_chipset.c`, next to the struct they fill, unchanged, and `nouveau_device.c` calls them. Was: — Phase 4 item 2. They are pure functions of the chipset living in `src/nouveau/winsys/nouveau_device.c`, which Horizon does not build: duplicate them into `nvkmd_horizon`, or move them upstream next to `nv_device_info.h`. They describe the chip, not the kernel driver |
 | D11 | `vk_sync` type: Horizon-native over syncpoints, or the runtime's `vk_sync_timeline` emulation | **closed: native (items 6-10)** — a binary vk_sync over a channel fence, with the runtime's timeline emulation on top. The emulation needs a binary type underneath regardless, and a syncpoint fence is what a submit produces. Was: — Phase 4 item 8, and the largest single piece of the phase. The native route needs a CPU-side syncpoint increment (`nvioctlNvhostCtrl_SyncptIncr`) that `horizon_gpu` does not expose, and an owner for a syncpoint no channel created. Depends on D8 |
-| D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
-| D14 | An uncached memory policy in `horizon/` | **open, raised with the owner; does NOT block Phase 4** (traced: the fill path touches no COHERENT allocation, and vkCmdFillBuffer is DMA-engine methods, not a shader) — Vulkan requires a `HOST_VISIBLE + HOST_COHERENT` memory type; NVK advertises one on SoC and means an *uncached* map by it; `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED`, and `NVKMD_MEM_COHERENT` makes nvkmd skip cache maintenance entirely. The mechanism exists (`svcSetMemoryAttribute` + `MemoryAttribute_Uncached`, as deko3d does) but it means touching `horizon/` |
+| D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **closed: the capability (patch 0029)** — `nvkmd_info` gains `has_sparse`; nouveau answers true, horizon false, and the nine sparse features plus `VK_QUEUE_SPARSE_BINDING_BIT` follow it. **The reason first recorded for this was wrong** and the correction stands with the decision: it was not that `NVGPU_AS` has no sparse reservation — `NvAllocSpaceFlags_Sparse` exists. What is missing is *partial* unbind, which is what sparse residency needs. Was: — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
+| D14 | An uncached memory policy in `horizon/` | **closed on hardware — `t_uncached` PASS 19/19** (`docs/hw-logs/t_uncached.log`). `horizon/memory/mem.c` implements `HORIZON_GPU_MEM_UNCACHED` with `svcSetMemoryAttribute(MemAttr_IsUncached)` over the rounded range, undone on every error path and at destroy; patch 0030 maps `NVKMD_MEM_COHERENT` onto it. All three unknowns the test separates were answered on console: the kernel accepts our heap allocations, the resulting mapping is Normal-NC (ordinary loads, stores and `memcpy` work — Device memory would have faulted), and the GPU reads an un-flushed command list written through it. Was: — open, raised with the owner; does NOT block Phase 4. `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED` — no longer true, and this row said so long after the code and the log had landed |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit. **Was numbered D9 on `main`**; renumbered on merge, see the note below |
 
@@ -4214,6 +4214,38 @@ file and loses no history. Nothing was dropped; only one identifier moved.
 `main`'s D8 row still read **open**. It is superseded here, not by argument but by the
 work: items 6-10 convert the absolute deadline to a relative duration exactly once, which
 is what the question was blocking.
+
+### Four rows were stale, and what found them (2026-08-04)
+
+Merging `main` put this table under inspection and four rows did not survive it. All
+four had been answered in the body of this file, in a patch, or by a log in
+`docs/hw-logs/`, and none of the answers had been carried back up to the summary. The
+rows now read closed:
+
+| Row | Answered by | How long it sat wrong |
+|---|---|---|
+| D5 — cache policy per memory type | the `t_gpuwrite` matrix (R6) | since R6, and the row's *premise* was wrong, not just its state |
+| D6 — timeline semaphores | patch 0022 | since the patch landed |
+| D12 — sparse binding | patch 0029 (`has_sparse = false` for horizon) | since the patch landed |
+| D14 — uncached memory policy | `docs/hw-logs/t_uncached.log`, PASS 19/19 | since the log landed |
+
+D14 is the worst of the four: the row asserted "`horizon_gpu` offers only
+`HORIZON_GPU_MEM_CACHED`" while `horizon/memory/mem.c` had implemented the uncached
+policy, patch 0030 had wired `NVKMD_MEM_COHERENT` to it, and a passing hardware log for
+it was committed in this same tree. Anyone reading only the summary table would have
+concluded the opposite of what the repository contains.
+
+**What found it was not a re-read of this file.** It was the auto-generated description
+on PR #6, which listed "Implemented UNCACHED cache policy (decision D14)" as done. That
+contradicted the table, so one of the two had to be wrong — and it was the table. A
+generated summary disagreeing with the hand-maintained one is a cheap and apparently
+effective check; worth repeating rather than resenting.
+
+D5 is the one worth keeping in view. The others were bookkeeping. D5 was a wrong belief
+about the hardware that survived in the summary for as long as it survived in the code:
+the row assumed CPU cache maintenance was what would make a GPU write visible. The
+console said otherwise. That is the same mistake, in the same place, that
+`tests/t_vulkan.c` carried in its memory-type note until `fc3c636`.
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
