@@ -127,6 +127,36 @@ static bool channel_check_fault(horizon_gpu_channel *chan)
     return chan->lost;
 }
 
+/* "The fence says reached" is the answer a waiter wants, and on this
+ * platform it is not sufficient on its own.
+ *
+ * MEASURED ON HARDWARE, 2026-08-04 (t_vk_image run 1). A render pass
+ * MMU-faulted, nothing it was supposed to write was written, and
+ * vkWaitForFences returned VK_SUCCESS. The syncpoint had reached the
+ * threshold — because nvgpu's channel recovery force-increments a
+ * faulted channel's syncpoints to their maximum submitted value, so
+ * that waiters do not hang forever. The counter therefore says
+ * "finished" for work that never ran, and the CPU then read a buffer
+ * still holding its poison and had no way to know why. The fault only
+ * surfaced at the *next* kickoff, one test case later, by which time
+ * the case that caused it had already been reported as passing.
+ *
+ * So the notifier is consulted on the success path too, and it decides.
+ * A reached threshold plus a fault notification is CHANNEL_LOST, not OK.
+ *
+ * This is deliberately stricter than "the fence completed before the
+ * fault": the notifier is sticky and per-channel, so work that genuinely
+ * finished before a later fault will also be reported lost. That is the
+ * safe direction. The unsafe one is what was measured — reporting
+ * success for work that did not happen — and no caller of this function
+ * can tell the two apart from the outside. */
+static horizon_gpu_result channel_reached_or_lost(horizon_gpu_channel *chan)
+{
+    if (channel_check_fault(chan))
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+    return horizon_gpu_ok();
+}
+
 /* Logs a teardown step's failure during horizon_gpu_channel_create's error
  * unwind instead of discarding it. A failure here means the corresponding
  * object (and its live_* counter) cannot be un-wound any further from this
@@ -569,7 +599,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
-                return horizon_gpu_ok();
+                return channel_reached_or_lost(chan);
             if (rc != KERNELRESULT(TimedOut))
                 return horizon_gpu_err_nv(rc);
 
@@ -588,7 +618,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             continue;
         }
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
-            return horizon_gpu_ok();
+            return channel_reached_or_lost(chan);
 
         if (channel_check_fault(chan))
             return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
