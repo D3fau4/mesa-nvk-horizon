@@ -14,12 +14,12 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Re-run `t_fault` for the latch (14/15 → 15/15), then Phase 6 |
-| **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **14/15**, the fence/notifier fix firing for the first time |
-| **Known failures** | `t_fault` 14/15: the wait correctly reported channel lost, and then `get_error` said "none" because reading a notification consumes it. Fixed by a latch, not yet re-run. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
+| **Next concrete task** | Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
+| **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **15/15** after the latch it earned, and an exit crash it also earned |
+| **Known failures** | **`t_fault` crashes the console on exit.** All 15 checks pass, the log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Two experiments are built and not run. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | The latch that `t_fault` run 1 earned. Everything else this project owed itself has now been measured on a console |
+| **Never verified on hardware** | Nothing outstanding: every measurement this project owed itself has been made on a console. What is not *explained* is `t_fault`'s exit crash |
 
 
 ---
@@ -105,52 +105,76 @@ log alone, which is the whole question:
 So a swapchain test can have the default window and still be reported.
 The alternative — nxlink over the network — is not needed.
 
-### `t_fault`: the fix fired, and found the defect next to it
+### `t_fault`: the fix fired, found the defect next to it, then found a worse one
 
-**14/15.** The measurement it was written for passed, and the one check
-that failed found something real.
+**Run 1: 14/15. Run 2 with the latch: 15/15.**
 
     ok   the submit is accepted — the fault is the GPU's, not the kickoff's
-    note fence 26:34794
-    [horizon_gpu:E] channel 0x28b7dcd050: fault notification 31 (MMU fault) — marking lost
-    note wait_fence -> channel lost (nv 0x00000000)
+    [horizon_gpu:E] channel 0xce51cd050: fault notification 31 (MMU fault) — marking lost
     ok   the wait does NOT report success for work that faulted
     ok   and it names the channel lost rather than timing out
-    FAIL the notifier recorded the fault (type=0 'none')
+    ok   the notifier recorded the fault (type=31 'MMU fault')
     ok   a submit to the lost channel is refused
     ok   the faulted channel tears down cleanly
     ok   the device tears down after a faulted channel
 
 **The fence/notifier fix works.** It was written on 2026-08-04 because
 `vkWaitForFences` had returned `VK_SUCCESS` for MMU-faulted work, and
-until now nothing had faulted since. A deliberate fault reaches it: the
-syncpoint was force-incremented by nvgpu's recovery exactly as
-predicted, the notifier was consulted anyway, and the wait reported
-**channel lost** instead of success. The fault type is **31, MMU
-fault** — worth having written down.
+nothing had faulted since. A deliberate fault reaches it: nvgpu's
+recovery force-incremented the syncpoint exactly as predicted, the
+notifier was consulted anyway, and the wait reported **channel lost**.
+The fault type is **31, MMU fault**.
 
-And teardown after a fault, which nothing else exercises, is clean: the
-reservation, the channel and the device all came down without error.
-
-**The failing check is a defect in `horizon/`, not in the test.**
+Run 1's single failure was a defect in `horizon/`, not in the test.
 libnx's `nvGpuChannelGetErrorNotification` does a non-blocking
-`eventWait` on the channel's error *event* before the ioctl, so **the
-first reader consumes the notification**. The first reader is
-`channel_check_fault`, on the wait path; it logged the type and threw
-it away. A caller that received `HORIZON_GPU_ERR_CHANNEL_LOST` and
-asked why was told "no error recorded" — for a channel that was lost
-because of one. The information existed only in a log line, where no
-program could reach it.
+`eventWait` on the channel's error *event*, so **the first reader
+consumes the notification** — and the first reader is
+`channel_check_fault`, on the wait path. It logged the type and threw
+it away, so a caller that received `HORIZON_GPU_ERR_CHANNEL_LOST` and
+asked why was told "no error recorded", for a channel lost because of
+one. `horizon_gpu_channel_get_error` now latches it. Run 2 says the
+latch works.
 
-Fixed by latching it: `horizon_gpu_channel_get_error` records any
-non-zero type it sees, and answers from the latch when the live query
-says nothing is pending. The header's contract is corrected to say so.
-This is the second time this project has touched `horizon/`, and like
-the first it is for a bug a hardware run produced rather than one a
-reading suggested.
+### AND THEN THE REAL FINDING: `t_fault` crashes the console on exit
 
-Re-run pending. Everything else in `t_fault` passed, so a 15/15 is the
-only thing outstanding.
+Reported by the owner, both runs: **every check passes, the log is
+written and closed, and pressing + to leave takes the system down.**
+
+This is worse than the thing the test was written to catch, and it is
+not a test defect. It happens strictly after everything `t_fault`
+reports — the channel, the reservation and the device all tear down
+with `ok`. What is left between the last line of the log and the crash
+is: the `+` loop, `consoleExit`, and libnx's `__appExit`, which closes
+the process's `nv` session.
+
+**Why it matters beyond this test.** A real Vulkan application on this
+driver can take a GPU fault. If the process then brings the system down
+when it exits, that is a defect anything shipping would hit, and it is
+not visible from any test that does not fault on purpose.
+
+**The leading hypothesis, and it is a hypothesis.**
+`horizon_gpu_channel_destroy` deliberately skips the drain for a lost
+channel — its counter may never advance again and teardown has to stay
+possible (`docs/architecture.md` § 6). So the channel handle is closed
+while nvgpu may still be recovering it, and the nv session is closed a
+moment later by `__appExit`.
+
+**Two things added to narrow it, both in the test and neither in
+`horizon/`** — a sleep in the library would be a failure hidden behind
+a sleep, which this project does not do:
+
+1. **A bounded settle** (2 s) between the fault and the teardown. If
+   the exit stops crashing, the cause is a race with recovery, and the
+   fix is a bounded wait on something observable rather than a delay.
+2. **A fresh device, channel and real submit after the teardown.** If
+   the GPU still works in this process once a faulted channel has been
+   torn down, the session survived and the crash belongs to process
+   exit; if it does not, the session never recovered and the crash at
+   `+` is a consequence of a state that was already broken while the
+   test was reporting `ok`.
+
+Not run. The 15/15 is banked, so this run is optional and costs a
+console reboot; it is offered rather than assumed.
 
 
 ### One thing about the Phase 3 debt, said rather than slipped in

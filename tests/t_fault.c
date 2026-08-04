@@ -46,6 +46,35 @@
  * own for that reason and never shares it, so nothing else in the
  * binary is affected — and it is the last thing the binary does.
  *
+ * WARNING, MEASURED 2026-08-04: RUNNING THIS CRASHES THE CONSOLE ON
+ * EXIT. Every check passes (15/15), the log is written and closed, and
+ * then pressing + to return to the menu takes the system down. The
+ * measurement is banked; this warning is here so nobody runs it
+ * casually for the passing line.
+ *
+ * The crash is strictly after everything this test reports. What it is
+ * not: it is not the teardown failing, because the channel, the
+ * reservation and the device all report ok. What it might be is a race
+ * with nvgpu's own recovery. horizon_gpu_channel_destroy deliberately
+ * skips the drain for a lost channel — its counter may never advance
+ * again and teardown has to remain possible (architecture.md § 6) — so
+ * the channel handle is closed while the kernel may still be
+ * recovering it, and the process's nv session is closed by __appExit a
+ * moment later.
+ *
+ * TWO THINGS WERE ADDED TO NARROW IT, and neither belongs in
+ * horizon/: a sleep in the library would be a failure hidden behind a
+ * sleep, which this project does not do.
+ *
+ *   - a bounded settle between the fault and the teardown. If the exit
+ *     stops crashing, it is a race with recovery, and the fix is a
+ *     bounded wait on something observable rather than a delay.
+ *   - a fresh channel and a real submit AFTER the teardown. If the GPU
+ *     is still usable in this process once a faulted channel has been
+ *     torn down, the session survived and the crash belongs to process
+ *     exit; if it is not, the session never recovered and the exit
+ *     crash is a consequence rather than the cause.
+ *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
@@ -73,6 +102,12 @@ const bool test_uses_display = false;
 #define CMDBUF_B      UINT64_C(0x1000)
 #define UNMAPPED_B    UINT64_C(0x10000)
 #define PAYLOAD       UINT32_C(0xbadf00d5)
+#define GOOD_PAYLOAD  UINT32_C(0x600d0001)
+
+/* How long to let nvgpu's recovery run before closing the channel. Long
+ * enough to matter if the crash is a race, short enough that a run is
+ * still a run. */
+#define SETTLE_NS     UINT64_C(2000000000)
 
 /* A mapped scratch object, used only for the push buffer. */
 typedef struct scratch {
@@ -227,8 +262,18 @@ int run_test(test_ctx *t)
            "a submit to the lost channel is refused (status=%s)",
            horizon_gpu_status_str(res.status));
 
+   /* 5. Let the kernel's recovery run before anything is closed. This
+    * is an experiment, not a fix: if the exit crash goes away, the
+    * cause is a race and the answer is to wait on something
+    * observable. If it does not, the delay costs two seconds and rules
+    * one thing out. */
+   t_note(t, "settling for %llu ms before teardown, to see whether the "
+             "exit crash is a race with nvgpu's recovery",
+          (unsigned long long)(SETTLE_NS / 1000000));
+   svcSleepThread(SETTLE_NS);
+
 out:
-   /* 5. Teardown after a fault, which nothing else exercises. Reported
+   /* 6. Teardown after a fault, which nothing else exercises. Reported
     * as checks rather than done silently: a leak or a hang here would
     * otherwise show up as a mysterious failure in whatever ran next. */
    scratch_destroy(&cmd);
@@ -249,6 +294,81 @@ out:
       t_check(t, horizon_gpu_succeeded(res),
               "the device tears down after a faulted channel (status=%s)",
               horizon_gpu_status_str(res.status));
+      dev = NULL;
    }
+
+   /* 7. IS THIS PROCESS'S GPU STILL USABLE? A whole new device,
+    * channel and submit, after a faulted channel has been torn down.
+    *
+    * This is the question the exit crash turns on. If real work runs
+    * here, the nv session survived the fault and the crash belongs to
+    * process exit — __appExit closing a session the kernel is not
+    * finished with. If it does not, the session never recovered and
+    * the crash at + is a consequence of a state that was already
+    * broken by the time this test said everything was ok. */
+   {
+      horizon_gpu_device *dev2 = NULL;
+      horizon_gpu_channel *chan2 = NULL;
+      scratch cmd2 = { 0 }, tgt2 = { 0 };
+
+      res = horizon_gpu_device_create(NULL, &dev2);
+      if (!t_check(t, horizon_gpu_succeeded(res),
+                   "after the fault: a second device opens (status=%s)",
+                   horizon_gpu_status_str(res.status)))
+         goto probe_out;
+
+      res = horizon_gpu_channel_create(dev2, NULL, &chan2);
+      if (!t_check(t, horizon_gpu_succeeded(res),
+                   "after the fault: a second channel opens (status=%s)",
+                   horizon_gpu_status_str(res.status)))
+         goto probe_out;
+
+      if (horizon_gpu_failed(scratch_create(dev2, &cmd2)) ||
+          horizon_gpu_failed(scratch_create(dev2, &tgt2))) {
+         t_check(t, false, "after the fault: memory for the probe");
+         goto probe_out;
+      }
+
+      tgt2.cpu[0] = 0;
+      (void)horizon_gpu_mem_flush(tgt2.mem, 0, CMDBUF_B);
+
+      const uint32_t n2 =
+         horizon_cmds_semaphore_release(cmd2.cpu, tgt2.gpu_va, GOOD_PAYLOAD);
+      (void)horizon_gpu_mem_flush(cmd2.mem, 0, CMDBUF_B);
+
+      const horizon_gpu_cmd_span span2 = {
+         .gpu_va = cmd2.gpu_va, .num_dwords = n2,
+      };
+      horizon_gpu_fence f2 = { 0 };
+      res = horizon_gpu_submit(chan2, &span2, 1, HORIZON_GPU_SUBMIT_DEFAULT,
+                               &f2);
+      if (!t_check(t, horizon_gpu_succeeded(res),
+                   "after the fault: a submit on the new channel is "
+                   "accepted (status=%s)", horizon_gpu_status_str(res.status)))
+         goto probe_out;
+
+      res = horizon_gpu_channel_wait_fence(chan2, f2, WAIT_NS);
+      if (!t_check(t, horizon_gpu_succeeded(res),
+                   "after the fault: the new channel's work completes "
+                   "(status=%s)", horizon_gpu_status_str(res.status)))
+         goto probe_out;
+
+      (void)horizon_gpu_mem_invalidate(tgt2.mem, 0, CMDBUF_B);
+      t_check(t, tgt2.cpu[0] == GOOD_PAYLOAD,
+              "after the fault: THE GPU STILL WORKS IN THIS PROCESS "
+              "(0x%08" PRIx32 ")", tgt2.cpu[0]);
+
+probe_out:
+      scratch_destroy(&tgt2);
+      scratch_destroy(&cmd2);
+      if (chan2 != NULL)
+         (void)horizon_gpu_channel_destroy(chan2);
+      if (dev2 != NULL)
+         (void)horizon_gpu_device_destroy(dev2);
+   }
+
+   t_note(t, "everything this test can measure is done. If the console "
+             "goes down when you press +, it goes down after this line "
+             "and after the log was closed");
    return 0;
 }
