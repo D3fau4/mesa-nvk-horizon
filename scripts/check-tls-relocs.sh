@@ -65,23 +65,64 @@ if [ "${#present[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Archives as well as loose objects, because a Rust staticlib has no
-# loose objects at all: `find -name '*.o'` over build/mesa-nvk finds 821
-# of them and none under src/nouveau/rust_runtime, whose members exist
-# only inside libnouveau_rust_runtime.a. Checking only loose objects
-# would have left the Rust half — "one more place TLS could appear",
-# which is why build-mesa-nvk.sh looked at it in the first place —
-# scanned by nothing.
+# Loose objects, plus the members of archives that have none.
 #
-# Granularity differs between the two, and the difference is worth
-# stating rather than hiding: a loose object is judged on its own, while
-# an archive is judged whole. An archive whose members disagreed (one
-# with relocations, one without) would pass. That is not a shape this
-# toolchain produces — an archive comes out of one cargo or one meson
-# invocation with one set of flags — and per-member extraction costs a
-# temporary directory per archive for a case that cannot arise here.
-mapfile -t objs < <(find "${present[@]}" \
-                        \( -name '*.o' -o -name '*.a' \) -type f | sort)
+# Neither half of that is arbitrary, and the first attempt at it got
+# both wrong, so the reasoning is written out.
+#
+# WHY ARCHIVES AT ALL. A Rust staticlib has no loose objects: over
+# build/mesa-nvk, `find -name '*.o'` turns up 821 and not one of them is
+# under src/nouveau/rust_runtime, whose members exist only inside
+# libnouveau_rust_runtime.a. Scanning loose objects alone leaves the
+# Rust half — "one more place TLS could appear", which is why
+# build-mesa-nvk.sh was looking in the first place — checked by nothing.
+#
+# WHY NOT ARCHIVES AS WELL AS OBJECTS. Because that counts everything
+# twice. All 821 of those loose objects live under a `<archive>.p/`
+# directory and are exactly the members of the 24 archives beside them,
+# so scanning both scanned the same code twice and reported 845 — in a
+# script whose entire job is to make a count trustworthy.
+#
+# WHY MEMBERS AND NOT WHOLE ARCHIVES. `nm` and `readelf -r` on an
+# archive answer for the archive: one member calling __aarch64_read_tp
+# and another carrying the only relocation reads as clean. It was
+# tempting to wave that away as a shape the toolchain cannot produce —
+# except the artefact this was added for is exactly that shape.
+# libnouveau_rust_runtime.a bundles the -Zbuild-std core/alloc objects
+# together with the crate's own, from separate compilations. The blind
+# spot was aimed straight at the target.
+#
+# So: an archive is expanded into its members and each is judged alone,
+# and only when nothing else already covers it.
+tls_probe_dir="build/probe/tls-members"
+rm -rf "$tls_probe_dir"
+
+mapfile -t loose < <(find "${present[@]}" -name '*.o' -type f | sort)
+mapfile -t archives < <(find "${present[@]}" -name '*.a' -type f | sort)
+
+objs=("${loose[@]}")
+expanded=0
+
+for a in "${archives[@]}"; do
+    # Meson names the object directory after the target: libfoo.a ->
+    # libfoo.a.p/. When it holds objects, they ARE this archive's
+    # members and are already in `loose`.
+    if compgen -G "$a.p/*.o" >/dev/null; then
+        continue
+    fi
+    dest="$tls_probe_dir/$(echo "$a" | tr '/' '_')"
+    mkdir -p "$dest"
+    # `ar x` writes into the working directory, so it is run from the
+    # destination with the archive named absolutely.
+    if ! horizon_run sh -c 'cd "$1" && aarch64-none-elf-ar x "$2"' \
+             sh "$dest" "$PWD/$a" 2>/dev/null; then
+        echo "check-tls-relocs: could not expand $a" >&2
+        exit 1
+    fi
+    mapfile -t members < <(find "$dest" -name '*.o' -type f | sort)
+    objs+=("${members[@]}")
+    expanded=$((expanded + 1))
+done
 
 if [ "${#objs[@]}" -eq 0 ]; then
     echo "check-tls-relocs: nothing to check (no objects under ${present[*]})"
@@ -128,6 +169,8 @@ if [ "$bad" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-tls-relocs: OK ($ok object(s)/archive(s) use TLS, all with" \
-     "relocations, ${#objs[@]} scanned)"
+rm -rf "$tls_probe_dir"
+echo "check-tls-relocs: OK ($ok object(s) use TLS, all with relocations," \
+     "${#objs[@]} scanned: ${#loose[@]} loose + members of $expanded" \
+     "archive(s) with none)"
 exit 0

@@ -59,6 +59,24 @@ horizon_meson compile -C "$MESA_NVK_BUILD_DIR" "$@"
 # prints as if it were good news. check-tls-relocs.sh is what
 # distinguishes the two, by looking for the call rather than for the
 # relocation; build-mesa.sh has always run it and this path did not.
+# Assert the artefacts exist BEFORE gating on them.
+#
+# Without this the gate is green on an empty directory: check-tls-relocs
+# exits 0 with "nothing to check" when it finds no objects, and the loop
+# below used to skip a missing archive with `|| continue`. A build that
+# produced nothing at all would then report a clean TLS result — which
+# is the same "zero is not good news" shape this whole block exists to
+# stop, one level up.
+for _lib in "src/nouveau/vulkan/libnvk.a" \
+            "src/nouveau/rust_runtime/libnouveau_rust_runtime.a"; do
+    if [ ! -f "$MESA_NVK_BUILD_DIR/$_lib" ]; then
+        echo "build-mesa-nvk: $_lib is missing after a successful build;" \
+             "refusing to report a TLS result for artefacts that do not" \
+             "exist" >&2
+        exit 1
+    fi
+done
+
 scripts/check-tls-relocs.sh "$MESA_NVK_BUILD_DIR"
 
 # The counts stay, after the gate rather than instead of it: they say
@@ -66,7 +84,6 @@ scripts/check-tls-relocs.sh "$MESA_NVK_BUILD_DIR"
 # result deliberately does not.
 for _lib in "src/nouveau/vulkan/libnvk.a" \
             "src/nouveau/rust_runtime/libnouveau_rust_runtime.a"; do
-    [ -f "$MESA_NVK_BUILD_DIR/$_lib" ] || continue
     _n=$(horizon_run "${DEVKITA64_TOOL_PREFIX}objdump" -r \
              "$MESA_NVK_BUILD_DIR/$_lib" 2>/dev/null |
          grep -c 'R_AARCH64_TLS' || true)
