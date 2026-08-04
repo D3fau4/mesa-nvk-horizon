@@ -6065,9 +6065,47 @@ run did **not** reconfigure.
   cleanly, and a second run is a no-op
 - NVK rebuilt end to end; patch 0043 compiles; the new TLS gate passes over it
 
-**The corrected `t_gpuwrite` and `t_vulkan` have not been run on a Switch.**
-Every claim about what the fixed test *will* measure is a prediction, stated
-as one before the run rather than after it.
+**Superseded below — both have now run on a Switch.** Left as written so the
+prediction stays legible next to the result.
+
+### Hardware, same day: both corrected tests pass
+
+`docs/hw-logs/t_gpuwrite-run5-review-fixes-PASS.log` — **PASS (47/47)**, and
+the arithmetic is the whole audit: 51 − 4, one removed "fence increment
+encoded" check per arm. Nothing else changed count, so nothing else changed.
+
+`docs/hw-logs/t_vulkan-run5-review-fixes-PASS.log` — **PASS (56/56)**, with
+the corrected memory-type note in it (`the readback uses CPU cache
+maintenance; GPU-side visibility is the channel's L2 writeback`), so this log
+is from a binary that carries the correction rather than one that predates it.
+
+**What the run re-measures.** All four arms now wait on a threshold that only
+their own submit can reach, and all four report
+`before invalidate == after == 0xc0ffee01`. Arm A is CPU/GPU-cacheable and arm
+B is not; with real waits under them, "the payload is there either way, with
+no cache maintenance" is now a sound observation instead of a raced one.
+**That restores the cache-irrelevance claim** — which the entry above
+correctly said had been left resting on arm A alone — on fresh evidence rather
+than on the run that was reinterpreted.
+
+**What it does not re-measure, and this matters more.** The original
+experiment was *no flush versus flush*, and **there is no longer a no-flush
+arm to run.** The fix in `0cca09d` made the channel's fence block emit WFI
+SCOPE_ALL + `L2_FLUSH_DIRTY` on *every* submit, so all four arms get the
+writeback from the channel and differ only by a redundant extra `MEM_OP`. The
+matrix is degenerate now: four arms passing is consistent with the L2 finding
+and is not a test of it.
+
+So the honest position on `t_gpuwrite-run2-matrix.log` is unchanged by this
+run. Arm A's failure there stands (correct wait, no flush, not visible), arm
+D's success stands, and arms B and C remain unmeasured — this run cannot
+recover them because the configuration they distinguished no longer exists.
+
+Re-testing the L2 finding directly would need something this test cannot
+currently express: a submit whose channel fence block omits the writeback.
+That is an instrument to build if the finding is ever doubted, not a gap in
+what is deployed — recorded here so the limit is found by reading rather than
+by someone trusting a degenerate matrix.
 
 ## Next concrete task
 
