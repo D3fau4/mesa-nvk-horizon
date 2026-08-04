@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-07-28
+**Last updated:** 2026-08-04
 **Branch:** `claude/mesa-nvk-horizon-vszk01`
 
 ---
@@ -5386,11 +5386,44 @@ thresholds, a correct 64-bit shadow, real fences.
 Cost: ~32 ioctls once per channel, only where the read is unavailable.
 Nothing changes on a platform that can read the counter.
 
-**Not built yet, deliberately.** It rests entirely on `nvFenceWait`
+**Not wired up, deliberately.** Wiring it rests entirely on `nvFenceWait`
 working where `SyncptRead` does not, and that is exactly what the
-pending emulator run measures. Building it first would stack unvalidated
+pending emulator run measures. Wiring it first would stack unvalidated
 work on an unvalidated assumption — the mistake the window block-off
 already made once today.
+
+**The arithmetic is built and proven, though**, because that half does
+not depend on the pending measurement at all: whether the ioctl answers
+is a question about the platform, whether the search is correct is a
+question about arithmetic, and only the second can be settled today.
+`horizon_syncpt_search_value` (`horizon/sync/syncpt_math.h`) takes the
+predicate as a callback, so the file never learns what an ioctl is, and
+`tests/host/h_syncpt_math.c` drives it against an oracle that answers
+only yes/no — every wrap corner, a 4096-value deterministic sweep, a
+counter advancing mid-search, and the predicate failing at the first
+probe and mid-search. **Nothing calls it**; it is inert until the run
+says otherwise.
+
+Two properties came out of writing it that the plan above only guessed
+at, and both are better than guessed:
+
+- The count is exactly **33 probes**, not "about 32": one to place the
+  anchor, 31 halvings, one to verify.
+- The verification probe is **exact, not a heuristic**. A monotonically
+  increasing counter can only make the result stale, never too large — a
+  "reached" answer never becomes false — so asking whether `value + 1`
+  has been reached is true precisely when the result went stale. `OK`
+  means the value *is* the counter's value at that instant.
+
+Gate discipline: the new checks were broken on purpose three ways —
+anchor never flipping to the upper half, the verification verdict
+ignored, and an off-by-one on the recovered value — and each was caught
+by the checks that should catch it (`28/30`, `28/30`, `26/30`), then
+restored to `30/30`. Host suite is now **114/114**.
+
+The mesa gates were not re-run for this change and did not need to be:
+the diff is three files, none under `mesa/` or `mesa-patches/`, and the
+series is unchanged at 42 patches.
 
 So that run has three outcomes and all three are actionable:
 

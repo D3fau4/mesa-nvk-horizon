@@ -9,6 +9,8 @@
 #ifndef HORIZON_SYNC_SYNCPT_MATH_H
 #define HORIZON_SYNC_SYNCPT_MATH_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -44,6 +46,105 @@ static inline int32_t horizon_timeout_ns_to_us_clamped(uint64_t ns)
     if (us > (uint64_t)INT32_MAX)
         return INT32_MAX;
     return (int32_t)us;
+}
+
+/* --- Recovering a syncpoint's value from the wait predicate alone -------
+ *
+ * NVHOST_IOCTL_CTRL_SYNCPT_READ ("what is the counter?") and
+ * NVHOST_IOCTL_CTRL_SYNCPT_WAIT ("has (id, threshold) been reached?") are
+ * different ioctls, and an environment may implement the second without
+ * the first. The second is enough, because the thresholds a counter C has
+ * reached are exactly the modular half-space
+ *
+ *     { T : (int32_t)(C - T) >= 0 }  =  { C - 2^31 + 1, ..., C }
+ *
+ * whose upper end *is* C. Anchoring inside that half-space makes the
+ * predicate monotone in the offset from the anchor, so a binary search
+ * finds C in 31 probes, plus one to place the anchor and one to verify
+ * (docs/synchronization.md § 9.3).
+ *
+ * This file never learns what an ioctl is: the predicate is the caller's,
+ * so the search is pure arithmetic and unit-tested as such
+ * (tests/host/h_syncpt_math.c). */
+
+typedef enum horizon_syncpt_search_status {
+    HORIZON_SYNCPT_SEARCH_OK = 0,
+    /* The predicate itself could not be answered. */
+    HORIZON_SYNCPT_SEARCH_PROBE_FAILED,
+    /* The counter advanced past the result while the search ran. */
+    HORIZON_SYNCPT_SEARCH_MOVED,
+} horizon_syncpt_search_status;
+
+/* Answers "has `threshold` been reached?". Returns false — leaving
+ * *out_reached untouched — when the question could not be put. */
+typedef bool (*horizon_syncpt_probe_fn)(void *ctx, uint32_t threshold,
+                                        bool *out_reached);
+
+/* Binary-searches the syncpoint's current value using `probe` alone.
+ *
+ * The result is never an overestimate: every "reached" answer stays true
+ * for a monotonically increasing counter, so the value returned is one the
+ * counter had at or before the last probe. The final probe turns that into
+ * an exact test — it asks whether value + 1 has been reached, which is
+ * true precisely when the counter has moved on — so OK means the returned
+ * value is the counter's value at that instant, not an approximation.
+ * `out_probes` (optional) receives the number of probes actually issued,
+ * on every path including failure. */
+static inline horizon_syncpt_search_status
+horizon_syncpt_search_value(horizon_syncpt_probe_fn probe, void *ctx,
+                            uint32_t *out_value, uint32_t *out_probes)
+{
+    uint32_t probes = 0;
+    bool reached = false;
+
+#define HORIZON_SYNCPT_PROBE(t)                                              \
+    do {                                                                     \
+        if (!probe(ctx, (t), &reached)) {                                    \
+            if (out_probes != NULL)                                          \
+                *out_probes = probes;                                        \
+            return HORIZON_SYNCPT_SEARCH_PROBE_FAILED;                       \
+        }                                                                    \
+        probes++;                                                            \
+    } while (0)
+
+    /* Place the anchor. For any v exactly one of {v, v + 2^31} lies in the
+     * half-space — the two conditions partition the 2^32 possible values
+     * of C - v — so a single probe always finds one. */
+    HORIZON_SYNCPT_PROBE(0);
+    const uint32_t anchor = reached ? UINT32_C(0) : UINT32_C(0x80000000);
+
+    /* Largest d in [0, 2^31 - 1] with reached(anchor + d). d = 0 holds by
+     * construction, so the invariant is true before the first iteration. */
+    uint32_t lo = 0, hi = UINT32_C(0x7fffffff);
+    while (lo < hi) {
+        /* Round the midpoint up so it is always strictly above `lo`;
+         * rounding down would let lo == mid spin forever. */
+        const uint32_t mid = lo + (hi - lo + 1) / 2;
+        HORIZON_SYNCPT_PROBE(anchor + mid);
+        if (reached)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+
+    const uint32_t value = anchor + lo;
+
+    /* A counter that moved would have made this an underestimate — the
+     * direction that makes a later fence look signalled early, which is
+     * the failure worth catching. */
+    HORIZON_SYNCPT_PROBE(value + 1);
+    if (reached) {
+        if (out_probes != NULL)
+            *out_probes = probes;
+        return HORIZON_SYNCPT_SEARCH_MOVED;
+    }
+
+#undef HORIZON_SYNCPT_PROBE
+
+    if (out_probes != NULL)
+        *out_probes = probes;
+    *out_value = value;
+    return HORIZON_SYNCPT_SEARCH_OK;
 }
 
 #ifdef __cplusplus

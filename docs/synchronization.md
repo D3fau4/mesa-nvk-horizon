@@ -327,3 +327,64 @@ and `t_vulkan` still refuses to call such a run a pass.
 Where the read works it stays the primary path. It is one ioctl for any
 number of fences on the same syncpoint, and it feeds the 64-bit shadow,
 which this cannot.
+
+### 9.3 Recovering the value from the predicate
+
+§ 9.2 stops one step short: the wait answers the fence's question, but the
+*threshold* it is asked about was still computed from a baseline nobody
+measured. That baseline is the last thing keeping a degraded channel
+untrustworthy, and it does not have to stay unmeasured — the predicate is
+enough to recover the counter outright.
+
+The thresholds a counter `C` has reached are exactly the modular
+half-space
+
+```
+{ T : (int32_t)(C - T) >= 0 }  =  { C - 2^31 + 1, ..., C }
+```
+
+whose upper end *is* `C`. So `C` is recoverable by finding the largest
+reached threshold. Two facts make that a binary search rather than a scan:
+
+1. For any `v`, exactly one of `v` and `v + 2^31` is in the half-space —
+   the two conditions partition the 2³² possible values of `C - v`. One
+   probe therefore always lands an **anchor** inside it.
+2. Measured as an offset `d` from an anchor, `reached(anchor + d)` is
+   monotone over `d ∈ [0, 2^31 - 1]`: true up to `d = C - anchor`, false
+   after. The circular order that makes a plain `>=` wrong is gone.
+
+31 halvings then pin `d`, for **33 probes total** — one anchor, 31
+halvings, one verification.
+
+**The result is never an overestimate.** For a monotonically increasing
+counter a "reached" answer never becomes false, so every `d` the search
+accepted is still reached at the end: the value returned is one the
+counter genuinely had. A counter that moves underneath the search can
+therefore only make the result *stale* — the direction that would make a
+later fence look signalled early, which is the one worth catching.
+
+The last probe catches it exactly, not heuristically. It asks whether
+`value + 1` has been reached, which is true precisely when the counter has
+moved past the result. So `OK` does not mean "probably right": it means
+the value returned is the counter's value at that instant.
+
+`horizon_syncpt_search_value` (`horizon/sync/syncpt_math.h`) is the
+arithmetic, taking the predicate as a callback so the file never learns
+what an ioctl is. It is unit-tested on the host against an oracle that
+answers only yes/no — every wrap corner, a 4096-value sweep, a counter
+advancing mid-search, and the predicate being unavailable at the first
+probe and mid-search (`tests/host/h_syncpt_math.c`).
+
+**Nothing calls it yet, deliberately.** The arithmetic is validated; the
+premise is not. Whether `nvFenceWait` answers where `SyncptRead` does not
+is what the pending emulator run measures, and wiring a search onto an
+unmeasured predicate would be the mistake the shader-window block-off
+already made once — a change that looked obviously right and broke
+`vkCreateDevice` outright. The half that could be proven today is proven;
+the half that depends on a measurement waits for it.
+
+When it is wired, the payoff is that "untrusted baseline" stops being a
+category: the value would be *measured*, by a different ioctl than the one
+that failed, and the thresholds, the 64-bit shadow and the fences derived
+from it become as sound as on a platform that can read the counter. The
+cost is 33 ioctls once per channel, and only where the read is missing.
