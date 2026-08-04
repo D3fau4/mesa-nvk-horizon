@@ -5120,7 +5120,72 @@ this project had never asked memory a question below the Vulkan layer.
 That is the gap `STATUS.md` had recorded as owed, and it is exactly the
 gap the bug was hiding in.
 
-### The next measurement, and why it is a matrix
+### It is the GPU's L2, and the fix is measured
+
+The matrix ran and answered all four ways at once
+(`docs/hw-logs/t_gpuwrite-run2-matrix.log`):
+
+| arm | mapping | extra command | result |
+|---|---|---|---|
+| A | L2-cacheable | none | **FAILED** — payload nowhere in the allocation |
+| B | **non**-cacheable | none | **PASSED** |
+| C | L2-cacheable | `MEMBAR` | **FAILED** — a barrier is not enough |
+| D | L2-cacheable | `L2_FLUSH_DIRTY` | **PASSED** |
+
+A GPU write lands in the GPU's L2 first, and nothing about a syncpoint
+increment obliges that L2 to reach the memory a CPU reads. B shows the
+write bypassing L2 when the mapping is not cacheable; D shows it reaching
+memory when the L2 is written back explicitly; C rules out the cheaper
+barrier, which is worth having measured rather than assumed.
+
+**Where NVK stands on this, checked in the tree.** NVK does raise the
+right barrier — `VK_ACCESS_2_HOST_READ_BIT` maps to
+`NVK_BARRIER_HOST_WFI_FLUSH_SYSMEM` (`nvk_cmd_buffer.c:533`) — but below
+Hopper that barrier emits only `NV906F_SET_REFERENCE`
+(`nvk_cmd_buffer.c:783-795`), with no L2 writeback at all. On a desktop
+part that is enough. On GM20B it is not, and arm C is the measurement
+that says so.
+
+### The fix, and where it went
+
+`horizon_gpu_channel` now begins every submit's fence block with
+`MEM_OP_D(L2_FLUSH_DIRTY)`, in exactly the order arm D measured: the
+work, then the flush, then the WFI and syncpoint increment that
+`horizon_cmds_fence_incr` already emitted. The block is built once per
+channel, so a submit costs three extra dwords.
+
+It went into `horizon/` rather than into a Mesa patch because that is
+where the defect is: `t_gpuwrite` runs no Mesa code and still failed, and
+a fence that signals while its writes are invisible is a fence that lies.
+Fixing it here also fixes it for every consumer at once.
+
+**Unconditional, and the cost is acknowledged rather than hidden.** This
+layer cannot know which submits a CPU will later read from, and a fence
+that is only sometimes truthful is worse than one that always costs a
+flush. A dirty-L2 writeback per submit is not free, and narrowing it —
+Mesa-side, at the `HOST_WFI_FLUSH_SYSMEM` barrier where NVK already knows
+a host read is coming — is a **pending decision**, not something to guess
+at before the unconditional version is confirmed on hardware.
+
+### What the arms guard now
+
+With the flush in the channel, all four arms are expected to pass, and
+the matrix has stopped diagnosing and started guarding. Arm A is the
+direct regression: an L2-cacheable mapping with no flush of its own,
+which works only because the channel flushes. The arms can no longer
+prove *why* it works, only that it does — the proof is the run above,
+kept in `docs/hw-logs/`. That is also the "break the gate on purpose"
+evidence for this fix: the failing measurement already exists and is
+recorded, rather than being simulated after the fact.
+
+### The measurement this still owes
+
+`t_vulkan` has **not** been re-run since the fix. The chain from "the
+bottom layer can now make a GPU write visible" to "the Phase 4 exit
+criterion passes" is plausible and unproven, and the readback is the only
+thing that can prove it.
+
+### The superseded plan (kept: it is why the matrix existed)
 
 A GPU write lands in the GPU's L2 first, and nothing about a syncpoint
 increment obliges that L2 to reach the memory a CPU reads. The failing

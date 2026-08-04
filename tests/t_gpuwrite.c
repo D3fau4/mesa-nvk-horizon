@@ -20,21 +20,32 @@
  * CPU-side policy is not the variable, so this revision stops varying it
  * and varies what is left instead.
  *
- * What is left is the GPU's own L2. A GPU write lands there first, and
- * nothing about a syncpoint increment obliges that L2 to reach the memory
- * the CPU reads. The mapping in the failing run was created L2-cacheable
- * (NVGPU_AS_MAP_BUFFER_FLAGS_CACHEABLE), so this revision runs a matrix:
+ * WHAT THE SECOND RUN MEASURED (2026-08-04, hardware). The matrix below
+ * answered all four ways at once, and the cause is the GPU's own L2: a
+ * GPU write lands there first, and nothing about a syncpoint increment
+ * obliges that L2 to reach the memory the CPU reads.
  *
- *   A  L2-cacheable mapping, nothing else      the failing baseline
- *   B  NON-cacheable mapping                   is the mapping attribute it?
- *   C  L2-cacheable + MEMBAR                   does a barrier suffice?
- *   D  L2-cacheable + L2_FLUSH_DIRTY           does an explicit writeback?
+ *   A  L2-cacheable mapping, nothing else      FAILED, payload nowhere
+ *   B  NON-cacheable mapping                   PASSED
+ *   C  L2-cacheable + MEMBAR                   FAILED — a barrier is not enough
+ *   D  L2-cacheable + L2_FLUSH_DIRTY           PASSED
  *
- * Each arm is decisive about a different fix, and if all four fail the
- * conclusion is equally definite: the write is not an L2 residency
- * problem and the CPU and GPU are not looking at the same memory. To
- * catch exactly that, a failing arm also scans the whole allocation for
- * the payload and reports where it landed if it landed anywhere.
+ * The fix went where the defect was: horizon_gpu_channel now begins every
+ * submit's fence block with L2_FLUSH_DIRTY, in exactly the order arm D
+ * measured. A fence whose writes are not visible is a fence that lies,
+ * and this layer cannot know which submits a CPU will read from.
+ *
+ * SO WHAT THESE ARMS DO NOW. With that flush in place all four are
+ * expected to pass, and the matrix has stopped diagnosing and started
+ * guarding: arm A is the direct regression — an L2-cacheable mapping with
+ * no flush of its own, which works only because the channel flushes — and
+ * B, C and D check the fix composes with the other configurations rather
+ * than depending on them.
+ *
+ * The arms can no longer prove *why* it works, only that it does; the
+ * proof is the run above, kept in docs/hw-logs/. A failing arm still
+ * scans the whole allocation for the payload and reports where it landed,
+ * which separates "wrong offset" from "did not land" without a round trip.
  *
  * Each arm reads the target twice, before and after CPU cache
  * maintenance, and names which of four cases it saw:
