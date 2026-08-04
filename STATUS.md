@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Items 1, 2, 3, 4, 5, 7, 8 and 9 met on hardware, 2026-08-04**, each by CPU readback. **Item 6 is the only one open** |
+| **Phase** | 5 in progress. **Items 1, 2, 3, 4, 5, 7, 8 and 9 met on hardware, 2026-08-04**, each by CPU readback. **Item 6 is the only one open**: its test passes now, but a failure it produced once has not been explained |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), **a rasterised triangle with interpolated vertex colours** (**84/84**), **the depth test with the depth buffer read back** (**66/66**), **twelve colour formats** (**282/282**), **eight submits outstanding at once** (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console. Sampling is the one thing that does not |
-| **Next concrete task** | Run the rewritten `t_vk_texture`: it reads the source back before sampling it, so the next log says whether the upload or the sampler is at fault |
-| **Known failures** | **Item 6.** Rows 4 and 5 of an 8x8 tiled source read as transparent black; rows 0-3 and 6-7 and the whole of mip level 1 are right. Those two rows are the third 64-byte group of a Maxwell GOB for a surface half a GOB wide. Upload or sampler is not yet distinguished |
+| **Next concrete task** | Run `t_vk_texture` with the three-variant matrix, which separates the usage flag from the early readback as the reason run 1's failure stopped reproducing |
+| **Known failures** | **Item 6, unexplained.** Run 1: rows 4 and 5 of an 8x8 tiled source read as transparent black. Run 2: the same configuration passes 213/213 with the source verified byte for byte — but three things changed at once between them, so nothing is explained and the item stays open |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | The rewritten `t_vk_texture` (three sources, source readback); `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | `t_vk_texture`'s three-variant matrix; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,71 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Item 6, run 2: the failure did not reproduce, and that closes nothing (2026-08-04)
+
+**Class: hardware (HW), then cross build (CB).** `t_vk_texture`
+**PASS 213/213** — including the same 8x8 tiled, two-level source that
+returned 3072/4096 in run 1. Its level 0 and level 1 both came back out
+of the image byte for byte, so at that point in that run the upload had
+landed correctly, and all four thousand sampled pixels were right.
+
+**Item 6 is not met.** A pass that cannot reproduce a failure it has
+already seen does not explain it, and run 2 changed **three things at
+once**:
+
+1. `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` was added to the source image —
+   usage flags feed NIL's layout choice;
+2. a copy-out and two extra barriers now sit between the upload and the
+   sampling;
+3. the source image is allocated after the render target and the
+   buffers instead of before them, so it lands at different addresses.
+
+Both runs report `vkAllocateMemory(image, 0x1000 align 0x20000)`, so
+the layout's *size and alignment* did not change; that weakens (1)
+without eliminating it, since usage can change a PTE kind without
+changing a size.
+
+Declaring the item met here would be the failure mode this repository
+keeps guarding against — a check reporting success without having
+measured the thing in question. Worse than usual, because a real
+hardware failure was observed and would be papered over.
+
+### The experiment, which separates two of the three
+
+The 8x8 tiled source now runs three ways:
+
+| variant | usage | between upload and sampling |
+|---|---|---|
+| checked first | + TRANSFER_SRC | copy out, check, then sample (run 2) |
+| checked after | + TRANSFER_SRC | nothing; copy out and check afterwards |
+| run 1 shape | no TRANSFER_SRC | nothing, and no copy out at all |
+
+Between upload and sampling, **checked after** is identical to **run 1
+shape** except for the usage flag, and identical to **checked first**
+except for the readback. So the next log reads directly:
+
+- *after passes, run-1-shape fails* → the usage flag, i.e. the layout;
+- *both fail* → the early readback was masking it, whatever the flags,
+  and the "checked after" readback says whether the upload or the
+  texture unit is at fault;
+- *all three pass* → neither, and what is left uncontrolled is
+  allocation order, the addresses that follow from it, and run 1's data
+  pattern. That is the next experiment, not this one.
+
+**A limit of the method, recorded because it is real:** a source
+without `TRANSFER_SRC` cannot be read back at all, so if that flag is
+the trigger, the verification added in run 2 is structurally unable to
+see it. That is exactly why "run 1 shape" is in the table despite being
+unable to attribute its own failure — the other two rows attribute it.
+
+The 64x64 tiled and 8x8 linear sources stay as baselines; both passed
+in run 2 (`largest deviation 0 of 255` on the 64x64 linear filter,
+1 of 255 on the two 8x8 ones).
+
+Gates 4/4, host tests 6/6, 23 `.nro`. Not run yet.
 
 ---
 

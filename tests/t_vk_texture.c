@@ -5,31 +5,63 @@
  * into a 64x64 target three ways, with every one of the 4096 result
  * pixels compared against what the sampler must have produced.
  *
- * WHY THE SOURCE IS VERIFIED FIRST, AND WHY THAT IS NOT PARANOIA. Run 1
- * of this test failed on hardware (2026-08-04, batch 5): rows 4 and 5
- * of an 8x8 source read as transparent black through the sampler while
- * rows 0-3 and 6-7 were right, and mip level 1 was entirely right. The
- * two failures were consistent to the byte — case C's first bad pixel
- * came back 7/92/16/239 where 8/92/16/239 is exactly what blending
- * 0.9375 of texel (0,3) with 0.0625 of a *zero* texel (0,4) gives.
+ * WHY THE SOURCE IS VERIFIED AT ALL. Run 1 of this test failed on
+ * hardware (2026-08-04, batch 5): rows 4 and 5 of an 8x8 tiled source
+ * read as transparent black through the sampler while rows 0-3 and 6-7
+ * were right, and mip level 1 was entirely right. The two failing cases
+ * agreed to the byte — case C's first bad pixel came back 7/92/16/239
+ * where blending 15/16 of texel (0,3) with 1/16 of a *zero* texel (0,4)
+ * gives 8/92/16/239, the single count being a 7.5 tie this hardware
+ * rounds down.
  *
- * And the test could not say whether the upload had not landed or the
+ * The test could not say whether the upload had not landed or the
  * sampler was reading the wrong place, because it had never looked at
- * the source. Every expected value in it was built on the assumption
- * that the upload worked. So now the source comes back out through
- * vkCmdCopyImageToBuffer before anything samples it, and the answer is
- * attributed instead of guessed:
+ * the source: every expected value rested on the assumption that the
+ * upload worked. So the source is now copied back out and compared.
  *
- *   source readback wrong -> the upload, or the layout it wrote into
- *   source readback right, sampling wrong -> the texture descriptor
+ * AND THEN RUN 2 PASSED, WHICH IS WHY THIS FILE LOOKS LIKE AN
+ * EXPERIMENT. 213/213, the same 8x8 tiled source, all four thousand
+ * pixels right. That does not close anything: run 2 changed three
+ * things at once — it added TRANSFER_SRC to the source's usage, it put
+ * a copy-out and two extra barriers between the upload and the
+ * sampling, and it moved the source's allocation after the target's. A
+ * failure that stops reproducing after three simultaneous changes has
+ * not been explained, and calling it fixed would be the same mistake as
+ * a check that reports success without measuring anything.
  *
- * THE THREE SOURCES, WHICH BRACKET THE OBVIOUS SUSPECT. A Maxwell GOB
- * is 64 bytes by 8 rows. An 8x8 RGBA8 image is 32 bytes by 8 rows —
- * half a GOB wide — and its rows 4 and 5 are exactly the third 64-byte
- * group of the GOB's swizzle. A 64x64 source is a full GOB wide and
- * eight GOBs tall, so if the fault is about surfaces narrower than a
- * GOB it appears in one and not the other. The linear source removes
- * tiling from the question altogether.
+ * So the 8x8 tiled source now runs three ways, and the three separate
+ * the two candidates this file can control:
+ *
+ *   checked first    upload, copy out, check, sample     (run 2)
+ *   checked after    upload, sample, then copy out       (run 1's shape,
+ *                                                         attributable)
+ *   run 1 shape      no TRANSFER_SRC, no copy out at all (run 1 exactly)
+ *
+ * Between upload and sampling, "checked after" is identical to "run 1
+ * shape" except for the usage flag, and identical to "checked first"
+ * except for the readback. So:
+ *
+ *   after passes, run-1-shape fails -> the usage flag, i.e. the layout
+ *   both fail                       -> the early readback was masking it
+ *   all three pass                  -> neither; what is left uncontrolled
+ *                                      is allocation order, the
+ *                                      addresses that follow from it,
+ *                                      and run 1's data pattern
+ *
+ * The uncomfortable part, stated because it is a limit of the method:
+ * a source without TRANSFER_SRC cannot be read back at all, so if the
+ * usage flag is the trigger, the verification added in run 2 is
+ * structurally unable to see it. That is exactly why "run 1 shape" is
+ * in the table even though it cannot attribute its own failure — the
+ * other two rows are what attribute it.
+ *
+ * THE THREE SOURCES BEYOND THAT. A Maxwell GOB is 64 bytes by 8 rows.
+ * An 8x8 RGBA8 image is 32 bytes by 8 rows — half a GOB wide — and its
+ * rows 4 and 5 are exactly the third 64-byte group of the GOB's
+ * swizzle. A 64x64 source is a full GOB wide and eight GOBs tall, so if
+ * the fault is about surfaces narrower than a GOB it appears in one and
+ * not the other. The linear source removes tiling from the question
+ * altogether.
  *
  * THE THREE SAMPLING CASES, per source:
  *
@@ -137,28 +169,76 @@ static uint32_t chan(uint32_t t, uint32_t k)
    return (t >> (k * 8u)) & 0xffu;
 }
 
+/* Where the source's round-trip check sits relative to the sampling —
+ * which is itself one of the variables under test. See the header. */
+enum verify {
+   VERIFY_BEFORE,   /* upload, copy out, check, then sample */
+   VERIFY_AFTER,    /* upload, sample, then copy out and check */
+   VERIFY_NONE,     /* upload and sample, exactly as run 1 did */
+};
+
 /* A source configuration. The sampling cases are the same for all of
- * them; what changes is the surface the sampler has to address. */
+ * them; what changes is the surface the sampler has to address, and —
+ * for the three variants of the 8x8 tiled source — the two things that
+ * differed between the run that failed and the run that did not. */
 struct source {
    const char *name;
    uint32_t w, h;
    uint32_t levels;
    VkImageTiling tiling;
+   /* VK_IMAGE_USAGE_TRANSFER_SRC_BIT on the source image. Run 1's
+    * source did not have it and could not be copied out; run 2's did.
+    * Usage flags feed NIL's layout choice, so this is a candidate for
+    * the difference all by itself — and the uncomfortable part is that
+    * a source without it cannot be verified by readback at all, so if
+    * this is the trigger, the check added in run 2 is structurally
+    * unable to see it. */
+   bool transfer_src;
+   enum verify verify;
 };
 
+/* THE MATRIX, and what each row can conclude.
+ *
+ * Entries 0 to 2 are the same 8x8 tiled source three ways. Between
+ * upload and sampling, entry 1 looks exactly like entry 2 except for
+ * the usage flag, and exactly like entry 0 except for the readback. So
+ * the three of them separate the two candidates:
+ *
+ *   1 passes, 2 fails       ->  the usage flag, i.e. the layout
+ *   1 fails,  2 fails       ->  the readback before sampling was
+ *                               masking it, whatever the flags
+ *   all three pass          ->  neither; the trigger is something else
+ *                               still uncontrolled (allocation order,
+ *                               addresses, or run 1's data pattern)
+ */
 static const struct source SOURCES[] = {
-   /* The one that failed in run 1: half a GOB wide, exactly one GOB
-    * tall. Its rows 4 and 5 are the third 64-byte group of the GOB
-    * swizzle. */
-   { "8x8 optimal", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL },
+   /* Run 2's arrangement, which passed: half a GOB wide, exactly one
+    * GOB tall, with its rows 4 and 5 at the third 64-byte group of the
+    * GOB swizzle — the ones that came back as zero in run 1. */
+   { "8x8 optimal, checked first", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
+     true, VERIFY_BEFORE },
+   /* The same image, sampled straight after the upload the way run 1
+    * did, and only then copied out. If sampling fails here and the
+    * copy-out afterwards shows the image was right all along, the
+    * texture unit is reading something the copy engine is not. */
+   { "8x8 optimal, checked after", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
+     true, VERIFY_AFTER },
+   /* Run 1 exactly: no TRANSFER_SRC, no readback, sample and see. It
+    * cannot attribute a failure on its own — the two rows above are
+    * what attribute it. */
+   { "8x8 optimal, run 1 shape", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
+     false, VERIFY_NONE },
    /* A full GOB wide and eight tall. If the fault is about surfaces
-    * narrower than a GOB, this one is clean and the one above is not. */
-   { "64x64 optimal", 64, 64, 2, VK_IMAGE_TILING_OPTIMAL },
+    * narrower than a GOB, this one is clean and the ones above are
+    * not. */
+   { "64x64 optimal", 64, 64, 2, VK_IMAGE_TILING_OPTIMAL,
+     true, VERIFY_BEFORE },
    /* No tiling at all, and one level: LINEAR images are limited to one
     * mip on most implementations, so this source runs cases A and C
-    * only. If this passes where the tiled 8x8 fails, the fault is in
-    * the tiled layout and not in the sampler or the copy. */
-   { "8x8 linear", 8, 8, 1, VK_IMAGE_TILING_LINEAR },
+    * only. If this passes where a tiled 8x8 fails, the fault is in the
+    * tiled layout and not in the sampler. */
+   { "8x8 linear", 8, 8, 1, VK_IMAGE_TILING_LINEAR,
+     true, VERIFY_BEFORE },
 };
 #define NUM_SOURCES (sizeof(SOURCES) / sizeof(SOURCES[0]))
 
@@ -513,9 +593,12 @@ static void run_source(vkfw *fw, const struct source *s,
                        VkImage target, VkImageView target_view)
 {
    test_ctx *t = fw->t;
-   const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+   /* TRANSFER_SRC only when the variant asks for it: the flag is one of
+    * the things being separated, and it is also what makes a readback
+    * possible at all. */
+   const VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+      (s->transfer_src ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u);
 
    if (!vkfw_image_supported(fw, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D,
                              s->tiling, usage, s->name)) {
@@ -546,7 +629,9 @@ static void run_source(vkfw *fw, const struct source *s,
    if (!vkfw_buffer_poison(fw, src_back, POISON))
       goto out;
 
-   /* ---- upload, and read straight back out ----------------------- */
+   /* ---- upload; read back here only if this variant checks first -- */
+   VkBufferImageCopy regions[MAX_LEVELS];
+   level_regions(s, regions);
    {
       VkCommandBuffer cb;
       if (!vkfw_cmd_begin(fw, &cb))
@@ -559,46 +644,56 @@ static void run_source(vkfw *fw, const struct source *s,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-      VkBufferImageCopy regions[MAX_LEVELS];
-      level_regions(s, regions);
       fw->vk.vkCmdCopyBufferToImage(cb, staging->buf, src.img,
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                     s->levels, regions);
 
-      image_barrier(fw, cb, src.img, s->levels,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT);
+      if (s->verify == VERIFY_BEFORE) {
+         image_barrier(fw, cb, src.img, s->levels,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_ACCESS_TRANSFER_READ_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-      fw->vk.vkCmdCopyImageToBuffer(cb, src.img,
-                                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                    src_back->buf, s->levels, regions);
+         fw->vk.vkCmdCopyImageToBuffer(cb, src.img,
+                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       src_back->buf, s->levels, regions);
 
-      image_barrier(fw, cb, src.img, s->levels,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+         image_barrier(fw, cb, src.img, s->levels,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      } else {
+         /* Exactly what run 1 recorded: upload, then straight to the
+          * layout the sampler needs, with nothing in between. */
+         image_barrier(fw, cb, src.img, s->levels,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+      }
 
-      if (!vkfw_submit_and_wait(fw, cb, "upload and read back the source"))
-         goto out;
-      if (!vkfw_buffer_invalidate(fw, src_back))
+      if (!vkfw_submit_and_wait(fw, cb, "upload the source"))
          goto out;
    }
 
-   const bool source_intact = check_source(fw, s, (const uint32_t *)
-                                           src_back->map);
-   if (!source_intact) {
-      /* The sampling cases would now fail on the source's contents and
-       * say nothing about sampling. Reporting three more failures for
-       * one cause is noise. */
-      t_note(t, "%s: the source did not survive the round trip, so the "
-                "sampling cases below would be measuring the upload; "
-                "skipped", s->name);
-      goto out;
+   if (s->verify == VERIFY_BEFORE) {
+      if (!vkfw_buffer_invalidate(fw, src_back))
+         goto out;
+      if (!check_source(fw, s, (const uint32_t *)src_back->map)) {
+         /* The sampling cases would now fail on the source's contents
+          * and say nothing about sampling. Reporting three more
+          * failures for one cause is noise. */
+         t_note(t, "%s: the source did not survive the round trip, so the "
+                   "sampling cases below would be measuring the upload; "
+                   "skipped", s->name);
+         goto out;
+      }
    }
 
    /* ---- descriptors --------------------------------------------- */
@@ -688,6 +783,37 @@ static void run_source(vkfw *fw, const struct source *s,
          vkfw_expect_words(fw, (const uint32_t *)dst->map + TEXELS, POISON,
                            TAIL_WORDS, "nothing was written past the image");
       }
+   }
+
+   /* ---- the readback, for the variant that does it last ---------- */
+   if (s->verify == VERIFY_AFTER && !vkfw_device_lost(fw)) {
+      VkCommandBuffer cb;
+      if (!vkfw_buffer_poison(fw, src_back, POISON))
+         goto out;
+      if (!vkfw_cmd_begin(fw, &cb))
+         goto out;
+
+      image_barrier(fw, cb, src.img, s->levels,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT);
+      fw->vk.vkCmdCopyImageToBuffer(cb, src.img,
+                                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    src_back->buf, s->levels, regions);
+
+      if (!vkfw_submit_and_wait(fw, cb, "read the source back afterwards"))
+         goto out;
+      if (!vkfw_buffer_invalidate(fw, src_back))
+         goto out;
+
+      /* THE DISCRIMINATION. If the sampling cases above failed and this
+       * says the image was right all along, the texture unit read
+       * something the copy engine did not — the descriptor or a cache,
+       * not the upload. If this fails too, the upload never landed and
+       * the sampler was reporting it faithfully. */
+      check_source(fw, s, (const uint32_t *)src_back->map);
    }
 
 out:
