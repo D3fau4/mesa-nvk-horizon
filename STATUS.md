@@ -1,7 +1,7 @@
 # STATUS
 
 **Last updated:** 2026-08-04
-**Branch:** `claude/mesa-nvk-horizon-vszk01`
+**Branch:** `claude/phase-5-offscreen-rendering-vnl6q9`
 
 ---
 
@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 not started |
+| **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 started: step 0, de-mining, before any item |
 | **What runs on a Switch** | The full mandatory Vulkan sequence, CPU readback verified: `t_vulkan` **PASS 60/60** (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`). All 15 `horizon/` tests pass on console |
-| **Next concrete task** | Phase 5 item 1 (transfers). Before any item: the shader local/shared window overlap, which two Phase 5 items walk straight into |
+| **Next concrete task** | Phase 5 step 0: `t_va_window` written and cross-built, **not yet run**; then `alloc_tiled_mem`, then the Vulkan test fixture |
 | **Known failures** | None outstanding on hardware |
-| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); `alloc_tiled_mem` is a NULL function pointer any tiled image reaches; the L2 writeback is unconditional, one per submit |
+| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); `alloc_tiled_mem` is a NULL function pointer, reachable through the linear-tiled shadow path only (see below); the L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | Everything committed after `t_vulkan-run6`: the fixes in this review round, and the sub-chunk D16 check |
+| **Never verified on hardware** | Everything committed after `t_vulkan-run6`: the fixes in that review round, the sub-chunk D16 check, and all of Phase 5 |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -119,6 +119,116 @@ resolved native over syncpoints and D8 where it actually bites: the
 absolute deadline becomes a relative duration exactly once. The
 `compiler_builtins`-versus-newlib question is answered by that link:
 **no collision**. The series is twenty-three.
+
+---
+
+## Phase 5 — step 0a: the shader window, asked instead of assumed (2026-08-04)
+
+**Class: cross build (X).** `t_va_window.nro` is built by both build
+paths and has **not been run on a console**. Nothing below is a hardware
+result; the arithmetic is read off logs that already exist.
+
+Phase 5 is where a shader runs for the first time, and two of its nine
+items (compute dispatch, triangle) are shaders reading through the
+aperture that `vkCreateDevice` has been warning about since Phase 4.
+The warning is real. The reasoning underneath it was never checked.
+
+### What the pinned tree actually says
+
+The aperture is programmed by NVK, at addresses the hardware fixes:
+
+| | address | where |
+|---|---|---|
+| `SET_SHADER_SHARED_MEMORY_WINDOW` | `0xfe000000` | `nvk_cmd_dispatch.c:85` |
+| `SET_SHADER_LOCAL_MEMORY_WINDOW` | `0xff000000` | `nvk_cmd_dispatch.c:82`, `nvk_cmd_draw.c:583` |
+
+Both are the 32-bit pre-Volta methods (`NVA0C0_SET_SHADER_*`), which is
+why the aperture sits inside the low 4 GiB at all. Adjacent, 16 MiB
+each: one 32 MiB span `[0xfe000000, 0x100000000)` ending exactly at
+4 GiB.
+
+The reservation it collides with is NVK's shader heap:
+`nvk_device.c:336` asks `nvk_heap_init` for a **contiguous** heap when
+`cls_eng3d < VOLTA_A`, and `nvk_mem_arena_init` answers that with one
+`nvkmd_dev_alloc_va` of `NVK_MEM_ARENA_MAX_SIZE` — `1 << 32`,
+`nvk_mem_arena.h:17-19` — at device creation.
+
+### The arithmetic 0039 was never held to
+
+`t_va_reserve` on hardware asked for `region_pages + 0x100000` pages and
+got `0x4f7fff`, so the small-page region is `0x3f7fff` pages ≈ **15.87
+GiB**, starting at `0x8000000`. With the window blocked, **about 12 GiB
+of small-page space remains above `0x100000000`** — contiguous, and far
+more than the 4 GiB the heap wants.
+
+So patch 0039's failure —
+
+```
+horizon_gpu_vm_reserve(0x100000000, 4096, 0x0) failed:
+            nv 0x00000f5c   (LibnxNvidiaError_InsufficientMemory)
+```
+
+— is **not explained by there being no room**. It is a property of
+Horizon's `nvhost-as-gpu` that nobody has measured. The recorded
+conclusion ("the window splits the region at precisely the wrong
+address and the heap no longer fits below it") assumed the allocator
+would only ever look below. Nothing established that.
+
+### What `t_va_window` asks
+
+A `horizon_gpu`-only `.nro` — no Vulkan, no Mesa, so the answer is about
+the address space and not about the driver. Seven probes, each releasing
+what it took:
+
+| | question |
+|---|---|
+| P1 | where a 4 GiB non-fixed small-page reservation lands today, and whether it covers the window |
+| P2 | whether the aperture itself can be reserved `FixedOffset` |
+| P3 | 0039's exact failure, with the window held — measured, with its `nv` code |
+| P4/P5 | a 4 GiB reservation placed **fixed** at `0x100000000` and at `0x200000000`, both entirely above the aperture |
+| P6 | a 64 KiB fixed reservation at `0x180000000`, to separate "`FixedOffset` does not work up there" from "4 GiB does not fit up there" |
+| P7 | heap-fixed-high **first**, then the window — the order the real fix would use, which 0039 did not |
+
+The findings are notes; the checks are the invariants that hold whatever
+the findings are. One of them earns its place on its own: **if P3
+succeeds, its range must not overlap the reservation P2 is holding.** A
+kernel that hands out a range overlapping a live reservation would mean
+no reservation in this driver means anything, which is a larger finding
+than the window.
+
+### The two strategies it decides between
+
+- **A — block the aperture and put the heap above it.** Needs P7. Removes
+  the collision outright.
+- **B — leave the aperture alone, keep the detection, and fail loudly if
+  anything is ever *bound* inside it.** Always available: it changes no
+  reservation, so it cannot break `vkCreateDevice` the way 0039 did.
+
+Worth saying plainly, because it is the reason B is not a consolation
+prize: **the collision looks unreachable in practice under either
+layout.** The heap's own reservation covers the window, so nothing else
+can be given that range; the heap binds 64 KiB chunks from the bottom
+and the doubling in `nvk_contiguous_mem_arena_mem_offset_B` puts the
+first chunk that reaches `0xfe000000` past 2 GiB of shader code. A
+tripwire on bind converts an unreachable hazard into a visible failure
+the day it stops being unreachable, and costs nothing.
+
+### One correction to what this file said
+
+The state block claimed `alloc_tiled_mem` "is a NULL function pointer
+any tiled image reaches". The NULL pointer is real — `nvkmd.c:111` calls
+`dev->ops->alloc_tiled_mem` with no capability check and no assert — but
+the reachability was wrong. The `vkAllocateMemory` route needs
+`pte_kind != 0 || tile_mode != 0` (`nvk_device_memory.c:228`), and both
+stay zero here: they are set only under `image->can_compress`, and
+`nvk_image_can_compress` (`nvk_image.c:812`) returns false
+unconditionally when `kmd_info.has_compression` is false, which patch
+0018 sets. **The reachable caller is the other one**:
+`ensure_linear_tiled_shadow_mem_locked` (`nvk_cmd_draw.c:1055`), which
+fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
+that is, precisely if a Phase 5 test renders straight into a linear
+image to make readback easy. It moves the hazard from item 3 to item 5,
+and the NULL pointer has to go regardless.
 
 ---
 

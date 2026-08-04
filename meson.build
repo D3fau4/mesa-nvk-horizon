@@ -172,6 +172,12 @@ horizon_tests = [
   # and packaged with the others because it is a hardware measurement,
   # and hardware measurements travel together.
   't_sysinfo',
+  # Phase 5: what the allocator does around the shader local/shared
+  # memory window. NVK reaches that aperture the moment a shader runs,
+  # and blocking it off broke vkCreateDevice once (patches 0039/0040)
+  # for a reason nobody measured. Uses no Mesa, on purpose: the question
+  # is about the address space, not about the driver.
+  't_va_window',
 ]
 
 testfw = static_library(
