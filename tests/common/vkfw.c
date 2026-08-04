@@ -678,3 +678,179 @@ uint32_t vkfw_expect_words_array(vkfw *fw, const void *got,
    }
    return wrong;
 }
+
+static bool gfx_module(vkfw *fw, const uint32_t *code, size_t size_B,
+                       const char *what, const char *stage,
+                       VkShaderModule *out)
+{
+   const VkShaderModuleCreateInfo ci = {
+      .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+      .codeSize = size_B,
+      .pCode = code,
+   };
+   VkResult r = fw->vk.vkCreateShaderModule(fw->dev, &ci, NULL, out);
+   return t_check(fw->t, r == VK_SUCCESS,
+                  "%s: vkCreateShaderModule(%s) -> %s", what, stage,
+                  vkfw_result_str(r));
+}
+
+bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
+                     vkfw_gfx *out)
+{
+   test_ctx *t = fw->t;
+   memset(out, 0, sizeof(*out));
+
+   if (!gfx_module(fw, desc->vs_spv, desc->vs_B, what, "vertex", &out->vs))
+      return false;
+   if (!gfx_module(fw, desc->fs_spv, desc->fs_B, what, "fragment", &out->fs))
+      return false;
+
+   /* The layout has to match what the shaders declare, and an empty one
+    * against a shader that declares a binding is what took a console
+    * down in t_vk_image run 2 — no validation layers here to say so.
+    * The caller passes the set layout its shaders were written for, or
+    * VK_NULL_HANDLE when they declare nothing. */
+   const VkPipelineLayoutCreateInfo plci = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = desc->set_layout != VK_NULL_HANDLE ? 1u : 0u,
+      .pSetLayouts = desc->set_layout != VK_NULL_HANDLE ? &desc->set_layout
+                                                        : NULL,
+   };
+   VkResult r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL,
+                                              &out->layout);
+   if (!t_check(t, r == VK_SUCCESS, "%s: vkCreatePipelineLayout -> %s",
+                what, vkfw_result_str(r)))
+      return false;
+
+   const VkPipelineShaderStageCreateInfo stages[2] = {
+      {
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = out->vs,
+         .pName = "main",
+      },
+      {
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = out->fs,
+         .pName = "main",
+      },
+   };
+
+   const VkPipelineVertexInputStateCreateInfo vi = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+      .vertexBindingDescriptionCount = desc->binding_count,
+      .pVertexBindingDescriptions = desc->bindings,
+      .vertexAttributeDescriptionCount = desc->attr_count,
+      .pVertexAttributeDescriptions = desc->attrs,
+   };
+
+   const VkPipelineInputAssemblyStateCreateInfo ia = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+      .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+   };
+
+   const VkViewport viewport = {
+      .x = 0.0f, .y = 0.0f,
+      .width = (float)desc->width, .height = (float)desc->height,
+      .minDepth = 0.0f, .maxDepth = 1.0f,
+   };
+   const VkRect2D scissor = {
+      .offset = { 0, 0 },
+      .extent = { desc->width, desc->height },
+   };
+   const VkPipelineViewportStateCreateInfo vp = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+      .viewportCount = 1,
+      .pViewports = desc->dynamic_viewport ? NULL : &viewport,
+      .scissorCount = 1,
+      .pScissors = desc->dynamic_viewport ? NULL : &scissor,
+   };
+   const VkDynamicState dyn_states[2] = {
+      VK_DYNAMIC_STATE_VIEWPORT,
+      VK_DYNAMIC_STATE_SCISSOR,
+   };
+   const VkPipelineDynamicStateCreateInfo dyn = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+      .dynamicStateCount = 2,
+      .pDynamicStates = dyn_states,
+   };
+
+   const VkPipelineRasterizationStateCreateInfo rs = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+      .polygonMode = VK_POLYGON_MODE_FILL,
+      .cullMode = VK_CULL_MODE_NONE,
+      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+      .lineWidth = 1.0f,
+   };
+
+   const VkPipelineMultisampleStateCreateInfo ms = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+   };
+
+   /* Supplied even with no depth attachment rather than left NULL: a
+    * NULL pDepthStencilState is legal only when the pass provably has
+    * none, and "all off" spelled out cannot be misread. */
+   const VkPipelineDepthStencilStateCreateInfo ds = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+      .depthTestEnable = desc->depth_test ? VK_TRUE : VK_FALSE,
+      .depthWriteEnable = desc->depth_write ? VK_TRUE : VK_FALSE,
+      .depthCompareOp = desc->depth_test ? desc->depth_compare
+                                         : VK_COMPARE_OP_ALWAYS,
+   };
+
+   const VkPipelineColorBlendAttachmentState cba = {
+      .blendEnable = VK_FALSE,
+      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+   };
+   const VkPipelineColorBlendStateCreateInfo cb = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+      .attachmentCount = 1,
+      .pAttachments = &cba,
+   };
+
+   const VkPipelineRenderingCreateInfo prci = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+      .colorAttachmentCount = 1,
+      .pColorAttachmentFormats = &desc->colour_format,
+      .depthAttachmentFormat = desc->depth_format,
+      .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+   };
+
+   const VkGraphicsPipelineCreateInfo gpci = {
+      .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+      .pNext = &prci,
+      .stageCount = 2,
+      .pStages = stages,
+      .pVertexInputState = &vi,
+      .pInputAssemblyState = &ia,
+      .pViewportState = &vp,
+      .pRasterizationState = &rs,
+      .pMultisampleState = &ms,
+      .pDepthStencilState = &ds,
+      .pColorBlendState = &cb,
+      .pDynamicState = desc->dynamic_viewport ? &dyn : NULL,
+      .layout = out->layout,
+      .renderPass = VK_NULL_HANDLE,   /* dynamic rendering */
+   };
+
+   r = fw->vk.vkCreateGraphicsPipelines(fw->dev, VK_NULL_HANDLE, 1, &gpci,
+                                        NULL, &out->pipeline);
+   return t_check(t, r == VK_SUCCESS, "%s: vkCreateGraphicsPipelines -> %s",
+                  what, vkfw_result_str(r));
+}
+
+void vkfw_gfx_destroy(vkfw *fw, vkfw_gfx *g)
+{
+   if (g->pipeline != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipeline(fw->dev, g->pipeline, NULL);
+   if (g->layout != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipelineLayout(fw->dev, g->layout, NULL);
+   if (g->fs != VK_NULL_HANDLE)
+      fw->vk.vkDestroyShaderModule(fw->dev, g->fs, NULL);
+   if (g->vs != VK_NULL_HANDLE)
+      fw->vk.vkDestroyShaderModule(fw->dev, g->vs, NULL);
+   memset(g, 0, sizeof(*g));
+}

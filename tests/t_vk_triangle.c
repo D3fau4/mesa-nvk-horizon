@@ -216,205 +216,10 @@ static void image_barrier(vkfw *fw, VkCommandBuffer cb, VkImage img,
                                0, NULL, 0, NULL, 1, &b);
 }
 
-struct pipeline_set {
-   VkShaderModule vs, fs;
-   VkPipelineLayout layout;
-   VkPipeline pipeline;
-};
-
-static void pipeline_set_destroy(vkfw *fw, struct pipeline_set *p)
-{
-   if (p->pipeline != VK_NULL_HANDLE)
-      fw->vk.vkDestroyPipeline(fw->dev, p->pipeline, NULL);
-   if (p->layout != VK_NULL_HANDLE)
-      fw->vk.vkDestroyPipelineLayout(fw->dev, p->layout, NULL);
-   if (p->fs != VK_NULL_HANDLE)
-      fw->vk.vkDestroyShaderModule(fw->dev, p->fs, NULL);
-   if (p->vs != VK_NULL_HANDLE)
-      fw->vk.vkDestroyShaderModule(fw->dev, p->vs, NULL);
-   memset(p, 0, sizeof(*p));
-}
-
-static bool make_module(vkfw *fw, const uint32_t *code, size_t size_B,
-                        const char *what, VkShaderModule *out)
-{
-   const VkShaderModuleCreateInfo ci = {
-      .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-      .codeSize = size_B,
-      .pCode = code,
-   };
-   VkResult r = fw->vk.vkCreateShaderModule(fw->dev, &ci, NULL, out);
-   return t_check(fw->t, r == VK_SUCCESS, "%s: vkCreateShaderModule -> %s",
-                  what, vkfw_result_str(r));
-}
-
-static bool make_pipeline(vkfw *fw, const char *what,
-                          const uint32_t *vs_code, size_t vs_B,
-                          const uint32_t *fs_code, size_t fs_B,
-                          bool vertex_input, bool dynamic_viewport,
-                          struct pipeline_set *out)
-{
-   test_ctx *t = fw->t;
-   memset(out, 0, sizeof(*out));
-
-   if (!make_module(fw, vs_code, vs_B, what, &out->vs))
-      return false;
-   if (!make_module(fw, fs_code, fs_B, what, &out->fs))
-      return false;
-
-   /* No descriptor sets and no push constants: both shaders read only
-    * their inputs. An empty layout is consistent with that — unlike the
-    * empty layout that crashed a console in t_vk_image, where the
-    * shader really did declare a binding. */
-   const VkPipelineLayoutCreateInfo plci = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-   };
-   VkResult r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL,
-                                              &out->layout);
-   if (!t_check(t, r == VK_SUCCESS, "%s: vkCreatePipelineLayout -> %s",
-                what, vkfw_result_str(r)))
-      return false;
-
-   const VkPipelineShaderStageCreateInfo stages[2] = {
-      {
-         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = out->vs,
-         .pName = "main",
-      },
-      {
-         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = out->fs,
-         .pName = "main",
-      },
-   };
-
-   const VkVertexInputBindingDescription binding = {
-      .binding = 0,
-      .stride = sizeof(struct vertex),
-      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-   };
-   const VkVertexInputAttributeDescription attrs[2] = {
-      { .location = 0, .binding = 0,
-        .format = VK_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(struct vertex, x) },
-      { .location = 1, .binding = 0,
-        .format = VK_FORMAT_R32G32B32A32_SFLOAT,
-        .offset = offsetof(struct vertex, r) },
-   };
-   const VkPipelineVertexInputStateCreateInfo vi = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-      .vertexBindingDescriptionCount = vertex_input ? 1u : 0u,
-      .pVertexBindingDescriptions = vertex_input ? &binding : NULL,
-      .vertexAttributeDescriptionCount = vertex_input ? 2u : 0u,
-      .pVertexAttributeDescriptions = vertex_input ? attrs : NULL,
-   };
-
-   const VkPipelineInputAssemblyStateCreateInfo ia = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-      .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-   };
-
-   const VkViewport viewport = {
-      .x = 0.0f, .y = 0.0f,
-      .width = (float)W, .height = (float)H,
-      .minDepth = 0.0f, .maxDepth = 1.0f,
-   };
-   const VkRect2D scissor = { .offset = { 0, 0 }, .extent = { W, H } };
-   const VkPipelineViewportStateCreateInfo vp = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-      .viewportCount = 1,
-      .pViewports = dynamic_viewport ? NULL : &viewport,
-      .scissorCount = 1,
-      .pScissors = dynamic_viewport ? NULL : &scissor,
-   };
-   const VkDynamicState dyn_states[2] = {
-      VK_DYNAMIC_STATE_VIEWPORT,
-      VK_DYNAMIC_STATE_SCISSOR,
-   };
-   const VkPipelineDynamicStateCreateInfo dyn = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-      .dynamicStateCount = 2,
-      .pDynamicStates = dyn_states,
-   };
-
-   /* Culling off, deliberately. The triangle's winding in framebuffer
-    * space depends on Vulkan's y-down NDC, and getting that wrong would
-    * make the whole target come back as the clear colour — a failure
-    * that says nothing about rasterisation. Face culling is not part of
-    * this item. */
-   const VkPipelineRasterizationStateCreateInfo rs = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-      .polygonMode = VK_POLYGON_MODE_FILL,
-      .cullMode = VK_CULL_MODE_NONE,
-      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-      .lineWidth = 1.0f,
-   };
-
-   const VkPipelineMultisampleStateCreateInfo ms = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-   };
-
-   /* No depth attachment in this item, but the state is supplied rather
-    * than left NULL: a NULL pDepthStencilState is only legal when the
-    * render pass provably has no depth attachment, and spelling out
-    * "all off" costs nothing and cannot be misread. */
-   const VkPipelineDepthStencilStateCreateInfo ds = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-      .depthTestEnable = VK_FALSE,
-      .depthWriteEnable = VK_FALSE,
-      .depthCompareOp = VK_COMPARE_OP_ALWAYS,
-   };
-
-   const VkPipelineColorBlendAttachmentState cba = {
-      .blendEnable = VK_FALSE,
-      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-   };
-   const VkPipelineColorBlendStateCreateInfo cb = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &cba,
-   };
-
-   const VkFormat colour_format = VK_FORMAT_R8G8B8A8_UNORM;
-   const VkPipelineRenderingCreateInfo prci = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-      .colorAttachmentCount = 1,
-      .pColorAttachmentFormats = &colour_format,
-      .depthAttachmentFormat = VK_FORMAT_UNDEFINED,
-      .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
-   };
-
-   const VkGraphicsPipelineCreateInfo gpci = {
-      .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-      .pNext = &prci,
-      .stageCount = 2,
-      .pStages = stages,
-      .pVertexInputState = &vi,
-      .pInputAssemblyState = &ia,
-      .pViewportState = &vp,
-      .pRasterizationState = &rs,
-      .pMultisampleState = &ms,
-      .pDepthStencilState = &ds,
-      .pColorBlendState = &cb,
-      .pDynamicState = dynamic_viewport ? &dyn : NULL,
-      .layout = out->layout,
-      .renderPass = VK_NULL_HANDLE,   /* dynamic rendering */
-   };
-
-   r = fw->vk.vkCreateGraphicsPipelines(fw->dev, VK_NULL_HANDLE, 1, &gpci,
-                                        NULL, &out->pipeline);
-   return t_check(t, r == VK_SUCCESS, "%s: vkCreateGraphicsPipelines -> %s",
-                  what, vkfw_result_str(r));
-}
-
 /* Records clear + draw + copy-to-buffer for one case, submits it and
  * waits. The wait is vkWaitForFences, which is where Vulkan puts a CPU
  * stall; nothing else here blocks. */
-static bool render(vkfw *fw, const char *what, const struct pipeline_set *p,
+static bool render(vkfw *fw, const char *what, const vkfw_gfx *p,
                    VkImage img, VkImageView view, const vkfw_buffer *vbuf,
                    bool dynamic_viewport, vkfw_buffer *dst)
 {
@@ -705,7 +510,7 @@ int run_test(test_ctx *t)
    if (!vkfw_init(&fw, t, &features13))
       return 1;
 
-   struct pipeline_set pa = { 0 }, pb = { 0 };
+   vkfw_gfx pa = { 0 }, pb = { 0 };
    vkfw_buffer dst = { 0 }, vbuf = { 0 };
    vkfw_image img = { 0 };
    VkImageView view = VK_NULL_HANDLE;
@@ -754,11 +559,16 @@ int run_test(test_ctx *t)
       goto out;
 
    /* --- case A --------------------------------------------------- */
-   if (!make_pipeline(&fw, "A", tri_vert_index_spv,
-                      sizeof(tri_vert_index_spv), tri_frag_const_spv,
-                      sizeof(tri_frag_const_spv),
-                      false /* vertex_input */, false /* dynamic_viewport */,
-                      &pa))
+   const vkfw_gfx_desc desc_a = {
+      .vs_spv = tri_vert_index_spv, .vs_B = sizeof(tri_vert_index_spv),
+      .fs_spv = tri_frag_const_spv, .fs_B = sizeof(tri_frag_const_spv),
+      .colour_format = VK_FORMAT_R8G8B8A8_UNORM,
+      .depth_format = VK_FORMAT_UNDEFINED,
+      .width = W, .height = H,
+      /* No vertex input and a static viewport: the two things case B
+       * adds, absent here so that B failing alone names them. */
+   };
+   if (!vkfw_gfx_create(&fw, "A", &desc_a, &pa))
       goto out;
 
    if (!vkfw_buffer_poison(&fw, &dst, POISON))
@@ -804,11 +614,30 @@ int run_test(test_ctx *t)
    if (!vkfw_buffer_flush(&fw, &vbuf))
       goto out;
 
-   if (!make_pipeline(&fw, "B", tri_vert_attrib_spv,
-                      sizeof(tri_vert_attrib_spv), tri_frag_interp_spv,
-                      sizeof(tri_frag_interp_spv),
-                      true /* vertex_input */, true /* dynamic_viewport */,
-                      &pb))
+   const VkVertexInputBindingDescription binding = {
+      .binding = 0,
+      .stride = sizeof(struct vertex),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+   };
+   const VkVertexInputAttributeDescription attrs[2] = {
+      { .location = 0, .binding = 0,
+        .format = VK_FORMAT_R32G32_SFLOAT,
+        .offset = offsetof(struct vertex, x) },
+      { .location = 1, .binding = 0,
+        .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+        .offset = offsetof(struct vertex, r) },
+   };
+   const vkfw_gfx_desc desc_b = {
+      .vs_spv = tri_vert_attrib_spv, .vs_B = sizeof(tri_vert_attrib_spv),
+      .fs_spv = tri_frag_interp_spv, .fs_B = sizeof(tri_frag_interp_spv),
+      .colour_format = VK_FORMAT_R8G8B8A8_UNORM,
+      .depth_format = VK_FORMAT_UNDEFINED,
+      .binding_count = 1, .bindings = &binding,
+      .attr_count = 2, .attrs = attrs,
+      .width = W, .height = H,
+      .dynamic_viewport = true,
+   };
+   if (!vkfw_gfx_create(&fw, "B", &desc_b, &pb))
       goto out;
 
    if (!vkfw_buffer_poison(&fw, &dst, POISON))
@@ -822,8 +651,8 @@ int run_test(test_ctx *t)
    }
 
 out:
-   pipeline_set_destroy(&fw, &pb);
-   pipeline_set_destroy(&fw, &pa);
+   vkfw_gfx_destroy(&fw, &pb);
+   vkfw_gfx_destroy(&fw, &pa);
    if (view != VK_NULL_HANDLE)
       fw.vk.vkDestroyImageView(fw.dev, view, NULL);
    vkfw_image_destroy(&fw, &img);

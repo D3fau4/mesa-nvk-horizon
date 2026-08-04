@@ -269,6 +269,78 @@ bool vkfw_cmd_end_submit(vkfw *fw, VkCommandBuffer cb, VkFence fence);
  * Vulkan puts one. `what` names the step in the check line. */
 bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what);
 
+/* A graphics pipeline, and the twelve structures Vulkan needs to build
+ * one.
+ *
+ * WHY THIS IS IN THE FIXTURE. Items 5 to 8 all render, and the part
+ * they share is not the interesting part: two shader modules, a layout,
+ * and the same rasterisation, multisample and blend state every time.
+ * Written out per test it is four copies of a hundred lines in which
+ * the two or three fields that actually differ between the tests are
+ * invisible. Here, a test states only what it changes.
+ *
+ * Everything this sets and does not expose is fixed for a reason:
+ *
+ *   triangle list       the only topology these items draw
+ *   cull mode NONE      winding in framebuffer space depends on
+ *                       Vulkan's y-down NDC; a culled triangle comes
+ *                       back as the clear colour, which says nothing
+ *                       about what is being measured. Culling is not
+ *                       part of any item here
+ *   1 sample            multisampling is not in Phase 5
+ *   blending off        every item compares written values; a blend
+ *                       would make the destination part of the answer
+ *   one colour att.     items 5 to 8 each render to exactly one
+ *
+ * Dynamic rendering only: there is no VkRenderPass anywhere in this
+ * suite, so the formats come in through VkPipelineRenderingCreateInfo.
+ */
+typedef struct vkfw_gfx_desc {
+   const uint32_t *vs_spv;
+   size_t vs_B;
+   const uint32_t *fs_spv;
+   size_t fs_B;
+
+   VkFormat colour_format;
+   /* VK_FORMAT_UNDEFINED when the pass has no depth attachment. */
+   VkFormat depth_format;
+
+   /* VK_NULL_HANDLE when the shaders declare no descriptors. */
+   VkDescriptorSetLayout set_layout;
+
+   /* Vertex input; leave the counts at zero for a shader that builds
+    * its own positions from gl_VertexIndex. */
+   uint32_t binding_count;
+   const VkVertexInputBindingDescription *bindings;
+   uint32_t attr_count;
+   const VkVertexInputAttributeDescription *attrs;
+
+   /* The static viewport and scissor, both the full target. Ignored
+    * when dynamic_viewport is set, in which case the caller issues
+    * vkCmdSetViewport and vkCmdSetScissor itself. */
+   uint32_t width, height;
+   bool dynamic_viewport;
+
+   bool depth_test;
+   bool depth_write;
+   VkCompareOp depth_compare;    /* only read when depth_test */
+} vkfw_gfx_desc;
+
+typedef struct vkfw_gfx {
+   VkShaderModule vs, fs;
+   VkPipelineLayout layout;
+   VkPipeline pipeline;
+} vkfw_gfx;
+
+/* Builds modules, layout and pipeline, checking each step and naming it
+ * with `what`. Returns false with `out` safe to pass to
+ * vkfw_gfx_destroy either way. */
+bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
+                     vkfw_gfx *out);
+
+/* Reverse order, safe on a partially-built or zeroed vkfw_gfx. */
+void vkfw_gfx_destroy(vkfw *fw, vkfw_gfx *g);
+
 /* Compares `n` 32-bit words against `expect`, reporting the first
  * mismatch by index with both values, and passes exactly one check.
  * Returns the number of words that differ. */
