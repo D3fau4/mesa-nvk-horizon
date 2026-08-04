@@ -14,9 +14,9 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 started: step 0, de-mining, before any item |
 | **What runs on a Switch** | The full mandatory Vulkan sequence, CPU readback verified: `t_vulkan` **PASS 60/60** (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`). All 15 `horizon/` tests pass on console |
-| **Next concrete task** | Phase 5 step 0: `t_va_window` written and cross-built, **not yet run**; then `alloc_tiled_mem`, then the Vulkan test fixture |
+| **Next concrete task** | Phase 5 step 0c: the Vulkan test fixture, then item 1 (transfers). `t_va_window` is built and **not yet run** |
 | **Known failures** | None outstanding on hardware |
-| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); `alloc_tiled_mem` is a NULL function pointer, reachable through the linear-tiled shadow path only (see below); the L2 writeback is unconditional, one per submit |
+| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); the L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
 | **Never verified on hardware** | Everything committed after `t_vulkan-run6`: the fixes in that review round, the sub-chunk D16 check, and all of Phase 5 |
 
@@ -229,6 +229,80 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Phase 5 — step 0b: the NULL op, and the two more like it (2026-08-04)
+
+**Class: cross build (X).** `libnvk.a` builds with both patches and
+carries `nvkmd_horizon_alloc_tiled_mem`; `check-tls-relocs` reports 0
+TLS relocations. Nothing here has run on a console.
+
+`alloc_tiled_mem` was the second of the three known mines. Two things
+came out of fixing it, and the second is the larger one.
+
+### The op, implemented rather than stubbed
+
+It is implementable here and cheaply, because this platform already
+made the decision the op needs: **a block-linear layout is a property of
+the GPU mapping, not of the memory object** (memory-model § 1 #9), and
+`alloc_mem` already reserves and binds a VA for everything it creates.
+So the two entry points differ in exactly one value — the PTE kind that
+VA carries — and the body becomes one function taking the kind.
+
+That kind also settles the hazard `nvkmd_horizon_alloc_va` had written
+down and handed on: a non-pitch kind sends the reservation to the
+big-page half, `horizon_gpu_vm_map` rounds a bind's size up to the
+reservation's page size and then requires the rounded range to fit the
+memory object, so an object that is not a whole number of big pages
+cannot be bound whole. The allocation is where that is fixable, and
+raising the alignment to `bind_align_B` is the whole fix, since
+`horizon_gpu_mem_create` rounds the size up to the alignment.
+
+`tile_mode` is not consumed. In the nouveau backend it is a field of the
+kernel's BO; Horizon has no such field, and everything needed to read a
+block-linear surface comes from the PTE kind or from the descriptor NIL
+writes. Written down in the code rather than dropped silently.
+
+`has_alloc_tiled` becomes true. Its one other consumer is
+`EXT_image_drm_format_modifier`, which therefore joins the advertised
+set — nothing enables it here, and an advertised extension costs nothing
+until an application asks for it.
+
+### The same class, twice more
+
+The comment this backend carried said the NULL entries were safe because
+"nvkmd.h's inline wrappers assert on that before dispatching". **They do
+not.** `nvkmd_dev_alloc_tiled_mem` is out-of-line in `nvkmd.c:111-118`
+and calls through the pointer with no check and no assert;
+`nvkmd_dev_import_dma_buf` (`nvkmd.c:154-160`) is the same. The claim
+had never been checked.
+
+Checking it found two more live instances:
+
+| NULL op | reached through | advertised? |
+|---|---|---|
+| `alloc_tiled_mem` | `ensure_linear_tiled_shadow_mem_locked`, `nvk_cmd_draw.c:1055` | no extension needed at all |
+| `import_dma_buf` / `export_dma_buf` | `VkImportMemoryFdInfoKHR`, `vkGetMemoryFdKHR` | `KHR_external_memory_fd`, `EXT_external_memory_dma_buf` — **flat `true`** |
+| `overmap` | `vkUnmapMemory2KHR` with `VK_MEMORY_UNMAP_RESERVE_BIT_EXT` | `EXT_map_memory_placed` — **flat `true`** |
+
+`nvk_get_device_extensions` already had the right pattern —
+`EXT_image_drm_format_modifier` follows `kmd_info.has_alloc_tiled` — and
+these three were simply left unconditional, which is correct on nouveau
+where every flag is true and is a way to advertise an unimplementable
+extension anywhere else. Patch 0046 makes them follow the same flags.
+Upstreamable as written: nothing changes for nouveau.
+
+### And the argument for not leaving a NULL
+
+The original comment ended "a caller that ignored the capability faults
+here rather than silently getting a wrong allocation", which is a real
+preference — loud beats wrong. It does not hold on this platform. A jump
+through a NULL function pointer on a Switch is not loud: there is no
+debugger, the `.nro` dies with no log line, and the last thing written
+to the SD card is whatever check ran before it. A `VkResult` naming the
+operation is strictly more informative, and an extension that is never
+advertised is better still, because then nothing conforming can ask.
 
 ---
 
