@@ -124,7 +124,7 @@ static void region_destroy(region *r)
 
 /* Returns true when the rung executed to its last dword. */
 static bool run_rung(test_ctx *t, horizon_gpu_device *dev, region *pb,
-                     region *tgt, uint32_t dwords)
+                     region *tgt, uint32_t index, uint32_t dwords)
 {
    horizon_gpu_channel *chan = NULL;
    bool ok = false;
@@ -135,10 +135,14 @@ static bool run_rung(test_ctx *t, horizon_gpu_device *dev, region *pb,
                 horizon_gpu_status_str(res.status)))
       return false;
 
-   /* NOP filler, then the release. The payload names the rung, so a
-    * stale value from the previous one cannot be mistaken for this
-    * one's. */
-   const uint32_t payload = 0x5a5a0000u | (dwords & 0xffffu);
+   /* NOP filler, then the release. The payload names the rung by
+    * position rather than by size: the first version used the low
+    * sixteen bits of the dword count, and 131072 and 524288 are both
+    * zero there, so the two largest rungs — the interesting ones —
+    * carried the same payload. The check was still sound, because the
+    * target is zeroed and flushed before each rung, but a payload that
+    * claims to identify a rung should identify it. */
+   const uint32_t payload = 0x5a5a0000u | ((index + 1u) << 8);
    const uint32_t rel_dwords = HORIZON_CMDS_SEM_RELEASE_DWORDS;
    if (!t_check(t, dwords > rel_dwords + 2u,
                 "%u dwords: the rung has room for filler and a release",
@@ -235,7 +239,7 @@ int run_test(test_ctx *t)
    uint32_t largest = 0;
    uint32_t first_failed = 0;
    for (uint32_t i = 0; i < NUM_RUNGS; i++) {
-      if (run_rung(t, dev, &pb, &tgt, RUNGS[i])) {
+      if (run_rung(t, dev, &pb, &tgt, i, RUNGS[i])) {
          largest = RUNGS[i];
       } else {
          first_failed = RUNGS[i];

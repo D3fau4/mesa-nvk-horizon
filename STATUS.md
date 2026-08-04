@@ -14,15 +14,110 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Run the debt batch — seven binaries that between them close every measurement this project owes itself — then Phase 6 |
-| **The debt batch** | `t_vulkan` (control) · `t_threads` and `t_ostime`, Phase 3's owed console run · `t_fault`, the fence/notifier fix firing for the first time · `t_pbsize`, the number D15 turns on · `t_vk_caps`, patch 0046's gating both ways and patch 0045's `alloc_tiled_mem` at last · `t_display`, console-less reporting for Phase 6. Order: `t_vulkan`, `t_threads`, `t_ostime`, `t_vk_caps`, `t_pbsize`, `t_display`, `t_fault` last, because it loses its channel on purpose |
+| **Next concrete task** | Find out what `t_fault` did, then Phase 6 |
+| **The debt batch** | Six of seven back, all PASS. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works. `t_fault` returned no log |
 | **Known failures** | None outstanding. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
-| **Open, not blocking** | The L2 writeback is unconditional, one per submit. `alloc_tiled_mem` now has a test that reaches it: a `VK_IMAGE_TILING_LINEAR` image can never be a colour attachment in NVK, but a `DRM_FORMAT_MOD_LINEAR` one can, and rendering into it is what allocates the tiled shadow |
-| **Open decisions** | **D15**, pending one hardware run, and **D7**, which is written up and needs a person to file it. D17 is closed |
-| **Never verified on hardware** | Six things, all now with a test aimed at them and none of them run: `alloc_tiled_mem` and the extension gating (`t_vk_caps`), the fence/notifier fix (`t_fault`), the entry-size limit D15 turns on (`t_pbsize`), console-less reporting for Phase 6 (`t_display`), and Phase 3's owed `t_threads`/`t_ostime` |
+| **Open, not blocking** | The L2 writeback is unconditional, one per submit |
+| **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
+| **Never verified on hardware** | **One thing: the fence/notifier fix (`t_fault`).** Its log did not come back from the debt batch, and a deliberate MMU fault is exactly the test that could take the console with it, so whether it ran is not something to assume |
 
 
 ---
+
+## The debt batch on hardware (2026-08-04)
+
+**Class: hardware (HW).** Six logs came back, every one a pass. The
+seventh, `t_fault`, produced no log at all — see below.
+
+### Patch 0045 executed, three weeks after it was written
+
+    ok  VK_EXT_image_drm_format_modifier is advertised
+    ok  the driver offers 7 DRM format modifier(s) for R8G8B8A8_UNORM
+    ok  DRM_FORMAT_MOD_LINEAR can be a colour attachment
+    ok  every texel of the linear image holds what the tiled shadow
+        rendered: 4096/4096 words are 0xff996633 (all of them)
+
+`nvkmd_dev_alloc_tiled_mem` was a NULL function pointer until patch
+0045, and then nothing reached it, because a `VK_IMAGE_TILING_LINEAR`
+image can never be a colour attachment in NVK — upstream, every chip.
+The path that does reach it is the one patch 0045 opened itself:
+setting `has_alloc_tiled` is what put `EXT_image_drm_format_modifier`
+in the extension list, and a `DRM_FORMAT_MOD_LINEAR` image *is*
+allowed to be an attachment. Rendering into one makes NVK allocate a
+tiled shadow through `alloc_tiled_mem`, draw into that, and copy the
+result back into the linear layout when the pass ends. All 4096 texels
+came back right, so the whole round trip works.
+
+The device offers **seven** modifiers for R8G8B8A8_UNORM —
+`0x3000000000fe010` through `…15`, and `0x0` — all with the same
+feature word `0x1dd83`. Worth having written down before Phase 6 asks
+which layout an `nwindow` buffer wants.
+
+### Patch 0046's gating, right in both directions
+
+    ok  VK_KHR_external_memory_fd is not advertised
+    ok  VK_EXT_external_memory_dma_buf is not advertised
+    ok  VK_EXT_map_memory_placed is not advertised
+    ok  VK_EXT_image_drm_format_modifier IS advertised
+    ok  no sparse feature is advertised
+
+Three absent, one present, and patch 0029's sparse gating with them. A
+gate that only ever says no is indistinguishable from an extension list
+that was never built, which is why the fourth row is there.
+
+### D15's number: there is no limit to bound
+
+    ok    32 dwords: the release at the END of the entry ran
+    …
+    ok  524288 dwords: the release at the END of the entry ran
+    note D15: every rung up to 524288 dwords (2048 KiB) executed to its
+         last dword; no entry-size limit was found in this range
+
+Verified by the release at the *end* of each entry, not by the submit
+being accepted — the interesting failure is an entry the channel takes
+and then does not finish. Nothing is added to `horizon_gpu_submit`, and
+nothing is paid at channel creation.
+
+One defect of my own in that test, fixed afterwards: the payload was
+`0x5a5a0000 | (dwords & 0xffff)`, and both 131072 and 524288 are zero
+in the low sixteen bits, so the two largest rungs — the interesting
+ones — carried the same payload. The check was still sound, because the
+target is zeroed and flushed before every rung, so a rung that did not
+run reads zero rather than a neighbour's value. But a payload that says
+it names a rung should name it, and it now does, by position.
+
+### Phase 3's debt, closed on a console
+
+`t_threads` **67/67** and `t_ostime` **43/43** — the same numbers they
+gave on the emulator, now from the hardware they were always owed to.
+`os_time_get_nano` resolves to a **52 ns** step over 80066 samples, and
+over a 100 ms sleep it differs from the ARM system counter by **2 ns**.
+
+### Phase 6's harness half is done
+
+`t_display` ran with no console and reported itself through the SD-card
+log alone, which is the whole question:
+
+    note this test owns the display: no console was started, and this
+         file is the whole record
+    ok   nwindowGetDimensions -> 0x00000000 (1280 x 720)
+
+So a swapchain test can have the default window and still be reported.
+The alternative — nxlink over the network — is not needed.
+
+### `t_fault` produced no log, and that is not nothing
+
+It is the one test that deliberately MMU-faults, and it was last in the
+order for that reason. A missing log has three explanations and they
+are not equivalent: it was not run; it ran and hung before the
+framework could close the file; or the fault took more than its own
+channel down. The framework flushes after every line, so a hang after
+the first check would still have left a partial file with no `RESULT:`
+line — and there is no file at all, which points at the first
+explanation or at a failure early enough to lose even that.
+
+Not guessed at here. The question is asked of the person who ran it.
+
 
 ### One thing about the Phase 3 debt, said rather than slipped in
 
@@ -95,7 +190,7 @@ other change shows up as a failing gate.
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 | D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **closed: block (patch 0044), verified on hardware — `vkWaitForFences(200 ms)` on a never-submitted fence returned `VK_TIMEOUT` after 200 ms, where the old code answered in microseconds (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`, PASS 60/60)** — owner said address it now. A `mtx_t` and `cnd_t` in `nvk_horizon_sync`, broadcast from `signal()`, `set_fence()` and `move()` — the three transitions that can release a waiter — and deliberately not from `reset()`, which makes the object *less* reachable. The condvar wait is chunked at 100 ms rather than handed the caller's deadline, because `cnd_timedwait` takes an absolute `TIME_UTC` deadline and D8 measured that clock to be the real-time clock: chunking bounds how far a date change can move a wait, and costs no wake-up latency because a broadcast ends the chunk immediately. `move()` needed care of its own — it copies the payload struct, which would have copied the destination's live mutex and condvar over with the source's, including one held on that line. Primitives verified on console rather than assumed (`t_threads`, 67/67, exercises `cnd_wait`/`signal`/`broadcast`/`timedwait`). `t_vulkan` gained the check that discriminates the fix from the bug. **Not yet run on hardware.** Was: — open, raised with the owner (Codex P1, PR #6) — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
 | D17 | Split this file: state in `STATUS.md`, narrative in `docs/history/` | **CLOSED 2026-08-04.** `scripts/split-status.py` cut the file at section boundaries into contiguous chunks, **verified that the chunks reassemble into the original byte for byte before writing anything**, and wrote `docs/history/` plus `MANIFEST.sha256`. 7749 lines became 171 here and nine files there. That answers "what guarantees nothing is edited in transit". For afterwards, `scripts/check-history-intact.sh` compares every history file against its digest — broken three ways to confirm it fails: an undeclared edit, an undeclared file, a declared file gone. History may still be appended to; the manifest update in the same commit is what declares it, and puts old and new digests side by side in the diff |
-| D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **DECIDED: no, and here is the number instead.** The ramp diagnoses a ring-size fault by kicking synthetic push buffers of increasing size at every channel creation, CPU-waiting each rung. Two objections. The entry *count* is already bounded by construction — `horizon_gpu_submit` refuses a submit whose spans plus its own two entries exceed `GPFIFO_QUEUE_SIZE`, and `t_submit` measures it — so what is actually unbounded is the *size in dwords of one entry*, which `horizon_gpu_submit` only checks for being non-zero. And a per-channel-creation CPU wait is a cost CLAUDE.md permits only where Vulkan requires one or in debug-synchronous mode. So the ramp lives in a test (`t_pbsize`, rungs from 32 to 524288 dwords, each verified by a semaphore release at the *end* of the entry rather than by acceptance) and the answer becomes a bound in the code if there is one. Closed once that test has run |
+| D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **CLOSED 2026-08-04: no, and here is the number.** The ramp diagnoses a ring-size fault by kicking synthetic push buffers of increasing size at every channel creation, CPU-waiting each rung. The entry *count* was already bounded by construction — `horizon_gpu_submit` refuses what will not fit `GPFIFO_QUEUE_SIZE` — so the open question was the *size of one entry*, which was checked only for being non-zero. `t_pbsize` walked it on hardware: **every rung from 32 up to 524288 dwords (2 MiB) executed to its last dword**, each verified by a semaphore release at the END of the entry rather than by the submit being accepted. There is no limit to bound in that range, so nothing is added to `horizon_gpu_submit` and nothing is paid at channel creation. Should a limit ever appear it is a number to enforce, not a ramp to run |
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
 
