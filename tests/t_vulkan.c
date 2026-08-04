@@ -656,6 +656,15 @@ run_test(test_ctx *t)
    VkFence fence = VK_NULL_HANDLE;
    r = vkCreateFence(dev, &fci, NULL, &fence);
    t_check(t, r == VK_SUCCESS, "vkCreateFence -> %d", (int)r);
+   /* Return here, unlike the checks above it, because vkQueueSubmit
+    * takes VK_NULL_HANDLE legitimately — a submit with no fence is
+    * valid Vulkan — so the guard below would let a failed creation
+    * through and hand the null handle to vkWaitForFences, which is not
+    * valid and may take the process down before the framework can print
+    * its FAIL line. A crash reports nothing; a FAIL reports everything.
+    */
+   if (r != VK_SUCCESS)
+      return 1;
 
    const VkSubmitInfo si = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
