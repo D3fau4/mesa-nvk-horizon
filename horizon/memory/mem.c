@@ -108,10 +108,31 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
         /* Reverse order: the attribute was set after the allocation, so
          * it comes off before the storage goes back. Returning uncached
          * memory to the heap would leave every later allocation that
-         * reuses it silently uncached. */
-        if (policy == HORIZON_GPU_MEM_UNCACHED)
-            svcSetMemoryAttribute(mem->cpu, rounded,
-                                  MemAttr_IsUncached, 0);
+         * reuses it silently uncached.
+         *
+         * Which means the restore's own Result decides whether the
+         * storage may go back at all, so it is checked rather than
+         * issued and forgotten (CLAUDE.md: never discard a libnx
+         * Result). If it fails, the pages are deliberately *not* freed:
+         * a leak costs this process some address space, while handing
+         * uncached pages to malloc costs every later allocation that
+         * lands on them, in unrelated code, with no symptom near the
+         * cause. Of the two, the leak is the one that can be found. */
+        if (policy == HORIZON_GPU_MEM_UNCACHED) {
+            Result arc = svcSetMemoryAttribute(mem->cpu, rounded,
+                                               MemAttr_IsUncached, 0);
+            if (R_FAILED(arc)) {
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "svcSetMemoryAttribute(restore cached, %p, "
+                             "0x%llx) failed: 0x%08x — leaking 0x%llx "
+                             "bytes rather than returning uncached pages "
+                             "to the heap", mem->cpu,
+                             (unsigned long long)rounded, arc,
+                             (unsigned long long)rounded);
+                free(mem);
+                return horizon_gpu_err_nv(arc);
+            }
+        }
         free(mem->cpu);
         free(mem);
         return horizon_gpu_err_nv(rc);
@@ -149,10 +170,30 @@ horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem)
     /* Same reason as the error path in create: the heap gets its pages
      * back as it lent them, cached. Leaving the attribute on would make
      * every later allocation that reuses this address silently uncached
-     * — a fault that appears in unrelated code, long afterwards. */
-    if (mem->policy == HORIZON_GPU_MEM_UNCACHED)
-        svcSetMemoryAttribute(mem->cpu, mem->size,
-                              MemAttr_IsUncached, 0);
+     * — a fault that appears in unrelated code, long afterwards.
+     *
+     * And, as there, the restore's Result decides whether the pages may
+     * go back: on failure they are leaked on purpose and the caller is
+     * told. The object itself is destroyed either way — nvMapClose has
+     * already run and this must not be retried — so the returned error
+     * means "destroyed, and it cost you the backing", not "try again".
+     */
+    if (mem->policy == HORIZON_GPU_MEM_UNCACHED) {
+        Result arc = svcSetMemoryAttribute(mem->cpu, mem->size,
+                                           MemAttr_IsUncached, 0);
+        if (R_FAILED(arc)) {
+            horizon_logf(&mem->dev->log, HORIZON_LOG_ERROR,
+                         "mem %p: svcSetMemoryAttribute(restore cached, "
+                         "%p, 0x%llx) failed: 0x%08x — leaking 0x%llx "
+                         "bytes rather than returning uncached pages to "
+                         "the heap", (void *)mem, mem->cpu,
+                         (unsigned long long)mem->size, arc,
+                         (unsigned long long)mem->size);
+            atomic_fetch_sub(&mem->dev->live_mem, 1);
+            free(mem);
+            return horizon_gpu_err_nv(arc);
+        }
+    }
     free(mem->cpu);
     atomic_fetch_sub(&mem->dev->live_mem, 1);
     free(mem);

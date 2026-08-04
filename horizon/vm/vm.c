@@ -95,6 +95,27 @@ vm_reserve_common(horizon_gpu_device *dev, uint64_t size, uint32_t page_size,
                      "AllocSpace(FixedOffset 0x%llx) returned 0x%llx",
                      (unsigned long long)fixed_base,
                      (unsigned long long)base);
+        /* The call *succeeded*: there is a live kernel reservation at
+         * `base`, and after this function returns nothing will remember
+         * it. Freeing only the wrapper would leak GPU address space that
+         * no later release can reach, and a caller that retries would
+         * leak a little more each time. Tear down in reverse order, as
+         * every other error path here does.
+         *
+         * If the release itself fails there is nothing further this
+         * layer can do — the address space is genuinely lost — so it is
+         * logged loudly and the original mismatch is still what gets
+         * reported, because that is the defect the caller has to hear
+         * about. */
+        Result frc = nvioctlNvhostAsGpu_FreeSpace(dev->as.fd, base,
+                                                  (u32)pages, page_size);
+        if (R_FAILED(frc))
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "FreeSpace(base=0x%llx) after a mismatched fixed "
+                         "reservation failed: 0x%08x — 0x%llx bytes of GPU "
+                         "address space are now unreachable",
+                         (unsigned long long)base, frc,
+                         (unsigned long long)rounded);
         free(range);
         return horizon_gpu_err(HORIZON_GPU_ERR_NV);
     }
