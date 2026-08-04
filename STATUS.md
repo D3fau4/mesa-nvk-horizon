@@ -14,12 +14,12 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Find out what `t_fault` did, then Phase 6 |
-| **The debt batch** | Six of seven back, all PASS. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works. `t_fault` returned no log |
-| **Known failures** | None outstanding. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
+| **Next concrete task** | Re-run `t_fault` for the latch (14/15 → 15/15), then Phase 6 |
+| **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **14/15**, the fence/notifier fix firing for the first time |
+| **Known failures** | `t_fault` 14/15: the wait correctly reported channel lost, and then `get_error` said "none" because reading a notification consumes it. Fixed by a latch, not yet re-run. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | **One thing: the fence/notifier fix (`t_fault`).** Its log did not come back from the debt batch, and a deliberate MMU fault is exactly the test that could take the console with it, so whether it ran is not something to assume |
+| **Never verified on hardware** | The latch that `t_fault` run 1 earned. Everything else this project owed itself has now been measured on a console |
 
 
 ---
@@ -105,18 +105,52 @@ log alone, which is the whole question:
 So a swapchain test can have the default window and still be reported.
 The alternative — nxlink over the network — is not needed.
 
-### `t_fault` produced no log, and that is not nothing
+### `t_fault`: the fix fired, and found the defect next to it
 
-It is the one test that deliberately MMU-faults, and it was last in the
-order for that reason. A missing log has three explanations and they
-are not equivalent: it was not run; it ran and hung before the
-framework could close the file; or the fault took more than its own
-channel down. The framework flushes after every line, so a hang after
-the first check would still have left a partial file with no `RESULT:`
-line — and there is no file at all, which points at the first
-explanation or at a failure early enough to lose even that.
+**14/15.** The measurement it was written for passed, and the one check
+that failed found something real.
 
-Not guessed at here. The question is asked of the person who ran it.
+    ok   the submit is accepted — the fault is the GPU's, not the kickoff's
+    note fence 26:34794
+    [horizon_gpu:E] channel 0x28b7dcd050: fault notification 31 (MMU fault) — marking lost
+    note wait_fence -> channel lost (nv 0x00000000)
+    ok   the wait does NOT report success for work that faulted
+    ok   and it names the channel lost rather than timing out
+    FAIL the notifier recorded the fault (type=0 'none')
+    ok   a submit to the lost channel is refused
+    ok   the faulted channel tears down cleanly
+    ok   the device tears down after a faulted channel
+
+**The fence/notifier fix works.** It was written on 2026-08-04 because
+`vkWaitForFences` had returned `VK_SUCCESS` for MMU-faulted work, and
+until now nothing had faulted since. A deliberate fault reaches it: the
+syncpoint was force-incremented by nvgpu's recovery exactly as
+predicted, the notifier was consulted anyway, and the wait reported
+**channel lost** instead of success. The fault type is **31, MMU
+fault** — worth having written down.
+
+And teardown after a fault, which nothing else exercises, is clean: the
+reservation, the channel and the device all came down without error.
+
+**The failing check is a defect in `horizon/`, not in the test.**
+libnx's `nvGpuChannelGetErrorNotification` does a non-blocking
+`eventWait` on the channel's error *event* before the ioctl, so **the
+first reader consumes the notification**. The first reader is
+`channel_check_fault`, on the wait path; it logged the type and threw
+it away. A caller that received `HORIZON_GPU_ERR_CHANNEL_LOST` and
+asked why was told "no error recorded" — for a channel that was lost
+because of one. The information existed only in a log line, where no
+program could reach it.
+
+Fixed by latching it: `horizon_gpu_channel_get_error` records any
+non-zero type it sees, and answers from the latch when the live query
+says nothing is pending. The header's contract is corrected to say so.
+This is the second time this project has touched `horizon/`, and like
+the first it is for a bug a hardware run produced rather than one a
+reading suggested.
+
+Re-run pending. Everything else in `t_fault` passed, so a 15/15 is the
+only thing outstanding.
 
 
 ### One thing about the Phase 3 debt, said rather than slipped in

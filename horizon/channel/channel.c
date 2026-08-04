@@ -98,9 +98,15 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
          * "none" — anything else (a real ioctl/service failure) must be
          * reported, not swallowed as a false-healthy channel. */
         if (rc == KERNELRESULT(TimedOut)) {
-            *out_type = 0;
+            /* Nothing pending *now*. That is not the same as nothing
+             * ever, because reading a notification consumes it: the
+             * wait path's own check is usually the reader, and it
+             * leaves nothing for the caller who then asks why the
+             * channel is lost. Answer from the latch when there is one
+             * (see last_error_type in channel_priv.h, and t_fault). */
+            *out_type = chan->last_error_type;
             if (out_desc)
-                *out_desc = channel_error_desc(0);
+                *out_desc = channel_error_desc(*out_type);
             return horizon_gpu_ok();
         }
         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
@@ -110,6 +116,8 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
 
     /* A notification with a zero timestamp has never fired. */
     *out_type = (notif.timestamp != 0) ? notif.info32 : 0;
+    if (*out_type != 0)
+        chan->last_error_type = *out_type;
     if (out_desc)
         *out_desc = channel_error_desc(*out_type);
     return horizon_gpu_ok();

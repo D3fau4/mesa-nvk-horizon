@@ -117,7 +117,16 @@ horizon_gpu_result horizon_gpu_channel_wait_idle(horizon_gpu_channel *chan,
                                                  uint64_t timeout_ns);
 
 /* Latest error notification: raw type (NvNotificationType) and a decoded
- * description. `*out_type` == 0 means no error recorded. */
+ * description. `*out_type` == 0 means no error has ever been recorded on
+ * this channel.
+ *
+ * The value is latched. Reading a notification consumes it — libnx waits
+ * on the channel's error event first — and the wait path checks for
+ * faults itself, so by the time a caller who received
+ * HORIZON_GPU_ERR_CHANNEL_LOST asks what happened, the notification is
+ * already gone. Measured on hardware, 2026-08-04 (t_fault): before the
+ * latch this answered "none" for a channel that had just been lost to
+ * an MMU fault. */
 horizon_gpu_result
 horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
                               const char **out_desc);

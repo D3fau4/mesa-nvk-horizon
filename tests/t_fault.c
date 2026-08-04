@@ -30,9 +30,12 @@
  *      not at kickoff;
  *   2. the wait does NOT report success. This is the whole point. A
  *      pass here before the fix would have been a failure;
- *   3. the notifier records a non-zero error type, and its decoded
- *      description is printed so a future reader knows which fault this
- *      hardware raises;
+ *   3. the notifier still names the fault *after* the wait has
+ *      consumed it. Run 1 failed exactly here — see the comment at that
+ *      check — and the fix is a latch in horizon_gpu_channel_get_error.
+ *      The decoded description is printed either way, so a future
+ *      reader knows which fault this hardware raises: **31, MMU
+ *      fault**, measured 2026-08-04;
  *   4. a submit on the lost channel is refused rather than accepted
  *      into a channel that can no longer run anything;
  *   5. the channel and the device tear down cleanly afterwards, which
@@ -201,7 +204,14 @@ int run_test(test_ctx *t)
            "(status=%s)", horizon_gpu_status_str(res.status));
 
    /* 3. What the hardware actually raised, recorded for whoever reads
-    * this log next. */
+    * this log next.
+    *
+    * RUN 1 FAILED HERE, AND IT WAS RIGHT TO. type came back 0 for a
+    * channel that had just been marked lost by an MMU fault — because
+    * reading a notification consumes it, and the wait's own check had
+    * already read it. The type existed only in a log line, where no
+    * program could reach it. horizon_gpu_channel_get_error now latches
+    * it; this check is what says the latch works. */
    err_type = 0;
    desc = "none";
    res = horizon_gpu_channel_get_error(chan, &err_type, &desc);
