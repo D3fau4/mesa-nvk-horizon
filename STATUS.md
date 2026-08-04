@@ -124,11 +124,19 @@ reassembly cannot be re-run. `phase-4-narrative.md` is the one history
 file the script did not cut; it was lifted out by hand afterwards and
 its provenance is that commit, which the script now says.
 
-**There is still no CI.** Every gate is a script somebody has to
-remember to run, and `split-status.py` promised an undeclared edit
-"shows up as a failing gate" while nothing makes it fail. That needs
-the owner's decision about GitHub Actions minutes and a container, so
-it is named here and not invented.
+**CI now exists for the half that needs nothing.**
+`.github/workflows/gates.yml` runs history-intact, test parity,
+layering, no-abs-paths and the host tests on every push and pull
+request — bash, python and a C compiler, no container. That makes
+`split-status.py`'s promise true: an undeclared edit to the record now
+fails something other than somebody's memory.
+
+**The other half is named, not pretended.** `check-dispatch-complete`
+reads a linked Horizon ELF and `check-tls-relocs` scans devkitA64
+objects; both need the cross-toolchain image, which is a container pull
+and minutes per run. They stay manual until the owner decides that cost
+is worth paying. The workflow file says so and can be deleted without
+anything depending on it.
 
 ### The patches
 
