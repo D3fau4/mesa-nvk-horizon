@@ -5,11 +5,24 @@
 
 ---
 
-## Current phase
+## Current state — read this first
 
-**Phase 4 — `nvkmd_horizon`. The backend exists and NVK builds.
-All ten milestone items are implemented and the mandatory
-Vulkan sequence links as a .nro. What is owed is a hardware run.**
+*Everything below this section is the working record: dated, append-mostly, and
+long. This block is the state itself, and it is the part that must be true.*
+
+| | |
+|---|---|
+| **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 not started |
+| **What runs on a Switch** | The full mandatory Vulkan sequence, CPU readback verified: `t_vulkan` **PASS 60/60** (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`). All 15 `horizon/` tests pass on console |
+| **Next concrete task** | Phase 5 item 1 (transfers). Before any item: the shader local/shared window overlap, which two Phase 5 items walk straight into |
+| **Known failures** | None outstanding on hardware |
+| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); `alloc_tiled_mem` is a NULL function pointer any tiled image reaches; the L2 writeback is unconditional, one per submit |
+| **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
+| **Never verified on hardware** | Everything committed after `t_vulkan-run6`: the fixes in this review round, and the sub-chunk D16 check |
+
+**Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
+items implemented, the driver linked as a `.nro`, and the mandatory sequence
+run on console.
 
 **Step 1** is the interface reading: what `nvkmd` requires, operation by
 operation, with its semantics, against what `horizon_gpu` already
@@ -4197,6 +4210,7 @@ emitters), and found no regression in either mode.
 | D14 | An uncached memory policy in `horizon/` | **closed on hardware — `t_uncached` PASS 19/19** (`docs/hw-logs/t_uncached.log`). `horizon/memory/mem.c` implements `HORIZON_GPU_MEM_UNCACHED` with `svcSetMemoryAttribute(MemAttr_IsUncached)` over the rounded range, undone on every error path and at destroy; patch 0030 maps `NVKMD_MEM_COHERENT` onto it. All three unknowns the test separates were answered on console: the kernel accepts our heap allocations, the resulting mapping is Normal-NC (ordinary loads, stores and `memcpy` work — Device memory would have faulted), and the GPU reads an un-flushed command list written through it. Was: — open, raised with the owner; does NOT block Phase 4. `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED` — no longer true, and this row said so long after the code and the log had landed |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 | D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **closed: block (patch 0044), verified on hardware — `vkWaitForFences(200 ms)` on a never-submitted fence returned `VK_TIMEOUT` after 200 ms, where the old code answered in microseconds (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`, PASS 60/60)** — owner said address it now. A `mtx_t` and `cnd_t` in `nvk_horizon_sync`, broadcast from `signal()`, `set_fence()` and `move()` — the three transitions that can release a waiter — and deliberately not from `reset()`, which makes the object *less* reachable. The condvar wait is chunked at 100 ms rather than handed the caller's deadline, because `cnd_timedwait` takes an absolute `TIME_UTC` deadline and D8 measured that clock to be the real-time clock: chunking bounds how far a date change can move a wait, and costs no wake-up latency because a broadcast ends the chunk immediately. `move()` needed care of its own — it copies the payload struct, which would have copied the destination's live mutex and condvar over with the source's, including one held on that line. Primitives verified on console rather than assumed (`t_threads`, 67/67, exercises `cnd_wait`/`signal`/`broadcast`/`timedwait`). `t_vulkan` gained the check that discriminates the fix from the bug. **Not yet run on hardware.** Was: — open, raised with the owner (Codex P1, PR #6) — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
+| D17 | Split this file: state in `STATUS.md`, narrative in `docs/history/` | **open, raised by review (PR #6)** — the file is 6447 lines and 362 KB. CLAUDE.md casts it as current phase, what is done, what was tested, known failures, pending decisions and the next task; it has become the working log those things are buried in, and the reviewer drew the causal line that matters: that is *how* four decision rows outlived their answers, and how the opening paragraph went on saying a hardware run was owed after it had happened. The "Current state" block at the top is a stopgap, not the fix. The real split is a decision because the bulk of this file is *evidence* — dated measurements, verbatim console output, rejected designs and why — and moving evidence is how evidence gets lost or silently reworded. Wanted: what stays, what moves, and what guarantees nothing is edited in transit |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit. **Was numbered D9 on `main`**; renumbered on merge, see the note below |
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
@@ -6215,6 +6229,100 @@ Cross build only for the sub-chunk check; the rest is on console above.
 - `check-tls-relocs`: OK, 4 of 845 use TLS, all with relocations
 - Meson path: 16 `.nro` including `t_vulkan` with the D16 check compiled in
 - host tests 132/132 and the four source gates OK
+
+## Adversarial review of the fix round, PR #6 (2026-08-04) — every finding held
+
+A second review, this time of `8fdade7..9948669` — the commits that fixed the
+first twelve findings. **Nothing in it was wrong.** Two rounds now with no false
+positive, and this one was worse for me than the first, because the first found
+old defects and this one found defects I had just introduced *while fixing
+old defects*.
+
+### The one that had to be reverted
+
+**The degraded-destroy fence poll asks a value that means nothing, and is
+biased toward saying yes.** When the baseline is untrusted, the read at channel
+creation failed too, so `syncpt_value_at_create` is **0** and `shadow_target`
+counts submits from zero — it is not the hardware counter, and the code that
+sets it says so in as many words: *"its fences are not measurements."* Whether
+Horizon resets a syncpoint at channel creation is **R5, still open**. If it
+does not, a threshold of 3 is compared against a live counter in the thousands,
+which is already past it — so `nvFenceWait` succeeds instantly and the destroy
+reports that work retired **having verified nothing**.
+
+That is worse than the "not checked" it replaced. And
+`horizon_gpu_channel_wait_fence` says of this same number that "reached" is
+only as good as an assumption nobody verified — so the change had two functions
+in one file drawing opposite conclusions from one unreliable value, with the
+destroy biased toward false assurance.
+
+Reverted. The rejected design is recorded in the code, where the next person to
+have the same idea will read it.
+
+I should have caught this. I *quoted* the untrusted-baseline reasoning in the
+commit message while adding a check that depends on the baseline being
+trustworthy.
+
+### The gate I had just "fixed" was counting everything twice
+
+`check-tls-relocs.sh` scanned loose objects **and** archives. All 821 loose
+objects under `build/mesa-nvk` live in `<archive>.p/` directories and are
+exactly the members of the 24 archives beside them — so it scanned the same
+code twice and reported **845**, in a script whose entire purpose is a
+trustworthy count. The "4 objects use TLS" it printed was one archive plus the
+same three objects inside it.
+
+Worse, the whole-archive check was blind in exactly the place it had been added
+for. I wrote that a mixed archive "is not a shape this toolchain produces". It
+is precisely the shape of `libnouveau_rust_runtime.a`, which bundles the
+`-Zbuild-std` core/alloc objects with the crate's own from separate
+compilations. **Demonstrated rather than argued:**
+
+```
+$ nm libmixed.a | grep -q "U __aarch64_read_tp"   -> yes
+$ readelf -r libmixed.a | grep -q R_AARCH64_TLS   -> yes  (from the GOOD member)
+  whole-archive verdict: OK   <- the miscompiled member is invisible
+```
+
+Now archives are expanded and each member judged alone, and only archives with
+no loose objects are expanded, so nothing is counted twice:
+
+```
+before:  845 scanned, 4 use TLS      (821 objects + the 24 archives holding them)
+after:  1207 scanned, 3 use TLS      (821 loose + 386 members of 2 archives with none)
+```
+
+386 Rust staticlib members are now checked individually; before, they were one
+opaque blob that could not fail. Break-tested: a mixed archive with no loose
+objects is caught and the offending **member** is named.
+
+### The rest
+
+| Finding | What it was |
+|---|---|
+| NVK build dir has three names | `toolchain-env.sh` keyed on `$NVK_BUILD_DIR`, which **nothing sets**; the scripts that build there read `$MESA_NVK_BUILD_DIR`. Point that anywhere else and the state string named a directory the build never used — *the same failure the commit was written to close*, one layer down. Unified. Verified: an override now yields `absent build/elsewhere` instead of `present build/mesa-nvk` |
+| `mem.c` create unwind | Returned the *cleanup's* error, discarding the `nvMapCreate` failure that caused the unwind. The caller learned about the mop-up and never why creation failed |
+| `memory.h` contract | `destroy` can now fail after destroying the object, and the header documented only BUSY. A caller applying the ordinary retry convention would hit a use-after-free of a pointer this layer calls single-owner. Both failures and their opposite meanings are now in the header |
+| TLS gate green on nothing | `check-tls-relocs` exits 0 on an empty tree and the count loop skipped missing archives, so a build that produced *nothing* reported a clean TLS result — the same "zero is not good news" shape the commit message condemned. The artefacts are now asserted to exist first |
+| `horizon_image_digest` | Widened to match any `@`, which the rationale never supported: the derived-image case is handled by the `.Id` branch, and all the widening did was return an arbitrary repository for a multi-tagged image. Now tries this project's repositories in order |
+| Called twice per manifest | Two independent `docker image inspect` runs that can disagree, in one file whose job is naming a single toolchain. Evaluated once |
+| `print-toolchain-versions.sh` | Still labelled the result "image digest" when it is now a full reference or a local id — a provenance field misnaming its contents, in the change that exists to fix provenance fields |
+| `fetch-rust-crates.sh` | Keyed its cache on a value that can be `unknown`, which never equals the recorded one — re-downloading the whole vendor closure every run, in the one script whose purpose is offline vendoring. An unidentifiable toolchain now does not invalidate the cache |
+| Shell hygiene | `_hz_mesa`, `_hz_nvk`, `_hz_lib` leaked into the caller's shell, `_hz_lib` shared with another function. Renamed and unset |
+| `vm.c` | Returned `HORIZON_GPU_ERR_NV` with an empty `.nv` — an NV-flavoured error with nothing to look up, for a call that *succeeded* and merely answered wrongly. Now `VA_EXHAUSTED`, which is what "a fixed request came back elsewhere" means |
+| `t_vulkan` teardown | My new `return 1` joined sixteen others that jump over the destroy block and leak the `VkDevice` — channels and NvMap objects never released. The comment even noted it was behaving "unlike the checks above it": it saw the asymmetry and picked the leaking side. Now `goto teardown`. The other sixteen are left for a change of their own |
+| Superseded logs | `t_gpuwrite-run4-PASS.log` was still named `-PASS`, still showing `fence increment encoded`, unannotated. `STATUS.md` had the retraction; the file a reader opens did not. `docs/hw-logs/README.md` now says which runs measured less than they claim — and two of my first drafts of *that* were wrong until checked against the logs |
+| This file is 362 KB | Decision **D17**. The reviewer drew the causal line: this is *how* four decision rows outlived their answers, and how the opening paragraph went on saying a hardware run was owed after it had happened — which it was still doing when the review arrived. A "Current state" block now leads the file; the real split is a decision because most of this file is evidence |
+
+### Verified
+
+Host and cross build. **None of this round has run on hardware.**
+
+- host tests 132/132; `check-layering`, `check-mesa-test-parity`,
+  `check-no-abs-paths`, `check-dispatch-complete` OK
+- Makefile path 15 `.nro`, Meson path 16, both `-Werror` clean
+- TLS gate over the real NVK build: 3 of 1207, all with relocations
+- gate break-tested in both directions on a mixed archive
 
 ## Next concrete task
 
