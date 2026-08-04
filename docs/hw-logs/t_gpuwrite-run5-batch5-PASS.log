@@ -1,0 +1,62 @@
+== t_gpuwrite ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   channel_create (status=ok nv=0x00000000)
+  note poison 0x3f0011fe, payload 0xc0ffee01
+  ok   A/cacheable: target allocated and mapped (status=ok nv=0x00000000)
+  ok   A/cacheable: command list allocated and mapped (status=ok)
+  note A/cacheable: target gpu_va=0x80f9000 cpu=0x6b571d4000 gpu_cacheable=1 mem_op=0x00
+  ok   A/cacheable: poison flushed out of the CPU cache (status=ok)
+  ok   A/cacheable: semaphore release encoded for 0x80f9000 (5 dwords)
+  ok   A/cacheable: command list flushed (status=ok)
+  ok   A/cacheable: submit accepted (status=ok nv=0x00000000)
+  ok   A/cacheable: fence reached, so the release executed (status=ok)
+  ok   A/cacheable: invalidate (status=ok)
+  note A/cacheable: target[0] before invalidate = 0x3f0011fe, after = 0xc0ffee01
+  note A/cacheable: VERDICT the GPU wrote, and CPU cache maintenance is REQUIRED here and works
+  ok   A/cacheable: the CPU reads what the GPU wrote (0xc0ffee01)
+  ok   A/cacheable: the release wrote 4 bytes and disturbed nothing after them
+  ok   B/noncacheable: target allocated and mapped (status=ok nv=0x00000000)
+  ok   B/noncacheable: command list allocated and mapped (status=ok)
+  note B/noncacheable: target gpu_va=0x80f9000 cpu=0x6b571d4000 gpu_cacheable=0 mem_op=0x00
+  ok   B/noncacheable: poison flushed out of the CPU cache (status=ok)
+  ok   B/noncacheable: semaphore release encoded for 0x80f9000 (5 dwords)
+  ok   B/noncacheable: command list flushed (status=ok)
+  ok   B/noncacheable: submit accepted (status=ok nv=0x00000000)
+  ok   B/noncacheable: fence reached, so the release executed (status=ok)
+  ok   B/noncacheable: invalidate (status=ok)
+  note B/noncacheable: target[0] before invalidate = 0xc0ffee01, after = 0xc0ffee01
+  note B/noncacheable: VERDICT the GPU wrote, and this mapping needed no cache maintenance to see it
+  ok   B/noncacheable: the CPU reads what the GPU wrote (0xc0ffee01)
+  ok   B/noncacheable: the release wrote 4 bytes and disturbed nothing after them
+  ok   C/membar: target allocated and mapped (status=ok nv=0x00000000)
+  ok   C/membar: command list allocated and mapped (status=ok)
+  note C/membar: target gpu_va=0x80f9000 cpu=0x6b571d4000 gpu_cacheable=1 mem_op=0x05
+  ok   C/membar: poison flushed out of the CPU cache (status=ok)
+  ok   C/membar: semaphore release encoded for 0x80f9000 (5 dwords)
+  ok   C/membar: MEM_OP 0x05 encoded (3 dwords)
+  ok   C/membar: command list flushed (status=ok)
+  ok   C/membar: submit accepted (status=ok nv=0x00000000)
+  ok   C/membar: fence reached, so the release executed (status=ok)
+  ok   C/membar: invalidate (status=ok)
+  note C/membar: target[0] before invalidate = 0xc0ffee01, after = 0xc0ffee01
+  note C/membar: VERDICT the GPU wrote, and this mapping needed no cache maintenance to see it
+  ok   C/membar: the CPU reads what the GPU wrote (0xc0ffee01)
+  ok   C/membar: the release wrote 4 bytes and disturbed nothing after them
+  ok   D/l2flush: target allocated and mapped (status=ok nv=0x00000000)
+  ok   D/l2flush: command list allocated and mapped (status=ok)
+  note D/l2flush: target gpu_va=0x80f9000 cpu=0x6b571d4000 gpu_cacheable=1 mem_op=0x10
+  ok   D/l2flush: poison flushed out of the CPU cache (status=ok)
+  ok   D/l2flush: semaphore release encoded for 0x80f9000 (5 dwords)
+  ok   D/l2flush: MEM_OP 0x10 encoded (3 dwords)
+  ok   D/l2flush: command list flushed (status=ok)
+  ok   D/l2flush: submit accepted (status=ok nv=0x00000000)
+  ok   D/l2flush: fence reached, so the release executed (status=ok)
+  ok   D/l2flush: invalidate (status=ok)
+  note D/l2flush: target[0] before invalidate = 0xc0ffee01, after = 0xc0ffee01
+  note D/l2flush: VERDICT the GPU wrote, and this mapping needed no cache maintenance to see it
+  ok   D/l2flush: the CPU reads what the GPU wrote (0xc0ffee01)
+  ok   D/l2flush: the release wrote 4 bytes and disturbed nothing after them
+  ok   wait_idle before teardown
+  ok   channel_destroy (status=ok)
+  ok   device_destroy (status=ok)
+RESULT: PASS (47/47)

@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Items 1, 2, 3 and 4 met on hardware, 2026-08-04**, each by CPU readback. Items 5–9 are written and cross-built, and have never run |
-| **What runs on a Switch** | Transfers (`t_vk_transfer` **202/202**), a compute shader compiled by NAK (`t_vk_compute` **37/37**), off-screen images and clears through the 3D engine (`t_vk_image` **76/76**), the mandatory sequence (`t_vulkan` **62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Run batch 5 on console. Every remaining Phase 5 item now has a test; none of the five new ones has executed |
-| **Known failures** | None outstanding on hardware. Nothing in batch 5 has been measured — five new tests and patch 0048 all go to the console for the first time together |
+| **Phase** | 5 in progress. **Items 1, 2, 3, 4, 5, 7, 8 and 9 met on hardware, 2026-08-04**, each by CPU readback. **Item 6 is the only one open** |
+| **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), **a rasterised triangle with interpolated vertex colours** (**84/84**), **the depth test with the depth buffer read back** (**66/66**), **twelve colour formats** (**282/282**), **eight submits outstanding at once** (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console. Sampling is the one thing that does not |
+| **Next concrete task** | Run the rewritten `t_vk_texture`: it reads the source back before sampling it, so the next log says whether the upload or the sampler is at fault |
+| **Known failures** | **Item 6.** Rows 4 and 5 of an 8x8 tiled source read as transparent black; rows 0-3 and 6-7 and the whole of mip level 1 are right. Those two rows are the third 64-byte group of a Maxwell GOB for a surface half a GOB wide. Upload or sampler is not yet distinguished |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | Patch 0048 and the `t_vk_image` that now depends on it; `t_vk_triangle`, `t_vk_texture`, `t_vk_depth`, `t_vk_format` and `t_vk_submits` in their entirety; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | The rewritten `t_vk_texture` (three sources, source readback); `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,129 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## HARDWARE BATCH 5 — items 5, 7, 8 and 9 met; item 6 found a real defect (2026-08-04)
+
+**Class: hardware (HW).** Ten of eleven.
+
+| | | |
+|---|---|---|
+| `t_vulkan` | **PASS 62/62** | the control, tenth consecutive pass |
+| `t_gpuwrite` | **PASS 47/47** | `horizon_gpu` only |
+| `t_submit` | **PASS 30/30** | the entry queue with two own entries per submit |
+| `t_vk_transfer` | **PASS 202/202** | item 1, unchanged |
+| `t_vk_compute` | **PASS 37/37** | item 2, unchanged |
+| `t_vk_image` | **PASS 72/72** | items 3 and 4 — **without the workaround** |
+| `t_vk_triangle` | **PASS 84/84** | **item 5 met** |
+| `t_vk_depth` | **PASS 66/66** | **item 7 met** |
+| `t_vk_format` | **PASS 282/282** | **item 8 met**, 12 of 12 formats claimed |
+| `t_vk_submits` | **PASS 287/287** | **item 9 met** |
+| `t_vk_texture` | **FAIL 93/95** | item 6 — two cases, one cause, below |
+
+### Patch 0048 is verified
+
+`t_vk_image` is 72/72 with `warm_shader_heap` gone — the four checks it
+used to contribute are the four missing from 76. The first render pass
+on a device that has compiled nothing no longer MMU-faults, so the
+shader heap's first chunk being bound at `vkCreateDevice` is what run 1
+was missing, confirmed by removing the workaround rather than by adding
+one.
+
+### Item 5: exactly 1540, and interpolation to the bit
+
+    ok   the coverage model counts 1540 pixels, expected 1540
+    ok   A: 1540 pixels hold the triangle colour, expected 1540
+    ok   A: 2556 pixels hold the clear colour, expected 2556
+    ok   B: 1540 pixels came back opaque, expected 1540
+    note B: largest deviation from the computed colour: 0 of 255
+
+The four boundary probes all land where the geometry puts them —
+(31,31) covered and (32,31) background, (4,4) covered with (3,4) and
+(4,3) background — so the half-pixel argument holds on hardware. And
+case B's interpolated colours match the computed barycentrics **with
+zero deviation across all 1540 covered pixels**, which is a stronger
+result than the tolerance of 2 the test allows.
+
+### Item 9: the numbers
+
+    note calibration: 200000 iterations over 4096 invocations took 1335250 us
+    ok   job 0 was still running when all 8 submits had been issued (VK_NOT_READY)
+    ok   issuing 8 submits took 681 us against 540827 us of execution
+    note 16 empty submits: 1495 us batched, 2018 us one at a time
+         (126 us per round trip serialised)
+
+**Eight submits outstanding at one instant, and issuing them cost 1/794
+of what running them cost.** Both halves of the criterion, measured.
+
+Three numbers worth keeping, none of them a Phase 5 problem:
+
+- **~85 us of CPU per `vkQueueSubmit`** (681 us for eight). That is the
+  dominant per-submit cost — batching sixteen empty submits saved only
+  26% precisely because the CPU side does not overlap with itself.
+- **126 us per serialised round trip**, L2-invalidate prologue and
+  syncpoint epilogue included. The GPU half of a trivial submit is
+  therefore about 33 us.
+- The spin loop ran at **6.1e8 iterations/s across the whole GPU**,
+  which is far slower than 2 SMs at a docked clock would give. Most
+  likely the GPU was at its idle clock; possibly NAK's loop is poor.
+  Not investigated, recorded.
+
+### Item 6: rows 4 and 5 of an 8x8 source read as zero
+
+Two failures, one cause, and the arithmetic identifies it exactly.
+
+    FAIL A: nearest, implicit LOD: 3072/4096 pixels hold the texel they sampled
+    note first wrong pixel (0,32): got 0x00000000, want 0xff148008
+    FAIL C: linear, implicit LOD: 2560/4096 pixels are within 2
+    note first outside tolerance at (0,28): got 7 92 16 239, want 8 100 17 255
+
+Case A misses 1024 pixels = 16 output rows = **2 source texel rows**,
+starting at output row 32, which is texel row 4. Case C misses 1536 =
+24 output rows, which is exactly the set of pixels whose bilinear
+footprint touches texel rows 4 or 5. And the value confirms it: at
+(0,28) the v weight on texel row 4 is 1/16, and blending 15/16 of texel
+(0,3) with 1/16 of a **zero** texel gives 8/92/16/239 against the
+observed 7/92/16/239 — the one count of difference being R = 7.5, a tie
+this hardware rounds down.
+
+So: **level 0 texel rows 4 and 5 read as transparent black. Rows 0-3
+and 6-7 are correct, and level 1 is entirely correct.**
+
+In the tiled surface those two rows are image bytes 128..191 — the
+third 64-byte group of a Maxwell GOB's swizzle, for a surface 32 bytes
+wide (`offset = (y/2)*64 + ((x%32)/16)*32 + (y%2)*16 + (x%16)`). An 8x8
+RGBA8 image is half a GOB wide and exactly one GOB tall.
+
+**What the log cannot say, and why that is my defect and not the
+driver's.** Whether the upload never landed or the sampler reads the
+wrong place. The test built every expected value on the assumption that
+the upload worked and never looked at the source. A test that cannot
+attribute its own failure has done half its job.
+
+`t_vk_texture` is rewritten for the next run:
+
+- **The source is read back and verified** through
+  `vkCmdCopyImageToBuffer` before anything samples it, so the answer is
+  attributed: readback wrong means the upload or the layout it wrote
+  into, readback right with sampling wrong means the descriptor. If the
+  source does not survive, the sampling cases are skipped rather than
+  reporting three more failures for one cause.
+- **Three sources instead of one**: the 8x8 tiled that failed, a 64x64
+  tiled (a full GOB wide, eight tall), and an 8x8 linear. If the fault
+  is about surfaces narrower than a GOB, the first fails and the second
+  does not; if the linear one passes, tiling is implicated and the
+  sampler is not.
+- **Failures report a range, not a first**: "wrong from (0,32) to
+  (63,47)" identifies a band of rows where "first wrong at (0,32)"
+  needed arithmetic afterwards to become one.
+- The source pattern now names its own position — `r` identifies `x`
+  and `g` identifies `y`, since multiplying by an odd number is a
+  bijection mod 256 — so a sampler reading the wrong texel says **which
+  one** it read.
+
+Not run yet. Gates 4/4, host tests 6/6, 23 `.nro`.
 
 ---
 

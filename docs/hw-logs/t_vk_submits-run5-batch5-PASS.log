@@ -1,0 +1,299 @@
+== t_vk_submits ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x6b57f2e6e0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x6b57f2e6e0: up, syncpt=26 initial=25986 zcull=off
+[horizon_gpu:I] channel 0x6b57f7f010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x6b57f7f010: up, syncpt=27 initial=175 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   vkCreateShaderModule -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreatePipelineLayout -> VK_SUCCESS
+  ok   vkCreateComputePipelines -> VK_SUCCESS
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(0) -> VK_SUCCESS
+  ok   vkCreateFence(job 0) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(1) -> VK_SUCCESS
+  ok   vkCreateFence(job 1) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   vkCreateFence(job 2) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(3) -> VK_SUCCESS
+  ok   vkCreateFence(job 3) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(4) -> VK_SUCCESS
+  ok   vkCreateFence(job 4) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(5) -> VK_SUCCESS
+  ok   vkCreateFence(job 5) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(6) -> VK_SUCCESS
+  ok   vkCreateFence(job 6) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(7) -> VK_SUCCESS
+  ok   vkCreateFence(job 7) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   calibration: vkQueueSubmit -> VK_SUCCESS
+  ok   calibration: vkWaitForFences -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 0: 8/8 spot-checked invocations are right
+  ok   job 0: no word still holds the poison (0 do)
+  note calibration: 200000 iterations over 4096 invocations took 1335250 us; using 10000 iterations for a target of 60000 us per job
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkCreateFence(job 0, again) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4096/4096 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(job) -> VK_SUCCESS
+  ok   all 8 submits were accepted with no wait between them (0 refused)
+  ok   vkWaitForFences(all 8) -> VK_SUCCESS
+  ok   job 0 was still running when all 8 submits had been issued (vkGetFenceStatus -> VK_NOT_READY)
+  ok   issuing 8 submits took 681 us against 540827 us of execution (under a quarter)
+  note issue 681 us, total 540827 us, 67603 us per job
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 0: 8/8 spot-checked invocations are right
+  ok   job 0: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 1: 8/8 spot-checked invocations are right
+  ok   job 1: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 2: 8/8 spot-checked invocations are right
+  ok   job 2: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 3: 8/8 spot-checked invocations are right
+  ok   job 3: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 4: 8/8 spot-checked invocations are right
+  ok   job 4: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 5: 8/8 spot-checked invocations are right
+  ok   job 5: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 6: 8/8 spot-checked invocations are right
+  ok   job 6: no word still holds the poison (0 do)
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   job 7: 8/8 spot-checked invocations are right
+  ok   job 7: no word still holds the poison (0 do)
+  ok   vkCreateFence(trivial 0) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 1) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 2) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 3) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 4) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 5) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 6) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 7) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 8) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 9) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 10) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 11) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 12) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 13) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 14) -> VK_SUCCESS
+  ok   vkCreateFence(trivial 15) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 0) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 1) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 2) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 3) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 4) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 5) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 6) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 7) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 8) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 9) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 10) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 11) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 12) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 13) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 14) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 15) -> VK_SUCCESS
+  ok   vkResetFences(16) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 0) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 1) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 2) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 3) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 4) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 5) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 6) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 7) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 8) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 9) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 10) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 11) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 12) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 13) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 14) -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkEndCommandBuffer(trivial 15) -> VK_SUCCESS
+  ok   vkResetFences(16) -> VK_SUCCESS
+  ok   batched: vkWaitForFences(all 16) -> VK_SUCCESS
+  ok   serialised: every vkWaitForFences succeeded (worst VK_SUCCESS)
+  note 16 empty submits: 1495 us batched, 2018 us one at a time (126 us per round trip serialised)
+  ok   batching 16 submits beat submitting them one at a time (1495 us against 2018 us)
+RESULT: PASS (287/287)
