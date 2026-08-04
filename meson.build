@@ -327,6 +327,9 @@ nvk_tests = [
   # Phase 5 item 8 — twelve colour formats, each checked against the
   # bytes its encoding says it must hold.
   't_vk_format',
+  # Phase 5 item 9 — several submits in flight at once, demonstrated by
+  # an unsignalled fence and by wall clock, not by absence of errors.
+  't_vk_submits',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -362,6 +365,9 @@ nvk_test_shaders = {
   # to match its attachment's.
   't_vk_format' : ['fmt_vert_fullscreen', 'fmt_frag_float',
                    'fmt_frag_uint', 'fmt_frag_sint'],
+  # A compute job whose duration the test controls, so it can still be
+  # running when the next submit is issued.
+  't_vk_submits' : ['comp_spin'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

@@ -1,0 +1,115 @@
+; comp_spin -- Phase 5 item 9, a compute job that takes a measurable
+; amount of time.
+;
+;     acc = gid + bias
+;     repeat iters times:  acc = acc * 1664525 + 1013904223
+;     out[gid] = acc
+;
+; WHY A LOOP AND NOT A BIG DISPATCH. Item 9 has to observe several
+; submits in flight at once, which needs a job still running when the
+; next one is submitted. A dispatch large enough to take tens of
+; milliseconds would need megabytes of output; a loop takes as long as
+; it is told to and writes one word per invocation.
+;
+; WHY THE TRIP COUNT IS A PUSH CONSTANT. Two reasons. It lets the test
+; calibrate -- time one job, then choose a trip count that makes the
+; next ones last about as long as it wants -- so the measurement does
+; not depend on this chip's clock. And it stops the compiler from
+; folding the loop: with a literal trip count and a body this regular,
+; a shader compiler is entitled to compute the closed form and the job
+; would take no time at all.
+;
+; WHY THIS RECURRENCE. Numerical Recipes' linear congruential step, in
+; 32-bit wrapping arithmetic. Each iteration depends on the last, so the
+; loop cannot be vectorised away or reordered, and the step is a
+; bijection on uint32 -- distinct seeds stay distinct however many times
+; it is applied, which is what lets the test tell one job's output from
+; another's. The constants are the classic 1664525 / 1013904223 pair;
+; nothing here depends on their statistical quality, only on the
+; recurrence being a dependent chain.
+;
+; The CPU can reproduce any single invocation's answer by running the
+; same recurrence, which is how the results are checked -- for a few
+; invocations, since reproducing all of them would cost as much as the
+; GPU job did.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 64 1 1
+
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %Buf 0 Offset 0
+               OpDecorate %Buf Block
+               OpDecorate %ssbo DescriptorSet 0
+               OpDecorate %ssbo Binding 0
+               OpMemberDecorate %PC 0 Offset 0
+               OpMemberDecorate %PC 1 Offset 4
+               OpDecorate %PC Block
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+      %int32 = OpTypeInt 32 1
+       %bool = OpTypeBool
+     %v3uint = OpTypeVector %uint 3
+   %ptr_in_v = OpTypePointer Input %v3uint
+   %ptr_in_u = OpTypePointer Input %uint
+        %gid = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+        %Buf = OpTypeStruct %rta
+    %ptr_ssb = OpTypePointer StorageBuffer %Buf
+       %ssbo = OpVariable %ptr_ssb StorageBuffer
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+
+         %PC = OpTypeStruct %uint %uint
+     %ptr_pc = OpTypePointer PushConstant %PC
+   %ptr_pc_u = OpTypePointer PushConstant %uint
+         %pc = OpVariable %ptr_pc PushConstant
+
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+      %int_0 = OpConstant %int32 0
+      %int_1 = OpConstant %int32 1
+       %mult = OpConstant %uint 1664525
+        %inc = OpConstant %uint 1013904223
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+      %gidxp = OpAccessChain %ptr_in_u %gid %uint_0
+       %gidx = OpLoad %uint %gidxp
+      %itersp = OpAccessChain %ptr_pc_u %pc %int_0
+      %iters = OpLoad %uint %itersp
+      %biasp = OpAccessChain %ptr_pc_u %pc %int_1
+       %bias = OpLoad %uint %biasp
+       %seed = OpIAdd %uint %gidx %bias
+               OpBranch %header
+
+     %header = OpLabel
+        %acc = OpPhi %uint %seed %entry %next %continue
+          %i = OpPhi %uint %uint_0 %entry %i1 %continue
+               OpLoopMerge %merge %continue None
+               OpBranch %check
+
+      %check = OpLabel
+       %cond = OpULessThan %bool %i %iters
+               OpBranchConditional %cond %body %merge
+
+       %body = OpLabel
+       %prod = OpIMul %uint %acc %mult
+       %next = OpIAdd %uint %prod %inc
+               OpBranch %continue
+
+   %continue = OpLabel
+         %i1 = OpIAdd %uint %i %uint_1
+               OpBranch %header
+
+      %merge = OpLabel
+        %dst = OpAccessChain %ptr_ssb_u %ssbo %int_0 %gidx
+               OpStore %dst %acc
+               OpReturn
+               OpFunctionEnd
