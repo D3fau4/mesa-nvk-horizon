@@ -5020,11 +5020,45 @@ would leave half the candidates unaccounted for. The dump is capped at
 Tested: host 103/103, cross build, six gates, series re-applied twice
 from the pinned base. **Not yet run on hardware.**
 
-## BLOCKER: no console (2026-07-28)
+## BLOCKER LIFTED: a console is available again (2026-08-04)
 
-The owner no longer has access to a Nintendo Switch; only an emulator is
-available. Phase 4's exit criterion is **blocked**, not abandoned, by the
-owner's decision recorded here.
+The owner has a Nintendo Switch again. Phase 4's exit criterion is
+**unblocked**, and the artefacts for the run are built and packaged
+(`build/pkg`, manifest included, sha256 per artefact).
+
+What this run is measuring is not the same thing the last console run
+measured. **Five defects were found and fixed since 2026-07-28 and not
+one of them has executed on hardware:** patch 0034 (the page half),
+0036 (`get_value`, a call through NULL), 0037 (window collision
+detection), 0038 (R18 — privileged GR register writes disabled, which
+is the candidate fix for the MMU fault that ended the last console
+run), and the degraded reap in `horizon/`. Whatever the log says, it
+is the first hardware evidence about any of them.
+
+Two `t_vulkan` artefacts are shipped so one round trip covers both
+outcomes, because round trips are the expensive thing here and one has
+already been wasted on a misread log:
+
+- `t_vulkan.nro` — `T_VULKAN_PUSH_DUMP 0`, `T_VULKAN_DEBUG_SYNC 0`.
+  This is the exit-criterion run: no CPU stall inserted anywhere, and
+  a log short enough to paste here whole.
+- `t_vulkan-pushdump.nro` — the same test with `NVK_DEBUG=push_dump,vm`
+  compiled in. Print-only, so it changes no behaviour, but it decodes
+  thousands of lines. **Only to be run if the first one fails.**
+
+Verified by content rather than by intent: the string `push_dump,vm`
+is present in the second artefact and absent from the first.
+
+The degraded baseline cannot engage on hardware — `t_vulkan`'s probe
+enables it only where channel creation fails for want of the syncpoint
+read, and real nvgpu implements that read. The final `t_check(!degraded)`
+stays as the guard.
+
+### The state it was blocked in (2026-07-28)
+
+The owner no longer had access to a Nintendo Switch; only an emulator
+was available. Phase 4's exit criterion was **blocked**, not abandoned,
+by the owner's decision recorded here.
 
 The criterion cannot be met on the emulator, and this is not a
 formality. The emulator answers `NVHOST_IOCTL_CTRL_SYNCPT_READ` with

@@ -192,7 +192,7 @@ run_test(test_ctx *t)
     * valid run — just a very verbose one. Off by default because the
     * MME microcode upload alone decodes to thousands of lines.
     */
-#define T_VULKAN_PUSH_DUMP 1
+#define T_VULKAN_PUSH_DUMP 0
 
 #if T_VULKAN_PUSH_DUMP
    setenv("NVK_DEBUG", "push_dump,vm", 1);
