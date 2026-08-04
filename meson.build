@@ -316,6 +316,9 @@ nvk_tests = [
   # have been linked since Phase 4 and have never produced machine code
   # that executed.
   't_vk_compute',
+  # Phase 5 item 5 — the first draw call. Vertex processing,
+  # rasterisation and the ROP, none of which any earlier item reaches.
+  't_vk_triangle',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -334,6 +337,12 @@ nvk_test_shaders = {
   # able to catch the regression patch 0048 fixed.
   't_vk_image' : [],
   't_vk_compute' : ['comp_write_id'],
+  # Two pipelines: A builds its positions from gl_VertexIndex and writes
+  # a constant colour, B fetches position and colour from a vertex
+  # buffer and interpolates. Four shaders so that a failure in B alone
+  # names attribute fetch or interpolation.
+  't_vk_triangle' : ['tri_vert_index', 'tri_frag_const',
+                     'tri_vert_attrib', 'tri_frag_interp'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

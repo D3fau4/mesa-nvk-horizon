@@ -169,15 +169,28 @@ if [ -z "$ms_nvk_tests" ]; then
 fi
 
 # The dict is read once; a per-test sed over the whole file would be the
-# same answer six times over.
-nvk_shader_dict=$(sed -n '/^nvk_test_shaders  *= *{/,/^}/p' meson.build)
+# same answer six times over. Comments go first so a '# ...quoted...'
+# inside an entry cannot be read as a shader name.
+nvk_shader_dict=$(sed -n '/^nvk_test_shaders  *= *{/,/^}/p' meson.build |
+                  sed 's/#.*//')
 
 for t in $ms_nvk_tests; do
-    # "(none)" rather than the empty string: compare() treats empty as a
-    # broken extraction, and "this test uses no shader" is a real value
-    # here — in fact the one worth guarding.
+    # An entry may span lines, so it is accumulated from the key to the
+    # closing bracket and the key itself dropped before the names are
+    # read out. "(none)" rather than the empty string: compare() treats
+    # empty as a broken extraction, and "this test uses no shader" is a
+    # real value here — in fact the one worth guarding.
     ms_sh=$(printf '%s\n' "$nvk_shader_dict" |
-            sed -n "s/^ *'$t' *: *\[\(.*\)\] *,* *$/\1/p" |
+            awk -v key="'$t'" '
+                $0 ~ "^ *" key " *:" { inside = 1 }
+                inside {
+                    buf = buf $0
+                    if (index($0, "]")) {
+                        sub(/^[^[]*\[/, "", buf)
+                        print buf
+                        exit
+                    }
+                }' |
             grep -o "'[^']*'" | tr -d "'" | LC_ALL=C sort -u | tr '\n' ' ')
     src_sh=$(grep -o '^#include "[A-Za-z0-9_]*\.spv\.h"' "tests/$t.c" |
              sed 's/^#include "\(.*\)\.spv\.h"$/\1/' |

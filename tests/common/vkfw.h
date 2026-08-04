@@ -123,6 +123,7 @@
    X(vkCreateSampler)                                                    \
    X(vkDestroySampler)                                                   \
    X(vkCmdBindPipeline)                                                  \
+   X(vkCmdBindVertexBuffers)                                             \
    X(vkCmdBindDescriptorSets)                                            \
    X(vkCmdPushConstants)                                                 \
    X(vkCmdDispatch)                                                      \
