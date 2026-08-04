@@ -791,6 +791,35 @@ run_test(test_ctx *t)
               "D16: and it stopped waiting when asked (%llu ms, expected "
               "< 2000)", (unsigned long long)waited_ms);
 
+      /* A timeout SHORTER than one condvar chunk.
+       *
+       * The check above cannot see this, and the reason is that 200 ms
+       * is exactly two 100 ms chunks: a loop that clamped its last
+       * chunk to the time remaining and one that always waited a whole
+       * chunk both land on 200 ms. So it says nothing about the clamp,
+       * and the clamp is what stops a short wait being rounded up to
+       * the chunk size — 5 ms becoming 100 ms is a twentyfold overshoot
+       * of what the caller asked for, and vkWaitForFences with a small
+       * timeout is how an application polls without spinning.
+       *
+       * 5 ms requested. Under 50 ms proves it did not wait a chunk;
+       * the bound is loose because a scheduler on a busy console owes
+       * nobody millisecond precision, and this is testing an
+       * arithmetic clamp, not the kernel's timer accuracy.
+       */
+      const uint64_t t1 = armTicksToNs(armGetSystemTick());
+      r = vkWaitForFences(dev, 1, &idle_fence, VK_TRUE, UINT64_C(5000000));
+      const uint64_t short_ms =
+         (armTicksToNs(armGetSystemTick()) - t1) / UINT64_C(1000000);
+
+      t_note(t, "D16: vkWaitForFences(5 ms) returned %d after %llu ms",
+             (int)r, (unsigned long long)short_ms);
+      t_check(t, r == VK_TIMEOUT,
+              "D16: a sub-chunk timeout still times out (%d)", (int)r);
+      t_check(t, short_ms < 50,
+              "D16: and is not rounded up to a whole 100 ms chunk (%llu ms, "
+              "expected < 50)", (unsigned long long)short_ms);
+
       vkDestroyFence(dev, idle_fence, NULL);
    }
 
