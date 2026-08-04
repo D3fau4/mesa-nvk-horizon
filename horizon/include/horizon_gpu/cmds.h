@@ -31,6 +31,19 @@ extern "C" {
 #define HORIZON_NVA06F_SYNCPOINTA  UINT32_C(0x0070) /* PAYLOAD 31:0        */
 #define HORIZON_NVA06F_SYNCPOINTB  UINT32_C(0x0074) /* OPERATION/INDEX     */
 #define HORIZON_NVA06F_WFI         UINT32_C(0x0078)
+#define HORIZON_NVA06F_SEMAPHOREA  UINT32_C(0x0010) /* OFFSET_UPPER 7:0    */
+#define HORIZON_NVA06F_SEMAPHOREB  UINT32_C(0x0014) /* OFFSET_LOWER 31:2   */
+#define HORIZON_NVA06F_SEMAPHOREC  UINT32_C(0x0018) /* PAYLOAD 31:0        */
+#define HORIZON_NVA06F_SEMAPHORED  UINT32_C(0x001C) /* OPERATION/flags     */
+
+/* SEMAPHORED fields. Verified against the Maxwell channel class header
+ * for the exact class GM20B's characteristics report (gpfifo=0xb06f),
+ * mesa/src/nouveau/headers/nvidia/classes/clb06f.h:81-95 — not recalled.
+ * OPERATION is 4:0; RELEASE_WFI is 20:20 and its *enabled* encoding is 0;
+ * RELEASE_SIZE is 24:24 with 4BYTE = 1. */
+#define HORIZON_SEMAPHORED_OP_RELEASE      UINT32_C(2)
+#define HORIZON_SEMAPHORED_RELEASE_WFI_EN  UINT32_C(0)
+#define HORIZON_SEMAPHORED_RELEASE_SIZE_4B (UINT32_C(1) << 24)
 
 /* SYNCPOINTB fields (cla06f.h): OPERATION 0:0, WAIT_SWITCH 4:4,
  * SYNCPT_INDEX 19:8. */
@@ -50,6 +63,7 @@ extern "C" {
 #define HORIZON_CMDS_FENCE_INCR_DWORDS   6u
 #define HORIZON_CMDS_SET_OBJECTS_DWORDS  (2u * HORIZON_CMDS_NUM_SUBCHANNELS)
 #define HORIZON_CMDS_SYNCPT_WAIT_DWORDS  4u
+#define HORIZON_CMDS_SEM_RELEASE_DWORDS  5u
 
 /* Pushbuffer method header, "increasing methods" opcode (001b in bits
  * 31:29; count 28:16; subchannel 15:13; dword method address 12:0) —
@@ -84,6 +98,26 @@ horizon_cmds_syncpt_wait(uint32_t buf[HORIZON_CMDS_SYNCPT_WAIT_DWORDS],
 uint32_t
 horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
                          const uint32_t classes[HORIZON_CMDS_NUM_SUBCHANNELS]);
+
+/* Host semaphore release: writes `payload` to `gpu_va` from the GPU.
+ *
+ * This is the cheapest GPU write to memory there is on this channel — a
+ * host method, so no engine object has to be bound to any subchannel
+ * first — which is what makes it the right instrument for asking whether
+ * a GPU write becomes visible to the CPU at all.
+ *
+ * RELEASE_WFI is enabled so the write is ordered after preceding work in
+ * the channel rather than at method-fetch time, and RELEASE_SIZE is 4BYTE
+ * so exactly the payload dword lands and nothing around it is disturbed —
+ * the 16-byte form would also write a timestamp.
+ *
+ * Returns the dword count, or 0 without writing anything if `gpu_va` is
+ * not 4-byte aligned (OFFSET_LOWER is bits 31:2, so a misaligned address
+ * would be silently truncated into a different, valid-looking one) or
+ * does not fit the 40 GPU VA bits this address space has. */
+uint32_t
+horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
+                               uint64_t gpu_va, uint32_t payload);
 
 /* `pairs` NOP methods (2 dwords each) into buf, which holds `buf_dwords`
  * dwords of capacity. Returns the dword count, or 0 without writing

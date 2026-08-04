@@ -45,6 +45,33 @@ horizon_cmds_syncpt_wait(uint32_t buf[HORIZON_CMDS_SYNCPT_WAIT_DWORDS],
 }
 
 uint32_t
+horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
+                               uint64_t gpu_va, uint32_t payload)
+{
+    /* OFFSET_LOWER is bits 31:2 and OFFSET_UPPER is bits 7:0 of the next
+     * method, so the address must be 4-byte aligned and must fit 40 bits
+     * — which is exactly the GPU VA width this address space reports.
+     * Reject rather than truncate: a truncated address is still a valid
+     * address, and the GPU would write to it. */
+    if ((gpu_va & UINT64_C(3)) != 0)
+        return 0;
+    if ((gpu_va >> 40) != 0)
+        return 0;
+
+    uint32_t n = 0;
+    /* SEMAPHOREA..D are consecutive methods, so one increasing-methods
+     * header covers all four. */
+    buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_SEMAPHOREA, 4);
+    buf[n++] = (uint32_t)(gpu_va >> 32) & 0xFFu;
+    buf[n++] = (uint32_t)gpu_va & 0xFFFFFFFCu;
+    buf[n++] = payload;
+    buf[n++] = HORIZON_SEMAPHORED_OP_RELEASE |
+               HORIZON_SEMAPHORED_RELEASE_WFI_EN |
+               HORIZON_SEMAPHORED_RELEASE_SIZE_4B;
+    return n;
+}
+
+uint32_t
 horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
                          const uint32_t classes[HORIZON_CMDS_NUM_SUBCHANNELS])
 {

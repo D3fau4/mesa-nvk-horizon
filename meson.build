@@ -159,6 +159,10 @@ horizon_tests = [
   't_submit',
   't_syncpt',
   't_fence_wait',
+  # Phase 4: does a GPU write to memory become visible to the CPU? Every
+  # observation below t_vulkan is made through a syncpoint, which is a
+  # host1x counter and not memory, so nothing had ever asked this.
+  't_gpuwrite',
   't_teardown',
   # Phase 4, decision D14: the UNCACHED cache policy. Uses no Mesa, so it
   # lives with the horizon_gpu tests rather than the NVK ones.

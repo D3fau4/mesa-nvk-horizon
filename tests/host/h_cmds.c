@@ -86,5 +86,32 @@ int main(void)
     H_CHECK(horizon_cmds_nop(nbuf, 8, 5) == 0,
             "nop: pairs that would overrun the buffer is rejected");
 
+    /* Host semaphore release — the GPU write used by t_gpuwrite. Field
+     * positions per clb06f.h:74-95 for the class GM20B reports. */
+    uint32_t sem[HORIZON_CMDS_SEM_RELEASE_DWORDS];
+    n = horizon_cmds_semaphore_release(sem, UINT64_C(0x8712345678), 0xC0FFEE01u);
+    H_CHECK(n == HORIZON_CMDS_SEM_RELEASE_DWORDS, "sem: dword count");
+    /* One increasing-methods header covering SEMAPHOREA..D: opcode 001b,
+     * count 4, subch 0, dword method address 0x10 >> 2 = 4. */
+    H_CHECK(sem[0] == 0x20040004u, "sem: hdr(0, SEMAPHOREA=0x10, 4)");
+    H_CHECK(sem[1] == 0x87u, "sem: OFFSET_UPPER is VA bits 39:32");
+    H_CHECK(sem[2] == 0x12345678u, "sem: OFFSET_LOWER is VA bits 31:2");
+    H_CHECK(sem[3] == 0xC0FFEE01u, "sem: payload verbatim");
+    /* RELEASE(2) | RELEASE_WFI_EN(0 at bit 20) | RELEASE_SIZE_4BYTE(1 at
+     * bit 24) = 0x01000002. A 16-byte release would also write a
+     * timestamp over the following three dwords. */
+    H_CHECK(sem[4] == 0x01000002u, "sem: RELEASE | WFI enabled | 4-byte");
+
+    /* An address the encoding cannot carry is rejected rather than
+     * truncated — a truncated GPU address is still an address, and the
+     * GPU would write to it. */
+    H_CHECK(horizon_cmds_semaphore_release(sem, UINT64_C(0x1002), 1) == 0,
+            "sem: misaligned address rejected");
+    H_CHECK(horizon_cmds_semaphore_release(sem, UINT64_C(1) << 40, 1) == 0,
+            "sem: address beyond 40 VA bits rejected");
+    H_CHECK(horizon_cmds_semaphore_release(sem, 0, 0) ==
+            HORIZON_CMDS_SEM_RELEASE_DWORDS,
+            "sem: VA 0 is encodable (rejection is about width, not value)");
+
     return h_summary("h_cmds");
 }
