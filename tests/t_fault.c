@@ -75,10 +75,37 @@
  *     exit; if it is not, the session never recovered and the exit
  *     crash is a consequence rather than the cause.
  *
+ * BOTH WERE RUN (2026-08-04, 20/20) AND THE ANSWERS ARE:
+ *
+ *   - the session survives completely. A second device, channel,
+ *     submit and readback all work after the faulted channel is torn
+ *     down, so the process is healthy when it reaches the exit path
+ *     and nothing broken is being carried forward. That was the worse
+ *     possibility and it is ruled out.
+ *   - the settle changes nothing. It still crashes with two seconds of
+ *     slack, so it is not a simple race with nvgpu's recovery.
+ *
+ * WHICH LEAVES THE EXIT PATH ITSELF, and the third experiment is here
+ * so the next person to run this gets the answer for free rather than
+ * spending a reboot on it. An atexit handler writes a marker file. It
+ * runs after main returns and after consoleExit, and before libnx's
+ * __appExit tears the services down. So:
+ *
+ *   marker present  ->  the crash is in __appExit or later — service
+ *                       teardown, which for this process means giving
+ *                       the GPU back to a compositor that shares it
+ *   marker absent   ->  the crash is earlier: consoleExit, or the
+ *                       return out of main
+ *
+ * Not worth a run of its own. Worth having already written down when
+ * somebody runs this again.
+ *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <switch.h>
 
@@ -151,8 +178,35 @@ static void scratch_destroy(scratch *s)
    s->mem = NULL;
 }
 
+#define EXIT_MARKER "sdmc:/horizon_gpu_tests/t_fault-exit.log"
+
+/* Runs at exit(), after main has returned and consoleExit has run, and
+ * before libnx's __appExit. Its own file, because the test's log is
+ * closed by then. See the header for what its presence and absence
+ * each mean. */
+static void note_reached_atexit(void)
+{
+   FILE *f = fopen(EXIT_MARKER, "w");
+   if (f == NULL)
+      return;
+   fprintf(f, "reached atexit: main returned and consoleExit ran.\n"
+              "If the console still went down, it went down in "
+              "__appExit or later.\n");
+   fflush(f);
+   fclose(f);
+}
+
 int run_test(test_ctx *t)
 {
+   /* Registered first, so it is in place however the rest of this
+    * ends. */
+   if (atexit(note_reached_atexit) != 0)
+      t_note(t, "atexit registration failed; the exit marker will not be "
+                "written and its absence means nothing this run");
+   else
+      t_note(t, "an atexit marker will be written to " EXIT_MARKER
+                " — send it back with this log");
+
    horizon_gpu_device *dev = NULL;
    horizon_gpu_channel *chan = NULL;
    horizon_gpu_va_range *unmapped = NULL;

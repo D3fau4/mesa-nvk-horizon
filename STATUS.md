@@ -16,7 +16,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
 | **Next concrete task** | Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
 | **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
-| **Known failures** | **`t_fault` crashes the console on exit.** All 15 checks pass, the log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Run 3 ruled out the worse cause: the nv session survives a fault completely, and a fresh device, channel and submit all work afterwards. Whether the settle changed the crash is the open half. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
+| **Known failures** | **`t_fault` crashes the console on exit.** All 15 checks pass, the log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit |
 | **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
 | **Never verified on hardware** | Nothing outstanding: every measurement this project owed itself has been made on a console. What is not *explained* is `t_fault`'s exit crash |
@@ -175,16 +175,42 @@ which libnx reference-counts, so the two create/destroy pairs in this
 run are balanced and the first version — one device — had no
 double-exit either.
 
-**What is still open is the other half**, and the log cannot answer it
-because the crash happens after the file is closed: did the 2-second
-settle change anything? If it still crashes, the cause is in the exit
-path itself rather than a race with nvgpu's recovery, and the next
-experiment is an `atexit` marker to find which teardown step is the
-last one reached. If it stopped crashing, the cause is the race, and
-the fix is a bounded wait on something observable in
-`horizon_gpu_channel_destroy` for a lost channel — never a sleep.
+### And the settle changed nothing, so it is the exit path itself
 
-Asked of the owner rather than assumed.
+Confirmed by the owner: with two seconds of slack between the fault and
+the teardown, it still crashes on `+`. So it is not a simple race with
+nvgpu's recovery either.
+
+**What is established:**
+
+| | |
+|---|---|
+| the fence/notifier fix | works — a real fault reaches it and the wait says lost |
+| teardown after a fault | clean: reservation, channel and device all `ok` |
+| the `nv` session | survives completely; a second device, channel and submit all work |
+| a 2 s settle | changes nothing |
+| the crash | is after every line the process reports, in the exit path |
+
+**What is not established** is which exit step, and that is the only
+thing left. `horizon_gpu_device_destroy` calls `nvFenceExit()` and
+`nvExit()`, both reference-counted by libnx and balanced here, so it is
+not a double-exit. What remains is `consoleExit`, the return out of
+`main`, and `__appExit` — which for this process means handing the GPU
+back to a compositor that shares it.
+
+An `atexit` marker is now built into `t_fault` so the next person to
+run it gets that answer for free: present means the crash is in
+`__appExit` or later, absent means it is earlier. It is not worth a
+reboot of its own.
+
+**Proportion, stated as a decision.** This is a defect that only a
+process which deliberately MMU-faults the GPU can reach. It does not
+affect any correct workload, the fence/notifier fix it was built to
+verify is verified, and every remaining question costs the owner a
+console reboot for one bit. So it is recorded, instrumented, and left —
+not chased. Phase 6 puts a swapchain next to the compositor, which is
+where this is most likely to reappear with better context; if it does,
+the marker is already in place.
 
 
 ### One thing about the Phase 3 debt, said rather than slipped in
