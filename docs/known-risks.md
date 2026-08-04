@@ -234,6 +234,23 @@ configure real GPU state, and something will eventually depend on them.
 draw, determine which specific registers are rejected and what NVK loses by skipping them.
 Record the answer rather than inheriting the no-op.
 
+**FIRED IN PHASE 4 (2026-07-28), not Phase 5.** The two writes are issued while the
+*queue's context* is initialised, long before any draw, so the third hardware run met them
+inside `vkCreateDevice`. The symptom is R18's, exactly: submission is asynchronous, so
+`vkCreateDevice` returns 0 and the *next* kickoff on that channel fails with
+`LibnxNvidiaError_Timeout` (0x00000d5c) and an error notifier set.
+
+The registers, read off the decoded push dump: `gr_gpcs_tpcs_sm_disp_ctrl` (0x419f78,
+clearing bit 3) and `sms_hww_warp_esp_report_mask` (0x419e44). What NVK loses, from its own
+comments: FP helper invocation memory loads, without which one dEQP subgroups test fails
+occasionally; and Out Of Range Address exceptions stay enabled for a case involving an
+empty fragment shader. Neither is reachable by anything this port runs today.
+
+Gated on `nvkmd_info::has_priv_reg_writes` (patch 0038) rather than neutered, so nouveau
+keeps NVK's behaviour and the cost is stated at the declaration instead of vanishing into
+a no-op. **Not yet confirmed on hardware** — the console that confirms it is the one that
+closes Phase 4.
+
 ---
 
 ## R13 — Rust/NAK toolchain for a non-Linux target

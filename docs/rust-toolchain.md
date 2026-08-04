@@ -175,3 +175,146 @@ provides, but it is a thing that must exist and does not today.
   drift tripwire.
 - This document, so Phase 3 starts from an answer rather than from the
   open question.
+
+---
+
+## 6. Update from Phase 4 step 3 (2026-07-28) — measured, not predicted
+
+Rust has now been compiled and linked for Horizon. Everything in this
+section is a **cross build (X)**; the full write-up, with commands, is
+in `STATUS.md` under "Phase 4 — step 3".
+
+### § 2's conclusion is confirmed, and by a second route
+
+The document concluded `no_std` + `alloc` from the source. A
+measurement now says the same thing from the target's own metadata:
+
+```
+$ rustc --print cfg --target aarch64-nintendo-switch-freestanding
+target_os="horizon"   target_env=""   (no target_family, no unix)
+
+$ rustc --print cfg --target armv6k-nintendo-3ds
+target_os="horizon"   target_env="newlib"   target_family="unix"   unix
+```
+
+Rust's `std` **does** support `target_os = "horizon"` — and every one of
+those sites is under `sys/pal/unix/`, `sys/fs/unix.rs`,
+`sys/alloc/unix.rs`. That is the **3DS**, which reaches newlib through
+the unix PAL. The Switch target has no `target_family`, so a `std` built
+for it selects `sys/pal/unsupported`, where the operations that make
+`std` worth having return errors.
+
+So building `std` is not the cheaper option that was passed over; it is
+the worse one. `"std": false` in the spec is describing this.
+
+### § 4's open sub-risk is now closed for the probe, open for NAK/NIL
+
+The `-mtp=soft` question — "should not arise, but 'should not' is not
+'measured'" — was checked on the artefact, as this section asked:
+
+```
+R_AARCH64_TLS* relocations in the Rust staticlib: 0
+__aarch64_read_tp references:                     0
+mrs tpidr_el0 in the linked Horizon ELF:          0
+```
+
+A `no_std` + `alloc` staticlib generates no thread-local storage, so
+rustc never reaches the point where it would emit the hardware
+thread-pointer read. **This was measured on a probe crate, not on NAK
+and NIL**, and the check to re-run on their archives is the same one:
+`scripts/check-tls-relocs.sh`, which tests the property rather than the
+flag and will need pointing at the Rust output.
+
+The second sub-risk — `alloc` needs a global allocator, "a thing that
+must exist and does not today" — was satisfied in the probe by a
+`#[global_allocator]` over newlib's `memalign`/`free`, six lines. What
+it turned into is a **design question rather than a shim**: exactly one
+`#[global_allocator]` and one `#[panic_handler]` may exist across the
+whole crate graph, and Mesa links two Rust staticlibs into one binary.
+Where they live is not decided here.
+
+### What the sysroot turned out to be
+
+`-Zbuild-std=core,alloc` produces three rlibs — `core`, `alloc`,
+`compiler_builtins` — and installing them at
+`lib/rustlib/<target>/lib/` is enough for a bare `rustc --sysroot` to
+find them. That matters because **Meson drives `rustc` directly and
+never calls cargo**, so cargo is a build-time tool for the sysroot only.
+
+One condition of the environment had to be handled first: containers
+here have no network, and `-Zbuild-std` resolves the standard library's
+whole workspace, which depends on 30 crates.io packages even when only
+`core` and `alloc` are built. `scripts/fetch-rust-crates.sh` fetches
+them on the host against the checksums in Rust's own
+`library/Cargo.lock`. It pins nothing itself, for the same reason
+`versions.env` does not pin libnx.
+
+---
+
+## 7. Update from Phase 4 step 5 (2026-07-28) — the conversion, done
+
+Everything in this section is a **cross build (X)**. The full write-up
+is in `STATUS.md` under "Phase 4 — step 5".
+
+**§ 2's seven sites were right, and all seven are gone.** What § 2 did
+not count was the prelude: without `std` there is no `Vec`, `Box`,
+`String`, `vec!` or `format!` in scope anywhere, which is why the first
+build produced five hundred errors that were one fact. Measured before
+starting: 37 files needing `use alloc::…`, ~210 `std::` paths of which
+the overwhelming majority are `core::` under another name.
+
+Two of § 2's specifics were wrong in detail, and both were found by
+building rather than by reading:
+
+- **`os_get_option()` was not "already reachable through the bindgen
+  bindings".** NAK's allowlist covers `nak_.*`, `nouveau_ws_.*` and
+  `drm.*`; it had to be added.
+- **`FxHashMap` is not a substitution that removes `std`.** § 2 said as
+  much in its own nuance paragraph, but the resolution is not the one
+  it guessed: rustc-hash 2.x defines the aliases *only* under its
+  `std` feature, and Mesa's wrap turned that feature on. The aliases
+  are now rebuilt over hashbrown directly.
+
+Four things were not on the list at all: `eprintln!` (21 sites),
+`f32::round`/`powf`/`log2` (which live on `std`'s float types because
+`core` has no libm), rustc-hash's feature, and bindgen's
+`--use-core`.
+
+### § 4's sub-risk is now closed on NAK and NIL
+
+Step 3 could only measure the TLS question on a probe crate. On the
+real artefact:
+
+```
+R_AARCH64_TLS* relocations in libnouveau_rust_runtime.a : 0
+__aarch64_read_tp references                            : 0
+```
+
+### The allocator question, answered by a link failure
+
+§ 6 left open "where the single `#[global_allocator]` and
+`#[panic_handler]` live". It is not a preference. Two `no_std` Rust
+staticlibs, each with its own, **cannot be linked into one binary**:
+
+```
+ld: libb.a(...): multiple definition of `__rustc::__rust_alloc';
+    liba.a(...): first defined here
+    ... and __rust_dealloc, __rust_realloc, __rust_alloc_zeroed,
+        rust_begin_unwind
+```
+
+Measured with and without `-O`. Upstream Mesa gets away with two Rust
+staticlibs because `std` supplies the shim and the archive member
+holding it is simply not pulled the second time.
+
+So NAK and NIL are rlibs where there is no `std`, and
+`src/nouveau/rust_runtime` is the one staticlib that carries the pair.
+Verified on the artefact: exactly one definition of each of
+`__rust_alloc`, `__rust_alloc_zeroed`, `__rust_alloc_error_handler` and
+`rust_begin_unwind`.
+
+### Still unmeasured
+
+Whether `compiler_builtins` collides with newlib's `memcpy` family at
+link time. Nothing has linked the full driver yet — the build now stops
+on `src/nouveau/winsys`, which is what `nvkmd_horizon` replaces.

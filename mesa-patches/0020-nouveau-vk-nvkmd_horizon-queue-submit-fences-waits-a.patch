@@ -1,0 +1,806 @@
+From 0b7171f1b3d0a9f1738957fb7033c7eafdedaf0f Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:42:30 +0000
+Subject: [PATCH 20/30] nouveau/vk: nvkmd_horizon queue, submit, fences, waits
+ and destruction
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Milestone items 6 to 10. Every operation nvkmd defines is now
+implemented; no entry point in this backend returns "not implemented"
+any more.
+
+Decision D11, native over syncpoints. A binary vk_sync backed by a
+channel fence — a syncpoint id and a threshold — with the runtime's
+vk_sync_timeline emulation on top for timeline semaphores, which is what
+NVK does on every backend whose kernel driver has no timeline of its
+own. The emulation needs a binary type underneath regardless; the only
+question was whether that should be a syncpoint fence or a CPU-only
+event, and a syncpoint fence is what a submit actually produces.
+
+Decision D8's practical consequence, handled in one place. vk_sync waits
+take an absolute deadline built from os_time_get_nano(), and on this
+platform that clock was measured to be the real-time clock — t_ostime
+saw TIME_MONOTONIC return epoch seconds. The deadline is therefore
+converted to a relative duration exactly once, at the moment the wait
+starts, and horizon_gpu waits with libnx's tick-based sleep, which is
+monotonic in hardware. A date change during the wait cannot move the
+deadline because by then there is no deadline left to move.
+
+Extension 2 of the six Phase 4 step 1 enumerated, resolved without
+changing horizon_gpu: nvkmd carries no_prefetch per entry and
+horizon_gpu_submit takes it per submit, so consecutive entries that
+agree go in one submit and a change of flag ends the run. `incomplete`
+forces the run to continue regardless, because such an entry ends
+mid-method and the next one supplies the data.
+
+Where a CPU stall happens, and where it does not:
+
+  exec()     never. The submit is asynchronous and stays that way.
+  sync()     always, and that is what it is for: vkQueueWaitIdle and
+             vkDeviceWaitIdle are made of it. No deadline, because
+             those two entry points have none; horizon_gpu implements
+             that as a bounded re-checking loop rather than an infinite
+             kernel wait, and re-checks the error notifier, so a
+             faulted channel ends it.
+  wait()     on the CPU for now, and stated rather than hidden. A
+             GPU-side wait is what this should be — the channel
+             stalling on the syncpoint — and the methods that do it
+             need a command-stream builder this backend does not have
+             yet. It runs only when the application asked one
+             submission to wait for another, never after every submit.
+  flush()    nothing to flush: horizon_gpu_submit appends and kicks off
+             in the same call.
+
+A bind is performed immediately rather than queued: Horizon has no
+VM_BIND queue, NVGPU_AS_IOCTL_MAP_BUFFER_EX is synchronous, and the
+mapping is in place before the call returns. That is stricter than the
+interface requires, not looser.
+
+A signal with nothing submitted issues a fence-only submit rather than
+signalling on the CPU: the signal must still be ordered after any
+earlier work on the channel, and only the channel can say that.
+
+`engines` is not a channel property here. Horizon binds engines by
+emitting SET_OBJECT into the stream, and horizon_gpu_channel_bind_engines
+does all five subchannels at once with the device's queried class
+numbers — there is no channel that can do 3D but not compute. It is
+submitted asynchronously; the next submit is ordered after it by the
+channel itself.
+
+mesa-nvk-horizon: Phase 4 items 6-10
+Evidence: libnvk.a is 94 812 bytes with all seven backend objects and 0
+  TLS relocations, and no VK_ERROR_FEATURE_NOT_PRESENT milestone stub
+  remains in nvkmd/horizon/.
+---
+ src/nouveau/vulkan/meson.build                |   2 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  55 +++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 330 ++++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  11 +-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c |  11 +-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c | 229 ++++++++++++
+ 6 files changed, 624 insertions(+), 14 deletions(-)
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index 8599845..537d0ea 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -87,7 +87,9 @@ if host_machine.system() == 'horizon'
+     'nvkmd/horizon/nvkmd_horizon_dev.c',
+     'nvkmd/horizon/nvkmd_horizon_enumerate.c',
+     'nvkmd/horizon/nvkmd_horizon_mem.c',
++    'nvkmd/horizon/nvkmd_horizon_ctx.c',
+     'nvkmd/horizon/nvkmd_horizon_pdev.c',
++    'nvkmd/horizon/nvkmd_horizon_sync.c',
+     'nvkmd/horizon/nvkmd_horizon_va.c',
+   )
+ else
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 40f55e1..47fe880 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -16,6 +16,7 @@
+ #include "horizon_gpu/vm.h"
+ 
+ #include "util/simple_mtx.h"
++#include "vk_sync.h"
+ 
+ /*
+  * The Horizon OS kernel-mode-driver backend.
+@@ -54,6 +55,11 @@ struct nvkmd_horizon_pdev {
+     */
+    simple_mtx_t mutex;
+    uint32_t dev_refcnt;
++
++   /* NULL-terminated, as nvkmd_pdev::sync_types wants. Owned here so
++    * the list outlives no one and is not a global.
++    */
++   const struct vk_sync_type *sync_types[2];
+ };
+ 
+ NVKMD_DECL_SUBCLASS(pdev, horizon);
+@@ -90,6 +96,55 @@ struct nvkmd_horizon_va {
+ 
+ NVKMD_DECL_SUBCLASS(va, horizon);
+ 
++struct nvkmd_horizon_ctx {
++   struct nvkmd_ctx base;
++
++   horizon_gpu_channel *chan;
++
++   /* The fence of the most recent submit on this channel. Every submit
++    * carries one syncpoint increment, so this is "when everything
++    * submitted so far has completed" — which is exactly what a signal
++    * means.
++    */
++   horizon_gpu_fence last_fence;
++   bool has_fence;
++};
++
++NVKMD_DECL_SUBCLASS(ctx, horizon);
++
++/* The vk_sync type — decision D11, native over syncpoints. See
++ * nvkmd_horizon_sync.c for why, and for how D8's clock question is
++ * handled in one place.
++ */
++enum nvk_horizon_sync_state {
++   NVK_HORIZON_SYNC_RESET,
++   NVK_HORIZON_SYNC_PENDING,
++   NVK_HORIZON_SYNC_SIGNALLED,
++};
++
++struct nvk_horizon_sync {
++   struct vk_sync base;
++
++   enum nvk_horizon_sync_state state;
++   horizon_gpu_fence fence;
++   /* Borrowed from the context that signalled this object; waits go
++    * through the channel so a faulted one is reported rather than
++    * waited on forever.
++    */
++   horizon_gpu_channel *chan;
++};
++
++extern const struct vk_sync_type nvk_horizon_sync_type;
++
++void nvk_horizon_sync_set_fence(struct vk_sync *sync,
++                                horizon_gpu_channel *chan,
++                                horizon_gpu_fence fence);
++
++VkResult nvkmd_horizon_create_ctx(struct nvkmd_dev *dev,
++                                  struct vk_object_base *log_obj,
++                                  enum nvkmd_engines engines,
++                                  struct nvkmd_ctx **ctx_out);
++
+ VkResult nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+                                    enum nvk_debug debug_flags,
+                                    struct nvkmd_pdev **pdev_out);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+new file mode 100644
+index 0000000..d73e5e4
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -0,0 +1,330 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vk_log.h"
++#include "vk_sync.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_time.h"
++#include "util/u_memory.h"
++
++#include <inttypes.h>
++
++static void
++nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
++{
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++
++   /* horizon_gpu_channel_destroy fails with ERR_BUSY while submits are
++    * in flight. nvkmd's contract is that the queue is idle before the
++    * context goes away — vkDestroyDevice waits — so waiting again here
++    * would be the unconditional stall rejected design 6 forbids. It is
++    * reported instead, because a busy channel at destroy time is a
++    * driver bug and should be visible.
++    */
++   horizon_gpu_result res = horizon_gpu_channel_destroy(ctx->chan);
++   if (res.status != HORIZON_GPU_OK) {
++      mesa_loge("horizon_gpu_channel_destroy failed: status %d, "
++                "nv 0x%08" PRIx32, (int)res.status, res.nv);
++      return;
++   }
++
++   FREE(ctx);
++}
++
++static VkResult
++nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj,
++                       uint32_t wait_count,
++                       const struct vk_sync_wait *waits)
++{
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++
++   /* A GPU-side wait is what this should be: the channel should stall on
++    * the syncpoint rather than the CPU stalling on it. The methods that
++    * do that (the host's SYNCPOINT/SEMAPHORE acquire) are Phase 5 work —
++    * this backend has no command-stream builder yet, and inventing one
++    * here would be the wrong place for it.
++    *
++    * So the wait happens on the CPU, and that is stated rather than
++    * hidden. It is NOT the thing rejected design 6 forbids: this runs
++    * only when the application asked one submission to wait for another,
++    * never after every submit, and never to make something else appear
++    * to work.
++    */
++   for (uint32_t i = 0; i < wait_count; i++) {
++      const struct vk_sync_type *type = waits[i].sync->type;
++      assert(type->wait != NULL);
++
++      /* NULL device: the sync type's wait() uses it only to build a
++       * vk_errorf, and nvkmd has no vk_device to hand it — the layer
++       * below the driver deliberately does not know about one.
++       */
++      VkResult result = type->wait(NULL, waits[i].sync, waits[i].wait_value,
++                                   VK_SYNC_WAIT_COMPLETE,
++                                   OS_TIMEOUT_INFINITE);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj,
++                       uint32_t exec_count,
++                       const struct nvkmd_ctx_exec *execs)
++{
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++
++   if (exec_count == 0)
++      return VK_SUCCESS;
++
++   /* nvkmd carries no_prefetch *per entry*; horizon_gpu_submit takes it
++    * *per submit*. That mismatch is extension 2 of the six Phase 4 step
++    * 1 enumerated, and it is resolved here rather than by changing
++    * horizon_gpu: consecutive entries that agree go in one submit, and a
++    * change of flag ends the run. Every entry therefore gets the flag it
++    * asked for, at the cost of one extra kickoff per change — which in
++    * practice is zero, because NVK sets no_prefetch for a whole push.
++    *
++    * `incomplete` means the entry ends mid-method and the next entry
++    * supplies the data, so the two must land in the same submit. It
++    * therefore forces the run to continue regardless of the flag.
++    */
++   horizon_gpu_cmd_span spans[16];
++   uint32_t n = 0;
++   bool run_no_prefetch = execs[0].no_prefetch;
++   bool must_continue = false;
++
++   for (uint32_t i = 0; i < exec_count; i++) {
++      const bool flag_changed = execs[i].no_prefetch != run_no_prefetch;
++
++      if (n > 0 && !must_continue &&
++          (flag_changed || n == ARRAY_SIZE(spans))) {
++         horizon_gpu_fence fence;
++         horizon_gpu_result res =
++            horizon_gpu_submit(ctx->chan, spans, n,
++                               HORIZON_GPU_SUBMIT_DEFAULT, &fence);
++         if (res.status != HORIZON_GPU_OK) {
++            return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                             "horizon_gpu_submit(%" PRIu32 " spans) failed: "
++                             "status %d, nv 0x%08" PRIx32,
++                             n, (int)res.status, res.nv);
++         }
++         ctx->last_fence = fence;
++         ctx->has_fence = true;
++         n = 0;
++         run_no_prefetch = execs[i].no_prefetch;
++      }
++
++      spans[n].gpu_va = execs[i].addr;
++      spans[n].num_dwords = execs[i].size_B / 4;
++      n++;
++      must_continue = execs[i].incomplete;
++   }
++
++   if (n > 0) {
++      horizon_gpu_fence fence;
++      horizon_gpu_result res =
++         horizon_gpu_submit(ctx->chan, spans, n,
++                            HORIZON_GPU_SUBMIT_DEFAULT, &fence);
++      if (res.status != HORIZON_GPU_OK) {
++         return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                          "horizon_gpu_submit(%" PRIu32 " spans) failed: "
++                          "status %d, nv 0x%08" PRIx32,
++                          n, (int)res.status, res.nv);
++      }
++      ctx->last_fence = fence;
++      ctx->has_fence = true;
++   }
++
++   /* No wait here. The submit is asynchronous and stays that way:
++    * rejected design 6 is a property held from the first line, not
++    * retrofitted.
++    */
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_ctx_bind(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj,
++                       uint32_t bind_count,
++                       const struct nvkmd_ctx_bind *binds)
++{
++   /* On a DRM backend a bind goes through the kernel's VM_BIND queue and
++    * is ordered against the channel's work. Horizon has no such queue:
++    * NVGPU_AS_IOCTL_MAP_BUFFER_EX is synchronous and takes effect when
++    * it returns. So a bind is performed immediately, through the same
++    * VA operations nvkmd_va exposes.
++    *
++    * That is stricter than the interface requires, not looser: the
++    * mapping is in place before this call returns, so anything
++    * submitted afterwards sees it.
++    */
++   for (uint32_t i = 0; i < bind_count; i++) {
++      const struct nvkmd_ctx_bind *b = &binds[i];
++      VkResult result;
++
++      if (b->op == NVKMD_BIND_OP_BIND) {
++         result = b->va->ops->bind_mem(b->va, log_obj, b->va_offset_B,
++                                       b->mem, b->mem_offset_B, b->range_B);
++      } else {
++         result = b->va->ops->unbind(b->va, log_obj, b->va_offset_B,
++                                     b->range_B);
++      }
++
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_ctx_signal(struct nvkmd_ctx *_ctx,
++                         struct vk_object_base *log_obj,
++                         uint32_t signal_count,
++                         const struct vk_sync_signal *signals)
++{
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++
++   /* Every submit already carries one syncpoint increment, so the fence
++    * of the last one is exactly "when everything submitted so far has
++    * completed" — which is what these signals mean.
++    *
++    * With nothing submitted there is nothing to wait for, so a
++    * fence-only submit is issued rather than signalling on the CPU: the
++    * signal must still be ordered after any earlier work on this
++    * channel, and only the channel can say that.
++    */
++   if (!ctx->has_fence) {
++      horizon_gpu_fence fence;
++      horizon_gpu_result res =
++         horizon_gpu_submit(ctx->chan, NULL, 0,
++                            HORIZON_GPU_SUBMIT_DEFAULT, &fence);
++      if (res.status != HORIZON_GPU_OK) {
++         return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                          "horizon_gpu_submit(fence only) failed: "
++                          "status %d, nv 0x%08" PRIx32,
++                          (int)res.status, res.nv);
++      }
++      ctx->last_fence = fence;
++      ctx->has_fence = true;
++   }
++
++   for (uint32_t i = 0; i < signal_count; i++) {
++      nvk_horizon_sync_set_fence(signals[i].sync, ctx->chan,
++                                 ctx->last_fence);
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_ctx_flush(struct nvkmd_ctx *_ctx,
++                        struct vk_object_base *log_obj)
++{
++   /* Nothing to flush. horizon_gpu_submit appends the GPFIFO entries and
++    * kicks off in the same call, so work is running by the time exec()
++    * returns; there is no batching layer here to drain.
++    */
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_horizon_ctx_sync(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj)
++{
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++
++   if (!ctx->has_fence)
++      return VK_SUCCESS;
++
++   /* This is the one place a CPU stall is unconditional, and it is
++    * where Vulkan says so: sync() is what vkQueueWaitIdle and
++    * vkDeviceWaitIdle are made of.
++    *
++    * No deadline: those two entry points have none. horizon_gpu
++    * implements "no timeout" as a bounded re-checking loop rather than
++    * an infinite kernel wait, and channel_wait_idle re-checks the error
++    * notifier, so a faulted channel ends this rather than hanging.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_channel_wait_idle(ctx->chan, HORIZON_GPU_NO_TIMEOUT);
++   if (res.status != HORIZON_GPU_OK) {
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_channel_wait_idle failed: status %d, "
++                       "nv 0x%08" PRIx32, (int)res.status, res.nv);
++   }
++
++   return VK_SUCCESS;
++}
++
++const struct nvkmd_ctx_ops nvkmd_horizon_ctx_ops = {
++   .destroy = nvkmd_horizon_ctx_destroy,
++   .wait = nvkmd_horizon_ctx_wait,
++   .exec = nvkmd_horizon_ctx_exec,
++   .bind = nvkmd_horizon_ctx_bind,
++   .signal = nvkmd_horizon_ctx_signal,
++   .flush = nvkmd_horizon_ctx_flush,
++   .sync = nvkmd_horizon_ctx_sync,
++};
++
++VkResult
++nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
++                         struct vk_object_base *log_obj,
++                         enum nvkmd_engines engines,
++                         struct nvkmd_ctx **ctx_out)
++{
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
++
++   struct nvkmd_horizon_ctx *ctx = CALLOC_STRUCT(nvkmd_horizon_ctx);
++   if (ctx == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   /* One GPFIFO channel per context. `engines` is not a channel
++    * property here: Horizon binds engines by emitting SET_OBJECT into
++    * the stream (known-risks R7), and horizon_gpu_channel_bind_engines
++    * does all five subchannels at once with the device's *queried*
++    * class numbers. There is no channel that can do 3D but not compute.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_channel_create(dev->gpu, NULL, &ctx->chan);
++   if (res.status != HORIZON_GPU_OK) {
++      FREE(ctx);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_channel_create failed: status %d, "
++                       "nv 0x%08" PRIx32, (int)res.status, res.nv);
++   }
++
++   /* Asynchronous: bind_engines submits and returns a fence rather than
++    * waiting for it. The next submit on this channel is ordered after
++    * it by the channel itself, so there is nothing to wait for here.
++    */
++   horizon_gpu_fence bind_fence;
++   res = horizon_gpu_channel_bind_engines(ctx->chan, &bind_fence);
++   if (res.status != HORIZON_GPU_OK) {
++      horizon_gpu_channel_destroy(ctx->chan);
++      FREE(ctx);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_channel_bind_engines failed: status %d, "
++                       "nv 0x%08" PRIx32, (int)res.status, res.nv);
++   }
++
++   ctx->last_fence = bind_fence;
++   ctx->has_fence = true;
++
++   ctx->base.ops = &nvkmd_horizon_ctx_ops;
++   ctx->base.dev = _dev;
++
++   *ctx_out = &ctx->base;
++
++   return VK_SUCCESS;
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index 7720a8a..f53fd80 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -55,15 +55,6 @@ nvkmd_horizon_dev_get_drm_fd(struct nvkmd_dev *_dev)
+ 
+ 
+ 
+-static VkResult
+-nvkmd_horizon_dev_create_ctx(struct nvkmd_dev *_dev,
+-                             struct vk_object_base *log_obj,
+-                             enum nvkmd_engines engines,
+-                             struct nvkmd_ctx **ctx_out)
+-{
+-   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
+-                    "nvkmd_horizon: contexts are milestone item 6");
+-}
+ 
+ const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
+    .destroy = nvkmd_horizon_dev_destroy,
+@@ -77,7 +68,7 @@ const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
+     * silently getting a wrong allocation.
+     */
+    .alloc_va = nvkmd_horizon_alloc_va,
+-   .create_ctx = nvkmd_horizon_dev_create_ctx,
++   .create_ctx = nvkmd_horizon_create_ctx,
+ };
+ 
+ VkResult
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 6365634..8147a1a 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -275,11 +275,14 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+    pdev->base.drm.render_dev = 0;
+    pdev->base.drm.primary_dev = 0;
+ 
+-   /* Sync types are decision D11 and belong to milestone item 8. Until
+-    * then the pdev advertises none, which is a build-visible gap
+-    * rather than a silently wrong answer.
++   /* One binary sync type over syncpoints (decision D11, resolved in
++    * nvkmd_horizon_sync.c). The runtime's vk_sync_timeline emulation
++    * goes on top of it for timeline semaphores, which is what NVK does
++    * on every backend whose kernel driver has no timeline of its own.
+     */
+-   pdev->base.sync_types = NULL;
++   pdev->sync_types[0] = &nvk_horizon_sync_type;
++   pdev->sync_types[1] = NULL;
++   pdev->base.sync_types = pdev->sync_types;
+ 
+    *pdev_out = &pdev->base;
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+new file mode 100644
+index 0000000..ed91d75
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -0,0 +1,229 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * The vk_sync type for Horizon — decision D11, native over syncpoints.
++ *
++ * WHAT IT IS. A *binary* sync backed by a channel fence: a syncpoint id
++ * and a threshold. The runtime's vk_sync_timeline emulation goes on top
++ * for timeline semaphores, which is what NVK does on every backend whose
++ * kernel driver has no timeline of its own.
++ *
++ * WHY NOT THE RUNTIME'S EMULATION ALONE (D11's other arm). The emulation
++ * needs a binary sync type underneath regardless; the question was only
++ * whether *that* should be a syncpoint fence or a CPU-only event. A
++ * syncpoint fence is what a submit actually produces, so anything else
++ * would mean a second bookkeeping layer over the same hardware counter.
++ *
++ * WHY THE TIMEOUT IS CONVERTED HERE (decision D8). vk_sync waits take an
++ * *absolute* deadline in nanoseconds, built by the runtime from
++ * os_time_get_nano(). On this platform that clock was measured to be the
++ * real-time clock — t_ostime saw TIME_MONOTONIC return epoch seconds —
++ * so an absolute deadline moves if the console's date changes.
++ *
++ * The deadline is therefore turned into a *relative* duration exactly
++ * once, here, at the moment the wait starts, and horizon_gpu is given
++ * that duration. horizon_gpu waits with libnx's own tick-based sleep,
++ * which is monotonic in hardware. A date change during the wait then
++ * cannot move the deadline, because by then there is no deadline left to
++ * move — only a remaining duration. That is the whole of D8's practical
++ * consequence, handled in one place rather than everywhere a wait
++ * happens.
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vk_device.h"
++#include "vk_log.h"
++#include "vk_sync.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_time.h"
++
++#include <inttypes.h>
++
++static struct nvk_horizon_sync *
++to_horizon_sync(struct vk_sync *sync)
++{
++   assert(sync->type == &nvk_horizon_sync_type);
++   return container_of(sync, struct nvk_horizon_sync, base);
++}
++
++static VkResult
++nvk_horizon_sync_init(struct vk_device *device,
++                      struct vk_sync *_sync,
++                      uint64_t initial_value)
++{
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   /* A binary sync: initial_value is 0 or 1 and nothing else is legal.
++    * There is no fence yet either way — one arrives when a submit
++    * signals this object.
++    */
++   sync->state = initial_value ? NVK_HORIZON_SYNC_SIGNALLED
++                               : NVK_HORIZON_SYNC_RESET;
++   sync->fence = (horizon_gpu_fence) { 0, 0 };
++   sync->chan = NULL;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvk_horizon_sync_finish(struct vk_device *device, struct vk_sync *_sync)
++{
++   /* Nothing owned: a fence is two integers and the channel is
++    * borrowed from the context that signalled it.
++    */
++}
++
++static VkResult
++nvk_horizon_sync_signal(struct vk_device *device,
++                        struct vk_sync *_sync,
++                        uint64_t value)
++{
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   /* A CPU-side signal, which is what vkSignalSemaphore and an
++    * already-signalled VkFence need. It does not touch the syncpoint:
++    * incrementing one from the CPU needs an ioctl horizon_gpu does not
++    * expose yet (extension 3 of the six Phase 4 step 1 enumerated), and
++    * nothing here requires the GPU to observe a CPU signal — the GPU
++    * only ever waits on fences this backend produced itself.
++    */
++   sync->state = NVK_HORIZON_SYNC_SIGNALLED;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvk_horizon_sync_reset(struct vk_device *device, struct vk_sync *_sync)
++{
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   sync->state = NVK_HORIZON_SYNC_RESET;
++   sync->fence = (horizon_gpu_fence) { 0, 0 };
++   sync->chan = NULL;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvk_horizon_sync_move(struct vk_device *device,
++                      struct vk_sync *_dst, struct vk_sync *_src)
++{
++   struct nvk_horizon_sync *dst = to_horizon_sync(_dst);
++   struct nvk_horizon_sync *src = to_horizon_sync(_src);
++
++   /* Everything except the vk_sync header, which the runtime owns and
++    * has already initialised in the destination.
++    */
++   struct vk_sync saved = *_dst;
++   *dst = *src;
++   dst->base = saved;
++
++   src->state = NVK_HORIZON_SYNC_RESET;
++   src->fence = (horizon_gpu_fence) { 0, 0 };
++   src->chan = NULL;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvk_horizon_sync_wait(struct vk_device *device,
++                      struct vk_sync *_sync,
++                      uint64_t wait_value,
++                      enum vk_sync_wait_flags wait_flags,
++                      uint64_t abs_timeout_ns)
++{
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   if (sync->state == NVK_HORIZON_SYNC_SIGNALLED)
++      return VK_SUCCESS;
++
++   /* VK_SYNC_WAIT_PENDING asks only that the operation has been
++    * submitted, not that it has completed. A fence exists exactly when
++    * the submit happened, so that question is already answered.
++    */
++   if (wait_flags & VK_SYNC_WAIT_PENDING) {
++      return sync->state == NVK_HORIZON_SYNC_PENDING ? VK_SUCCESS
++                                                     : VK_TIMEOUT;
++   }
++
++   if (sync->state != NVK_HORIZON_SYNC_PENDING) {
++      /* Nothing submitted and nothing signalled: this can only ever
++       * become signalled by someone else, so waiting is waiting for the
++       * deadline. Report the timeout rather than blocking on a fence
++       * that does not exist.
++       */
++      return VK_TIMEOUT;
++   }
++
++   /* The absolute-to-relative conversion described in the header. Done
++    * once, before the wait, so a clock that moves afterwards cannot
++    * move the deadline.
++    */
++   uint64_t rel_timeout_ns;
++   if (abs_timeout_ns == OS_TIMEOUT_INFINITE) {
++      rel_timeout_ns = HORIZON_GPU_NO_TIMEOUT;
++   } else {
++      uint64_t now = os_time_get_nano();
++      rel_timeout_ns = abs_timeout_ns > now ? abs_timeout_ns - now : 0;
++   }
++
++   /* channel_wait_fence rather than fence_wait: it re-checks the
++    * channel's error notifier while waiting, so a faulted channel
++    * yields CHANNEL_LOST instead of an eternal timeout.
++    */
++   horizon_gpu_result res =
++      horizon_gpu_channel_wait_fence(sync->chan, sync->fence,
++                                     rel_timeout_ns);
++   if (res.status == HORIZON_GPU_ERR_TIMEOUT)
++      return VK_TIMEOUT;
++   if (res.status != HORIZON_GPU_OK) {
++      return vk_errorf(device, nvkmd_horizon_result(res),
++                       "horizon_gpu_channel_wait_fence(%" PRIu32 ", %" PRIu32
++                       ") failed: status %d, nv 0x%08" PRIx32,
++                       sync->fence.syncpt_id, sync->fence.threshold,
++                       (int)res.status, res.nv);
++   }
++
++   sync->state = NVK_HORIZON_SYNC_SIGNALLED;
++
++   return VK_SUCCESS;
++}
++
++const struct vk_sync_type nvk_horizon_sync_type = {
++   .size = sizeof(struct nvk_horizon_sync),
++   .features = VK_SYNC_FEATURE_BINARY |
++               VK_SYNC_FEATURE_GPU_WAIT |
++               VK_SYNC_FEATURE_CPU_WAIT |
++               VK_SYNC_FEATURE_CPU_RESET |
++               VK_SYNC_FEATURE_CPU_SIGNAL |
++               VK_SYNC_FEATURE_WAIT_PENDING,
++   .init = nvk_horizon_sync_init,
++   .finish = nvk_horizon_sync_finish,
++   .signal = nvk_horizon_sync_signal,
++   .reset = nvk_horizon_sync_reset,
++   .move = nvk_horizon_sync_move,
++   .wait = nvk_horizon_sync_wait,
++   /* No import/export: there is no dma-buf, no sync file and no fd on
++    * this platform to carry one through. wait_many is left to the
++    * runtime's emulation over wait(), which is correct and is not on
++    * any path this phase measures.
++    */
++};
++
++void
++nvk_horizon_sync_set_fence(struct vk_sync *_sync,
++                           horizon_gpu_channel *chan,
++                           horizon_gpu_fence fence)
++{
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   sync->chan = chan;
++   sync->fence = fence;
++   sync->state = NVK_HORIZON_SYNC_PENDING;
++}
+-- 
+2.43.0
+

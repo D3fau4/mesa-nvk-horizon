@@ -1,0 +1,1752 @@
+From 863177dcd9f6055d5b86f44a9ce818bb585ad60b Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:27:06 +0000
+Subject: [PATCH 18/30] nouveau/vk: add the Horizon kernel-mode-driver backend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NVK's kernel-mode-driver abstraction has one backend, and it is libdrm
+talking to the nouveau kernel driver. This adds a second, for a platform
+that has no DRM at all: Horizon OS, where the GPU is reached through the
+`nv` system services.
+
+The backend sits on horizon_gpu, a Vulkan-free GPU layer over those
+services, and is named through -Dhorizon-gpu-dir because it lives
+outside Mesa. There is no simulated render node, no synthetic file
+descriptor and no re-implementation of the nouveau uAPI anywhere in it.
+
+Enumeration takes the other hook the Vulkan runtime already offers.
+try_create_for_drm walks drmGetDevices2, which needs a DRM subsystem to
+walk; physical_devices.enumerate hands the whole job to the driver, and
+that is what a platform with one SoC GPU wants. nvk_create_physical_device
+is split out of nvk_create_drm_physical_device so both paths share
+everything that is not about *how* the device was found.
+
+Decision D9, which the hardware makes rather than the design: Horizon's
+`nv` session is per process, and the GM20B characteristics can only be
+queried once it is up — there is no way to describe the device without
+opening it, which is what the nouveau backend does by opening the render
+node a second time. So the pdev owns the horizon_gpu_device and every
+nvkmd_dev created from it shares that one under a reference count. They
+share the GPU address space, which is harmless: every VA in it is handed
+out by horizon_gpu_vm_reserve and no two reservations overlap.
+
+Decision D10: the parts of nv_device_info that are pure functions of the
+chipset — shader model, warps per MP, MPs per TPC, the legal
+shared-memory splits — move to src/nouveau/headers/nv_device_info_chipset.c,
+next to the struct they fill. They were inside the DRM winsys, where a
+second backend could not reach them and would have had to carry a copy
+that drifts. Nothing about them changed.
+
+Four smaller things had to give way, none of them Horizon-specific:
+
+  vk_image::drm_format_mod was declared under #if DETECT_OS_LINUX ||
+  DETECT_OS_BSD, so every driver reading it had to know which operating
+  system it was on. The field is now unconditional and simply stays
+  DRM_FORMAT_MOD_INVALID where the extension is not advertised; the
+  entry point that implements VK_EXT_drm_format_modifier stays guarded,
+  because that is a real platform dependency.
+
+  nvk_descriptor_table.c and nvk_device_memory.c included <sys/mman.h>
+  and used nothing from it.
+
+  nvk_physical_device.c's major()/minor() decompose a DRM device number,
+  and sys/sysmacros.h is glibc's home for them.
+
+  nvk_instance.c took its driver identity from the ELF build-id note,
+  which util/build_id.h only declares where dl_iterate_phdr exists. It
+  now falls back to hashing PACKAGE_VERSION and MESA_GIT_SHA1. That is
+  coarser — two builds of the same source with different local patches
+  hash the same — and is recorded as a limitation rather than papered
+  over with __DATE__, which would change the UUID on every rebuild.
+
+Milestone items 1 and 2 (device, and GM20B info to nvkmd_pdev_info) are
+implemented. Items 3 to 10 — memory objects, the VA heap, bind/unbind,
+queue and channel, submit, fences, on-demand waits and destruction —
+return VK_ERROR_FEATURE_NOT_PRESENT with the item number in the message,
+so a caller reaching one gets a named gap rather than a wrong answer.
+
+mesa-nvk-horizon: Phase 4 items 1-2
+Why: nouveau_ws is libdrm talking to the nouveau kernel driver. It is
+  not a gap to patch on Horizon; it is the thing being replaced.
+Evidence: `meson compile` for aarch64/horizon with
+  -Dvulkan-drivers=nouveau now builds libnvk.a (94 162 bytes) with
+  vk_icdGetInstanceProcAddr and nvk_CreateInstance defined and the three
+  backend objects in the archive. It previously stopped at
+    FAILED: src/nouveau/winsys/libnouveau_ws.a.p/nouveau_bo.c.o
+    nouveau_bo.c: fatal error: sys/mman.h: No such file or directory
+Upstream: the four fixes above and the nv_device_info move, yes. The
+  backend itself is new code for a platform Mesa does not yet target.
+---
+ meson.options                                 |  10 +
+ src/nouveau/headers/meson.build               |   3 +-
+ src/nouveau/headers/nv_device_info.h          |  10 +
+ src/nouveau/headers/nv_device_info_chipset.c  | 287 ++++++++++++++++++
+ src/nouveau/meson.build                       |  32 +-
+ src/nouveau/vulkan/meson.build                |  45 ++-
+ src/nouveau/vulkan/nvk_descriptor_table.c     |   1 -
+ src/nouveau/vulkan/nvk_device_memory.c        |   1 -
+ src/nouveau/vulkan/nvk_instance.c             |  41 ++-
+ src/nouveau/vulkan/nvk_physical_device.c      |  45 ++-
+ src/nouveau/vulkan/nvk_physical_device.h      |  10 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  88 ++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  | 158 ++++++++++
+ .../nvkmd/horizon/nvkmd_horizon_enumerate.c   |  62 ++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 287 ++++++++++++++++++
+ src/nouveau/winsys/nouveau_device.c           | 270 +---------------
+ src/vulkan/runtime/vk_image.c                 |   2 -
+ src/vulkan/runtime/vk_image.h                 |   8 +-
+ 18 files changed, 1069 insertions(+), 291 deletions(-)
+ create mode 100644 src/nouveau/headers/nv_device_info_chipset.c
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+
+diff --git a/meson.options b/meson.options
+index 220d46e..db48653 100644
+--- a/meson.options
++++ b/meson.options
+@@ -809,6 +809,16 @@ option(
+   description : 'Build the mesa-clc compiler or use a system version.'
+ )
+ 
++option(
++  'horizon-gpu-dir',
++  type : 'string',
++  value : '',
++  description : 'Prefix of the horizon_gpu GPU layer (its include/ and ' +
++                'the directory holding libhorizon_gpu.a). Required when ' +
++                'building the nouveau Vulkan driver for Horizon, which ' +
++                'uses it in place of libdrm and the nouveau winsys.'
++)
++
+ option(
+   'install-mesa-clc',
+   type : 'boolean',
+diff --git a/src/nouveau/headers/meson.build b/src/nouveau/headers/meson.build
+index 06fbcc9..0b64320 100644
+--- a/src/nouveau/headers/meson.build
++++ b/src/nouveau/headers/meson.build
+@@ -109,7 +109,8 @@ nv_push_class_dump_h = custom_target(
+ 
+ libnvidia_headers = static_library(
+   'nvidia_headers_c',
+-  ['nv_push.c', cl_generated, nv_push_class_dump_h],
++  ['nv_push.c', 'nv_device_info_chipset.c',
++   cl_generated, nv_push_class_dump_h],
+   include_directories : ['.', 'nvidia/classes', inc_include, inc_src],
+   c_args : [no_override_init_args],
+   gnu_symbol_visibility : 'hidden',
+diff --git a/src/nouveau/headers/nv_device_info.h b/src/nouveau/headers/nv_device_info.h
+index 1532983..b586df3 100644
+--- a/src/nouveau/headers/nv_device_info.h
++++ b/src/nouveau/headers/nv_device_info.h
+@@ -85,6 +85,16 @@ struct nv_device_info {
+    bool has_zcull_info;
+ };
+ 
++/* The parts of this struct that are pure functions of the chipset.
++ * Defined in nv_device_info_chipset.c, next to the struct they fill,
++ * rather than inside one kernel-mode-driver backend — they describe the
++ * chip, not the kernel driver.
++ */
++uint8_t nv_device_info_sm_for_chipset(uint16_t chipset);
++uint8_t nv_device_info_max_warps_per_mp_for_sm(uint8_t sm);
++uint8_t nv_device_info_mp_per_tpc_for_chipset(uint16_t chipset);
++void nv_device_info_init_shared_mem_sizes(struct nv_device_info *info);
++
+ static inline void
+ nv_device_uuid(const struct nv_device_info *info, uint8_t *uuid, size_t len, bool vm_bind)
+ {
+diff --git a/src/nouveau/headers/nv_device_info_chipset.c b/src/nouveau/headers/nv_device_info_chipset.c
+new file mode 100644
+index 0000000..f384962
+--- /dev/null
++++ b/src/nouveau/headers/nv_device_info_chipset.c
+@@ -0,0 +1,287 @@
++/*
++ * Copyright © 2023 Collabora Ltd. and Red Hat Inc.
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * The parts of nv_device_info that are pure functions of the chipset.
++ *
++ * Shader model, warps per MP, MPs per TPC and the legal shared-memory
++ * splits are properties of the *chip*. They were computed inside
++ * src/nouveau/winsys/nouveau_device.c, which is libdrm talking to the
++ * nouveau kernel driver, so a second kernel-mode-driver backend on a
++ * platform with no DRM had no way to reach them and would have had to
++ * carry a copy — which is a copy that drifts.
++ *
++ * Nothing here changed. The functions moved, and nouveau_device.c calls
++ * them instead of defining them.
++ */
++
++#include "nv_device_info.h"
++
++#include "util/macros.h"
++#include "util/u_math.h"
++
++#include <assert.h>
++#include <string.h>
++
++uint8_t
++nv_device_info_sm_for_chipset(uint16_t chipset)
++{
++   if (chipset >= 0x1b0)
++      return 120;
++   else if (chipset >= 0x1a0)
++      return 100;
++   else if (chipset >= 0x190)
++      return 89;
++   // GH100 is older than AD10X, but is SM90
++   else if (chipset >= 0x180)
++      return 90;
++   else if (chipset == 0x17b)
++      return 87;
++   else if (chipset >= 0x172)
++      return 86;
++   else if (chipset >= 0x170)
++      return 80;
++   else if (chipset >= 0x160)
++      return 75;
++   else if (chipset >= 0x14b)
++      return 72;
++   else if (chipset >= 0x140)
++      return 70;
++   else if (chipset >= 0x13b)
++      return 62;
++   else if (chipset >= 0x132)
++      return 61;
++   else if (chipset >= 0x130)
++      return 60;
++   else if (chipset >= 0x12b)
++      return 53;
++   else if (chipset >= 0x120)
++      return 52;
++   else if (chipset >= 0x110)
++      return 50;
++   // TODO: 37
++   else if (chipset >= 0x0f0)
++      return 35;
++   else if (chipset >= 0x0ea)
++      return 32;
++   else if (chipset >= 0x0e0)
++      return 30;
++   // GF110 is SM20
++   else if (chipset == 0x0c8)
++      return 20;
++   else if (chipset >= 0x0c1)
++      return 21;
++   else if (chipset >= 0x0c0)
++      return 20;
++   else if (chipset >= 0x0a3)
++      return 12;
++   // GT200 is SM13
++   else if (chipset >= 0x0a0)
++      return 13;
++   else if (chipset >= 0x080)
++      return 11;
++   // this has to be == because 0x63 is older than 0x50 and has no compute
++   else if (chipset == 0x050)
++      return 10;
++   // no compute
++   return 0x00;
++}
++
++uint8_t
++nv_device_info_max_warps_per_mp_for_sm(uint8_t sm)
++{
++   /* These are documented in each architecture's tuning guide. Eg. see:
++    * https://docs.nvidia.com/cuda/blackwell-tuning-guide/index.html#occupancy
++    */
++   switch (sm) {
++   case 10:
++   case 11:
++      return 24;
++   case 12:
++   case 13:
++   case 75:
++      return 32;
++   case 20:
++   case 21:
++   case 86:
++   case 87:
++   case 89:
++   case 120:
++      return 48;
++   case 30:
++   case 32:
++   case 35:
++   case 37:
++   case 50:
++   case 52:
++   case 53:
++   case 60:
++   case 61:
++   case 62:
++   case 70:
++   case 72:
++   case 80:
++   case 90:
++   case 100:
++   case 104:
++      return 64;
++   default:
++      assert(!"unkown SM version");
++      // return the biggest known value
++      return 64;
++   }
++}
++
++uint8_t
++nv_device_info_mp_per_tpc_for_chipset(uint16_t chipset)
++{
++   // GP100 is special and has two, otherwise it's a Volta and newer thing to have two
++   if (chipset == 0x130 || chipset >= 0x140)
++      return 2;
++   return 1;
++}
++
++void
++nv_device_info_init_shared_mem_sizes(struct nv_device_info *info)
++{
++   if (info->sm >= 80) {
++      const uint16_t ampere_shared_mem[10] =
++         { 0, 8, 16, 32, 64, 100, 132, 164, 196, 228 };
++
++      /* Quotes taken from current CUDA docs */
++      if (info->sm >= 120) {
++         /* The docs on this are a bit contradictory, but CUDA tooling reports
++          * values in line with the older SM levels reporting up to 100k.
++          *
++          * For devices of compute capability 12.0, shared memory capacity per
++          * SM is 128KB.
++          * For devices of compute capability 12.0 the maximum shared memory
++          * per thread block is 99 KB.
++          */
++         info->sm_smem_size_count = 6;
++      } else if (info->sm >= 90) {
++         /* Both the NVIDIA H100 GPU and the NVIDIA B200 GPU support shared
++          * memory capacities of 0, 8, 16, 32, 64, 100, 132, 164, 196 and
++          * 228 KB per SM.
++          *
++          * GB10X has the same limits.
++          */
++         info->sm_smem_size_count = 10;
++      } else if (info->sm == 80 || info->sm == 87) {
++         /* The NVIDIA A100 GPU supports shared memory capacity of 0, 8, 16,
++          * 32, 64, 100, 132 or 164 KB per SM.
++          *
++          * Same for GA10B.
++          */
++         info->sm_smem_size_count = 8;
++      } else if (info->sm == 89 || info->sm == 86) {
++         /* GPUs with compute capability 8.6 support shared memory capacity of
++          * 0, 8, 16, 32, 64 or 100 KB per SM.
++          * The NVIDIA Ada GPU architecture supports shared memory capacity of
++          * 0, 8, 16, 32, 64 or 100 KB per SM.
++          */
++         info->sm_smem_size_count = 6;
++      } else {
++         UNREACHABLE("Unknown shared memory support for SM.");
++      }
++
++      assert(info->sm_smem_size_count <= ARRAY_SIZE(ampere_shared_mem));
++      typed_memcpy(info->sm_smem_sizes_kB, ampere_shared_mem,
++                   info->sm_smem_size_count);
++      STATIC_ASSERT(ARRAY_SIZE(ampere_shared_mem) <=
++                    ARRAY_SIZE(info->sm_smem_sizes_kB));
++   } else if (info->sm >= 75) {
++      /* https://docs.nvidia.com/cuda/turing-tuning-guide/index.html#unified-shared-memory-l1-texture-cache
++       *   Turing supports two carveout configurations, either with 64 KB of
++       *   shared memory and 32 KB of L1, or with 32 KB of shared memory and
++       *   64 KB of L1. Turing allows a single thread block to address the full
++       *   64 KB of shared memory.
++       */
++      info->sm_smem_sizes_kB[0] = 32;
++      info->sm_smem_sizes_kB[1] = 64;
++      info->sm_smem_size_count = 2;
++   } else if (info->sm >= 70) {
++      /* https://docs.nvidia.com/cuda/archive/12.9.1/volta-tuning-guide/index.html#unified-shared-memory-l1-texture-cache
++       *
++       *   Volta supports shared memory capacities of 0, 8, 16, 32, 64, or
++       *   96 KB per SM. A new feature, Volta enables a single thread block
++       *   to address the full 96 KB of shared memory.
++       */
++      const uint16_t volta_shared_mem[6] = { 0, 8, 16, 32, 64, 96 };
++      info->sm_smem_size_count = ARRAY_SIZE(volta_shared_mem);
++      typed_memcpy(info->sm_smem_sizes_kB, volta_shared_mem,
++                   info->sm_smem_size_count);
++      STATIC_ASSERT(ARRAY_SIZE(volta_shared_mem) <=
++                    ARRAY_SIZE(info->sm_smem_sizes_kB));
++   } else if (info->sm >= 50) {
++      /* https://docs.nvidia.com/cuda/archive/12.9.1/maxwell-tuning-guide/index.html#shared-memory-capacity
++       *
++       *   GM107 provides 64 KB shared memory per SMM, and GM204 further
++       *   increases this to 96 KB shared memory per SMM.
++       *
++       * https://docs.nvidia.com/cuda/archive/12.9.1/pascal-tuning-guide/index.html#shared-memory-capacity
++       *
++       *   GP100 offers 64 KB shared memory per SM, and GP104 provides 96 KB per SM.
++       *
++       * Limits for Tegra (SM53, SM62) are taken from the now gone occupancy
++       * calculator.
++       */
++      info->sm_smem_size_count = 1;
++      switch (info->sm) {
++      case 50:
++      case 53:
++      case 60:
++      case 62:
++         info->sm_smem_sizes_kB[0] = 64;
++         break;
++      case 52:
++      case 61:
++         info->sm_smem_sizes_kB[0] = 96;
++         break;
++      default:
++         UNREACHABLE("unknown shared mem size for sm");
++         break;
++      }
++   } else if (info->sm == 37) {
++      /* https://docs.nvidia.com/cuda/archive/11.8.0/kepler-tuning-guide/index.html#shared-memory-and-warp-shuffle:
++       *
++       *   GK210 improves on this by increasing the shared memory capacity per
++       *   multiprocessor for each of the configurations described above by a
++       *   further 64 (i.e., the application can select 112 KB, 96 KB, or 80
++       *   KB of shared memory).
++       *
++       *   Note: The maximum shared memory per thread block for all Kepler
++       *   GPUs, including GK210, remains 48 KB.
++       */
++      info->sm_smem_sizes_kB[0] = 80;
++      info->sm_smem_sizes_kB[1] = 96;
++      info->sm_smem_sizes_kB[2] = 112;
++      info->sm_smem_size_count = 3;
++   } else if (info->sm >= 30) {
++      /* NVA0C0_QMDV00_06_L1_CONFIGURATION */
++      info->sm_smem_sizes_kB[0] = 16;
++      info->sm_smem_sizes_kB[1] = 32;
++      info->sm_smem_sizes_kB[2] = 48;
++      info->sm_smem_size_count = 3;
++   } else if (info->sm >= 20) {
++      /* NV90C0_SET_L1_CONFIGURATION */
++      info->sm_smem_sizes_kB[0] = 16;
++      info->sm_smem_sizes_kB[1] = 48;
++      info->sm_smem_size_count = 2;
++   } else {
++      info->sm_smem_sizes_kB[0] = 16;
++      info->sm_smem_size_count = 1;
++   }
++
++   /* See above, despite having more shared memory available, Kepler up to
++    * Pascal can only address up to 48kB per workgroup.
++    */
++   if (info->sm < 70 && info->sm >= 30) {
++      info->max_smem_per_wg_kB = 48;
++   } else {
++      info->max_smem_per_wg_kB =
++         info->sm_smem_sizes_kB[info->sm_smem_size_count - 1];
++   }
++}
+diff --git a/src/nouveau/meson.build b/src/nouveau/meson.build
+index 9c98c65..c9f5dc5 100644
+--- a/src/nouveau/meson.build
++++ b/src/nouveau/meson.build
+@@ -3,7 +3,37 @@
+ 
+ subdir('drm')
+ subdir('headers')
+-subdir('winsys')
++
++# The winsys is libdrm talking to the nouveau kernel driver. On a
++# platform whose kernel-mode driver is not DRM there is nothing for it
++# to talk to, and it does not build against a C library with no
++# sys/mman.h. The Horizon backend under vulkan/nvkmd/horizon/ replaces
++# it; see vulkan/meson.build.
++_nouveau_use_drm = host_machine.system() != 'horizon'
++
++if _nouveau_use_drm
++  subdir('winsys')
++else
++  # horizon_gpu, this project's Vulkan-free GPU layer over libnx and the
++  # `nv` services. It lives outside Mesa — Mesa is a pinned checkout
++  # here, never the place our code lives — so it is named by a build
++  # option rather than found on an include path.
++  _horizon_gpu_dir = get_option('horizon-gpu-dir')
++  if _horizon_gpu_dir == ''
++    error('Building the nouveau Vulkan driver for Horizon needs ' +
++          '-Dhorizon-gpu-dir=<prefix of horizon_gpu>.')
++  endif
++  _horizon_gpu_lib = meson.get_compiler('c').find_library(
++    'horizon_gpu',
++    dirs : [_horizon_gpu_dir / 'lib'],
++    required : true,
++  )
++  idep_horizon_gpu = declare_dependency(
++    include_directories : include_directories(_horizon_gpu_dir / 'include'),
++    dependencies : [_horizon_gpu_lib],
++  )
++endif
++
+ if with_nouveau_vk
+   subdir('rust')
+   subdir('nil')
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index afaee53..60e2b6c 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -69,16 +69,36 @@ nvk_files = files(
+   'nvk_wsi.h',
+   'layers/nvk_app_workarounds.c',
+   'layers/nvk_app_workarounds.h',
+-  'nvkmd/nouveau/nvkmd_nouveau.h',
+-  'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
+-  'nvkmd/nouveau/nvkmd_nouveau_dev.c',
+-  'nvkmd/nouveau/nvkmd_nouveau_mem.c',
+-  'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
+-  'nvkmd/nouveau/nvkmd_nouveau_va.c',
+   'nvkmd/nvkmd.c',
+   'nvkmd/nvkmd.h',
+ )
+ 
++# Which kernel-mode-driver backend to build.
++#
++# The nouveau one is libdrm talking to the nouveau kernel driver; the
++# Horizon one is libnx talking to the `nv` system services. They are not
++# alternatives to choose between at run time — a build targets one
++# operating system — so exactly one is compiled and NVK_USE_DRM says
++# which, because everything DRM-shaped in NVK (drmDevice enumeration,
++# render-node fds, dma-buf) exists only for the first.
++if host_machine.system() == 'horizon'
++  nvk_files += files(
++    'nvkmd/horizon/nvkmd_horizon.h',
++    'nvkmd/horizon/nvkmd_horizon_dev.c',
++    'nvkmd/horizon/nvkmd_horizon_enumerate.c',
++    'nvkmd/horizon/nvkmd_horizon_pdev.c',
++  )
++else
++  nvk_files += files(
++    'nvkmd/nouveau/nvkmd_nouveau.h',
++    'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
++    'nvkmd/nouveau/nvkmd_nouveau_dev.c',
++    'nvkmd/nouveau/nvkmd_nouveau_mem.c',
++    'nvkmd/nouveau/nvkmd_nouveau_pdev.c',
++    'nvkmd/nouveau/nvkmd_nouveau_va.c',
++  )
++endif
++
+ nvkcl_files = files(
+   'cl/nvk_query.cl',
+   'cl/nvk_copy_indirect.cl',
+@@ -118,8 +138,16 @@ nvkcl = custom_target(
+   command : [prog_vtn_bindgen2, '@INPUT@', '@OUTPUT@'],
+ )
+ 
++_nvk_use_drm = host_machine.system() != 'horizon'
++
+ nvk_deps = [
+-  dep_libdrm,
++  # libdrm and the nouveau winsys belong to the DRM backend. On a
++  # platform whose kernel-mode driver is not DRM they are not a missing
++  # dependency — they are the thing being replaced — and neither builds
++  # against a C library with no sys/mman.h.
++  _nvk_use_drm ? dep_libdrm : [],
++  _nvk_use_drm ? idep_nouveau_ws : [],
++  _nvk_use_drm ? [] : idep_horizon_gpu,
+   idep_nak,
+   idep_nil,
+   # Empty where std exists: idep_nak and idep_nil are complete
+@@ -129,7 +157,6 @@ nvk_deps = [
+   idep_nir,
+   idep_mesautil,
+   idep_nouveau_mme,
+-  idep_nouveau_ws,
+   idep_nvidia_headers,
+   idep_vulkan_runtime,
+   idep_vulkan_util,
+@@ -137,7 +164,7 @@ nvk_deps = [
+   idep_vulkan_wsi_headers,
+ ]
+ 
+-nvk_flags = []
++nvk_flags = _nvk_use_drm ? ['-DNVK_USE_DRM'] : []
+ 
+ if with_platform_android
+   nvk_files += files('nvk_android.c')
+diff --git a/src/nouveau/vulkan/nvk_descriptor_table.c b/src/nouveau/vulkan/nvk_descriptor_table.c
+index 4bb5e1d..900ffbe 100644
+--- a/src/nouveau/vulkan/nvk_descriptor_table.c
++++ b/src/nouveau/vulkan/nvk_descriptor_table.c
+@@ -7,7 +7,6 @@
+ #include "nvk_device.h"
+ #include "nvk_physical_device.h"
+ 
+-#include <sys/mman.h>
+ 
+ static VkResult
+ nvk_descriptor_table_grow_locked(struct nvk_device *dev,
+diff --git a/src/nouveau/vulkan/nvk_device_memory.c b/src/nouveau/vulkan/nvk_device_memory.c
+index c035c47..e502936 100644
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -13,7 +13,6 @@
+ #include "util/u_atomic.h"
+ 
+ #include <inttypes.h>
+-#include <sys/mman.h>
+ 
+ /* Supports opaque fd only */
+ const VkExternalMemoryProperties nvk_opaque_fd_mem_props = {
+diff --git a/src/nouveau/vulkan/nvk_instance.c b/src/nouveau/vulkan/nvk_instance.c
+index 5a8464d..171906d 100644
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -11,6 +11,8 @@
+ 
+ #include "util/build_id.h"
+ #include "util/detect_os.h"
++#include "util/mesa-blake3.h"
++#include "util/detect_os.h"
+ #include "util/driconf.h"
+ #include "util/mesa-blake3.h"
+ #include "util/u_debug.h"
+@@ -164,10 +166,22 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+    nvk_init_debug_flags(instance);
+    nvk_init_dri_options(instance);
+ 
++   /* Two ways to find a physical device, and which one applies is a
++    * property of the platform rather than a preference: try_create_for_drm
++    * walks drmGetDevices2, which needs a DRM subsystem to walk.
++    */
++#ifdef NVK_USE_DRM
+    instance->vk.physical_devices.try_create_for_drm =
+       nvk_create_drm_physical_device;
++#else
++   instance->vk.physical_devices.enumerate =
++      nvk_horizon_enumerate_physical_devices;
++#endif
+    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
+ 
++   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
++
++#if defined(HAVE_DL_ITERATE_PHDR) || DETECT_OS_APPLE
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(nvk_CreateInstance);
+    if (!note) {
+@@ -183,8 +197,33 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+       goto fail_init;
+    }
+ 
+-   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
+    copy_build_id_to_sha1(instance->driver_build_sha, note);
++#else
++   /* util/build_id.h declares its whole API under the same condition:
++    * finding the ELF note needs dl_iterate_phdr, which a platform with
++    * no dynamic loader does not have. The identifier is still needed —
++    * it becomes driverUUID and the pipeline-cache UUID, both of which
++    * must change when the driver changes — so it is derived from what
++    * this build does know about itself.
++    *
++    * PACKAGE_VERSION is Mesa's version and MESA_GIT_SHA1 is the commit
++    * it was built from when the build system could work that out. That
++    * is coarser than a link-time build id: two builds of the same
++    * source with different local patches hash the same. It is recorded
++    * as a limitation rather than papered over with __DATE__, which
++    * would change the UUID on every rebuild of unchanged source and
++    * break reproducible builds.
++    */
++   struct mesa_blake3 blake3_ctx;
++   _mesa_blake3_init(&blake3_ctx);
++   _mesa_blake3_update(&blake3_ctx, PACKAGE_VERSION,
++                       sizeof(PACKAGE_VERSION) - 1);
++#ifdef MESA_GIT_SHA1
++   _mesa_blake3_update(&blake3_ctx, MESA_GIT_SHA1,
++                       sizeof(MESA_GIT_SHA1) - 1);
++#endif
++   _mesa_blake3_final(&blake3_ctx, instance->driver_build_sha);
++#endif
+ 
+    *pInstance = nvk_instance_to_handle(instance);
+    return VK_SUCCESS;
+diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
+index 1a610c5..63ad5b0 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -28,7 +28,14 @@
+ #include "vk_shader_module.h"
+ #include "vulkan/wsi/wsi_common.h"
+ 
++/* major()/minor() decompose a dev_t, which is a DRM device number here.
++ * sys/sysmacros.h is glibc's home for them and a C library with no
++ * device numbers does not have it — nvkmd_pdev::drm is all zero there
++ * and the block below is compiled out with it.
++ */
++#ifdef NVK_USE_DRM
+ #include <sys/sysmacros.h>
++#endif
+ 
+ #include "nv_push.h"
+ #include "cl90c0.h"
+@@ -1413,20 +1420,19 @@ nvk_get_vram_heap_available(struct nvk_physical_device *pdev)
+    return pdev->info.vram_size_B - used;
+ }
+ 
++/* Everything about building an nvk_physical_device that does not depend
++ * on *how* the kernel-mode driver was opened. The DRM path below finds
++ * one through a drmDevice; a platform with no DRM creates one directly
++ * and calls in here.
++ */
+ VkResult
+-nvk_create_drm_physical_device(struct vk_instance *_instance,
+-                               struct _drmDevice *drm_device,
+-                               struct vk_physical_device **pdev_out)
++nvk_create_physical_device(struct vk_instance *_instance,
++                           struct nvkmd_pdev *nvkmd,
++                           struct vk_physical_device **pdev_out)
+ {
+    struct nvk_instance *instance = (struct nvk_instance *)_instance;
+    VkResult result;
+ 
+-   struct nvkmd_pdev *nvkmd;
+-   result = nvkmd_try_create_pdev_for_drm(drm_device, &instance->vk.base,
+-                                          instance->debug_flags, &nvkmd);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+    /* We don't support anything pre-Kepler */
+    if (nvkmd->dev_info.cls_eng3d < KEPLER_A) {
+       result = VK_ERROR_INCOMPATIBLE_DRIVER;
+@@ -1477,6 +1483,7 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
+    struct vk_properties properties;
+    nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
+ 
++#ifdef NVK_USE_DRM
+    if (nvkmd->drm.render_dev) {
+       properties.drmHasRender = true;
+       properties.drmRenderMajor = major(nvkmd->drm.render_dev);
+@@ -1488,6 +1495,7 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
+       properties.drmPrimaryMajor = major(nvkmd->drm.primary_dev);
+       properties.drmPrimaryMinor = minor(nvkmd->drm.primary_dev);
+    }
++#endif /* NVK_USE_DRM */
+ 
+    result = vk_physical_device_init(&pdev->vk, &instance->vk,
+                                     &supported_extensions,
+@@ -1636,6 +1644,25 @@ fail_nvkmd:
+    return result;
+ }
+ 
++#ifdef NVK_USE_DRM
++VkResult
++nvk_create_drm_physical_device(struct vk_instance *_instance,
++                               struct _drmDevice *drm_device,
++                               struct vk_physical_device **pdev_out)
++{
++   struct nvk_instance *instance = (struct nvk_instance *)_instance;
++
++   struct nvkmd_pdev *nvkmd;
++   VkResult result =
++      nvkmd_try_create_pdev_for_drm(drm_device, &instance->vk.base,
++                                    instance->debug_flags, &nvkmd);
++   if (result != VK_SUCCESS)
++      return result;
++
++   return nvk_create_physical_device(_instance, nvkmd, pdev_out);
++}
++#endif /* NVK_USE_DRM */
++
+ void
+ nvk_physical_device_destroy(struct vk_physical_device *vk_pdev)
+ {
+diff --git a/src/nouveau/vulkan/nvk_physical_device.h b/src/nouveau/vulkan/nvk_physical_device.h
+index b104b15..d2a20e0 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.h
++++ b/src/nouveau/vulkan/nvk_physical_device.h
+@@ -80,6 +80,16 @@ nvk_physical_device_instance(const struct nvk_physical_device *pdev)
+    return (struct nvk_instance *)pdev->vk.instance;
+ }
+ 
++VkResult nvk_create_physical_device(struct vk_instance *vk_instance,
++                                    struct nvkmd_pdev *nvkmd,
++                                    struct vk_physical_device **pdev_out);
++
++/* Enumeration on a platform with no DRM. Defined by the Horizon
++ * kernel-mode-driver backend, which is the only one that has no
++ * drmDevice to be found through.
++ */
++VkResult nvk_horizon_enumerate_physical_devices(struct vk_instance *vk_instance);
++
+ VkResult nvk_create_drm_physical_device(struct vk_instance *vk_instance,
+                                         struct _drmDevice *drm_device,
+                                         struct vk_physical_device **pdev_out);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+new file mode 100644
+index 0000000..a87949b
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef NVKMD_HORIZON_H
++#define NVKMD_HORIZON_H 1
++
++#include "nvkmd/nvkmd.h"
++
++#include "horizon_gpu/channel.h"
++#include "horizon_gpu/device.h"
++#include "horizon_gpu/memory.h"
++#include "horizon_gpu/result.h"
++#include "horizon_gpu/submit.h"
++#include "horizon_gpu/sync.h"
++#include "horizon_gpu/vm.h"
++
++#include "util/simple_mtx.h"
++
++/*
++ * The Horizon OS kernel-mode-driver backend.
++ *
++ * WHAT IT TALKS TO. horizon_gpu, this project's Vulkan-free GPU layer
++ * over libnx and the `nv` system services. There is no DRM here: no
++ * render node, no /dev/dri, no nouveau uAPI and no GEM handles. Every
++ * object below is backed by an NvMap, a GPU address-space reservation
++ * or a GPFIFO channel, referenced by its own typed handle.
++ *
++ * ONE DEVICE PER PROCESS (decision D9). Horizon's `nv` session is
++ * per process: horizon_gpu_device_create() brings up nvInitialize, the
++ * fence, map and gpu services and one GPU address space, and the GM20B
++ * characteristics can only be queried once that is up. There is
++ * therefore no way to describe the physical device without opening it,
++ * which is what nouveau does by opening the render node a second time
++ * (nvkmd_nouveau_dev.c:40).
++ *
++ * So the pdev owns the horizon_gpu_device and every nvkmd_dev created
++ * from it shares that one, under a reference count. Vulkan permits
++ * several VkDevices from one VkPhysicalDevice; they share the GPU
++ * address space, which is harmless because every VA in it is handed
++ * out by horizon_gpu_vm_reserve() and no two reservations overlap.
++ */
++
++struct nvkmd_horizon_pdev {
++   struct nvkmd_pdev base;
++
++   horizon_gpu_device *gpu;
++   horizon_gpu_device_info gpu_info;
++
++   /* Guards refcnt. The pdev outlives every dev, so the device itself
++    * is only destroyed in nvkmd_horizon_pdev_destroy; the count exists
++    * to catch a dev outliving the pdev, which would be a driver bug
++    * rather than an application one.
++    */
++   simple_mtx_t mutex;
++   uint32_t dev_refcnt;
++};
++
++NVKMD_DECL_SUBCLASS(pdev, horizon);
++
++struct nvkmd_horizon_dev {
++   struct nvkmd_dev base;
++
++   /* Borrowed from the pdev; not owned. See the header comment. */
++   horizon_gpu_device *gpu;
++};
++
++NVKMD_DECL_SUBCLASS(dev, horizon);
++
++VkResult nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
++                                   enum nvk_debug debug_flags,
++                                   struct nvkmd_pdev **pdev_out);
++
++VkResult nvkmd_horizon_create_dev(struct nvkmd_pdev *pdev,
++                                  struct vk_object_base *log_obj,
++                                  struct nvkmd_dev **dev_out);
++
++/* horizon_gpu_result -> VkResult, in one place.
++ *
++ * The mapping is deliberately narrow: horizon_gpu reports what failed,
++ * and Vulkan has three shapes of failure a driver may return from these
++ * paths. Anything that is not out-of-memory and not a timeout is
++ * VK_ERROR_UNKNOWN rather than a guess, and the caller logs the
++ * horizon_gpu result alongside it so the real reason is not lost.
++ */
++VkResult nvkmd_horizon_result(horizon_gpu_result res);
++
++#endif /* NVKMD_HORIZON_H */
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+new file mode 100644
+index 0000000..14696c0
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -0,0 +1,158 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vk_log.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/u_memory.h"
++
++#include <inttypes.h>
++
++static void
++nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)
++{
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
++   struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_dev->pdev);
++
++   simple_mtx_destroy(&_dev->mems_mutex);
++
++   simple_mtx_lock(&pdev->mutex);
++   assert(pdev->dev_refcnt > 0);
++   pdev->dev_refcnt--;
++   simple_mtx_unlock(&pdev->mutex);
++
++   /* The horizon_gpu_device itself is not destroyed here: it is the
++    * pdev's, shared by every dev created from it (decision D9, see
++    * nvkmd_horizon.h).
++    */
++   FREE(dev);
++}
++
++static uint64_t
++nvkmd_horizon_dev_get_gpu_timestamp(struct nvkmd_dev *_dev)
++{
++   /* Milestone item 8. horizon_gpu has no GPU timestamp query yet —
++    * it is one of the six extensions Phase 4 step 1 enumerated — and
++    * the only caller is vkGetCalibratedTimestampsKHR, which NVK gates
++    * on VK_EXT_calibrated_timestamps. Returning zero here would be a
++    * wrong answer rather than a missing one, so this is deliberately
++    * unreachable until the extension exists.
++    */
++   UNREACHABLE("GPU timestamps are not implemented on Horizon yet");
++}
++
++static int
++nvkmd_horizon_dev_get_drm_fd(struct nvkmd_dev *_dev)
++{
++   /* No DRM, and nothing invented to look like one. */
++   return -1;
++}
++
++static VkResult
++nvkmd_horizon_dev_alloc_mem(struct nvkmd_dev *_dev,
++                            struct vk_object_base *log_obj,
++                            uint64_t size_B, uint64_t align_B,
++                            enum nvkmd_mem_flags flags,
++                            struct nvkmd_mem **mem_out)
++{
++   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                    "nvkmd_horizon: memory objects are milestone item 3");
++}
++
++static VkResult
++nvkmd_horizon_dev_alloc_va(struct nvkmd_dev *_dev,
++                           struct vk_object_base *log_obj,
++                           enum nvkmd_va_flags flags, uint8_t pte_kind,
++                           uint64_t size_B, uint64_t align_B,
++                           uint64_t fixed_addr, struct nvkmd_va **va_out)
++{
++   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                    "nvkmd_horizon: the VA heap is milestone item 4");
++}
++
++static VkResult
++nvkmd_horizon_dev_create_ctx(struct nvkmd_dev *_dev,
++                             struct vk_object_base *log_obj,
++                             enum nvkmd_engines engines,
++                             struct nvkmd_ctx **ctx_out)
++{
++   return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                    "nvkmd_horizon: contexts are milestone item 6");
++}
++
++const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
++   .destroy = nvkmd_horizon_dev_destroy,
++   .get_gpu_timestamp = nvkmd_horizon_dev_get_gpu_timestamp,
++   .get_drm_fd = nvkmd_horizon_dev_get_drm_fd,
++   .alloc_mem = nvkmd_horizon_dev_alloc_mem,
++   /* alloc_tiled_mem and import_dma_buf are left NULL on purpose:
++    * nvkmd_info says has_alloc_tiled and has_dma_buf are false, and
++    * nvkmd.h's inline wrappers assert on that before dispatching, so a
++    * caller that ignored the capability faults here rather than
++    * silently getting a wrong allocation.
++    */
++   .alloc_va = nvkmd_horizon_dev_alloc_va,
++   .create_ctx = nvkmd_horizon_dev_create_ctx,
++};
++
++VkResult
++nvkmd_horizon_create_dev(struct nvkmd_pdev *_pdev,
++                         struct vk_object_base *log_obj,
++                         struct nvkmd_dev **dev_out)
++{
++   struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_pdev);
++
++   struct nvkmd_horizon_dev *dev = CALLOC_STRUCT(nvkmd_horizon_dev);
++   if (dev == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   dev->base.ops = &nvkmd_horizon_dev_ops;
++   dev->base.pdev = _pdev;
++   dev->gpu = pdev->gpu;
++
++   /* The usable GPU VA range, taken from what the address space
++    * actually reported rather than from a constant. horizon_gpu returns
++    * two regions — small-page and big-page — and nvkmd wants one
++    * interval, so this is the span they cover between them.
++    *
++    * va_start is deliberately not zero: address zero has to stay
++    * unmapped so a null GPU pointer faults instead of reading whatever
++    * happens to be mapped there.
++    */
++   const horizon_gpu_va_region_info *small = &pdev->gpu_info.va_regions[0];
++   const horizon_gpu_va_region_info *big = &pdev->gpu_info.va_regions[1];
++
++   uint64_t start = MIN2(small->base, big->base);
++   uint64_t small_end = small->base + small->pages * small->page_size;
++   uint64_t big_end = big->base + big->pages * big->page_size;
++   uint64_t end = MAX2(small_end, big_end);
++
++   if (start == 0)
++      start = small->page_size;
++
++   if (start >= end) {
++      FREE(dev);
++      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                       "nvkmd_horizon: the address space reported an empty "
++                       "VA range (0x%" PRIx64 "..0x%" PRIx64 ")", start, end);
++   }
++
++   dev->base.va_start = start;
++   dev->base.va_end = end;
++
++   list_inithead(&dev->base.mems);
++   simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
++
++   simple_mtx_lock(&pdev->mutex);
++   pdev->dev_refcnt++;
++   simple_mtx_unlock(&pdev->mutex);
++
++   *dev_out = &dev->base;
++
++   return VK_SUCCESS;
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
+new file mode 100644
+index 0000000..299997b
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
+@@ -0,0 +1,62 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * Physical-device enumeration without DRM.
++ *
++ * The Vulkan runtime offers two hooks: try_create_for_drm, which walks
++ * drmGetDevices2 and calls back per device, and enumerate, which hands
++ * the whole job to the driver (vk_instance.h). Horizon has no DRM, so
++ * this uses the second one — nothing here fabricates a render node, a
++ * drmDevice or a file descriptor to satisfy the first.
++ *
++ * There is exactly one GPU: GM20B is part of the SoC. So enumeration is
++ * "open the nv services; if that works there is one device".
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "nvk_instance.h"
++#include "nvk_physical_device.h"
++
++#include "vk_alloc.h"
++#include "vk_log.h"
++#include "vk_physical_device.h"
++
++VkResult
++nvk_horizon_enumerate_physical_devices(struct vk_instance *_instance)
++{
++   struct nvk_instance *instance = (struct nvk_instance *)_instance;
++
++   struct nvkmd_pdev *nvkmd;
++   VkResult result = nvkmd_horizon_create_pdev(&instance->vk.base,
++                                               instance->debug_flags,
++                                               &nvkmd);
++   if (result != VK_SUCCESS) {
++      /* No GPU is not an error: a process that cannot reach the nv
++       * services simply has no Vulkan device, and Vulkan says that is
++       * an empty list rather than a failed call.
++       */
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++         return VK_SUCCESS;
++      return result;
++   }
++
++   struct vk_physical_device *pdev;
++   result = nvk_create_physical_device(_instance, nvkmd, &pdev);
++   if (result != VK_SUCCESS) {
++      /* nvk_create_physical_device owns nvkmd on success and destroys
++       * it on every failure path of its own, so there is nothing to
++       * free here.
++       */
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++         return VK_SUCCESS;
++      return result;
++   }
++
++   list_addtail(&pdev->link, &_instance->physical_devices.list);
++
++   return VK_SUCCESS;
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+new file mode 100644
+index 0000000..6365634
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -0,0 +1,287 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "vulkan/vulkan_core.h"
++#include "vk_log.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/u_memory.h"
++
++#include "util/u_math.h"
++
++#include <inttypes.h>
++#include <string.h>
++
++VkResult
++nvkmd_horizon_result(horizon_gpu_result res)
++{
++   switch (res.status) {
++   case HORIZON_GPU_OK:
++      return VK_SUCCESS;
++   case HORIZON_GPU_ERR_OUT_OF_MEMORY:
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   case HORIZON_GPU_ERR_VA_EXHAUSTED:
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   case HORIZON_GPU_ERR_TIMEOUT:
++      return VK_TIMEOUT;
++   case HORIZON_GPU_ERR_CHANNEL_LOST:
++      return VK_ERROR_DEVICE_LOST;
++   case HORIZON_GPU_ERR_UNSUPPORTED:
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++   default:
++      /* INVALID_ARG, OVERFLOW, NV, BUSY, LEAK and STATE are all driver
++       * bugs or service failures with no Vulkan equivalent. They are
++       * reported as unknown rather than mapped to a plausible-looking
++       * error, and every call site logs the horizon_gpu status and the
++       * libnx Result beside it so the real reason survives.
++       */
++      return VK_ERROR_UNKNOWN;
++   }
++}
++
++/* GM20B's chipset number, as NVK spells chipsets.
++ *
++ * nv_device_info::chipset is the NVIDIA chip id: 0x12b is GM20B, which
++ * is what `sm_for_chipset` in nv_device_info_chipset.c maps to SM 53 and
++ * what nouveau reports for a Tegra X1. It is derived here from the
++ * *queried* architecture and implementation rather than written down:
++ * horizon_gpu reports arch = 0x120 (NVGPU_GPU_ARCH_GM200) and impl = 0xb
++ * (NVGPU_GPU_IMPL_GM20B), and the chipset number is the two nibbles
++ * combined, exactly as Linux's nvgpu and nouveau agree.
++ */
++static uint16_t
++chipset_from_arch_impl(uint32_t arch, uint32_t impl)
++{
++   return (uint16_t)((arch & 0xff0) | (impl & 0xf));
++}
++
++static void
++nvkmd_horizon_pdev_destroy(struct nvkmd_pdev *_pdev)
++{
++   struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_pdev);
++
++   /* A dev outliving its pdev is a driver bug, not an application one:
++    * the Vulkan runtime destroys every VkDevice before the instance
++    * that owns the VkPhysicalDevice. Saying so is better than tearing
++    * down the nv session under a device that is still using it.
++    */
++   assert(pdev->dev_refcnt == 0);
++
++   horizon_gpu_result res = horizon_gpu_device_destroy(pdev->gpu);
++   if (res.status != HORIZON_GPU_OK) {
++      /* horizon_gpu_device_destroy fails with ERR_LEAK when a child
++       * object is still alive, and logs each non-zero counter itself.
++       * Nothing was torn down in that case, so the leak is reported
++       * and the device is deliberately not freed a second time.
++       */
++      mesa_loge("horizon_gpu_device_destroy failed: status %d, nv 0x%08" PRIx32,
++                (int)res.status, res.nv);
++   }
++
++   simple_mtx_destroy(&pdev->mutex);
++   FREE(pdev);
++}
++
++static uint64_t
++nvkmd_horizon_pdev_get_vram_used(struct nvkmd_pdev *_pdev)
++{
++   /* The Switch has no VRAM: GM20B is an SoC part and every allocation
++    * comes out of system memory, which is why nvkmd_info::
++    * has_get_vram_used is false and why nvk never calls this. Answering
++    * zero is the truth rather than a placeholder.
++    */
++   return 0;
++}
++
++static int
++nvkmd_horizon_pdev_get_drm_primary_fd(struct nvkmd_pdev *_pdev)
++{
++   /* There is no DRM here, and nothing is invented to pretend
++    * otherwise: no render node, no synthetic descriptor. -1 is what
++    * nvkmd defines as "no fd", and nvk_physical_device.c only uses the
++    * answer to fill drmHasPrimary, which stays false.
++    */
++   return -1;
++}
++
++const struct nvkmd_pdev_ops nvkmd_horizon_pdev_ops = {
++   .destroy = nvkmd_horizon_pdev_destroy,
++   .get_vram_used = nvkmd_horizon_pdev_get_vram_used,
++   .get_drm_primary_fd = nvkmd_horizon_pdev_get_drm_primary_fd,
++   .create_dev = nvkmd_horizon_create_dev,
++};
++
++static void
++fill_dev_info(struct nv_device_info *info,
++              const horizon_gpu_device_info *gpu)
++{
++   memset(info, 0, sizeof(*info));
++
++   /* GM20B is part of the Tegra X1 SoC, not a card on a bus. Saying so
++    * is what makes nv_device_uuid() skip the PCI fields and what tells
++    * nvk there is no VRAM heap.
++    */
++   info->type = NV_DEVICE_TYPE_SOC;
++   info->chipset = chipset_from_arch_impl(gpu->arch, gpu->impl);
++   info->device_id = 0;
++
++   /* chipname comes from the nv services ("gm20b"); it is the same
++    * string nouveau derives, so it is used rather than reconstructed.
++    */
++   snprintf(info->chipset_name, sizeof(info->chipset_name), "%s",
++            gpu->chipname);
++   snprintf(info->device_name, sizeof(info->device_name), "NVIDIA %s",
++            gpu->chipname);
++
++   info->gpc_count = gpu->num_gpc;
++   info->tpc_count = gpu->num_gpc * gpu->num_tpc_per_gpc;
++
++   /* Pure functions of the chipset, shared with the nouveau backend
++    * rather than copied (decision D10): they describe the chip.
++    */
++   info->sm = nv_device_info_sm_for_chipset(info->chipset);
++   info->max_warps_per_mp =
++      nv_device_info_max_warps_per_mp_for_sm(info->sm);
++   info->mp_per_tpc = nv_device_info_mp_per_tpc_for_chipset(info->chipset);
++   nv_device_info_init_shared_mem_sizes(info);
++
++   /* Engine classes, queried from the nv services rather than assumed
++    * from the chipset (docs/known-risks.md R7).
++    */
++   info->cls_copy = gpu->dma_copy_class;
++   info->cls_eng2d = gpu->twod_class;
++   info->cls_eng3d = gpu->threed_class;
++   info->cls_m2mf = gpu->inline_to_memory_class;
++   info->cls_compute = gpu->compute_class;
++   info->cls_gpfifo = gpu->gpfifo_class;
++
++   /* No VRAM and no BAR: an SoC part addressing system memory. nvk
++    * reads vram_size_B only when type != NV_DEVICE_TYPE_SOC.
++    */
++   info->vram_size_B = 0;
++   info->bar_size_B = 0;
++
++   /* The atom size for a non-coherent map. Horizon's NvMap allocations
++    * are page-granular and the CPU cache line on Cortex-A57 is 64 B;
++    * the compression page size the services report is the smallest
++    * unit the GPU's memory subsystem addresses coherently, so it is
++    * used rather than a constant.
++    */
++   info->nc_atom_size_B = gpu->compression_page_size;
++
++   /* Tegra has no separate copy-engine queue exposed through `nv`; work
++    * goes through the one GPFIFO channel. Advertising a transfer queue
++    * would promise a second submission path that does not exist.
++    */
++   info->has_transfer_queue = false;
++
++   /* Zcull is queryable on Horizon but is not read here: it belongs to
++    * the channel, and nothing in Phase 4 uses it. has_zcull_info stays
++    * false, which is what nvk checks before touching zcull_info.
++    */
++   info->has_zcull_info = false;
++}
++
++VkResult
++nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
++                          enum nvk_debug debug_flags,
++                          struct nvkmd_pdev **pdev_out)
++{
++   struct nvkmd_horizon_pdev *pdev = CALLOC_STRUCT(nvkmd_horizon_pdev);
++   if (pdev == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   pdev->base.ops = &nvkmd_horizon_pdev_ops;
++   pdev->base.debug_flags = debug_flags;
++   simple_mtx_init(&pdev->mutex, mtx_plain);
++
++   /* Bringing up the nv services is what makes the GM20B facts
++    * queryable at all — there is no way to describe the device without
++    * opening it. Decision D9: the pdev owns this and every nvkmd_dev
++    * shares it.
++    */
++   horizon_gpu_result res = horizon_gpu_device_create(NULL, &pdev->gpu);
++   if (res.status != HORIZON_GPU_OK) {
++      VkResult vk_res = nvkmd_horizon_result(res);
++      simple_mtx_destroy(&pdev->mutex);
++      FREE(pdev);
++      /* Not a driver failure when the services are simply unavailable:
++       * a process without the nv permissions has no GPU, which is
++       * INCOMPATIBLE_DRIVER rather than an error to propagate.
++       */
++      if (vk_res == VK_ERROR_UNKNOWN)
++         return VK_ERROR_INCOMPATIBLE_DRIVER;
++      return vk_errorf(log_obj, vk_res,
++                       "horizon_gpu_device_create failed: status %d, "
++                       "nv 0x%08" PRIx32, (int)res.status, res.nv);
++   }
++
++   res = horizon_gpu_device_get_info(pdev->gpu, &pdev->gpu_info);
++   if (res.status != HORIZON_GPU_OK) {
++      horizon_gpu_device_destroy(pdev->gpu);
++      simple_mtx_destroy(&pdev->mutex);
++      FREE(pdev);
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_device_get_info failed: status %d, "
++                       "nv 0x%08" PRIx32, (int)res.status, res.nv);
++   }
++
++   fill_dev_info(&pdev->base.dev_info, &pdev->gpu_info);
++
++   /* What this backend can and cannot do. Each false is a statement
++    * about Horizon, not a gap left for later:
++    *
++    *   has_dma_buf        there is no dma-buf and no DRM to carry one.
++    *                      Sharing between processes on Horizon is a
++    *                      different mechanism entirely (Phase 6).
++    *   has_get_vram_used  there is no VRAM.
++    *   has_alloc_tiled    NvMap allocations carry no PTE kind of their
++    *                      own; the kind is a property of the *mapping*
++    *                      on this platform, applied at
++    *                      horizon_gpu_vm_map time.
++    *   has_map_fixed      NvMap gives back a CPU pointer of its own
++    *                      choosing; there is no mmap(MAP_FIXED).
++    *   has_overmap        follows from has_map_fixed.
++    *   has_compression    the services report a compression page size,
++    *                      but nothing has exercised compressed kinds on
++    *                      this chip yet, and claiming it before it is
++    *                      measured would corrupt images rather than
++    *                      fail.
++    */
++   pdev->base.kmd_info = (struct nvkmd_info) {
++      .has_dma_buf = false,
++      .has_get_vram_used = false,
++      .has_alloc_tiled = false,
++      .has_map_fixed = false,
++      .has_overmap = false,
++      .has_compression = false,
++   };
++
++   /* Bind alignment is the address space's big-page size: a mapping
++    * must start on one, because that is the granularity the GPU MMU
++    * fills. Queried, never assumed — as_big_page_size is what the
++    * address space was actually created with.
++    */
++   pdev->base.bind_align_B = pdev->gpu_info.as_big_page_size;
++
++   /* No DRM device numbers. nvk_physical_device.c only reads these to
++    * fill drmHasRender/drmHasPrimary, which stay false.
++    */
++   pdev->base.drm.render_dev = 0;
++   pdev->base.drm.primary_dev = 0;
++
++   /* Sync types are decision D11 and belong to milestone item 8. Until
++    * then the pdev advertises none, which is a build-visible gap
++    * rather than a silently wrong answer.
++    */
++   pdev->base.sync_types = NULL;
++
++   *pdev_out = &pdev->base;
++
++   return VK_SUCCESS;
++}
+diff --git a/src/nouveau/winsys/nouveau_device.c b/src/nouveau/winsys/nouveau_device.c
+index f5ad9d5..69e25e1 100644
+--- a/src/nouveau/winsys/nouveau_device.c
++++ b/src/nouveau/winsys/nouveau_device.c
+@@ -50,266 +50,6 @@ name_for_chip(uint32_t dev_id,
+    return name;
+ }
+ 
+-static uint8_t
+-sm_for_chipset(uint16_t chipset)
+-{
+-   if (chipset >= 0x1b0)
+-      return 120;
+-   else if (chipset >= 0x1a0)
+-      return 100;
+-   else if (chipset >= 0x190)
+-      return 89;
+-   // GH100 is older than AD10X, but is SM90
+-   else if (chipset >= 0x180)
+-      return 90;
+-   else if (chipset == 0x17b)
+-      return 87;
+-   else if (chipset >= 0x172)
+-      return 86;
+-   else if (chipset >= 0x170)
+-      return 80;
+-   else if (chipset >= 0x160)
+-      return 75;
+-   else if (chipset >= 0x14b)
+-      return 72;
+-   else if (chipset >= 0x140)
+-      return 70;
+-   else if (chipset >= 0x13b)
+-      return 62;
+-   else if (chipset >= 0x132)
+-      return 61;
+-   else if (chipset >= 0x130)
+-      return 60;
+-   else if (chipset >= 0x12b)
+-      return 53;
+-   else if (chipset >= 0x120)
+-      return 52;
+-   else if (chipset >= 0x110)
+-      return 50;
+-   // TODO: 37
+-   else if (chipset >= 0x0f0)
+-      return 35;
+-   else if (chipset >= 0x0ea)
+-      return 32;
+-   else if (chipset >= 0x0e0)
+-      return 30;
+-   // GF110 is SM20
+-   else if (chipset == 0x0c8)
+-      return 20;
+-   else if (chipset >= 0x0c1)
+-      return 21;
+-   else if (chipset >= 0x0c0)
+-      return 20;
+-   else if (chipset >= 0x0a3)
+-      return 12;
+-   // GT200 is SM13
+-   else if (chipset >= 0x0a0)
+-      return 13;
+-   else if (chipset >= 0x080)
+-      return 11;
+-   // this has to be == because 0x63 is older than 0x50 and has no compute
+-   else if (chipset == 0x050)
+-      return 10;
+-   // no compute
+-   return 0x00;
+-}
+-
+-static uint8_t
+-max_warps_per_mp_for_sm(uint8_t sm)
+-{
+-   /* These are documented in each architecture's tuning guide. Eg. see:
+-    * https://docs.nvidia.com/cuda/blackwell-tuning-guide/index.html#occupancy
+-    */
+-   switch (sm) {
+-   case 10:
+-   case 11:
+-      return 24;
+-   case 12:
+-   case 13:
+-   case 75:
+-      return 32;
+-   case 20:
+-   case 21:
+-   case 86:
+-   case 87:
+-   case 89:
+-   case 120:
+-      return 48;
+-   case 30:
+-   case 32:
+-   case 35:
+-   case 37:
+-   case 50:
+-   case 52:
+-   case 53:
+-   case 60:
+-   case 61:
+-   case 62:
+-   case 70:
+-   case 72:
+-   case 80:
+-   case 90:
+-   case 100:
+-   case 104:
+-      return 64;
+-   default:
+-      assert(!"unkown SM version");
+-      // return the biggest known value
+-      return 64;
+-   }
+-}
+-
+-static uint8_t
+-mp_per_tpc_for_chipset(uint16_t chipset)
+-{
+-   // GP100 is special and has two, otherwise it's a Volta and newer thing to have two
+-   if (chipset == 0x130 || chipset >= 0x140)
+-      return 2;
+-   return 1;
+-}
+-
+-static void
+-init_shared_mem_sizes(struct nv_device_info *info)
+-{
+-   if (info->sm >= 80) {
+-      const uint16_t ampere_shared_mem[10] =
+-         { 0, 8, 16, 32, 64, 100, 132, 164, 196, 228 };
+-
+-      /* Quotes taken from current CUDA docs */
+-      if (info->sm >= 120) {
+-         /* The docs on this are a bit contradictory, but CUDA tooling reports
+-          * values in line with the older SM levels reporting up to 100k.
+-          *
+-          * For devices of compute capability 12.0, shared memory capacity per
+-          * SM is 128KB.
+-          * For devices of compute capability 12.0 the maximum shared memory
+-          * per thread block is 99 KB.
+-          */
+-         info->sm_smem_size_count = 6;
+-      } else if (info->sm >= 90) {
+-         /* Both the NVIDIA H100 GPU and the NVIDIA B200 GPU support shared
+-          * memory capacities of 0, 8, 16, 32, 64, 100, 132, 164, 196 and
+-          * 228 KB per SM.
+-          *
+-          * GB10X has the same limits.
+-          */
+-         info->sm_smem_size_count = 10;
+-      } else if (info->sm == 80 || info->sm == 87) {
+-         /* The NVIDIA A100 GPU supports shared memory capacity of 0, 8, 16,
+-          * 32, 64, 100, 132 or 164 KB per SM.
+-          *
+-          * Same for GA10B.
+-          */
+-         info->sm_smem_size_count = 8;
+-      } else if (info->sm == 89 || info->sm == 86) {
+-         /* GPUs with compute capability 8.6 support shared memory capacity of
+-          * 0, 8, 16, 32, 64 or 100 KB per SM.
+-          * The NVIDIA Ada GPU architecture supports shared memory capacity of
+-          * 0, 8, 16, 32, 64 or 100 KB per SM.
+-          */
+-         info->sm_smem_size_count = 6;
+-      } else {
+-         UNREACHABLE("Unknown shared memory support for SM.");
+-      }
+-
+-      assert(info->sm_smem_size_count <= ARRAY_SIZE(ampere_shared_mem));
+-      typed_memcpy(info->sm_smem_sizes_kB, ampere_shared_mem,
+-                   info->sm_smem_size_count);
+-      STATIC_ASSERT(ARRAY_SIZE(ampere_shared_mem) <=
+-                    ARRAY_SIZE(info->sm_smem_sizes_kB));
+-   } else if (info->sm >= 75) {
+-      /* https://docs.nvidia.com/cuda/turing-tuning-guide/index.html#unified-shared-memory-l1-texture-cache
+-       *   Turing supports two carveout configurations, either with 64 KB of
+-       *   shared memory and 32 KB of L1, or with 32 KB of shared memory and
+-       *   64 KB of L1. Turing allows a single thread block to address the full
+-       *   64 KB of shared memory.
+-       */
+-      info->sm_smem_sizes_kB[0] = 32;
+-      info->sm_smem_sizes_kB[1] = 64;
+-      info->sm_smem_size_count = 2;
+-   } else if (info->sm >= 70) {
+-      /* https://docs.nvidia.com/cuda/archive/12.9.1/volta-tuning-guide/index.html#unified-shared-memory-l1-texture-cache
+-       *
+-       *   Volta supports shared memory capacities of 0, 8, 16, 32, 64, or
+-       *   96 KB per SM. A new feature, Volta enables a single thread block
+-       *   to address the full 96 KB of shared memory.
+-       */
+-      const uint16_t volta_shared_mem[6] = { 0, 8, 16, 32, 64, 96 };
+-      info->sm_smem_size_count = ARRAY_SIZE(volta_shared_mem);
+-      typed_memcpy(info->sm_smem_sizes_kB, volta_shared_mem,
+-                   info->sm_smem_size_count);
+-      STATIC_ASSERT(ARRAY_SIZE(volta_shared_mem) <=
+-                    ARRAY_SIZE(info->sm_smem_sizes_kB));
+-   } else if (info->sm >= 50) {
+-      /* https://docs.nvidia.com/cuda/archive/12.9.1/maxwell-tuning-guide/index.html#shared-memory-capacity
+-       *
+-       *   GM107 provides 64 KB shared memory per SMM, and GM204 further
+-       *   increases this to 96 KB shared memory per SMM.
+-       *
+-       * https://docs.nvidia.com/cuda/archive/12.9.1/pascal-tuning-guide/index.html#shared-memory-capacity
+-       *
+-       *   GP100 offers 64 KB shared memory per SM, and GP104 provides 96 KB per SM.
+-       *
+-       * Limits for Tegra (SM53, SM62) are taken from the now gone occupancy
+-       * calculator.
+-       */
+-      info->sm_smem_size_count = 1;
+-      switch (info->sm) {
+-      case 50:
+-      case 53:
+-      case 60:
+-      case 62:
+-         info->sm_smem_sizes_kB[0] = 64;
+-         break;
+-      case 52:
+-      case 61:
+-         info->sm_smem_sizes_kB[0] = 96;
+-         break;
+-      default:
+-         UNREACHABLE("unknown shared mem size for sm");
+-         break;
+-      }
+-   } else if (info->sm == 37) {
+-      /* https://docs.nvidia.com/cuda/archive/11.8.0/kepler-tuning-guide/index.html#shared-memory-and-warp-shuffle:
+-       *
+-       *   GK210 improves on this by increasing the shared memory capacity per
+-       *   multiprocessor for each of the configurations described above by a
+-       *   further 64 (i.e., the application can select 112 KB, 96 KB, or 80
+-       *   KB of shared memory).
+-       *
+-       *   Note: The maximum shared memory per thread block for all Kepler
+-       *   GPUs, including GK210, remains 48 KB.
+-       */
+-      info->sm_smem_sizes_kB[0] = 80;
+-      info->sm_smem_sizes_kB[1] = 96;
+-      info->sm_smem_sizes_kB[2] = 112;
+-      info->sm_smem_size_count = 3;
+-   } else if (info->sm >= 30) {
+-      /* NVA0C0_QMDV00_06_L1_CONFIGURATION */
+-      info->sm_smem_sizes_kB[0] = 16;
+-      info->sm_smem_sizes_kB[1] = 32;
+-      info->sm_smem_sizes_kB[2] = 48;
+-      info->sm_smem_size_count = 3;
+-   } else if (info->sm >= 20) {
+-      /* NV90C0_SET_L1_CONFIGURATION */
+-      info->sm_smem_sizes_kB[0] = 16;
+-      info->sm_smem_sizes_kB[1] = 48;
+-      info->sm_smem_size_count = 2;
+-   } else {
+-      info->sm_smem_sizes_kB[0] = 16;
+-      info->sm_smem_size_count = 1;
+-   }
+-
+-   /* See above, despite having more shared memory available, Kepler up to
+-    * Pascal can only address up to 48kB per workgroup.
+-    */
+-   if (info->sm < 70 && info->sm >= 30) {
+-      info->max_smem_per_wg_kB = 48;
+-   } else {
+-      info->max_smem_per_wg_kB =
+-         info->sm_smem_sizes_kB[info->sm_smem_size_count - 1];
+-   }
+-}
+ 
+ static int
+ nouveau_ws_param(int fd, uint64_t param, uint64_t *value)
+@@ -528,7 +268,7 @@ nouveau_ws_device_new(drmDevicePtr drm_device)
+    if (nouveau_ws_context_create(device, ~0, &tmp_ctx))
+       goto out_err;
+ 
+-   device->info.sm = sm_for_chipset(device->info.chipset);
++   device->info.sm = nv_device_info_sm_for_chipset(device->info.chipset);
+    device->info.cls_copy = tmp_ctx->copy.cls;
+    device->info.cls_eng2d = tmp_ctx->eng2d.cls;
+    device->info.cls_eng3d = tmp_ctx->eng3d.cls;
+@@ -537,8 +277,10 @@ nouveau_ws_device_new(drmDevicePtr drm_device)
+ 
+    // for now we hardcode those values, but in the future Nouveau could provide that information to
+    // us instead.
+-   device->info.max_warps_per_mp = max_warps_per_mp_for_sm(device->info.sm);
+-   device->info.mp_per_tpc = mp_per_tpc_for_chipset(device->info.chipset);
++   device->info.max_warps_per_mp =
++      nv_device_info_max_warps_per_mp_for_sm(device->info.sm);
++   device->info.mp_per_tpc =
++      nv_device_info_mp_per_tpc_for_chipset(device->info.chipset);
+ 
+    /* Transfer queues require two kernel fixes:
+     *   0ef5c4e4db ("nouveau: fix disabling the nonstall irq due to storm code")
+@@ -552,7 +294,7 @@ nouveau_ws_device_new(drmDevicePtr drm_device)
+    device->info.has_transfer_queue = device->nouveau_version >= 0x01000401 &&
+                                      device->info.cls_eng3d >= TURING_A;
+ 
+-   init_shared_mem_sizes(&device->info);
++   nv_device_info_init_shared_mem_sizes(&device->info);
+ 
+    nouveau_ws_context_destroy(tmp_ctx);
+ 
+diff --git a/src/vulkan/runtime/vk_image.c b/src/vulkan/runtime/vk_image.c
+index 0e30c25..88a6542 100644
+--- a/src/vulkan/runtime/vk_image.c
++++ b/src/vulkan/runtime/vk_image.c
+@@ -96,9 +96,7 @@ vk_image_init(struct vk_device *device,
+       vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+    image->wsi_legacy_scanout = wsi_info && wsi_info->scanout;
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
+    image->drm_format_mod = ((1ULL << 56) - 1) /* DRM_FORMAT_MOD_INVALID */;
+-#endif
+ 
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+    if (image->external_handle_types &
+diff --git a/src/vulkan/runtime/vk_image.h b/src/vulkan/runtime/vk_image.h
+index dfabbcf..f6a9ce8 100644
+--- a/src/vulkan/runtime/vk_image.h
++++ b/src/vulkan/runtime/vk_image.h
+@@ -76,7 +76,6 @@ struct vk_image {
+    /* wsi_image_create_info::scanout */
+    bool wsi_legacy_scanout;
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
+    /* VK_EXT_drm_format_modifier
+     *
+     * Initialized by vk_image_create/init() to DRM_FORMAT_MOD_INVALID.  It's
+@@ -85,9 +84,14 @@ struct vk_image {
+     *
+     * Must be DRM_FORMAT_MOD_INVALID unless tiling is
+     * VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT.
++    *
++    * Present on every platform. The extension that gives it a value
++    * other than DRM_FORMAT_MOD_INVALID is only advertised where DRM
++    * exists, so elsewhere it simply stays invalid — but a driver
++    * checking whether a modifier was chosen should not have to know
++    * which operating system it is on to ask the question.
+     */
+    uint64_t drm_format_mod;
+-#endif
+ 
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+    enum android_buffer_type android_buffer_type;
+-- 
+2.43.0
+

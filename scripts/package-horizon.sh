@@ -81,12 +81,18 @@ done
 manifest="$OUT/MANIFEST.txt"
 tmp="$manifest.tmp.$$"
 
+# Once, not per use. It shells out to `docker image inspect`, and it was
+# called twice inside this one manifest — two independent answers that
+# can disagree, in a file whose entire purpose is saying which single
+# toolchain produced these artefacts.
+_pkg_img=$(horizon_image_digest)
+
 {
     echo "mesa-nvk-horizon — packaged .nro artefacts"
     echo
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
-    echo "image      : $(horizon_image_digest)"
+    echo "image      : $_pkg_img"
     echo
     echo "# Switch toolchain, as READ from the environment at packaging"
     echo "# time. This project neither pins nor updates it — libnx and"
@@ -95,18 +101,35 @@ tmp="$manifest.tmp.$$"
     echo "# with these .nro attributable to a specific build."
     echo "#"
     echo "# Rebuild these exact artefacts against the same toolchain:"
-    # In local mode there is no image reference to hand back — printing
-    # repo@local would be a command that cannot work, in the one field
-    # whose entire job is attribution.
-    if [ "$(horizon_image_digest)" = "local" ]; then
+    # Three ways this can end, and only one of them is a command. The
+    # field's entire job is attribution, so a reference that cannot be
+    # resolved is worse than an honest refusal to print one — which is
+    # what the old <base-repo>@unknown was, for the derived image that
+    # nearly every build since Phase 4 has actually used.
+    case "$_pkg_img" in
+    local)
         echo "#   (built against the local devkitA64 at \$DEVKITPRO; there is"
         echo "#    no image reference to reproduce it. The versions below are"
         echo "#    the whole record — a devkitPro install that has since been"
         echo "#    updated cannot be recovered from here.)"
-    else
-        echo "#   HORIZON_NX_IMAGE=${HORIZON_NX_IMAGE_REPO}@$(horizon_image_digest) \\"
+        ;;
+    local-image-id:*)
+        echo "#   (built in ${HORIZON_IMAGE}, an image built here and never"
+        echo "#    pushed, so there is no digest to pull: ${_pkg_img#local-image-id:}"
+        echo "#    identifies it on the machine that built it and nowhere else."
+        echo "#    Rebuild the image with scripts/build-toolchain-image.sh; the"
+        echo "#    base it derives from is recorded above.)"
+        ;;
+    unknown)
+        echo "#   (docker could not describe ${HORIZON_IMAGE}; the toolchain"
+        echo "#    behind these artefacts is NOT recorded. Treat any hardware"
+        echo "#    result measured with them as unattributed.)"
+        ;;
+    *)
+        echo "#   HORIZON_NX_IMAGE=$_pkg_img \\"
         echo "#       scripts/build-horizon.sh"
-    fi
+        ;;
+    esac
     echo
     scripts/print-toolchain-versions.sh 2>/dev/null | sed 's/^/  /'
     echo

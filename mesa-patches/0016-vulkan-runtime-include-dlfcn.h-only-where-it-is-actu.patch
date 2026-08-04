@@ -1,0 +1,73 @@
+From f9b0b6c112cee0450b67f8b00fdc4a8b20e652aa Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:07:50 +0000
+Subject: [PATCH 16/30] vulkan/runtime: include dlfcn.h only where it is
+ actually used
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vk_instance.c includes dlfcn.h on every platform that is not Windows,
+but the only two things it uses from it — dlopen() and dlsym() — are
+both inside #if HAVE_RENDERDOC_INTEGRATION. A C library with no dynamic
+loader has no dlfcn.h at all, so the file failed to compile over a
+header it did not need:
+
+  vk_instance.c:42:10: fatal error: dlfcn.h: No such file or directory
+
+The include is now gated on the same condition as the calls, plus
+HAVE_DLOPEN: a platform could have the header and not the loader, and
+what decides whether the calls can work is whether dlopen exists.
+meson.build already computes that.
+
+Nothing changes where RenderDoc integration is enabled, and nothing
+changes on Windows.
+
+mesa-nvk-horizon: Phase 4 — the nouveau Vulkan driver for Horizon
+Why: newlib/libnx has no dynamic loader, so no dlfcn.h (patch 0001
+  records dlopen, libdl and dlfcn.h all measured absent).
+Evidence: building mesa-26.1.5 for aarch64/horizon with
+  -Dvulkan-drivers=nouveau stopped at the fatal error quoted above.
+  With this change the file compiles.
+Upstream: yes — it narrows an include to the code that uses it and is
+  a no-op wherever that code is built.
+---
+ src/vulkan/runtime/vk_instance.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/vulkan/runtime/vk_instance.c b/src/vulkan/runtime/vk_instance.c
+index 420ab21..c78a0cf 100644
+--- a/src/vulkan/runtime/vk_instance.c
++++ b/src/vulkan/runtime/vk_instance.c
+@@ -38,7 +38,18 @@
+ #include "compiler/glsl_types.h"
+ #endif
+ 
+-#ifndef _WIN32
++/* dlfcn.h is included for the RenderDoc integration and for nothing
++ * else: the two uses below, dlopen() and dlsym(), are both inside
++ * #if HAVE_RENDERDOC_INTEGRATION. Gating the include on the same thing
++ * keeps a C library with no dynamic loader — which therefore has no
++ * dlfcn.h at all — from failing to compile a file that would not have
++ * called into it anyway.
++ *
++ * HAVE_DLOPEN as well as the RenderDoc flag: a platform could in
++ * principle have the header and not the loader, and the check that
++ * matters for the calls is whether dlopen exists.
++ */
++#if HAVE_RENDERDOC_INTEGRATION && defined(HAVE_DLOPEN) && !defined(_WIN32)
+ #include "dlfcn.h"
+ #endif
+ 
+@@ -651,7 +662,7 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pSupportedVersion)
+ void
+ vk_instance_start_renderdoc_capture(struct vk_instance *instance)
+ {
+-#if HAVE_RENDERDOC_INTEGRATION
++#if HAVE_RENDERDOC_INTEGRATION && defined(HAVE_DLOPEN)
+    simple_mtx_lock(&instance->renderdoc_mtx);
+ 
+    if (!instance->renderdoc_api) {
+-- 
+2.43.0
+

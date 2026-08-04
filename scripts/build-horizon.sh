@@ -37,11 +37,17 @@ fi
 # closes it. `setup --reconfigure` re-executes meson.build, so fs.exists()
 # is asked again; a missing stamp means the directory predates this
 # check, which is the case that broke.
-# The recorded state is "<present|absent> <directory>", not just the
-# first half: -Dmesa_build_dir is baked in at configure time too, so
-# pointing $MESA_BUILD_DIR at a *different* directory that also has the
-# archives has to reconfigure as well. It did not, and the tests went on
-# linking the old one (measured; see horizon_mesa_state).
+# The recorded state is "<present|absent> <directory>" per build
+# directory, not just the first half: -Dmesa_build_dir is baked in at
+# configure time too, so pointing $MESA_BUILD_DIR at a *different*
+# directory that also has the archives has to reconfigure as well. It
+# did not, and the tests went on linking the old one (measured; see
+# horizon_mesa_state).
+#
+# Two directories, not one. The NVK build dir joined it because t_vulkan
+# is gated on *its* archives and they are produced after this script
+# runs, so tracking only core Mesa left the exit-criterion test out of
+# build.ninja permanently — see horizon_mesa_state for the sequence.
 now=$(horizon_mesa_state)
 then=$(cat "$HORIZON_BUILD_DIR.mesalibs" 2>/dev/null || true)
 if [ "$now" != "$then" ]; then

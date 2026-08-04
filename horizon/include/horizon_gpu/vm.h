@@ -46,6 +46,24 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
                                           uint64_t align,
                                           horizon_gpu_va_range **out_range);
 
+/* Reserves exactly [base, base+size) — the caller chooses the address,
+ * the kernel does not. `base` must be page_size-aligned; `size` is
+ * rounded up to page_size. Fails if the range is taken.
+ *
+ * This is NvAllocSpaceFlags_FixedOffset. It exists for the two things a
+ * kernel-chosen address cannot express: reserving an aperture the
+ * hardware fixes for us (the shader local/shared memory windows are at
+ * constant addresses and must not be handed to anything else), and
+ * replaying a capture at the address it was captured from.
+ *
+ * A request that comes back at a different address is reported as a
+ * failure rather than accepted, because a fixed request is exactly the
+ * one that cannot absorb a different answer. */
+horizon_gpu_result horizon_gpu_vm_reserve_fixed(horizon_gpu_device *dev,
+                                                uint64_t base, uint64_t size,
+                                                uint32_t page_size,
+                                                horizon_gpu_va_range **out_range);
+
 uint64_t horizon_gpu_va_range_base(const horizon_gpu_va_range *range);
 uint64_t horizon_gpu_va_range_size(const horizon_gpu_va_range *range);
 uint32_t horizon_gpu_va_range_page_size(const horizon_gpu_va_range *range);

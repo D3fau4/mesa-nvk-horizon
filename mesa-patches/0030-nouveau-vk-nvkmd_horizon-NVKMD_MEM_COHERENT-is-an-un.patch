@@ -1,0 +1,74 @@
+From 3fefc0a0cfadac2654d9a2c8cda691d69e1a6b5d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 15:13:13 +0000
+Subject: [PATCH 30/30] nouveau/vk: nvkmd_horizon, NVKMD_MEM_COHERENT is an
+ uncached allocation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NVK means an uncached map by HOST_COHERENT on an SoC — it says so where
+it advertises the two memory types (nvk_physical_device.c:1571-1575) —
+and NVKMD_MEM_COHERENT is what carries that down. Cache maintenance
+cannot stand in for it: nvkmd_mem_sync_to_gpu and sync_from_gpu return
+before doing anything when the flag is set (nvkmd.c:457, :476), so a
+cached allocation behind that flag would get no maintenance from
+anywhere and neither side would see the other's writes.
+
+horizon_gpu gained HORIZON_GPU_MEM_UNCACHED for exactly this (D14);
+this is the call site. Everything else stays CACHED, which is what heap
+memory is and what the explicit flush/invalidate around it expects.
+
+mesa-nvk-horizon: Phase 4 — decision D14, taken by the owner
+Why: Vulkan requires a HOST_VISIBLE + HOST_COHERENT memory type, so it
+  cannot be dropped, and with only a cached policy it was a promise the
+  platform could not keep.
+Evidence: nvkmd.c:457 and :476 return early on NVKMD_MEM_COHERENT.
+Upstream: no — this is the Horizon backend's own allocator.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 27 ++++++++++++-------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index cfcc923..772234e 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -189,17 +189,26 @@ nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
+    if (align != 0 && align < HORIZON_GPU_SMALL_PAGE_SIZE)
+       align = HORIZON_GPU_SMALL_PAGE_SIZE;
+ 
+-   /* HORIZON_GPU_MEM_CACHED is the only policy horizon_gpu offers, and
+-    * that is a statement about the platform rather than a limitation of
+-    * this backend: homebrew heap memory on Horizon is CPU-cached.
+-    * NVKMD_MEM_COHERENT therefore cannot be satisfied by the allocation
+-    * itself — it is satisfied by the sync_to_gpu/sync_from_gpu calls
+-    * nvk already makes around every access, which is decision D5 and is
+-    * why that decision is still open.
++   /* NVKMD_MEM_COHERENT means what NVK says it means on an SoC: an
++    * *uncached* map, the alternative to the cached one
++    * (nvk_physical_device.c:1571-1575). It cannot be satisfied by cache
++    * maintenance instead, because nvkmd_mem_sync_to_gpu and
++    * sync_from_gpu return before doing anything when the flag is set
++    * (nvkmd.c:457, :476) — so a cached allocation behind that flag
++    * would get no maintenance from anywhere and neither side would see
++    * the other's writes.
++    *
++    * D14. horizon_gpu gained the policy for exactly this; everything
++    * else stays CACHED, which is what heap memory is and what the
++    * explicit flush/invalidate around it expects.
+     */
++   const horizon_gpu_cache_policy policy =
++      (flags & NVKMD_MEM_COHERENT) ? HORIZON_GPU_MEM_UNCACHED
++                                   : HORIZON_GPU_MEM_CACHED;
++
+    horizon_gpu_result res =
+-      horizon_gpu_mem_create(dev->gpu, size_B, align,
+-                             HORIZON_GPU_MEM_CACHED, &mem->gpu_mem);
++      horizon_gpu_mem_create(dev->gpu, size_B, align, policy,
++                             &mem->gpu_mem);
+    if (res.status != HORIZON_GPU_OK) {
+       FREE(mem);
+       return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-- 
+2.43.0
+

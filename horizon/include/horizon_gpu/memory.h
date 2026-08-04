@@ -39,12 +39,36 @@ typedef struct horizon_gpu_mem horizon_gpu_mem;
  * § 5 rule 1 — the reference registers cached heap memory as uncached at
  * every call site, which we do not repeat).
  *
- * Homebrew heap memory on Horizon is always CPU-cached, so CACHED is the
- * only honest policy this phase offers; uncached backings are a pending
- * decision (D5) blocked on the R6 measurements. */
+ * Homebrew heap memory on Horizon is CPU-cached when it is allocated, so
+ * CACHED describes the storage as it comes. UNCACHED asks the kernel to
+ * change that for the range, with svcSetMemoryAttribute and
+ * MemoryAttribute_Uncached — the same mechanism deko3d uses for its
+ * CpuUncached memory blocks.
+ *
+ * WHY BOTH EXIST, and it is not a preference. Vulkan requires at least
+ * one memory type with HOST_VISIBLE and HOST_COHERENT
+ * (VkPhysicalDeviceMemoryProperties), and NVK advertises one on an SoC
+ * meaning exactly an uncached map:
+ *
+ *   /​* On Tegra, we only have sysmem ... The only difference in memory
+ *      types is between cached and uncached (but coherent) maps. *​/
+ *          -- nvk_physical_device.c:1571-1575
+ *
+ * With only CACHED, that memory type is a promise the platform cannot
+ * keep: NVKMD_MEM_COHERENT makes nvkmd skip cache maintenance entirely
+ * (nvkmd.c:457), so nothing would ever flush or invalidate and neither
+ * side would see the other's writes. Decision D14. */
 typedef enum horizon_gpu_cache_policy {
     HORIZON_GPU_MEM_CACHED = 1,
+    HORIZON_GPU_MEM_UNCACHED = 2,
 } horizon_gpu_cache_policy;
+
+/* Which policy this object was created with. Needed by callers that must
+ * decide whether cache maintenance is required at all — for UNCACHED
+ * memory the flush and invalidate below are no-ops, and doing them would
+ * be wasted work rather than wrong. */
+horizon_gpu_cache_policy
+horizon_gpu_mem_policy(const horizon_gpu_mem *mem);
 
 /* Allocates zero-initialised, page-aligned storage of `size` bytes rounded
  * up to `align` (power of two, >= HORIZON_GPU_SMALL_PAGE_SIZE; 0 means
@@ -56,7 +80,24 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
                                           horizon_gpu_mem **out_mem);
 
 /* Fails with HORIZON_GPU_ERR_BUSY while GPU mappings of this object are
- * alive. Closing invalidates the CPU pointer (memory-model § 7). */
+ * alive. Closing invalidates the CPU pointer (memory-model § 7).
+ *
+ * TWO FAILURES WITH OPPOSITE MEANINGS, because the caller must not treat
+ * them alike:
+ *
+ *   HORIZON_GPU_ERR_BUSY — nothing happened. The object is intact and
+ *     still owned by the caller; unmap its mappings and call again.
+ *
+ *   HORIZON_GPU_ERR_NV — the object is GONE and must NOT be passed here
+ *     again; a second call is a use-after-free, since `mem` has exactly
+ *     one owner (memory-model § 7). It reports that restoring an
+ *     UNCACHED range's cacheability failed, so the backing pages were
+ *     deliberately leaked rather than returned to the heap uncached,
+ *     where they would corrupt whatever allocated them next. Only an
+ *     UNCACHED object can answer this.
+ *
+ * BUSY is therefore the only retryable one. Everything else means the
+ * destroy completed, and the error describes what it cost. */
 horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem);
 
 void *horizon_gpu_mem_cpu_ptr(const horizon_gpu_mem *mem);

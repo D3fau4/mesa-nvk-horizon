@@ -1,0 +1,58 @@
+From bcd9d41b3f63babe9a21f16d5823559aebf2535e Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:57:23 +0000
+Subject: [PATCH 23/30] nouveau/vk: put block-linear mappings in the big-page
+ half on Horizon
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A non-pitch PTE kind is block-linear, and the GPU MMU only fills
+block-linear kinds in big pages on Maxwell: such a mapping in the
+small-page half faults on first access rather than failing to map. NVK
+asks for one whenever an image's layout is tiled — nvk_image.c passes
+plane->nil.pte_kind straight through — and does not necessarily round
+the size to a big page, so choosing the half by size and alignment
+alone put some tiled images in the wrong one.
+
+Found by reading the paths the first hardware run will take. It is the
+shape of bug that does not fail at the call that causes it: the map
+succeeds and the fault arrives later, somewhere else.
+
+mesa-nvk-horizon: Phase 4 — reducing avoidable first-run failures
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c    | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index 8e6bc1c..a163256 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -221,6 +221,24 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+        (size_B % big) == 0 && (align_B % big) == 0)
+       page_size = big;
+ 
++   /* A non-pitch PTE kind is block-linear, and the GPU MMU only fills
++    * block-linear kinds in big pages on Maxwell: a block-linear mapping
++    * in the small-page half faults on first access rather than failing
++    * to map. NVK asks for such a kind whenever an image's layout is
++    * tiled (nvk_image.c:1175 passes plane->nil.pte_kind straight
++    * through), and it does not necessarily round the size to a big
++    * page, so the rule above alone would put some tiled images in the
++    * wrong half.
++    *
++    * Where the kind demands it, the big-page half is taken and the size
++    * rounded up to match — horizon_gpu_vm_reserve rounds to page_size
++    * itself, so this only has to choose the half. Refusing instead
++    * would fail a legal request; mapping it in the small-page half
++    * would be the silent wrong answer.
++    */
++   if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
++      page_size = big;
++
+    horizon_gpu_result res =
+       horizon_gpu_vm_reserve(dev->gpu, size_B, page_size, align_B,
+                              &va->range);
+-- 
+2.43.0
+

@@ -65,7 +65,12 @@ PROBE
 }
 
 echo "toolchain          $HORIZON_TOOLCHAIN_DESC"
-echo "image digest       $(horizon_image_digest)"
+# Not "digest": horizon_image_digest returns a full repo@sha256:...
+# reference when the image has one, "local-image-id:sha256:..." when it
+# was built here and never pushed, or "local"/"unknown". Labelling all
+# of those "digest" mislabels the field in the one place whose purpose
+# is telling a reader exactly what produced an artefact.
+echo "image              $(horizon_image_digest)"
 
 if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
     probe | sh

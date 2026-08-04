@@ -159,7 +159,14 @@ horizon_tests = [
   't_submit',
   't_syncpt',
   't_fence_wait',
+  # Phase 4: does a GPU write to memory become visible to the CPU? Every
+  # observation below t_vulkan is made through a syncpoint, which is a
+  # host1x counter and not memory, so nothing had ever asked this.
+  't_gpuwrite',
   't_teardown',
+  # Phase 4, decision D14: the UNCACHED cache policy. Uses no Mesa, so it
+  # lives with the horizon_gpu tests rather than the NVK ones.
+  't_uncached',
   # Phase 3 item 6: compat/sysconf.c against the real kernel. Uses no
   # horizon_gpu — the C library and svcGetInfo only — but it is built
   # and packaged with the others because it is a hardware measurement,
@@ -212,6 +219,86 @@ mesa_test_libs = [
 ]
 mesa_tests = ['t_threads', 't_ostime']
 
+# ---------------------------------------------------------------------
+# Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
+# ---------------------------------------------------------------------
+# It links the whole nouveau Vulkan driver, so it needs a different Mesa
+# build from tests 12 and 13: scripts/configure-mesa-nvk.sh's, which has
+# -Dvulkan-drivers=nouveau. Skipped with a message when that build is
+# not there, exactly as those two are — a bare clone must still produce
+# the tests that need only the toolchain.
+#
+# The order matters here and nowhere else in this file: these are static
+# archives with genuine cycles between them (nvk needs vulkan_runtime,
+# which needs nir, which needs mesa_util, and nvk needs all three), so
+# Meson's --start-group/--end-group around a dependency's link_args is
+# what makes the link resolve rather than left-to-right order.
+nvk_build_dir = get_option('nvk_build_dir')
+# libnvk.a IS PULLED WHOLE, and nothing else is.
+#
+# Upstream's own reason for the flag:
+#
+#   # Instruct users of this library to link with --whole-archive.
+#   # Otherwise, our weak function overloads may not resolve properly.
+#       -- mesa/src/vulkan/runtime/meson.build:250, :327
+#
+# A Vulkan driver reaches its entry points through dispatch tables
+# generated with --weak, so a driver may leave one unimplemented and
+# the linker resolves the gap to zero rather than reporting it. An
+# archive member that nothing but a weak reference points at is
+# therefore never pulled in, and what reaches the binary is a NULL
+# table entry and a `nm -u` that says nothing is wrong.
+#
+# Measured on hardware, at the cost of a console round trip. The first
+# run that reached the driver died at
+#
+#   ok   vkEnumeratePhysicalDevices(list) -> 0
+#   <nothing further, no RESULT line>
+#
+# because vk_common_GetPhysicalDeviceProperties jumps through
+# dispatch_table.GetPhysicalDeviceProperties2, and the binary contained
+# no GetPhysicalDeviceProperties2 at all.
+#
+# Only libnvk.a, because it already contains the rest: upstream builds
+# it with dependencies that link_whole the Vulkan runtime, and Meson
+# propagates that into the static archive — 178 members, including
+# vk_physical_device_properties.c.o and two copies of vk_instance.c.o.
+# Listing libvulkan_runtime.a, libvulkan_lite_runtime.a or
+# libvulkan_instance.a beside it links those objects a second time:
+#
+#   ld: .../libvulkan_instance.a.p/vk_instance.c.o: multiple definition
+#       of `vk_instance_end_renderdoc_capture';
+#       .../src/nouveau/vulkan/../../vulkan/runtime/libvulkan_instance.a.p/
+#       vk_instance.c.o: first defined here
+#
+# — the same object reached by two paths. So they are not in the list
+# at all, and the one archive that carries them is pulled whole.
+nvk_whole_libs = [
+  'src/nouveau/vulkan/libnvk.a',
+]
+
+# The rest are ordinary archives: everything needed in them is needed
+# by a strong reference.
+nvk_test_libs = [
+  'src/nouveau/rust_runtime/libnouveau_rust_runtime.a',
+  'src/nouveau/compiler/libnak.a',
+  'src/nouveau/nil/liblibnil_format_table.a',
+  'src/nouveau/mme/libnouveau_mme.a',
+  'src/nouveau/headers/libnvidia_headers_c.a',
+  'src/vulkan/util/libvulkan_util.a',
+  'src/vulkan/wsi/libvulkan_wsi.a',
+  'src/compiler/spirv/libvtn.a',
+  'src/compiler/nir/libnir.a',
+  'src/compiler/libcompiler.a',
+  'src/compiler/rust/libcompiler_c_helpers.a',
+  'src/util/libxmlconfig.a',
+  'src/util/libmesa_util.a',
+  'src/util/libmesa_util_simd.a',
+  'src/util/blake3/libblake3.a',
+  'src/c11/impl/libmesa_util_c11.a',
+]
+nvk_tests = ['t_vulkan']
+
 # meson.project_source_root() / p returns p unchanged when p is absolute,
 # so both an absolute and a source-root-relative option value resolve
 # here without a second code path.
@@ -261,6 +348,45 @@ else
           'scripts/build-mesa.sh first')
 endif
 
+nvk_whole_lib_paths = []
+foreach l : nvk_whole_libs
+  nvk_whole_lib_paths += meson.project_source_root() / nvk_build_dir / l
+endforeach
+
+nvk_test_lib_paths = []
+foreach l : nvk_test_libs
+  nvk_test_lib_paths += meson.project_source_root() / nvk_build_dir / l
+endforeach
+
+nvk_libs_present = true
+foreach p : nvk_whole_lib_paths + nvk_test_lib_paths
+  if not fs.exists(p)
+    nvk_libs_present = false
+  endif
+endforeach
+
+if nvk_libs_present
+  idep_nvk_driver = declare_dependency(
+    include_directories : include_directories(
+      'mesa/src', 'mesa/include', 'mesa/src/vulkan/util'),
+    # -lstdc++: NVK compiles nvkcl.cpp (the C++ vtn_bindgen2 produces
+    # from the OpenCL shaders), and its exception personality routine
+    # lives there. One C++ file in an otherwise C driver.
+    #
+    # --whole-archive covers exactly the four archives listed above and
+    # is turned off again immediately: whole-archiving the rest costs
+    # size for nothing, and whole-archiving two archives built from the
+    # same sources collides on every symbol in them.
+    link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
+                ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
+                ['-lstdc++'],
+  )
+  horizon_tests += nvk_tests
+else
+  message('skipping ' + ' '.join(nvk_tests) + ': no NVK archives in ' +
+          nvk_build_dir + '; run scripts/build-mesa-nvk.sh first')
+endif
+
 foreach t : horizon_tests
   # Tests 12 and 13 additionally see Mesa's headers and archives; the
   # other eleven are built with no Mesa in sight, as before.
@@ -280,6 +406,10 @@ foreach t : horizon_tests
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
     t_link_depends = mesa_test_lib_paths
+  endif
+  if nvk_libs_present and nvk_tests.contains(t)
+    t_deps += idep_nvk_driver
+    t_link_depends = nvk_test_lib_paths
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the

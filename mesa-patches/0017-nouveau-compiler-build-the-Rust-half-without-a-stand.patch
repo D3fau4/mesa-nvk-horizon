@@ -1,0 +1,3447 @@
+From 52ecf48691de7a18b0b3e11c6633dab74e511770 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:08:24 +0000
+Subject: [PATCH 17/30] nouveau,compiler: build the Rust half without a
+ standard library
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NAK, NIL and the shared `compiler` crate are written against `std`, and
+a tier-3 target may not have one. aarch64-nintendo-switch-freestanding
+is such a target: its built-in spec says `"std": false`, and Rust's
+`horizon` support in std is the 3DS's, reached through a unix PAL this
+target does not have — a std built for it would select
+`sys/pal/unsupported`, where the operations that make std worth having
+return errors. So the crates are built #![no_std] against core and
+alloc instead.
+
+Almost all of it is spelling. Of the ~210 `std::` paths in these
+crates, the overwhelming majority are core under another name —
+std::mem (50), std::cmp (32), std::slice (30), std::ops (22),
+std::marker (20) — and the owning containers are alloc's. What actually
+needed an operating system was seven things, and each is replaced by
+something that does not:
+
+  std::env::var("NAK_DEBUG")     os_get_option(), Mesa's own accessor
+                                 for exactly this, now allowlisted in
+                                 NAK's bindings
+  std::sync::OnceLock<Debug>     an AtomicU32 with one value reserved
+                                 for "not read yet". Debug is a single
+                                 u32 of flag bits, so a race
+                                 recomputes the same answer
+  std::panic::catch_unwind (x2)  called directly: it cannot catch
+                                 anything on a target whose panic
+                                 strategy is abort, which this one sets
+  std::collections::HashMap      hashbrown, which is the implementation
+                                 std itself uses, with rustc-hash's
+                                 FxBuildHasher. rustc-hash defines its
+                                 Fx aliases only under its `std`
+                                 feature, so they are reconstructed
+  std::fs/std::io in             #[cfg(feature = "std")]. It is dead
+  save_graphviz                  code with three commented-out call
+                                 sites and the only filesystem use in
+                                 NAK
+  std::io::Result over           a local error type. No Rust code here
+  u_memstream                    reads or writes anything; what std::io
+                                 supplied was a Result alias and a way
+                                 to say "the C call failed"
+  eprintln! (21 sites)           the same write(2) std ends up in
+
+Two float methods, f32::round and f32::powf/log2, live on std's float
+types rather than in core, because core has no libm. newlib supplies
+roundf, powf and log2f and the driver already links -lm, so they are
+called directly rather than pulling in a Rust libm for three calls.
+
+Generated crate roots are generated with #![no_std] too, and bindgen is
+asked for --use-core so the bindings name C's integer types as
+::core::ffi::* rather than ::std::os::raw::*.
+
+NAK's bindings no longer drag in the kernel-mode winsys. nak_bindings.h
+included nouveau_bo.h, nouveau_context.h, nouveau_device.h, xf86drm.h
+and drm-uapi/nouveau_drm.h for one file — nak/hw_runner.rs, which is
+behind #[cfg(test)] — and that made NAK unbuildable wherever the winsys
+is not, over symbols nothing that would be built uses. The include and
+the allowlist entries it feeds are now asked for only with_tests.
+
+Finally, the crate layout. Rust requires exactly one
+#[global_allocator] and one #[panic_handler] per linked artefact and
+emits both into every --crate-type staticlib. Mesa builds NAK and NIL
+as two staticlibs, which works with std because std supplies the shim
+and the archive member holding it is simply not pulled a second time.
+Without std each archive defines the shim beside the code that uses it,
+and the two collide:
+
+  ld: libb.a(...): multiple definition of `__rustc::__rust_alloc';
+      liba.a(...): first defined here
+  ... and __rust_dealloc, __rust_realloc, __rust_alloc_zeroed,
+      rust_begin_unwind
+
+Measured with and without -O, so it is not a codegen-unit accident.
+Where there is no std, NAK and NIL are therefore rlibs and
+src/nouveau/rust_runtime is the one staticlib: it adds no code, names
+the two crates so the linker keeps them, and supplies the allocator
+(over the C library's memalign/free, so there is one heap rather than
+two) and the panic handler (abort, which is what the target's panic
+strategy already means).
+
+Whether std exists is read from host_machine.kernel(), which is the
+same property Meson's own Rust compiler uses to decide whether to
+sanity-check a `fn main()` or a `#![no_std] #![no_main]` program.
+Everything above is a no-op where that says a standard library exists.
+
+mesa-nvk-horizon: Phase 4 — the nouveau Vulkan driver for Horizon
+Why: aarch64-nintendo-switch-freestanding has no prebuilt std, and
+  building one would produce the `unsupported` PAL
+  (docs/rust-toolchain.md § 6).
+Evidence: `meson compile` for aarch64/horizon with
+  -Dvulkan-drivers=nouveau produced 500+ rustc errors that were one
+  fact — with no std there is no prelude:
+    141 error: cannot find attribute `derive` in this scope
+    102 error[E0405]: cannot find trait `Default` in this scope
+      2 error[E0463]: can't find crate for `std`
+  With this change NAK, NIL, compiler, nvidia_headers, bitview,
+  nak_latencies and both bindgen crates all compile, and
+  libnouveau_rust_runtime.a is 15 292 744 bytes with 0 R_AARCH64_TLS
+  relocations and exactly one definition of each allocator and panic
+  symbol.
+Upstream: partly. The core::/alloc:: spelling, the dead-code gate, the
+  bindings/winsys separation and --use-core are improvements anywhere.
+  The one-staticlib arrangement is conditional on a platform property
+  and changes nothing where std exists.
+---
+ .gitkeep                                      |  0
+ meson.build                                   | 21 +++++
+ src/compiler/rust/as_slice.rs                 |  7 +-
+ src/compiler/rust/bitset.rs                   |  7 +-
+ src/compiler/rust/cfg.rs                      | 23 ++---
+ src/compiler/rust/dataflow.rs                 |  5 +-
+ src/compiler/rust/depth_first_search.rs       |  1 +
+ src/compiler/rust/io.rs                       | 56 +++++++++++++
+ src/compiler/rust/lib.rs                      | 22 +++++
+ src/compiler/rust/memstream.rs                | 17 ++--
+ src/compiler/rust/meson.build                 | 13 ++-
+ src/compiler/rust/nir.rs                      | 10 +--
+ src/compiler/rust/nir_instr_printer.rs        |  3 +-
+ src/compiler/rust/proc/as_slice.rs            |  4 +-
+ src/compiler/rust/smallvec.rs                 |  3 +-
+ src/nouveau/compiler/acorn/lib.rs             | 14 ++++
+ src/nouveau/compiler/latencies/lib_rs_gen.py  |  7 ++
+ src/nouveau/compiler/meson.build              | 48 +++++++++--
+ src/nouveau/compiler/nak/api.rs               | 72 ++++++++++++----
+ src/nouveau/compiler/nak/assign_regs.rs       |  8 +-
+ src/nouveau/compiler/nak/builder.rs           |  1 +
+ src/nouveau/compiler/nak/calc_instr_deps.rs   | 22 ++---
+ src/nouveau/compiler/nak/const_tracker.rs     |  2 +-
+ src/nouveau/compiler/nak/from_nir.rs          | 37 +++++----
+ src/nouveau/compiler/nak/hw_runner.rs         | 35 ++++----
+ src/nouveau/compiler/nak/hw_tests.rs          | 22 ++---
+ src/nouveau/compiler/nak/ir.rs                | 47 ++++++-----
+ src/nouveau/compiler/nak/legalize.rs          | 17 ++--
+ src/nouveau/compiler/nak/lib.rs               | 73 ++++++++++++++++
+ src/nouveau/compiler/nak/liveness.rs          |  5 +-
+ src/nouveau/compiler/nak/lower_copy_swap.rs   |  2 +-
+ src/nouveau/compiler/nak/lower_par_copies.rs  |  3 +-
+ src/nouveau/compiler/nak/nvdisasm_tests.rs    | 12 +--
+ src/nouveau/compiler/nak/opt_bar_prop.rs      |  3 +-
+ src/nouveau/compiler/nak/opt_copy_prop.rs     |  2 +-
+ src/nouveau/compiler/nak/opt_crs.rs           |  2 +-
+ .../compiler/nak/opt_instr_sched_common.rs    | 27 +++++-
+ .../compiler/nak/opt_instr_sched_postpass.rs  | 14 ++--
+ .../compiler/nak/opt_instr_sched_prepass.rs   | 23 +++--
+ src/nouveau/compiler/nak/opt_jump_thread.rs   |  5 +-
+ src/nouveau/compiler/nak/opt_lop.rs           |  4 +-
+ src/nouveau/compiler/nak/opt_out.rs           |  1 +
+ src/nouveau/compiler/nak/opt_prmt.rs          |  2 +-
+ .../compiler/nak/opt_uniform_instrs.rs        |  2 +-
+ src/nouveau/compiler/nak/qmd.rs               |  4 +-
+ src/nouveau/compiler/nak/reg_tracker.rs       |  7 +-
+ src/nouveau/compiler/nak/repair_ssa.rs        | 10 ++-
+ src/nouveau/compiler/nak/sm20.rs              |  7 +-
+ .../compiler/nak/sm30_instr_latencies.rs      |  3 +-
+ src/nouveau/compiler/nak/sm32.rs              |  5 +-
+ src/nouveau/compiler/nak/sm50.rs              |  5 +-
+ src/nouveau/compiler/nak/sm70.rs              |  1 +
+ src/nouveau/compiler/nak/sm70_encode.rs       | 29 +++----
+ src/nouveau/compiler/nak/sph.rs               |  2 +-
+ src/nouveau/compiler/nak/spill_values.rs      |  9 +-
+ src/nouveau/compiler/nak/ssa_value.rs         | 10 ++-
+ src/nouveau/compiler/nak/to_cssa.rs           | 17 ++--
+ src/nouveau/compiler/nak/union_find.rs        | 13 +--
+ src/nouveau/compiler/nak_bindings.h           | 12 +++
+ src/nouveau/headers/lib_rs_gen.py             | 10 +++
+ src/nouveau/headers/nv_push_rs/lib.rs         | 17 +++-
+ src/nouveau/headers/struct_parser.py          |  2 +-
+ src/nouveau/meson.build                       |  7 ++
+ src/nouveau/nil/copy.rs                       | 24 +++---
+ src/nouveau/nil/descriptor.rs                 | 12 ++-
+ src/nouveau/nil/extent.rs                     | 26 +++---
+ src/nouveau/nil/image.rs                      | 53 ++++++------
+ src/nouveau/nil/lib.rs                        | 16 +++-
+ src/nouveau/nil/meson.build                   | 12 ++-
+ src/nouveau/nil/modifiers.rs                  |  2 +-
+ src/nouveau/nil/tiling.rs                     |  4 +-
+ src/nouveau/nil/zcull.rs                      |  2 +-
+ src/nouveau/rust/bitview/lib.rs               | 16 +++-
+ src/nouveau/rust_runtime/lib.rs               | 83 +++++++++++++++++++
+ src/nouveau/rust_runtime/meson.build          | 25 ++++++
+ src/nouveau/vulkan/meson.build                |  4 +
+ .../hashbrown-0.14-rs/meson.build             | 17 ++++
+ .../packagefiles/rustc-hash-2-rs/meson.build  |  9 +-
+ 78 files changed, 872 insertions(+), 307 deletions(-)
+ create mode 100644 .gitkeep
+ create mode 100644 src/compiler/rust/io.rs
+ create mode 100644 src/nouveau/rust_runtime/lib.rs
+ create mode 100644 src/nouveau/rust_runtime/meson.build
+
+diff --git a/.gitkeep b/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/meson.build b/meson.build
+index 3347046..0817173 100644
+--- a/meson.build
++++ b/meson.build
+@@ -847,6 +847,21 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or
+     error('Mesa requires Rust 1.82.0 or newer')
+   endif
+ 
++  # Whether a Rust standard library exists for this target.
++  #
++  # host_machine.kernel() is the signal Meson itself uses for exactly
++  # this: mesonbuild/compilers/rust.py sanity-checks a `fn main() {}`
++  # program on every machine except one whose kernel is 'none', where it
++  # compiles a `#![no_std] #![no_main]` program instead — because a
++  # freestanding target has no libstd to link. Reading the same property
++  # here keeps Mesa and Meson agreeing about the same machine rather
++  # than each deciding separately.
++  #
++  # Where it is false, Mesa's Rust crates are built #![no_std] against
++  # `core` and `alloc`, and exactly one Rust staticlib may exist in the
++  # binary — see src/nouveau/rust_runtime/lib.rs for why.
++  with_rust_std = host_machine.kernel() != 'none'
++
+   # bindgen 0.71 is the first version that knows about `editions`
+   bindgen_version = find_program('bindgen').version()
+   bindgen_bad_versions = [
+@@ -867,6 +882,12 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or
+   bindgen_output_args = [
+     # This is needed to generate 2024-safe code
+     '--wrap-unsafe-ops',
++    # Generated bindings name C's integer types as ::std::os::raw::* by
++    # default, which needs a standard library. --use-core makes them
++    # ::core::ffi::* instead: the same types, from the crate that is
++    # always there. Harmless where std exists, and the only spelling
++    # that works where it does not.
++    '--use-core',
+     # can't do anything about it anyway
+     '--raw-line', '#![allow(clippy::all)]',
+     '--raw-line', '#![allow(improper_ctypes)]',
+diff --git a/src/compiler/rust/as_slice.rs b/src/compiler/rust/as_slice.rs
+index 8e6657c..c40525d 100644
+--- a/src/compiler/rust/as_slice.rs
++++ b/src/compiler/rust/as_slice.rs
+@@ -1,9 +1,10 @@
+ // Copyright © 2024 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
+-use std::ops::Deref;
+-use std::ops::DerefMut;
+-use std::ops::Index;
++use alloc::boxed::Box;
++use core::ops::Deref;
++use core::ops::DerefMut;
++use core::ops::Index;
+ 
+ pub enum AttrList<T: 'static> {
+     Array(&'static [T]),
+diff --git a/src/compiler/rust/bitset.rs b/src/compiler/rust/bitset.rs
+index e868ac3..ba0019c 100644
+--- a/src/compiler/rust/bitset.rs
++++ b/src/compiler/rust/bitset.rs
+@@ -20,9 +20,10 @@
+ //! unary negation, because that would result in an infinite result set. For
+ //! patterns like `a & !b`, instead use set subtraction `a - b`.
+ 
+-use std::cmp::{max, min};
+-use std::marker::PhantomData;
+-use std::ops::{
++use alloc::vec::Vec;
++use core::cmp::{max, min};
++use core::marker::PhantomData;
++use core::ops::{
+     BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, RangeFull,
+     Sub, SubAssign,
+ };
+diff --git a/src/compiler/rust/cfg.rs b/src/compiler/rust/cfg.rs
+index e3d3284..f87d03f 100644
+--- a/src/compiler/rust/cfg.rs
++++ b/src/compiler/rust/cfg.rs
+@@ -1,13 +1,14 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::bitset::BitSet;
+ use crate::depth_first_search::{dfs, DepthFirstSearch};
+-use std::collections::HashMap;
+-use std::hash::{BuildHasher, Hash};
+-use std::iter::{Cloned, Rev};
+-use std::ops::{Deref, DerefMut, Index, IndexMut};
+-use std::slice;
++use hashbrown::HashMap;
++use core::hash::{BuildHasher, Hash};
++use core::iter::{Cloned, Rev};
++use core::ops::{Deref, DerefMut, Index, IndexMut};
++use core::slice;
+ 
+ /// A [CFG] node
+ pub struct CFGNode<N> {
+@@ -45,7 +46,7 @@ struct PostOrderSortDFS<'a, N> {
+ }
+ 
+ impl<'a, N> DepthFirstSearch for PostOrderSortDFS<'a, N> {
+-    type ChildIter = Cloned<Rev<std::slice::Iter<'a, usize>>>;
++    type ChildIter = Cloned<Rev<core::slice::Iter<'a, usize>>>;
+ 
+     fn pre(&mut self, id: usize) -> Self::ChildIter {
+         // Reverse the order of the successors so that any successors which are
+@@ -117,7 +118,7 @@ fn rev_post_order_sort<N>(nodes: &mut Vec<CFGNode<N>>) {
+     }
+     unsafe { sorted.set_len(sort.count) };
+ 
+-    std::mem::swap(nodes, &mut sorted);
++    core::mem::swap(nodes, &mut sorted);
+ }
+ 
+ fn find_common_dom<N>(
+@@ -143,7 +144,7 @@ struct DominanceDFS<'a, N> {
+ }
+ 
+ impl<'a, N> DepthFirstSearch for DominanceDFS<'a, N> {
+-    type ChildIter = Cloned<std::slice::Iter<'a, usize>>;
++    type ChildIter = Cloned<core::slice::Iter<'a, usize>>;
+ 
+     fn pre(&mut self, id: usize) -> Self::ChildIter {
+         self.nodes[id].dom_pre_idx = self.count;
+@@ -208,7 +209,7 @@ struct BackEdgesDFS<'a, N> {
+ }
+ 
+ impl<'a, N> DepthFirstSearch for BackEdgesDFS<'a, N> {
+-    type ChildIter = Cloned<std::slice::Iter<'a, usize>>;
++    type ChildIter = Cloned<core::slice::Iter<'a, usize>>;
+ 
+     fn pre(&mut self, id: usize) -> Self::ChildIter {
+         self.pre.insert(id);
+@@ -245,7 +246,7 @@ struct ReachesDFS<'a, N> {
+ }
+ 
+ impl<'a, N> DepthFirstSearch for ReachesDFS<'a, N> {
+-    type ChildIter = Cloned<std::slice::Iter<'a, usize>>;
++    type ChildIter = Cloned<core::slice::Iter<'a, usize>>;
+ 
+     fn pre(&mut self, id: usize) -> Self::ChildIter {
+         if id == self.stop || self.reaches.contains(id) {
+@@ -577,7 +578,7 @@ impl<K, N, H: BuildHasher + Default> Default for CFGBuilder<K, N, H> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use std::hash::RandomState;
++    use core::hash::RandomState;
+ 
+     fn test_loop_nesting(edges: &[(usize, usize)], expected: &[Option<usize>]) {
+         let mut builder = CFGBuilder::<_, _, RandomState>::new();
+diff --git a/src/compiler/rust/dataflow.rs b/src/compiler/rust/dataflow.rs
+index 585eeab..f3363d5 100644
+--- a/src/compiler/rust/dataflow.rs
++++ b/src/compiler/rust/dataflow.rs
+@@ -10,9 +10,10 @@
+ //! this terminology.
+ //! https://en.wikipedia.org/wiki/Data-flow_analysis#Basic_principles
+ 
++use alloc::vec::Vec;
+ use crate::bitset::BitSet;
+ use crate::cfg::CFG;
+-use std::collections::VecDeque;
++use alloc::collections::VecDeque;
+ 
+ /// A FIFO where each item is unique
+ #[derive(Default)]
+@@ -189,7 +190,7 @@ mod tests {
+     use super::*;
+     use crate::bitset::BitSet;
+     use crate::cfg::CFGBuilder;
+-    use std::hash::RandomState;
++    use core::hash::RandomState;
+ 
+     fn check_graph_reachability(
+         edges: &[(usize, usize)],
+diff --git a/src/compiler/rust/depth_first_search.rs b/src/compiler/rust/depth_first_search.rs
+index 64c1914..f4016eb 100644
+--- a/src/compiler/rust/depth_first_search.rs
++++ b/src/compiler/rust/depth_first_search.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2025 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::bitset::BitSet;
+ 
+ /// A trait implementing a depth-first search over a graph
+diff --git a/src/compiler/rust/io.rs b/src/compiler/rust/io.rs
+new file mode 100644
+index 0000000..7d29021
+--- /dev/null
++++ b/src/compiler/rust/io.rs
+@@ -0,0 +1,56 @@
++// Copyright (c) mesa-nvk-horizon contributors
++// SPDX-License-Identifier: MIT
++
++//! The parts of `std::io` this crate actually used.
++//!
++//! `MemStream` and `NirInstrPrinter` call `open_memstream`, `fflush` and
++//! `fseek` through the C bindings and report whether the C call failed.
++//! No Rust code here reads or writes anything, so what `std::io` was
++//! supplying is a `Result` alias and a way to say "the C call failed".
++//! Both are reproduced here so the crate does not need an operating
++//! system to say so.
++
++use core::fmt;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ErrorKind {
++    /// The C call failed and set errno; the value is not carried,
++    /// because nothing in this crate ever looked at it.
++    Other,
++    InvalidInput,
++}
++
++#[derive(Debug, Clone)]
++pub struct Error {
++    kind: ErrorKind,
++    msg: &'static str,
++}
++
++impl Error {
++    pub fn new(kind: ErrorKind, msg: &'static str) -> Self {
++        Error { kind, msg }
++    }
++
++    /// Named after the std function it replaces, so the call sites read
++    /// the same. The errno value itself is deliberately not captured:
++    /// no caller in this crate inspects it, and reading errno from Rust
++    /// would be a second C dependency for no gain.
++    pub fn last_os_error() -> Self {
++        Error {
++            kind: ErrorKind::Other,
++            msg: "C library call failed",
++        }
++    }
++
++    pub fn kind(&self) -> ErrorKind {
++        self.kind
++    }
++}
++
++impl fmt::Display for Error {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{}", self.msg)
++    }
++}
++
++pub type Result<T> = core::result::Result<T, Error>;
+diff --git a/src/compiler/rust/lib.rs b/src/compiler/rust/lib.rs
+index 68b0087..1316aa4 100644
+--- a/src/compiler/rust/lib.rs
++++ b/src/compiler/rust/lib.rs
+@@ -1,11 +1,33 @@
+ // Copyright © 2024 Igalia S.L.
+ // SPDX-License-Identifier: MIT
+ 
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
++// hashbrown, under the name Meson gives the host-machine build of it:
++// two targets in one project cannot share a name, and the native build
++// (which indexmap uses) already has `hashbrown`. Aliased here so the
++// `use hashbrown::…` in the sources reads the way it should.
++extern crate hashbrown_host as hashbrown;
++
++
+ pub mod as_slice;
+ pub mod bindings;
+ pub mod bitset;
+ pub mod cfg;
+ pub mod dataflow;
++pub mod io;
+ pub mod depth_first_search;
+ pub mod memstream;
+ pub mod nir;
+diff --git a/src/compiler/rust/memstream.rs b/src/compiler/rust/memstream.rs
+index 622f55b..2cbbd8c 100644
+--- a/src/compiler/rust/memstream.rs
++++ b/src/compiler/rust/memstream.rs
+@@ -1,9 +1,12 @@
+ // Copyright © 2024 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
+-use std::io;
+-use std::marker::PhantomPinned;
+-use std::pin::Pin;
++use alloc::boxed::Box;
++use alloc::string::String;
++use alloc::vec::Vec;
++use crate::io;
++use core::marker::PhantomPinned;
++use core::pin::Pin;
+ 
+ use crate::bindings;
+ 
+@@ -24,7 +27,7 @@ impl MemStream {
+     pub fn new() -> io::Result<Self> {
+         let mut stream_impl = Box::pin(MemStreamImpl {
+             stream: Default::default(),
+-            buffer: std::ptr::null_mut(),
++            buffer: core::ptr::null_mut(),
+             buffer_size: 0,
+             _pin: PhantomPinned,
+         });
+@@ -134,7 +137,7 @@ impl MemStream {
+             // SAFETY: this does not move the stream and we know that
+             // self.position() cannot exceed the stream size as per the
+             // open_memstream() API.
+-            Ok(unsafe { std::slice::from_raw_parts(self.0.buffer, pos) })
++            Ok(unsafe { core::slice::from_raw_parts(self.0.buffer, pos) })
+         }
+     }
+ }
+@@ -144,14 +147,14 @@ impl Drop for MemStream {
+         // SAFETY: this does not move the stream.
+         unsafe {
+             bindings::u_memstream_close(&mut self.inner_mut().stream);
+-            bindings::compiler_rs_free(self.0.buffer as *mut std::ffi::c_void);
++            bindings::compiler_rs_free(self.0.buffer as *mut core::ffi::c_void);
+         }
+     }
+ }
+ 
+ #[test]
+ fn test_memstream() {
+-    use std::ffi::CString;
++    use alloc::ffi::CString;
+ 
+     let mut s = MemStream::new().unwrap();
+     let test_str = "Test string";
+diff --git a/src/compiler/rust/meson.build b/src/compiler/rust/meson.build
+index 2dbf2bf..0b8bc50 100644
+--- a/src/compiler/rust/meson.build
++++ b/src/compiler/rust/meson.build
+@@ -7,6 +7,7 @@ _compiler_rs_sources = [
+   'cfg.rs',
+   'dataflow.rs',
+   'depth_first_search.rs',
++  'io.rs',
+   'memstream.rs',
+   'nir_instr_printer.rs',
+   'nir.rs',
+@@ -75,6 +76,16 @@ foreach type : _compiler_binding_types
+   _compiler_bindgen_args += ['--allowlist-type', type]
+ endforeach
+ 
++# hashbrown is the hash map `alloc` does not have. cfg.rs builds a
++# HashMap with a caller-supplied BuildHasher, which is exactly
++# hashbrown's shape, and a platform with no std has no
++# std::collections::HashMap to use instead.
++dep_hashbrown = dependency('hashbrown',
++  version : '>= 0.14',
++  fallback : ['hashbrown-0.14-rs', 'dep_hashbrown_host'],
++  required : true,
++)
++
+ _libcompiler_c_sources = files('rust_helpers.c')
+ 
+ _libcompiler_c = static_library(
+@@ -120,7 +131,7 @@ _libcompiler_rs = static_library(
+   _compiler_rs_sources,
+   gnu_symbol_visibility : 'hidden',
+   rust_abi : 'rust',
+-  dependencies: [_idep_libcompiler_c],
++  dependencies: [_idep_libcompiler_c, dep_hashbrown],
+   rust_args: _compiler_rust_args,
+ )
+ 
+diff --git a/src/compiler/rust/nir.rs b/src/compiler/rust/nir.rs
+index 90d9940..6dfb3aa 100644
+--- a/src/compiler/rust/nir.rs
++++ b/src/compiler/rust/nir.rs
+@@ -3,10 +3,10 @@
+ 
+ use crate::bindings::*;
+ 
+-use std::ffi::{c_void, CStr};
+-use std::marker::PhantomData;
+-use std::mem::offset_of;
+-use std::str;
++use core::ffi::{c_void, CStr};
++use core::marker::PhantomData;
++use core::mem::offset_of;
++use core::str;
+ 
+ pub struct ExecListIter<'a, T> {
+     n: &'a exec_node,
+@@ -246,7 +246,7 @@ impl nir_alu_src {
+ 
+ impl nir_tex_instr {
+     pub fn srcs_as_slice(&self) -> &[nir_tex_src] {
+-        unsafe { std::slice::from_raw_parts(self.src, self.num_srcs as usize) }
++        unsafe { core::slice::from_raw_parts(self.src, self.num_srcs as usize) }
+     }
+ 
+     pub fn get_src(&self, idx: usize) -> &nir_tex_src {
+diff --git a/src/compiler/rust/nir_instr_printer.rs b/src/compiler/rust/nir_instr_printer.rs
+index a02b411..010d356 100644
+--- a/src/compiler/rust/nir_instr_printer.rs
++++ b/src/compiler/rust/nir_instr_printer.rs
+@@ -1,7 +1,8 @@
+ // Copyright © 2024 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
+-use std::io;
++use alloc::string::String;
++use crate::io;
+ 
+ use crate::bindings;
+ use crate::bindings::nir_instr;
+diff --git a/src/compiler/rust/proc/as_slice.rs b/src/compiler/rust/proc/as_slice.rs
+index 6ea2850..292199b 100644
+--- a/src/compiler/rust/proc/as_slice.rs
++++ b/src/compiler/rust/proc/as_slice.rs
+@@ -130,7 +130,7 @@ pub fn derive_as_slice(
+                         fn as_slice(&self) -> &[#slice_type] {
+                             unsafe {
+                                 let first = &self.#first as *const #slice_type;
+-                                std::slice::from_raw_parts(first, #count)
++                                core::slice::from_raw_parts(first, #count)
+                             }
+                         }
+ 
+@@ -138,7 +138,7 @@ pub fn derive_as_slice(
+                             unsafe {
+                                 let first =
+                                     &mut self.#first as *mut #slice_type;
+-                                std::slice::from_raw_parts_mut(first, #count)
++                                core::slice::from_raw_parts_mut(first, #count)
+                             }
+                         }
+ 
+diff --git a/src/compiler/rust/smallvec.rs b/src/compiler/rust/smallvec.rs
+index 099eb79..cc28e2d 100644
+--- a/src/compiler/rust/smallvec.rs
++++ b/src/compiler/rust/smallvec.rs
+@@ -11,6 +11,7 @@
+ /// * `Many(Vec<T>)` - Stores multiple items in a heap-allocated `Vec`.
+ ///
+ /// This helps to reduce the amount of Vec's allocated in the optimization passes.
++use alloc::vec::Vec;
+ pub enum SmallVec<T> {
+     None,
+     One(T),
+@@ -41,7 +42,7 @@ impl<T> SmallVec<T> {
+                 *self = SmallVec::One(i);
+             }
+             SmallVec::One(_) => {
+-                *self = match std::mem::replace(self, SmallVec::None) {
++                *self = match core::mem::replace(self, SmallVec::None) {
+                     SmallVec::One(o) => SmallVec::Many(vec![o, i]),
+                     _ => panic!("Not a One"),
+                 };
+diff --git a/src/nouveau/compiler/acorn/lib.rs b/src/nouveau/compiler/acorn/lib.rs
+index f9bd19c..afe62ef 100644
+--- a/src/nouveau/compiler/acorn/lib.rs
++++ b/src/nouveau/compiler/acorn/lib.rs
+@@ -2,6 +2,20 @@
+ // SPDX-License-Identifier: MIT
+ 
+ // Generated by random.org
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
+ const INIT_DATA: [u16; 64] = [
+     8235, 45378, 61861, 23858, 42241, 27301, 23697, 15333, 52828, 39161, 46572,
+     7478, 11198, 4926, 21736, 23781, 37217, 20323, 32754, 61367, 12882, 35352,
+diff --git a/src/nouveau/compiler/latencies/lib_rs_gen.py b/src/nouveau/compiler/latencies/lib_rs_gen.py
+index c9d1c3f..4ce8400 100644
+--- a/src/nouveau/compiler/latencies/lib_rs_gen.py
++++ b/src/nouveau/compiler/latencies/lib_rs_gen.py
+@@ -17,6 +17,13 @@ TEMPLATE_RS = Template("""\
+ 
+ // This file is generated by lib_rs_gen.py. DO NOT EDIT!
+ 
++// A generated crate root, so the no_std attribute has to be generated
++// too: a driver for a platform with no operating-system runtime has no
++// `std` to link, and without this rustc injects one and stops at
++// "can't find crate for `std`".
++#![no_std]
++extern crate alloc;
++
+ % for mod in mods:
+ pub mod ${mod};
+ % endfor
+diff --git a/src/nouveau/compiler/meson.build b/src/nouveau/compiler/meson.build
+index 317ad79..0024840 100644
+--- a/src/nouveau/compiler/meson.build
++++ b/src/nouveau/compiler/meson.build
+@@ -9,6 +9,12 @@ dep_paste = dependency('paste',
+   required : true,
+ )
+ 
++dep_hashbrown = dependency('hashbrown',
++  version : '>= 0.14',
++  fallback : ['hashbrown-0.14-rs', 'dep_hashbrown_host'],
++  required : true,
++)
++
+ dep_rustc_hash = dependency('rustc-hash',
+   version: '>= 2.0',
+   fallback: ['rustc-hash-2-rs', 'dep_rustc_hash'],
+@@ -51,33 +57,47 @@ libnak_deps = [
+   idep_nil_h,
+ ]
+ 
++# The winsys and libdrm halves of nak_bindings.h exist for the hardware
++# tests; see the comment there. Both the include and the symbols it
++# would produce are asked for only when those tests are built.
++_nak_bindings_hw_test_args = with_tests \
++  ? ['-DNAK_BINDINGS_HW_TESTS'] : []
++_nak_bindings_hw_test_allowlist = with_tests ? [
++  '--allowlist-type', 'drm.*',
++  '--allowlist-type', 'nouveau_ws_.*',
++  '--allowlist-var', 'DRM_.*',
++  '--allowlist-function', 'drm.*',
++  '--allowlist-function', 'nouveau_ws_.*',
++] : []
++_nak_bindings_hw_test_deps = with_tests ? [dep_libdrm, idep_nouveau_ws] : []
++
+ _nak_bindings_rs = rust.bindgen(
+   input : ['nak_bindings.h'],
+   output : 'nak_bindings.rs',
+   c_args : [
+     pre_args,
++    _nak_bindings_hw_test_args,
+   ],
+   args : [
+     bindgen_output_args,
+     compiler_rs_bindgen_blocklist,
++    _nak_bindings_hw_test_allowlist,
++    # A crate root of its own, unlike the compiler crate's
++    # bindings, which are a module of it.
++    '--raw-line', '#![no_std]',
+     '--raw-line', 'use compiler::bindings::*;',
+-    '--allowlist-type', 'drm.*',
+     '--allowlist-type', 'nak_.*',
+-    '--allowlist-type', 'nouveau_ws_.*',
+-    '--allowlist-var', 'DRM_.*',
+     '--allowlist-var', 'NAK_.*',
+     '--allowlist-var', 'NVIDIA_VENDOR_ID',
+-    '--allowlist-function', 'drm.*',
+     '--allowlist-function', 'nak_.*',
+-    '--allowlist-function', 'nouveau_ws_.*',
++    '--allowlist-function', 'os_get_option',
+     # provided through compiler::bindings::*
+     '--blocklist-type', 'glsl_.*',
+     '--no-prepend-enum-name',
+     '--with-derive-default',
+   ],
+   dependencies : [
+-    dep_libdrm,
+-    idep_nouveau_ws,
++    _nak_bindings_hw_test_deps,
+     libnak_deps,
+   ],
+ )
+@@ -99,17 +119,21 @@ _libnak_ir_proc_rs = rust.proc_macro(
+   rust_args : rust_global_args,
+ )
+ 
++# See src/nouveau/rust_runtime/meson.build: without std, only one Rust
++# staticlib may exist in the binary, so this is an rlib there and the
++# runtime crate is what becomes the archive.
+ _libnak_rs = static_library(
+   'nak_rs',
+   files('nak/lib.rs'),
+   gnu_symbol_visibility : 'hidden',
+-  rust_abi : 'c',
++  rust_abi : with_rust_std ? 'c' : 'rust',
+   rust_args : [
+     nouveau_rust_args,
+     # Otherwise, rustc trips up on -pthread
+     '-Clink-arg=-Wno-unused-command-line-argument',
+   ],
+   dependencies : [
++    dep_hashbrown,
+     dep_paste,
+     dep_rustc_hash,
+     idep_bitview_rs,
+@@ -164,12 +188,18 @@ nak_nir_algebraic_c = custom_target(
+   depend_files : nir_algebraic_depends,
+ )
+ 
++# Where there is no std, _libnak_rs is an rlib, and Meson rightly
++# refuses to link a Rust-ABI library into a C target. The Rust half
++# reaches the binary through src/nouveau/rust_runtime instead, which is
++# the one archive that may carry it.
++_libnak_rs_link = with_rust_std ? [_libnak_rs] : []
++
+ _libnak = static_library(
+   'nak',
+   [libnak_c_files, nak_nir_algebraic_c],
+   include_directories : [inc_include, inc_src],
+   dependencies : libnak_deps,
+-  link_with : [_libnak_rs],
++  link_with : _libnak_rs_link,
+   c_args : [no_override_init_args],
+   gnu_symbol_visibility : 'hidden',
+ )
+diff --git a/src/nouveau/compiler/nak/api.rs b/src/nouveau/compiler/nak/api.rs
+index 527579c..50327f5 100644
+--- a/src/nouveau/compiler/nak/api.rs
++++ b/src/nouveau/compiler/nak/api.rs
+@@ -1,6 +1,9 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::string::String;
++use alloc::vec::Vec;
+ use crate::from_nir::*;
+ use crate::ir::{
+     ShaderInfo, ShaderIoInfo, ShaderModel, ShaderModelInfo, ShaderStageInfo,
+@@ -10,13 +13,12 @@ use crate::sph;
+ use compiler::bindings::*;
+ use nak_bindings::*;
+ 
+-use std::cmp::max;
+-use std::env;
+-use std::ffi::{CStr, CString};
+-use std::fmt::Write;
+-use std::os::raw::c_void;
+-use std::panic;
+-use std::sync::OnceLock;
++use core::cmp::max;
++use alloc::ffi::CString;
++use core::ffi::CStr;
++use core::fmt::Write;
++use core::ffi::c_void;
++use core::sync::atomic::{AtomicU32, Ordering};
+ 
+ #[repr(u8)]
+ enum DebugFlags {
+@@ -35,12 +37,21 @@ pub struct Debug {
+ 
+ impl Debug {
+     fn new() -> Debug {
+-        let debug_var = "NAK_DEBUG";
+-        let debug_str = match env::var(debug_var) {
+-            Ok(s) => s,
+-            Err(_) => {
++        // os_get_option() rather than std::env::var(): it is Mesa's own
++        // accessor for exactly this, it is already how every other Mesa
++        // debug flag is read, and it does not need an operating-system
++        // environment in the Rust standard library. The returned pointer
++        // belongs to the C library and is used immediately, which is the
++        // contract os_misc.h states for the non-_dup form.
++        let debug_str = unsafe {
++            let s = os_get_option(c"NAK_DEBUG".as_ptr());
++            if s.is_null() {
+                 return Debug { flags: 0 };
+             }
++            match CStr::from_ptr(s).to_str() {
++                Ok(s) => s,
++                Err(_) => return Debug { flags: 0 },
++            }
+         };
+ 
+         let mut flags = 0;
+@@ -92,11 +103,33 @@ pub trait GetDebugFlags {
+     }
+ }
+ 
+-pub static DEBUG: OnceLock<Debug> = OnceLock::new();
++/// A one-shot cache for the NAK_DEBUG flags.
++///
++/// This replaces a `std::sync::OnceLock<Debug>`. `Debug` is a single u32
++/// of flag bits, so the whole state fits in an atomic with one value
++/// reserved to mean "not read yet" — the flags occupy seven bits, so
++/// u32::MAX cannot be a real answer. Two threads racing here both call
++/// Debug::new() and both store the same value, which is why Relaxed
++/// ordering is enough: there is nothing else to publish.
++pub struct DebugFlagsCache {
++    flags: AtomicU32,
++}
++
++const DEBUG_FLAGS_UNREAD: u32 = u32::MAX;
+ 
+-impl GetDebugFlags for OnceLock<Debug> {
++pub static DEBUG: DebugFlagsCache = DebugFlagsCache {
++    flags: AtomicU32::new(DEBUG_FLAGS_UNREAD),
++};
++
++impl GetDebugFlags for DebugFlagsCache {
+     fn debug_flags(&self) -> u32 {
+-        self.get_or_init(Debug::new).flags
++        let cached = self.flags.load(Ordering::Relaxed);
++        if cached != DEBUG_FLAGS_UNREAD {
++            return cached;
++        }
++        let flags = Debug::new().flags;
++        self.flags.store(flags, Ordering::Relaxed);
++        flags
+     }
+ }
+ 
+@@ -381,7 +414,7 @@ impl ShaderBin {
+             code_size: (code.len() * 4).try_into().unwrap(),
+             code: code.as_ptr() as *const c_void,
+             asm_str: if asm.is_empty() {
+-                std::ptr::null()
++                core::ptr::null()
+             } else {
+                 asm.as_ptr()
+             },
+@@ -394,7 +427,7 @@ impl ShaderBin {
+     }
+ }
+ 
+-impl std::ops::Deref for ShaderBin {
++impl core::ops::Deref for ShaderBin {
+     type Target = nak_shader_bin;
+ 
+     fn deref(&self) -> &nak_shader_bin {
+@@ -504,6 +537,11 @@ pub extern "C" fn nak_compile_shader(
+     if DEBUG.panic() {
+         compile()
+     } else {
+-        panic::catch_unwind(compile).unwrap_or(std::ptr::null_mut())
++        // std::panic::catch_unwind cannot catch anything on a target
++        // whose panic strategy is "abort" — and
++        // aarch64-nintendo-switch-freestanding sets exactly that in its
++        // built-in spec. Calling compile() directly is the same
++        // behaviour with none of the machinery.
++        compile()
+     }
+ }
+diff --git a/src/nouveau/compiler/nak/assign_regs.rs b/src/nouveau/compiler/nak/assign_regs.rs
+index 82de401..824e0d0 100644
+--- a/src/nouveau/compiler/nak/assign_regs.rs
++++ b/src/nouveau/compiler/nak/assign_regs.rs
+@@ -1,14 +1,16 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::ir::*;
+ use crate::liveness::{BlockLiveness, Liveness, SimpleLiveness};
+ use crate::union_find::UnionFind;
+ 
+ use compiler::bitset::BitSet;
+-use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
+-use std::cmp::{max, min, Ordering};
++use crate::{FxHashMap, FxHashSet};
++use rustc_hash::FxBuildHasher;
++use core::cmp::{max, min, Ordering};
+ 
+ struct KillSet {
+     set: FxHashSet<SSAValue>,
+@@ -38,7 +40,7 @@ impl KillSet {
+         }
+     }
+ 
+-    pub fn iter(&self) -> std::slice::Iter<'_, SSAValue> {
++    pub fn iter(&self) -> core::slice::Iter<'_, SSAValue> {
+         self.vec.iter()
+     }
+ 
+diff --git a/src/nouveau/compiler/nak/builder.rs b/src/nouveau/compiler/nak/builder.rs
+index 9fb0254..8f20704 100644
+--- a/src/nouveau/compiler/nak/builder.rs
++++ b/src/nouveau/compiler/nak/builder.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ 
+ pub trait Builder {
+diff --git a/src/nouveau/compiler/nak/calc_instr_deps.rs b/src/nouveau/compiler/nak/calc_instr_deps.rs
+index dd1cbea..7fdd666 100644
+--- a/src/nouveau/compiler/nak/calc_instr_deps.rs
++++ b/src/nouveau/compiler/nak/calc_instr_deps.rs
+@@ -1,17 +1,19 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::ir::*;
+ use crate::opt_instr_sched_common::estimate_block_weight;
+ use crate::reg_tracker::{RegRefIterable, RegTracker, SparseRegTracker};
+ 
+ use compiler::dataflow::{BackwardDataflow, ForwardDataflow};
+-use rustc_hash::{FxHashMap, FxHashSet};
+-use std::cmp::max;
+-use std::hash::Hash;
+-use std::ops::Range;
+-use std::slice;
++use crate::{FxHashMap, FxHashSet};
++use core::cmp::max;
++use core::hash::Hash;
++use core::ops::Range;
++use core::slice;
+ 
+ #[derive(Clone)]
+ enum RegUse<T: Clone> {
+@@ -30,12 +32,12 @@ impl<T: Clone> RegUse<T> {
+     }
+ 
+     pub fn clear(&mut self) -> Self {
+-        std::mem::replace(self, RegUse::None)
++        core::mem::replace(self, RegUse::None)
+     }
+ 
+     pub fn clear_write(&mut self) -> Self {
+         if matches!(self, RegUse::Write(_)) {
+-            std::mem::replace(self, RegUse::None)
++            core::mem::replace(self, RegUse::None)
+         } else {
+             RegUse::None
+         }
+@@ -48,7 +50,7 @@ impl<T: Clone> RegUse<T> {
+                 RegUse::None
+             }
+             RegUse::Write(_) => {
+-                std::mem::replace(self, RegUse::Reads(vec![dep]))
++                core::mem::replace(self, RegUse::Reads(vec![dep]))
+             }
+             RegUse::Reads(reads) => {
+                 reads.push(dep);
+@@ -58,7 +60,7 @@ impl<T: Clone> RegUse<T> {
+     }
+ 
+     pub fn set_write(&mut self, dep: T) -> Self {
+-        std::mem::replace(self, RegUse::Write(dep))
++        core::mem::replace(self, RegUse::Write(dep))
+     }
+ }
+ 
+@@ -120,7 +122,7 @@ where
+         other: &Self,
+         mut merger: impl FnMut(&V, &V) -> V,
+     ) {
+-        use std::collections::hash_map::Entry;
++        use hashbrown::hash_map::Entry;
+         for (k, v) in other.map.iter() {
+             match self.map.entry(*k) {
+                 Entry::Vacant(vacant_entry) => {
+diff --git a/src/nouveau/compiler/nak/const_tracker.rs b/src/nouveau/compiler/nak/const_tracker.rs
+index 3273522..673a790 100644
+--- a/src/nouveau/compiler/nak/const_tracker.rs
++++ b/src/nouveau/compiler/nak/const_tracker.rs
+@@ -3,7 +3,7 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ pub struct ConstTracker {
+     map: FxHashMap<SSAValue, SrcRef>,
+diff --git a/src/nouveau/compiler/nak/from_nir.rs b/src/nouveau/compiler/nak/from_nir.rs
+index 04e618a..8bf0804 100644
+--- a/src/nouveau/compiler/nak/from_nir.rs
++++ b/src/nouveau/compiler/nak/from_nir.rs
+@@ -3,6 +3,8 @@
+ 
+ #![allow(non_upper_case_globals)]
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::api::GetDebugFlags;
+ use crate::api::DEBUG;
+ use crate::builder::*;
+@@ -15,9 +17,10 @@ use compiler::bindings::*;
+ use compiler::cfg::CFGBuilder;
+ use compiler::nir::*;
+ use compiler::nir_instr_printer::NirInstrPrinter;
+-use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
+-use std::cmp::max;
+-use std::ops::Index;
++use crate::{FxHashMap, FxHashSet};
++use rustc_hash::FxBuildHasher;
++use core::cmp::max;
++use core::ops::Index;
+ 
+ use compiler::bindings::shader_info__bindgen_ty_1__bindgen_ty_5 as shader_info_tess;
+ 
+@@ -673,7 +676,7 @@ impl<'a> ShaderFromNir<'a> {
+             }
+         }
+         let mut srcs =
+-            |i: usize| -> Src { std::mem::take(&mut srcs_vec[i]).unwrap() };
++            |i: usize| -> Src { core::mem::take(&mut srcs_vec[i]).unwrap() };
+ 
+         // Restricts an F16v2 source to just x if the ALU op is single-component. This
+         // must only be called for per-component sources (see nir_op_info::output_sizes
+@@ -1834,7 +1837,7 @@ impl<'a> ShaderFromNir<'a> {
+         }
+ 
+         let flags: nak_nir_tex_flags =
+-            unsafe { std::mem::transmute_copy(&tex.backend_flags) };
++            unsafe { core::mem::transmute_copy(&tex.backend_flags) };
+ 
+         let tex_ref = match flags.ref_type() {
+             NAK_NIR_TEX_REF_TYPE_BOUND => {
+@@ -2171,7 +2174,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_attr_io_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 assert!(!flags.patch());
+ 
+@@ -2193,7 +2196,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_attr_io_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+                 assert!(!flags.patch() || !flags.phys());
+ 
+                 if let ShaderIoInfo::Vtg(io) = &mut self.info.io {
+@@ -2621,7 +2624,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_suclamp_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 let mode = match flags.mode() {
+                     NAK_SUCLAMP_MODE_BLOCK_LINEAR => SuClampMode::BlockLinear,
+@@ -2699,7 +2702,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_imadsp_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 let translate_src_type = |s| {
+                     use IMadSpSrcType::*;
+@@ -3035,7 +3038,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_ipa_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 let mode = match flags.interp_mode() {
+                     NAK_INTERP_MODE_PERSPECTIVE => PixelImap::Perspective,
+@@ -3095,7 +3098,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_isbe_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 assert!(intrin.def.num_components() == 1);
+ 
+@@ -3143,7 +3146,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+                 let flags = intrin.flags();
+                 let flags: nak_nir_isbe_flags =
+-                    unsafe { std::mem::transmute_copy(&flags) };
++                    unsafe { core::mem::transmute_copy(&flags) };
+ 
+                 assert!(srcs[0].num_components() == 1);
+ 
+@@ -3385,7 +3388,7 @@ impl<'a> ShaderFromNir<'a> {
+                 // for 32-bit we have 2x32 return type,
+                 // for 64-bit we need 2x64, so is_locked must be a 64-bit val.
+                 // we can fill the remaining SSAValue with a copy of is_locked
+-                let locked_dst = std::iter::repeat_n(locked_gpr, dst.len());
++                let locked_dst = core::iter::repeat_n(locked_gpr, dst.len());
+                 let nir_dst: Vec<_> =
+                     dst.iter().copied().chain(locked_dst).collect();
+                 self.set_ssa(intrin.def.as_def(), nir_dst);
+@@ -3922,7 +3925,7 @@ impl<'a> ShaderFromNir<'a> {
+             }
+             nir_intrinsic_cmat_muladd_nv => {
+                 let flags: nak_nir_cmat_mul_add_flags =
+-                    unsafe { std::mem::transmute(intrin.flags()) };
++                    unsafe { core::mem::transmute(intrin.flags()) };
+                 let cmat_a = self.get_src(&srcs[0]);
+                 let cmat_b = self.get_src(&srcs[1]);
+                 let cmat_c = self.get_src(&srcs[2]);
+@@ -4344,7 +4347,7 @@ impl<'a> ShaderFromNir<'a> {
+                 /* Next block in the NIR CF list */
+                 let next_block = nb.cf_node.next().unwrap().as_block().unwrap();
+ 
+-                if std::ptr::eq(else_target, next_block) {
++                if core::ptr::eq(else_target, next_block) {
+                     self.emit_pred_jump(
+                         &mut b,
+                         nb,
+@@ -4353,7 +4356,7 @@ impl<'a> ShaderFromNir<'a> {
+                         target,
+                         else_target,
+                     );
+-                } else if std::ptr::eq(target, next_block) {
++                } else if core::ptr::eq(target, next_block) {
+                     self.emit_pred_jump(
+                         &mut b,
+                         nb,
+@@ -4460,7 +4463,7 @@ impl<'a> ShaderFromNir<'a> {
+ 
+         self.parse_cf_list(&mut ssa_alloc, &mut phi_map, nfi.iter_body());
+ 
+-        let cfg = std::mem::take(&mut self.cfg).as_cfg();
++        let cfg = core::mem::take(&mut self.cfg).as_cfg();
+         assert!(cfg.len() > 0);
+         for i in 0..cfg.len() {
+             if cfg[i].falls_through() {
+diff --git a/src/nouveau/compiler/nak/hw_runner.rs b/src/nouveau/compiler/nak/hw_runner.rs
+index f8a1414..d62b926 100644
+--- a/src/nouveau/compiler/nak/hw_runner.rs
++++ b/src/nouveau/compiler/nak/hw_runner.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use compiler::bindings::*;
+ use nak_bindings::*;
+ use nv_push_rs::Push as NvPush;
+@@ -14,10 +15,10 @@ use nvidia_headers::classes::clc6c0::AMPERE_COMPUTE_A;
+ use nvidia_headers::classes::clcbc0::HOPPER_COMPUTE_A;
+ 
+ use std::io;
+-use std::ops::Deref;
+-use std::ptr;
+-use std::ptr::NonNull;
+-use std::slice;
++use core::ops::Deref;
++use core::ptr;
++use core::ptr::NonNull;
++use core::slice;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ use std::sync::{Arc, Mutex};
+ 
+@@ -49,7 +50,7 @@ struct DrmDevices {
+ impl DrmDevices {
+     fn get() -> io::Result<Self> {
+         unsafe {
+-            let mut devices: [drmDevicePtr; 16] = [std::ptr::null_mut(); 16];
++            let mut devices: [drmDevicePtr; 16] = [core::ptr::null_mut(); 16];
+             let num_devices = drmGetDevices(
+                 devices.as_mut_ptr(),
+                 devices.len().try_into().unwrap(),
+@@ -159,7 +160,7 @@ pub struct Context {
+ impl Context {
+     pub fn new(dev: Arc<Device>) -> io::Result<Self> {
+         unsafe {
+-            let mut ctx: *mut nouveau_ws_context = std::ptr::null_mut();
++            let mut ctx: *mut nouveau_ws_context = core::ptr::null_mut();
+             let err = nouveau_ws_context_create(
+                 dev.ws_dev(),
+                 NOUVEAU_WS_ENGINE_COMPUTE,
+@@ -213,7 +214,7 @@ impl Context {
+             let err = drmIoctl(
+                 self.dev.fd(),
+                 DRM_RS_IOCTL_NOUVEAU_EXEC.into(),
+-                &exec as *const _ as *mut std::os::raw::c_void,
++                &exec as *const _ as *mut core::ffi::c_void,
+             );
+             if err != 0 {
+                 return Err(io::Error::last_os_error());
+@@ -230,7 +231,7 @@ impl Context {
+                 1,        // num_handles
+                 i64::MAX, // timeout_nsec
+                 DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
+-                std::ptr::null_mut(),
++                core::ptr::null_mut(),
+             );
+             if err != 0 {
+                 return Err(io::Error::last_os_error());
+@@ -273,14 +274,14 @@ pub struct BO {
+     dev: Arc<Device>,
+     bo: NonNull<nouveau_ws_bo>,
+     pub addr: u64,
+-    pub map: *mut std::os::raw::c_void,
++    pub map: *mut core::ffi::c_void,
+ }
+ 
+ impl BO {
+     pub fn new(dev: Arc<Device>, size: u64) -> io::Result<BO> {
+         let size = size.next_multiple_of(4096);
+ 
+-        let mut map: *mut std::os::raw::c_void = std::ptr::null_mut();
++        let mut map: *mut core::ffi::c_void = core::ptr::null_mut();
+         let bo = unsafe {
+             nouveau_ws_bo_new_mapped(
+                 dev.ws_dev(),
+@@ -331,7 +332,7 @@ struct QMDHeapImpl {
+     dev: Arc<Device>,
+     bos: Vec<BO>,
+     last_offset: u32,
+-    free: Vec<(u64, *mut std::os::raw::c_void)>,
++    free: Vec<(u64, *mut core::ffi::c_void)>,
+ }
+ 
+ struct QMDHeap {
+@@ -342,7 +343,7 @@ struct QMDHeap {
+ struct QMD<'a> {
+     heap: &'a QMDHeap,
+     pub addr: u64,
+-    pub map: *mut std::os::raw::c_void,
++    pub map: *mut core::ffi::c_void,
+ }
+ 
+ impl Drop for QMD<'_> {
+@@ -425,7 +426,7 @@ impl Runner {
+         shader: &nak_shader_bin,
+         invocations: u32,
+         data_stride: u32,
+-        data: *mut std::os::raw::c_void,
++        data: *mut core::ffi::c_void,
+         data_size: usize,
+     ) -> io::Result<()> {
+         let cs_info = unsafe {
+@@ -458,7 +459,7 @@ impl Runner {
+         unsafe {
+             let data_map = bo.map.byte_offset(data_offset.try_into().unwrap());
+             if data_size > 0 {
+-                std::ptr::copy(data, data_map, data_size);
++                core::ptr::copy(data, data_map, data_size);
+             }
+         }
+ 
+@@ -479,7 +480,7 @@ impl Runner {
+         unsafe {
+             let shader_map =
+                 bo.map.byte_offset(shader_offset.try_into().unwrap());
+-            std::ptr::copy(
++            core::ptr::copy(
+                 shader.code,
+                 shader_map,
+                 shader.code_size.try_into().unwrap(),
+@@ -586,7 +587,7 @@ impl Runner {
+         let push_addr = bo.addr + u64::try_from(push_offset).unwrap();
+         unsafe {
+             let push_map = bo.map.byte_offset(push_offset.try_into().unwrap());
+-            std::ptr::copy(p.as_ptr(), push_map.cast(), p.len());
++            core::ptr::copy(p.as_ptr(), push_map.cast(), p.len());
+         }
+ 
+         let res = self.ctx.exec(push_addr, (p.len() * 4).try_into().unwrap());
+@@ -595,7 +596,7 @@ impl Runner {
+         unsafe {
+             let data_map = bo.map.byte_offset(data_offset.try_into().unwrap());
+             if data_size > 0 {
+-                std::ptr::copy(data_map, data, data_size);
++                core::ptr::copy(data_map, data, data_size);
+             }
+         }
+ 
+diff --git a/src/nouveau/compiler/nak/hw_tests.rs b/src/nouveau/compiler/nak/hw_tests.rs
+index bb6e6d8..79001bd 100644
+--- a/src/nouveau/compiler/nak/hw_tests.rs
++++ b/src/nouveau/compiler/nak/hw_tests.rs
+@@ -1,6 +1,8 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, ShaderBin, DEBUG};
+ use crate::hw_runner::{Context, Runner, BO, CB0};
+ use crate::ir::*;
+@@ -10,10 +12,10 @@ use compiler::bindings::MESA_SHADER_COMPUTE;
+ use compiler::cfg::CFGBuilder;
+ use nak_bindings::*;
+ use rustc_hash::FxBuildHasher;
+-use std::cell::RefCell;
++use core::cell::RefCell;
+ use std::io;
+-use std::mem::{offset_of, size_of};
+-use std::str::FromStr;
++use core::mem::{offset_of, size_of};
++use core::str::FromStr;
+ use std::sync::OnceLock;
+ 
+ use nv_push_rs::Push as NvPush;
+@@ -281,7 +283,7 @@ fn test_sanity() {
+     let bin = b.compile();
+     unsafe {
+         run.run
+-            .run_raw(&bin, LOCAL_SIZE_X.into(), 0, std::ptr::null_mut(), 0)
++            .run_raw(&bin, LOCAL_SIZE_X.into(), 0, core::ptr::null_mut(), 0)
+             .unwrap();
+     }
+ }
+@@ -452,7 +454,7 @@ pub fn test_foldable_op_with(
+                 }
+             }
+         }
+-        data.extend(std::iter::repeat_n(0_u32, dst_comps));
++        data.extend(core::iter::repeat_n(0_u32, dst_comps));
+     }
+     debug_assert!(data.len() == invocations * comps);
+ 
+@@ -1849,7 +1851,7 @@ fn test_render_enable() -> io::Result<()> {
+ 
+         unsafe {
+             let map = bo.map.byte_offset(0);
+-            std::ptr::write_bytes(
++            core::ptr::write_bytes(
+                 map as *mut u8,
+                 0,
+                 bo_size.try_into().unwrap(),
+@@ -1857,7 +1859,7 @@ fn test_render_enable() -> io::Result<()> {
+         }
+         unsafe {
+             let input = bo.map.byte_offset(in_offset.try_into().unwrap());
+-            std::ptr::copy_nonoverlapping::<u64>(
++            core::ptr::copy_nonoverlapping::<u64>(
+                 &data[0],
+                 input as *mut u64,
+                 data.len(),
+@@ -1911,7 +1913,7 @@ fn test_render_enable() -> io::Result<()> {
+         let push_addr = bo.addr + u64::try_from(push_offset).unwrap();
+         unsafe {
+             let push_map = bo.map.byte_offset(push_offset.try_into().unwrap());
+-            std::ptr::copy(p.as_ptr(), push_map.cast(), p.len());
++            core::ptr::copy(p.as_ptr(), push_map.cast(), p.len());
+         }
+ 
+         ctx.exec(push_addr, (p.len() * 4).try_into().unwrap())?;
+@@ -1970,11 +1972,11 @@ fn test_render_enable() -> io::Result<()> {
+         // Try some random values
+         for _ in 0..2000 {
+             let data: [u64; 4] =
+-                std::array::from_fn(|_| a.borrow_mut().get_u64());
++                core::array::from_fn(|_| a.borrow_mut().get_u64());
+             check(&data)?;
+ 
+             let mut data_eq: [u64; 4] =
+-                std::array::from_fn(|_| a.borrow_mut().get_u64());
++                core::array::from_fn(|_| a.borrow_mut().get_u64());
+             data_eq[2] = data_eq[0];
+             check(&data)?;
+         }
+diff --git a/src/nouveau/compiler/nak/ir.rs b/src/nouveau/compiler/nak/ir.rs
+index 8d5feff..0924caa 100644
+--- a/src/nouveau/compiler/nak/ir.rs
++++ b/src/nouveau/compiler/nak/ir.rs
+@@ -4,6 +4,9 @@
+ extern crate bitview;
+ extern crate nak_ir_proc;
+ 
++use alloc::boxed::Box;
++use alloc::string::String;
++use alloc::vec::Vec;
+ use bitview::{BitMutView, BitMutViewable, BitView, BitViewable, SetField};
+ use nak_bindings::*;
+ 
+@@ -20,12 +23,12 @@ use compiler::cfg::CFG;
+ use compiler::dataflow::ForwardDataflow;
+ use compiler::smallvec::SmallVec;
+ use nak_ir_proc::*;
+-use std::cmp::{max, min};
+-use std::fmt;
+-use std::fmt::Write;
+-use std::iter::Zip;
+-use std::ops::{BitAnd, BitOr, Deref, DerefMut, Index, IndexMut, Not, Range};
+-use std::slice;
++use core::cmp::{max, min};
++use core::fmt;
++use core::fmt::Write;
++use core::iter::Zip;
++use core::ops::{BitAnd, BitOr, Deref, DerefMut, Index, IndexMut, Not, Range};
++use core::slice;
+ 
+ #[derive(Clone, Copy, Eq, Hash, PartialEq)]
+ pub struct Label {
+@@ -3182,11 +3185,11 @@ impl AsSlice<Src> for OpMuFu {
+     type Attr = SrcType;
+ 
+     fn as_slice(&self) -> &[Src] {
+-        std::slice::from_ref(&self.src)
++        core::slice::from_ref(&self.src)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Src] {
+-        std::slice::from_mut(&mut self.src)
++        core::slice::from_mut(&mut self.src)
+     }
+ 
+     fn attrs(&self) -> SrcTypeList {
+@@ -4491,7 +4494,7 @@ fn reduce_shift_imm(shift: &mut Src, wrap: bool, bits: u32) {
+         if wrap {
+             *shift &= bits - 1;
+         } else {
+-            *shift = std::cmp::min(*shift, bits)
++            *shift = core::cmp::min(*shift, bits)
+         }
+     }
+ }
+@@ -4699,11 +4702,11 @@ impl AsSlice<Src> for OpF2F {
+     type Attr = SrcType;
+ 
+     fn as_slice(&self) -> &[Src] {
+-        std::slice::from_ref(&self.src)
++        core::slice::from_ref(&self.src)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Src] {
+-        std::slice::from_mut(&mut self.src)
++        core::slice::from_mut(&mut self.src)
+     }
+ 
+     fn attrs(&self) -> SrcTypeList {
+@@ -4720,11 +4723,11 @@ impl AsSlice<Dst> for OpF2F {
+     type Attr = DstType;
+ 
+     fn as_slice(&self) -> &[Dst] {
+-        std::slice::from_ref(&self.dst)
++        core::slice::from_ref(&self.dst)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Dst] {
+-        std::slice::from_mut(&mut self.dst)
++        core::slice::from_mut(&mut self.dst)
+     }
+ 
+     fn attrs(&self) -> DstTypeList {
+@@ -4796,11 +4799,11 @@ impl AsSlice<Src> for OpF2I {
+     type Attr = SrcType;
+ 
+     fn as_slice(&self) -> &[Src] {
+-        std::slice::from_ref(&self.src)
++        core::slice::from_ref(&self.src)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Src] {
+-        std::slice::from_mut(&mut self.src)
++        core::slice::from_mut(&mut self.src)
+     }
+ 
+     fn attrs(&self) -> SrcTypeList {
+@@ -4839,11 +4842,11 @@ impl AsSlice<Src> for OpI2F {
+     type Attr = SrcType;
+ 
+     fn as_slice(&self) -> &[Src] {
+-        std::slice::from_ref(&self.src)
++        core::slice::from_ref(&self.src)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Src] {
+-        std::slice::from_mut(&mut self.src)
++        core::slice::from_mut(&mut self.src)
+     }
+ 
+     fn attrs(&self) -> SrcTypeList {
+@@ -4859,11 +4862,11 @@ impl AsSlice<Dst> for OpI2F {
+     type Attr = DstType;
+ 
+     fn as_slice(&self) -> &[Dst] {
+-        std::slice::from_ref(&self.dst)
++        core::slice::from_ref(&self.dst)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Dst] {
+-        std::slice::from_mut(&mut self.dst)
++        core::slice::from_mut(&mut self.dst)
+     }
+ 
+     fn attrs(&self) -> DstTypeList {
+@@ -4941,11 +4944,11 @@ impl AsSlice<Src> for OpFRnd {
+     type Attr = SrcType;
+ 
+     fn as_slice(&self) -> &[Src] {
+-        std::slice::from_ref(&self.src)
++        core::slice::from_ref(&self.src)
+     }
+ 
+     fn as_mut_slice(&mut self) -> &mut [Src] {
+-        std::slice::from_mut(&mut self.src)
++        core::slice::from_mut(&mut self.src)
+     }
+ 
+     fn attrs(&self) -> SrcTypeList {
+@@ -7699,7 +7702,7 @@ mod phi {
+     #[allow(unused_imports)]
+     use crate::ir::{OpPhiDsts, OpPhiSrcs};
+     use compiler::bitset::IntoBitIndex;
+-    use std::fmt;
++    use core::fmt;
+ 
+     /// A phi node
+     ///
+diff --git a/src/nouveau/compiler/nak/legalize.rs b/src/nouveau/compiler/nak/legalize.rs
+index bc7e893..0c10570 100644
+--- a/src/nouveau/compiler/nak/legalize.rs
++++ b/src/nouveau/compiler/nak/legalize.rs
+@@ -1,12 +1,13 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::const_tracker::ConstTracker;
+ use crate::ir::*;
+ use crate::liveness::{BlockLiveness, Liveness, SimpleLiveness};
+ 
+-use rustc_hash::{FxHashMap, FxHashSet};
++use crate::{FxHashMap, FxHashSet};
+ 
+ pub fn src_is_upred_reg(src: &Src) -> bool {
+     match &src.src_ref {
+@@ -39,7 +40,7 @@ pub fn swap_srcs_if_not_reg(
+     reg_file: RegFile,
+ ) -> bool {
+     if !src_is_reg(x, reg_file) && src_is_reg(y, reg_file) {
+-        std::mem::swap(x, y);
++        core::mem::swap(x, y);
+         true
+     } else {
+         false
+@@ -147,7 +148,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+         let ssa_vals: Vec<_> = old_val
+             .iter()
+             .copied()
+-            .chain(std::iter::from_fn(pad_fn))
++            .chain(core::iter::from_fn(pad_fn))
+             .take(n_comps)
+             .collect();
+ 
+@@ -182,7 +183,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+         }
+ 
+         let old_src_ref =
+-            std::mem::replace(&mut src.src_ref, val.clone().into());
++            core::mem::replace(&mut src.src_ref, val.clone().into());
+         if val.comps() == 1 {
+             self.copy_to(val[0].into(), old_src_ref.into());
+         } else {
+@@ -275,7 +276,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+         match src_type {
+             SrcType::F16 | SrcType::F16v2 => {
+                 let val = self.alloc_ssa(reg_file);
+-                let old_src = std::mem::replace(src, val.into());
++                let old_src = core::mem::replace(src, val.into());
+                 self.push_op(OpHAdd2 {
+                     dst: val.into(),
+                     srcs: [Src::ZERO.fneg(), old_src],
+@@ -286,7 +287,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+             }
+             SrcType::F32 => {
+                 let val = self.alloc_ssa(reg_file);
+-                let old_src = std::mem::replace(src, val.into());
++                let old_src = core::mem::replace(src, val.into());
+                 self.push_op(OpFAdd {
+                     dst: val.into(),
+                     srcs: [Src::ZERO.fneg(), old_src],
+@@ -297,7 +298,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+             }
+             SrcType::F64 => {
+                 let val = self.alloc_ssa_vec(reg_file, 2);
+-                let old_src = std::mem::replace(src, val.clone().into());
++                let old_src = core::mem::replace(src, val.clone().into());
+                 self.push_op(OpDAdd {
+                     dst: val.into(),
+                     srcs: [Src::ZERO.fneg(), old_src],
+@@ -316,7 +317,7 @@ pub trait LegalizeBuildHelpers: SSABuilder {
+     ) {
+         assert!(src_type == SrcType::I32);
+         let val = self.alloc_ssa(reg_file);
+-        let old_src = std::mem::replace(src, val.into());
++        let old_src = core::mem::replace(src, val.into());
+         if self.sm() >= 70 {
+             self.push_op(OpIAdd3 {
+                 srcs: [Src::ZERO, old_src, Src::ZERO],
+diff --git a/src/nouveau/compiler/nak/lib.rs b/src/nouveau/compiler/nak/lib.rs
+index 55cb3e1..cebd70e 100644
+--- a/src/nouveau/compiler/nak/lib.rs
++++ b/src/nouveau/compiler/nak/lib.rs
+@@ -1,6 +1,79 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
++// hashbrown, under the name Meson gives the host-machine build of it:
++// two targets in one project cannot share a name, and the native build
++// (which indexmap uses) already has `hashbrown`. Aliased here so the
++// `use hashbrown::…` in the sources reads the way it should.
++extern crate hashbrown_host as hashbrown;
++
++
++
++/// `eprint!`/`eprintln!` without `std`.
++///
++/// NAK writes debug output to stderr in twenty-one places, every one of
++/// them behind a NAK_DEBUG flag. What `std`'s macros ultimately do is
++/// write(2) to file descriptor 2, and that is available here — newlib
++/// provides it, and libnx wires it to whatever the process has open.
++/// So the macros are reproduced rather than the call sites rewritten.
++///
++/// A short-write or an error is ignored, exactly as `eprintln!` ignores
++/// them: this is debug output, and failing to print it must not change
++/// what the compiler does.
++#[doc(hidden)]
++pub fn __write_stderr(s: &str) {
++    extern "C" {
++        fn write(fd: i32, buf: *const core::ffi::c_void, n: usize) -> isize;
++    }
++    if !s.is_empty() {
++        unsafe {
++            write(2, s.as_ptr() as *const core::ffi::c_void, s.len());
++        }
++    }
++}
++
++macro_rules! eprint {
++    ($($arg:tt)*) => {
++        $crate::__write_stderr(&alloc::format!($($arg)*))
++    };
++}
++
++macro_rules! eprintln {
++    () => { $crate::__write_stderr("\n") };
++    ($($arg:tt)*) => {{
++        let mut s = alloc::format!($($arg)*);
++        s.push('\n');
++        $crate::__write_stderr(&s)
++    }};
++}
++
++
++/// `FxHashMap`/`FxHashSet` without `std`.
++///
++/// rustc-hash defines these two aliases only under its `std` feature,
++/// because there they are `std::collections::HashMap` with a different
++/// hasher — and `alloc` has no hash map at all. hashbrown is the same
++/// implementation `std` itself uses, so pairing it with rustc-hash's
++/// `FxBuildHasher` gives back exactly what the aliases meant, with the
++/// same API and the same hash function.
++pub type FxHashMap<K, V> =
++    hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
++pub type FxHashSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
++
+ mod api;
+ mod assign_regs;
+ mod builder;
+diff --git a/src/nouveau/compiler/nak/liveness.rs b/src/nouveau/compiler/nak/liveness.rs
+index de87d99..4efc24b 100644
+--- a/src/nouveau/compiler/nak/liveness.rs
++++ b/src/nouveau/compiler/nak/liveness.rs
+@@ -1,12 +1,13 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ 
+ use compiler::bitset::BitSet;
+ use compiler::dataflow::BackwardDataflow;
+-use rustc_hash::{FxHashMap, FxHashSet};
+-use std::cmp::{max, min, Ord, Ordering};
++use crate::{FxHashMap, FxHashSet};
++use core::cmp::{max, min, Ord, Ordering};
+ 
+ #[derive(Clone, Default)]
+ pub struct LiveSet {
+diff --git a/src/nouveau/compiler/nak/lower_copy_swap.rs b/src/nouveau/compiler/nak/lower_copy_swap.rs
+index 19e7f71..981b882 100644
+--- a/src/nouveau/compiler/nak/lower_copy_swap.rs
++++ b/src/nouveau/compiler/nak/lower_copy_swap.rs
+@@ -6,7 +6,7 @@ use crate::{
+     ir::*,
+ };
+ 
+-use std::cmp::max;
++use core::cmp::max;
+ 
+ struct LowerCopySwap {
+     slm_start: u32,
+diff --git a/src/nouveau/compiler/nak/lower_par_copies.rs b/src/nouveau/compiler/nak/lower_par_copies.rs
+index 3cb0b68..69afcde 100644
+--- a/src/nouveau/compiler/nak/lower_par_copies.rs
++++ b/src/nouveau/compiler/nak/lower_par_copies.rs
+@@ -1,12 +1,13 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::{
+     api::{GetDebugFlags, DEBUG},
+     ir::*,
+ };
+ 
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ struct CopyNode {
+     num_reads: usize,
+diff --git a/src/nouveau/compiler/nak/nvdisasm_tests.rs b/src/nouveau/compiler/nak/nvdisasm_tests.rs
+index fbcf7c8..dae4d50 100644
+--- a/src/nouveau/compiler/nak/nvdisasm_tests.rs
++++ b/src/nouveau/compiler/nak/nvdisasm_tests.rs
+@@ -1,6 +1,8 @@
+ // Copyright © 2025 Valve Corporation
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::string::String;
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use compiler::cfg::CFGBuilder;
+ use rustc_hash::FxBuildHasher;
+@@ -8,7 +10,7 @@ use rustc_hash::FxBuildHasher;
+ use std::io::Write;
+ use std::process;
+ use std::process::Command;
+-use std::slice;
++use core::slice;
+ use std::sync::atomic::AtomicUsize;
+ use std::sync::OnceLock;
+ 
+@@ -42,7 +44,7 @@ fn run_nvdisasm(s: &Shader) -> String {
+ 
+     std::io::stderr().write_all(&out.stderr).expect("IO error");
+     assert!(out.status.success());
+-    let stdout = std::str::from_utf8(&out.stdout).unwrap();
++    let stdout = core::str::from_utf8(&out.stdout).unwrap();
+     std::fs::remove_file(tmp_file).unwrap();
+     stdout.into()
+ }
+@@ -135,13 +137,13 @@ impl DisasmCheck {
+ 
+     fn check(mut self, sm: u8) {
+         assert!(self.expected.len() > 0);
+-        let actual = disassemble_instrs(std::mem::take(&mut self.instrs), sm);
++        let actual = disassemble_instrs(core::mem::take(&mut self.instrs), sm);
+         assert_eq!(actual.len(), self.expected.len());
+ 
+         let mut any_different = false;
+         for (a, e) in actual
+             .into_iter()
+-            .zip(std::mem::take(&mut self.expected).into_iter())
++            .zip(core::mem::take(&mut self.expected).into_iter())
+         {
+             if a != e {
+                 if !any_different {
+@@ -169,7 +171,7 @@ fn sm_list() -> &'static [u8] {
+ 
+         std::io::stderr().write_all(&out.stderr).expect("IO error");
+         assert!(out.status.success());
+-        let stdout = std::str::from_utf8(&out.stdout).unwrap();
++        let stdout = core::str::from_utf8(&out.stdout).unwrap();
+ 
+         if stdout.contains("cuda_12") {
+             &[70, 75, 80, 86, 89, 90, 100, 120]
+diff --git a/src/nouveau/compiler/nak/opt_bar_prop.rs b/src/nouveau/compiler/nak/opt_bar_prop.rs
+index 568c280..bcb50b7 100644
+--- a/src/nouveau/compiler/nak/opt_bar_prop.rs
++++ b/src/nouveau/compiler/nak/opt_bar_prop.rs
+@@ -1,11 +1,12 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::ir::*;
+ 
+ use compiler::bitset::BitSet;
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ struct PhiMap {
+     phi_ssa: FxHashMap<Phi, Vec<SSAValue>>,
+diff --git a/src/nouveau/compiler/nak/opt_copy_prop.rs b/src/nouveau/compiler/nak/opt_copy_prop.rs
+index f692228..12ae3c3 100644
+--- a/src/nouveau/compiler/nak/opt_copy_prop.rs
++++ b/src/nouveau/compiler/nak/opt_copy_prop.rs
+@@ -3,7 +3,7 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ enum CBufRule {
+     Yes,
+diff --git a/src/nouveau/compiler/nak/opt_crs.rs b/src/nouveau/compiler/nak/opt_crs.rs
+index d9cc3ef..413d2e5 100644
+--- a/src/nouveau/compiler/nak/opt_crs.rs
++++ b/src/nouveau/compiler/nak/opt_crs.rs
+@@ -3,7 +3,7 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashSet;
++use crate::FxHashSet;
+ 
+ fn opt_crs(f: &mut Function) {
+     let mut live_targets: FxHashSet<Label> = Default::default();
+diff --git a/src/nouveau/compiler/nak/opt_instr_sched_common.rs b/src/nouveau/compiler/nak/opt_instr_sched_common.rs
+index 2d8be48..95f84ea 100644
+--- a/src/nouveau/compiler/nak/opt_instr_sched_common.rs
++++ b/src/nouveau/compiler/nak/opt_instr_sched_common.rs
+@@ -1,12 +1,18 @@
+ // Copyright © 2024 Valve Corporation
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use compiler::cfg::CFG;
+-use std::cmp::max;
+-use std::cmp::Reverse;
++use core::cmp::max;
++use core::cmp::Reverse;
+ 
+ pub mod graph {
++    // A nested module gets its own scope, and the std prelude used to
++    // supply Vec in all of them.
++    use alloc::vec::Vec;
++
+     #[derive(Clone)]
+     pub struct Edge<EdgeLabel> {
+         pub label: EdgeLabel,
+@@ -52,7 +58,7 @@ pub mod graph {
+             let old_edges: Vec<_> = self
+                 .nodes
+                 .iter_mut()
+-                .map(|node| std::mem::take(&mut node.outgoing_edges))
++                .map(|node| core::mem::take(&mut node.outgoing_edges))
+                 .collect();
+ 
+             for (tail_idx, edges) in old_edges.into_iter().enumerate() {
+@@ -244,7 +250,13 @@ pub fn side_effect_type(op: &Op) -> SideEffect {
+ 
+ pub fn estimate_block_weight(cfg: &CFG<BasicBlock>, block_idx: usize) -> u64 {
+     let loop_depth = cfg.loop_depth(block_idx) as f32;
+-    10_f32.powf((loop_depth + 1.0).log2()) as u64
++    // f32::powf and f32::log2 are std methods, not core ones: core has
++    // no libm. newlib supplies both and the driver already links -lm.
++    extern "C" {
++        fn powf(base: f32, exp: f32) -> f32;
++        fn log2f(x: f32) -> f32;
++    }
++    unsafe { powf(10.0, log2f(loop_depth + 1.0)) as u64 }
+ }
+ 
+ /// Try to guess how many cycles a variable latency instruction will take
+@@ -428,6 +440,13 @@ impl FutureReadyInstr {
+     }
+ }
+ 
++// save_graphviz() writes a .dot file to /tmp for a developer to look at
++// with `dot -Tsvg`. It is dead code — #[allow(dead_code)], and its three
++// call sites are all commented out — and it is the only thing in NAK
++// that touches a filesystem. It is therefore compiled only where the
++// standard library can open a file, rather than being given a shim that
++// nothing would ever call.
++#[cfg(feature = "std")]
+ #[allow(dead_code)]
+ pub fn save_graphviz(
+     instrs: &[Box<Instr>],
+diff --git a/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs b/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
+index 8f5ce6b..6817311 100644
+--- a/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
++++ b/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
+@@ -1,13 +1,15 @@
+ // Copyright © 2024 Valve Corporation
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::opt_instr_sched_common::*;
+ use crate::reg_tracker::RegRefIterable;
+ use crate::reg_tracker::RegTracker;
+-use std::cmp::max;
+-use std::cmp::Reverse;
+-use std::collections::BinaryHeap;
++use core::cmp::max;
++use core::cmp::Reverse;
++use alloc::collections::BinaryHeap;
+ 
+ struct RegUse<T: Clone> {
+     reads: Vec<T>,
+@@ -184,7 +186,7 @@ fn generate_order(
+         current_cycle += g.nodes[next_idx].label.exec_latency;
+ 
+         let outgoing_edges =
+-            std::mem::take(&mut g.nodes[next_idx].outgoing_edges);
++            core::mem::take(&mut g.nodes[next_idx].outgoing_edges);
+         for edge in outgoing_edges.into_iter() {
+             let dep_instr = &mut g.nodes[edge.head_idx].label;
+             dep_instr.ready_cycle =
+@@ -213,7 +215,7 @@ fn sched_buffer(
+     // Apply the new instruction order
+     let mut instrs: Vec<Option<Instr>> = instrs.into_iter().map(Some).collect();
+     let instrs = new_order.into_iter().rev().map(move |i| {
+-        std::mem::take(&mut instrs[i]).expect("Instruction scheduled twice")
++        core::mem::take(&mut instrs[i]).expect("Instruction scheduled twice")
+     });
+     (instrs, cycle_count)
+ }
+@@ -225,7 +227,7 @@ impl Function {
+             let block = &mut self.blocks[i];
+ 
+             let orig_instr_count = block.instrs.len();
+-            let instrs = std::mem::take(&mut block.instrs);
++            let instrs = core::mem::take(&mut block.instrs);
+             let (instrs, cycle_count) = sched_buffer(sm, instrs);
+             block.instrs = instrs.collect();
+             assert_eq!(orig_instr_count, block.instrs.len());
+diff --git a/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs b/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
+index 7c88077..1955c5c 100644
+--- a/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
++++ b/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2025 Valve Corporation
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::ir::*;
+ use crate::liveness::{BlockLiveness, LiveSet, Liveness, SimpleLiveness};
+@@ -8,10 +9,10 @@ use crate::opt_instr_sched_common::{
+     calc_statistics, estimate_variable_latency, side_effect_type, DepGraph,
+     EdgeLabel, FutureReadyInstr, ReadyInstr, SideEffect,
+ };
+-use rustc_hash::FxHashMap;
+-use std::cmp::Reverse;
+-use std::cmp::{max, min};
+-use std::collections::BTreeSet;
++use crate::FxHashMap;
++use core::cmp::Reverse;
++use core::cmp::{max, min};
++use alloc::collections::BTreeSet;
+ 
+ // This is the maximum number of reserved gprs - (TODO: Model more cases where
+ // we actually need 2)
+@@ -149,10 +150,14 @@ fn generate_dep_graph(sm: &ShaderModelInfo, instrs: &[Instr]) -> DepGraph {
+ }
+ 
+ mod net_live {
++    // A nested module gets its own scope, and the std prelude
++    // used to supply Vec in all of them.
++    use alloc::vec::Vec;
++
+     use crate::ir::*;
+     use crate::liveness::LiveSet;
+-    use rustc_hash::FxHashMap;
+-    use std::ops::Index;
++    use crate::FxHashMap;
++    use core::ops::Index;
+ 
+     /// The net change in live values, from the end of an instruction to a
+     /// specific point during the instruction's execution
+@@ -452,7 +457,7 @@ impl<'a> GenerateOrder<'a> {
+                 match future_ready_instrs.last() {
+                     None => break,
+                     Some(FutureReadyInstr {
+-                        ready_cycle: std::cmp::Reverse(ready_cycle),
++                        ready_cycle: core::cmp::Reverse(ready_cycle),
+                         index,
+                     }) => {
+                         if current_cycle >= *ready_cycle {
+@@ -601,7 +606,7 @@ impl InstructionOrder {
+             instrs.into_iter().map(|instr| Some(instr)).collect();
+ 
+         self.order.iter().map(move |&i| {
+-            std::mem::take(&mut instrs[i]).expect("Instruction scheduled twice")
++            core::mem::take(&mut instrs[i]).expect("Instruction scheduled twice")
+         })
+     }
+ }
+@@ -827,7 +832,7 @@ impl Function {
+             let mut unit: ScheduleUnit = Default::default();
+ 
+             for (ip, instr) in
+-                std::mem::take(&mut block.instrs).into_iter().enumerate()
++                core::mem::take(&mut block.instrs).into_iter().enumerate()
+             {
+                 let starts_block = match instr.op {
+                     Op::PhiDsts(_) => true,
+diff --git a/src/nouveau/compiler/nak/opt_jump_thread.rs b/src/nouveau/compiler/nak/opt_jump_thread.rs
+index 1b73425..abad2d9 100644
+--- a/src/nouveau/compiler/nak/opt_jump_thread.rs
++++ b/src/nouveau/compiler/nak/opt_jump_thread.rs
+@@ -4,7 +4,8 @@
+ use crate::ir::*;
+ 
+ use compiler::cfg::CFGBuilder;
+-use rustc_hash::{FxBuildHasher, FxHashMap};
++use crate::FxHashMap;
++use rustc_hash::FxBuildHasher;
+ 
+ fn clone_branch(op: &Op) -> Op {
+     match op {
+@@ -135,7 +136,7 @@ fn rewrite_cfg(func: &mut Function) {
+     for block in func.blocks.drain() {
+         builder.add_node(block.label, block);
+     }
+-    let _ = std::mem::replace(&mut func.blocks, builder.as_cfg());
++    let _ = core::mem::replace(&mut func.blocks, builder.as_cfg());
+ }
+ 
+ /// Replace jumps to the following block with fall-through
+diff --git a/src/nouveau/compiler/nak/opt_lop.rs b/src/nouveau/compiler/nak/opt_lop.rs
+index 416784e..7d7b8f2 100644
+--- a/src/nouveau/compiler/nak/opt_lop.rs
++++ b/src/nouveau/compiler/nak/opt_lop.rs
+@@ -3,8 +3,8 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashMap;
+-use std::slice;
++use crate::FxHashMap;
++use core::slice;
+ 
+ struct LopEntry {
+     op: LogicOp3,
+diff --git a/src/nouveau/compiler/nak/opt_out.rs b/src/nouveau/compiler/nak/opt_out.rs
+index d80b1aa..cf75aeb 100644
+--- a/src/nouveau/compiler/nak/opt_out.rs
++++ b/src/nouveau/compiler/nak/opt_out.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::{
+     api::{GetDebugFlags, DEBUG},
+     ir::*,
+diff --git a/src/nouveau/compiler/nak/opt_prmt.rs b/src/nouveau/compiler/nak/opt_prmt.rs
+index 416452c..ac97692 100644
+--- a/src/nouveau/compiler/nak/opt_prmt.rs
++++ b/src/nouveau/compiler/nak/opt_prmt.rs
+@@ -5,7 +5,7 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ struct PrmtSrcs {
+     srcs: [SrcRef; 2],
+diff --git a/src/nouveau/compiler/nak/opt_uniform_instrs.rs b/src/nouveau/compiler/nak/opt_uniform_instrs.rs
+index e34f156..c135ba3 100644
+--- a/src/nouveau/compiler/nak/opt_uniform_instrs.rs
++++ b/src/nouveau/compiler/nak/opt_uniform_instrs.rs
+@@ -3,7 +3,7 @@
+ 
+ use crate::ir::*;
+ 
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ fn should_lower_to_warp(
+     sm: &ShaderModelInfo,
+diff --git a/src/nouveau/compiler/nak/qmd.rs b/src/nouveau/compiler/nak/qmd.rs
+index d91d6a3..e7a75d0 100644
+--- a/src/nouveau/compiler/nak/qmd.rs
++++ b/src/nouveau/compiler/nak/qmd.rs
+@@ -3,7 +3,7 @@
+ 
+ extern crate nvidia_headers;
+ 
+-use std::cmp::min;
++use core::cmp::min;
+ 
+ use compiler::bindings::*;
+ use nak_bindings::*;
+@@ -691,7 +691,7 @@ pub extern "C" fn nak_fill_qmd(
+     dev: *const nv_device_info,
+     info: *const nak_shader_info,
+     qmd_info: *const nak_qmd_info,
+-    qmd_out: *mut ::std::os::raw::c_void,
++    qmd_out: *mut ::core::ffi::c_void,
+     qmd_size: usize,
+ ) {
+     assert!(!dev.is_null());
+diff --git a/src/nouveau/compiler/nak/reg_tracker.rs b/src/nouveau/compiler/nak/reg_tracker.rs
+index 854e34e..d931792 100644
+--- a/src/nouveau/compiler/nak/reg_tracker.rs
++++ b/src/nouveau/compiler/nak/reg_tracker.rs
+@@ -1,11 +1,12 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
+-use rustc_hash::FxHashMap;
++use alloc::vec::Vec;
++use crate::FxHashMap;
+ 
+ use crate::ir::*;
+ 
+-use std::ops::{Index, IndexMut, Range};
++use core::ops::{Index, IndexMut, Range};
+ 
+ pub struct RegTracker<T> {
+     reg: [T; 255],
+@@ -96,7 +97,7 @@ impl<T: Default + Clone + Eq> SparseRegTracker<T> {
+     }
+ 
+     pub fn merge_with(&mut self, other: &Self, mut f: impl FnMut(&mut T, &T)) {
+-        use std::collections::hash_map::Entry;
++        use hashbrown::hash_map::Entry;
+ 
+         for (k, v) in other.regs.iter() {
+             match self.regs.entry(*k) {
+diff --git a/src/nouveau/compiler/nak/repair_ssa.rs b/src/nouveau/compiler/nak/repair_ssa.rs
+index 4980e75..39e5fb3 100644
+--- a/src/nouveau/compiler/nak/repair_ssa.rs
++++ b/src/nouveau/compiler/nak/repair_ssa.rs
+@@ -1,14 +1,16 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::union_find::UnionFind;
+ 
+ use compiler::bitset::BitSet;
+-use rustc_hash::{FxBuildHasher, FxHashMap};
+-use std::cell::RefCell;
+-use std::cmp::Reverse;
+-use std::collections::BinaryHeap;
++use crate::FxHashMap;
++use rustc_hash::FxBuildHasher;
++use core::cell::RefCell;
++use core::cmp::Reverse;
++use alloc::collections::BinaryHeap;
+ 
+ struct PhiTracker {
+     phi: Phi,
+diff --git a/src/nouveau/compiler/nak/sm20.rs b/src/nouveau/compiler/nak/sm20.rs
+index ada7faa..699e913 100644
+--- a/src/nouveau/compiler/nak/sm20.rs
++++ b/src/nouveau/compiler/nak/sm20.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2025 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::legalize::{
+     src_is_reg, swap_srcs_if_not_reg, LegalizeBuildHelpers, LegalizeBuilder,
+@@ -11,9 +12,9 @@ use crate::sm30_instr_latencies::{
+ };
+ use bitview::*;
+ 
+-use rustc_hash::FxHashMap;
+-use std::fmt;
+-use std::ops::Range;
++use crate::FxHashMap;
++use core::fmt;
++use core::ops::Range;
+ 
+ pub struct ShaderModel20 {
+     sm: u8,
+diff --git a/src/nouveau/compiler/nak/sm30_instr_latencies.rs b/src/nouveau/compiler/nak/sm30_instr_latencies.rs
+index 344dd32..ee78ec2 100644
+--- a/src/nouveau/compiler/nak/sm30_instr_latencies.rs
++++ b/src/nouveau/compiler/nak/sm30_instr_latencies.rs
+@@ -1,5 +1,6 @@
++use alloc::vec::Vec;
+ use bitview::{BitMutViewable, BitViewable, SetField};
+-use rustc_hash::FxHashMap;
++use crate::FxHashMap;
+ 
+ use crate::ir::{Instr, InstrDeps, Label, Op, OpNop, Shader};
+ 
+diff --git a/src/nouveau/compiler/nak/sm32.rs b/src/nouveau/compiler/nak/sm32.rs
+index 04f0d4f..536b68a 100644
+--- a/src/nouveau/compiler/nak/sm32.rs
++++ b/src/nouveau/compiler/nak/sm32.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2025 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::legalize::{
+     src_is_reg, swap_srcs_if_not_reg, LegalizeBuildHelpers, LegalizeBuilder,
+@@ -14,8 +15,8 @@ use bitview::{
+     BitMutView, BitMutViewable, BitView, BitViewable, SetBit, SetField,
+ };
+ 
+-use rustc_hash::FxHashMap;
+-use std::ops::Range;
++use crate::FxHashMap;
++use core::ops::Range;
+ 
+ pub struct ShaderModel32 {
+     sm: u8,
+diff --git a/src/nouveau/compiler/nak/sm50.rs b/src/nouveau/compiler/nak/sm50.rs
+index c17a0ec..cdd4138 100644
+--- a/src/nouveau/compiler/nak/sm50.rs
++++ b/src/nouveau/compiler/nak/sm50.rs
+@@ -1,14 +1,15 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::legalize::{
+     src_is_reg, swap_srcs_if_not_reg, LegalizeBuildHelpers, LegalizeBuilder,
+ };
+ use bitview::*;
+ 
+-use rustc_hash::FxHashMap;
+-use std::ops::Range;
++use crate::FxHashMap;
++use core::ops::Range;
+ 
+ pub fn instr_latency(_sm: u8, op: &Op, dst_idx: usize) -> u32 {
+     let file = match &op.dsts_as_slice()[dst_idx] {
+diff --git a/src/nouveau/compiler/nak/sm70.rs b/src/nouveau/compiler/nak/sm70.rs
+index 40e01bd..ea0394d 100644
+--- a/src/nouveau/compiler/nak/sm70.rs
++++ b/src/nouveau/compiler/nak/sm70.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::legalize::LegalizeBuilder;
+ use crate::sm120_instr_latencies::SM120Latency;
+diff --git a/src/nouveau/compiler/nak/sm70_encode.rs b/src/nouveau/compiler/nak/sm70_encode.rs
+index 2f76940..2cb6193 100644
+--- a/src/nouveau/compiler/nak/sm70_encode.rs
++++ b/src/nouveau/compiler/nak/sm70_encode.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2022 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::ir::*;
+ use crate::legalize::{
+     src_is_reg, src_is_upred_reg, swap_srcs_if_not_reg, LegalizeBuildHelpers,
+@@ -9,8 +10,8 @@ use crate::legalize::{
+ use crate::sm70::ShaderModel70;
+ use bitview::*;
+ 
+-use rustc_hash::FxHashMap;
+-use std::ops::Range;
++use crate::FxHashMap;
++use core::ops::Range;
+ 
+ /// A per-op trait that implements Volta+ opcode semantics
+ trait SM70Op {
+@@ -897,7 +898,7 @@ impl SM70Op for OpFSet {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::F32);
+@@ -922,7 +923,7 @@ impl SM70Op for OpFSetP {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::F32);
+@@ -1096,7 +1097,7 @@ impl SM70Op for OpDSetP {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::F64);
+@@ -1223,7 +1224,7 @@ impl SM70Op for OpHSet2 {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::F16v2);
+@@ -1265,7 +1266,7 @@ impl SM70Op for OpHSetP2 {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::F16v2);
+@@ -1462,7 +1463,7 @@ impl SM70Op for OpIAdd3X {
+         swap_srcs_if_not_reg(src2, src1, gpr);
+         if !src0.is_unmodified() && !src1.is_unmodified() {
+             let val = b.alloc_ssa(gpr);
+-            let old_src0 = std::mem::replace(src0, val.into());
++            let old_src0 = core::mem::replace(src0, val.into());
+             b.push_op(OpIAdd3X {
+                 srcs: [Src::ZERO, old_src0, Src::ZERO],
+                 overflow: [Dst::None, Dst::None],
+@@ -1519,7 +1520,7 @@ impl SM70Op for OpIDp4 {
+         let [src_type0, src_type1] = &mut self.src_types;
+         let [src0, src1, src2] = &mut self.srcs;
+         if swap_srcs_if_not_reg(src0, src1, gpr) {
+-            std::mem::swap(src_type0, src_type1);
++            core::mem::swap(src_type0, src_type1);
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::ALU);
+         b.copy_alu_src_if_ineg_imm(src1, gpr, SrcType::I32);
+@@ -1656,7 +1657,7 @@ impl SM70Op for OpISetP {
+         let gpr = op_gpr(self);
+         let [src0, src1] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.cmp_op = self.cmp_op.flip();
+         }
+         b.copy_alu_src_if_not_reg(src0, gpr, SrcType::ALU);
+@@ -1868,11 +1869,11 @@ impl SM70Op for OpLop3 {
+ 
+         let [src0, src1, src2] = &mut self.srcs;
+         if !src_is_reg(src0, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src0, src1);
++            core::mem::swap(src0, src1);
+             self.op = LogicOp3::new_lut(&|x, y, z| self.op.eval(y, x, z))
+         }
+         if !src_is_reg(src2, gpr) && src_is_reg(src1, gpr) {
+-            std::mem::swap(src2, src1);
++            core::mem::swap(src2, src1);
+             self.op = LogicOp3::new_lut(&|x, y, z| self.op.eval(x, z, y))
+         }
+ 
+@@ -2334,13 +2335,13 @@ impl SM70Op for OpPLop3 {
+             // there.
+             let [src0, src1, src2] = &mut self.srcs;
+             if src_is_upred_reg(src0) && !src_is_upred_reg(src2) {
+-                std::mem::swap(src0, src2);
++                core::mem::swap(src0, src2);
+                 for lop in &mut self.ops {
+                     *lop = LogicOp3::new_lut(&|x, y, z| lop.eval(z, y, x))
+                 }
+             }
+             if src_is_upred_reg(src1) && !src_is_upred_reg(src2) {
+-                std::mem::swap(src1, src2);
++                core::mem::swap(src1, src2);
+                 for lop in &mut self.ops {
+                     *lop = LogicOp3::new_lut(&|x, y, z| lop.eval(x, z, y))
+                 }
+diff --git a/src/nouveau/compiler/nak/sph.rs b/src/nouveau/compiler/nak/sph.rs
+index e01a6cb..e6ad412 100644
+--- a/src/nouveau/compiler/nak/sph.rs
++++ b/src/nouveau/compiler/nak/sph.rs
+@@ -12,7 +12,7 @@ use bitview::{
+ };
+ use nak_bindings::*;
+ use nvidia_headers::classes::cla097::sph::*;
+-use std::ops::Range;
++use core::ops::Range;
+ 
+ pub const _SPHV3_SHADER_HEADER_SIZE: usize = 20;
+ pub const SPHV4_SHADER_HEADER_SIZE: usize = 32;
+diff --git a/src/nouveau/compiler/nak/spill_values.rs b/src/nouveau/compiler/nak/spill_values.rs
+index d211730..258c628 100644
+--- a/src/nouveau/compiler/nak/spill_values.rs
++++ b/src/nouveau/compiler/nak/spill_values.rs
+@@ -1,6 +1,7 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::const_tracker::ConstTracker;
+ use crate::ir::*;
+@@ -9,10 +10,10 @@ use crate::liveness::{
+ };
+ 
+ use compiler::bitset::BitSet;
+-use rustc_hash::{FxHashMap, FxHashSet};
+-use std::cell::RefCell;
+-use std::cmp::{max, Ordering, Reverse};
+-use std::collections::BinaryHeap;
++use crate::{FxHashMap, FxHashSet};
++use core::cell::RefCell;
++use core::cmp::{max, Ordering, Reverse};
++use alloc::collections::BinaryHeap;
+ 
+ #[derive(Default)]
+ struct PhiDstMap {
+diff --git a/src/nouveau/compiler/nak/ssa_value.rs b/src/nouveau/compiler/nak/ssa_value.rs
+index ba9b75f..84ca692 100644
+--- a/src/nouveau/compiler/nak/ssa_value.rs
++++ b/src/nouveau/compiler/nak/ssa_value.rs
+@@ -1,12 +1,14 @@
+ // Copyright © 2025 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::boxed::Box;
++use alloc::vec::Vec;
+ use crate::ir::{HasRegFile, RegFile};
+ use compiler::bitset::IntoBitIndex;
+-use std::array;
+-use std::fmt;
+-use std::num::NonZeroU32;
+-use std::ops::{Deref, DerefMut};
++use core::array;
++use core::fmt;
++use core::num::NonZeroU32;
++use core::ops::{Deref, DerefMut};
+ 
+ /// An SSA value
+ ///
+diff --git a/src/nouveau/compiler/nak/to_cssa.rs b/src/nouveau/compiler/nak/to_cssa.rs
+index 0032297..0b040b3 100644
+--- a/src/nouveau/compiler/nak/to_cssa.rs
++++ b/src/nouveau/compiler/nak/to_cssa.rs
+@@ -1,13 +1,14 @@
+ // Copyright © 2023 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++use alloc::vec::Vec;
+ use crate::api::{GetDebugFlags, DEBUG};
+ use crate::ir::*;
+ use crate::liveness::{BlockLiveness, Liveness, SimpleLiveness};
+ 
+ use compiler::cfg::CFG;
+-use rustc_hash::FxHashMap;
+-use std::iter::Peekable;
++use crate::FxHashMap;
++use core::iter::Peekable;
+ 
+ struct MergedIter<I: Iterator> {
+     a: Peekable<I>,
+@@ -233,8 +234,8 @@ impl<'a> CoalesceGraph<'a> {
+     }
+ 
+     pub fn sets_merge(&mut self, a: usize, b: usize) -> usize {
+-        let a_nodes = std::mem::take(&mut self.sets[a].nodes);
+-        let b_nodes = std::mem::take(&mut self.sets[b].nodes);
++        let a_nodes = core::mem::take(&mut self.sets[a].nodes);
++        let b_nodes = core::mem::take(&mut self.sets[b].nodes);
+         let nodes = MergedIter::new(a_nodes.into_iter(), b_nodes.into_iter());
+ 
+         self.sets[a].nodes = nodes
+@@ -311,7 +312,7 @@ impl Function {
+         cg.init_sets(&self.blocks);
+ 
+         for bi in 0..self.blocks.len() {
+-            let block_instrs = std::mem::take(&mut self.blocks[bi].instrs);
++            let block_instrs = core::mem::take(&mut self.blocks[bi].instrs);
+ 
+             let mut instrs = Vec::new();
+             for mut instr in block_instrs.into_iter() {
+@@ -332,7 +333,7 @@ impl Function {
+                             }
+ 
+                             let tmp = self.ssa_alloc.alloc(file);
+-                            let old_dst = std::mem::replace(dst, tmp.into());
++                            let old_dst = core::mem::replace(dst, tmp.into());
+                             pcopy.push(old_dst, tmp.into());
+                         }
+ 
+@@ -359,7 +360,7 @@ impl Function {
+                                     if cg.sets_interfere(ps, ss, &self.blocks) {
+                                         let tmp = self.ssa_alloc.alloc(file);
+                                         let old_src =
+-                                            std::mem::replace(src, tmp.into());
++                                            core::mem::replace(src, tmp.into());
+                                         pcopy.push(tmp.into(), old_src);
+                                     } else {
+                                         cg.sets_merge(ps, ss);
+@@ -378,7 +379,7 @@ impl Function {
+                                     annotation: "generated by to_cssa".into(),
+                                 }));
+                             }
+-                            let old_src = std::mem::replace(src, tmp.into());
++                            let old_src = core::mem::replace(src, tmp.into());
+                             instrs.push(Instr::new(OpCopy {
+                                 dst: tmp.into(),
+                                 src: old_src,
+diff --git a/src/nouveau/compiler/nak/union_find.rs b/src/nouveau/compiler/nak/union_find.rs
+index 785f3f1..469e614 100644
+--- a/src/nouveau/compiler/nak/union_find.rs
++++ b/src/nouveau/compiler/nak/union_find.rs
+@@ -1,8 +1,9 @@
+ // Copyright © 2024 Mel Henning
+ // SPDX-License-Identifier: MIT
+ 
+-use std::collections::HashMap;
+-use std::hash::{BuildHasher, Hash};
++use alloc::vec::Vec;
++use hashbrown::HashMap;
++use core::hash::{BuildHasher, Hash};
+ 
+ #[derive(Copy, Clone)]
+ struct Root<X: Copy> {
+@@ -127,10 +128,10 @@ impl<X: Copy + Hash + Eq, H: BuildHasher + Default> UnionFind<X, H> {
+ mod tests {
+     use crate::union_find::Node;
+     use crate::union_find::UnionFind;
+-    use std::cmp::max;
+-    use std::hash::BuildHasher;
+-    use std::hash::Hash;
+-    use std::hash::RandomState;
++    use core::cmp::max;
++    use core::hash::BuildHasher;
++    use core::hash::Hash;
++    use core::hash::RandomState;
+ 
+     fn ceil_log2(x: usize) -> u32 {
+         assert!(x > 0);
+diff --git a/src/nouveau/compiler/nak_bindings.h b/src/nouveau/compiler/nak_bindings.h
+index e766da1..2787883 100644
+--- a/src/nouveau/compiler/nak_bindings.h
++++ b/src/nouveau/compiler/nak_bindings.h
+@@ -5,6 +5,17 @@
+ 
+ #include "nak_private.h"
+ 
++#include "util/os_misc.h"
++
++/* The kernel-mode winsys and libdrm are here for NAK's hardware tests
++ * and for nothing else: nak/hw_runner.rs is the only file that names a
++ * nouveau_ws_* symbol or DRM_RS_IOCTL_*, and it is behind #[cfg(test)].
++ * The compiler proper does not talk to a kernel driver.
++ *
++ * Including them unconditionally makes NAK unbuildable wherever the
++ * winsys is not, even though nothing that would be built uses it.
++ */
++#ifdef NAK_BINDINGS_HW_TESTS
+ #include "nouveau_bo.h"
+ #include "nouveau_context.h"
+ #include "nouveau_device.h"
+@@ -18,3 +29,4 @@
+ enum ENUM_PACKED drm_rs_ioctls {
+    DRM_RS_IOCTL(NOUVEAU_EXEC),
+ };
++#endif /* NAK_BINDINGS_HW_TESTS */
+diff --git a/src/nouveau/headers/lib_rs_gen.py b/src/nouveau/headers/lib_rs_gen.py
+index 71a40c3..1b503c6 100644
+--- a/src/nouveau/headers/lib_rs_gen.py
++++ b/src/nouveau/headers/lib_rs_gen.py
+@@ -23,8 +23,18 @@ TEMPLATE_RS = Template("""\
+ 
+ // This file is generated by lib_rs_gen.py. DO NOT EDIT!
+ 
++// A generated crate root, so the no_std attribute has to be generated
++// too: a driver for a platform with no operating-system runtime has no
++// `std` to link, and without this rustc injects one and stops at
++// "can't find crate for `std`".
++//
++// Inner attributes must precede every item, and `extern crate` is an
++// item, so it comes after them rather than beside #![no_std].
++#![no_std]
+ #![allow(unused_imports)]
+ 
++extern crate alloc;
++
+ <%def name="import_mod(m, path)">
+ % if m.present:
+ mod nvh_${'_'.join(path)};
+diff --git a/src/nouveau/headers/nv_push_rs/lib.rs b/src/nouveau/headers/nv_push_rs/lib.rs
+index 077358f..d34530a 100644
+--- a/src/nouveau/headers/nv_push_rs/lib.rs
++++ b/src/nouveau/headers/nv_push_rs/lib.rs
+@@ -1,6 +1,21 @@
+ // Copyright © 2024 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
++use alloc::vec::Vec;
+ use nvidia_headers::ArrayMthd;
+ use nvidia_headers::Mthd;
+ 
+@@ -273,7 +288,7 @@ impl Default for Push {
+     }
+ }
+ 
+-impl std::ops::Deref for Push {
++impl core::ops::Deref for Push {
+     type Target = [u32];
+ 
+     fn deref(&self) -> &[u32] {
+diff --git a/src/nouveau/headers/struct_parser.py b/src/nouveau/headers/struct_parser.py
+index 06e3da1..84b26a9 100644
+--- a/src/nouveau/headers/struct_parser.py
++++ b/src/nouveau/headers/struct_parser.py
+@@ -22,7 +22,7 @@ TEMPLATE_RS = Template("""\
+ 
+ #![allow(non_snake_case)]
+ 
+-use std::ops::Range;
++use core::ops::Range;
+ 
+ % for s in structs:
+ pub const ${s.name}_MAX_BIT: usize = ${s.max_bit};
+diff --git a/src/nouveau/meson.build b/src/nouveau/meson.build
+index 89b50de..9c98c65 100644
+--- a/src/nouveau/meson.build
++++ b/src/nouveau/meson.build
+@@ -8,6 +8,13 @@ if with_nouveau_vk
+   subdir('rust')
+   subdir('nil')
+   subdir('compiler')
++  if with_rust_std
++    idep_nouveau_rust_runtime = declare_dependency()
++  else
++    # After nil and compiler: it links what they build. Only where
++    # there is no std — with one, Mesa's two staticlibs are fine.
++    subdir('rust_runtime')
++  endif
+ endif
+ if with_tools.contains('drm-shim')
+   subdir('drm-shim')
+diff --git a/src/nouveau/nil/copy.rs b/src/nouveau/nil/copy.rs
+index fff1a8c..d70d9e5 100644
+--- a/src/nouveau/nil/copy.rs
++++ b/src/nouveau/nil/copy.rs
+@@ -4,8 +4,8 @@
+ use crate::extent::{units, Extent4D, Offset4D};
+ use crate::tiling::{GOBType, Tiling};
+ 
+-use std::ffi::c_void;
+-use std::ops::Range;
++use core::ffi::c_void;
++use core::ops::Range;
+ 
+ // This file is dedicated to the internal tiling layout, mainly in the context
+ // of CPU-based tiled memcpy implementations (and helpers) for
+@@ -90,9 +90,9 @@ impl<C: CopyGOBLines> CopyGOB for C {
+                         C::copy_whole_line(tiled as *mut _, linear as *mut _);
+                     }
+                 } else if x + C::LINE_WIDTH_B >= start.x && x < end.x {
+-                    let start = (std::cmp::max(x, start.x) - x) as usize;
++                    let start = (core::cmp::max(x, start.x) - x) as usize;
+                     let end =
+-                        std::cmp::min(end.x - x, C::LINE_WIDTH_B) as usize;
++                        core::cmp::min(end.x - x, C::LINE_WIDTH_B) as usize;
+                     unsafe {
+                         C::copy(
+                             (tiled + start) as *mut _,
+@@ -135,7 +135,7 @@ trait CopyBytes {
+ 
+ /// Implements copies for [`GOBType::FermiColor`]
+ struct CopyGOBFermi<C: CopyBytes> {
+-    phantom: std::marker::PhantomData<C>,
++    phantom: core::marker::PhantomData<C>,
+ }
+ 
+ impl<C: CopyBytes> CopyGOBLines for CopyGOBFermi<C> {
+@@ -183,7 +183,7 @@ impl<C: CopyBytes> CopyGOBLines for CopyGOBFermi<C> {
+ 
+ /// Implements copies for [`GOBType::TegraColor`]
+ struct CopyGOBTegra<C: CopyBytes> {
+-    phantom: std::marker::PhantomData<C>,
++    phantom: core::marker::PhantomData<C>,
+ }
+ 
+ impl<C: CopyBytes> CopyGOBLines for CopyGOBTegra<C> {
+@@ -231,7 +231,7 @@ impl<C: CopyBytes> CopyGOBLines for CopyGOBTegra<C> {
+ 
+ /// Implements copies for [`GOBType::TuringColor2D`]
+ struct CopyGOBTuring2D<C: CopyBytes> {
+-    phantom: std::marker::PhantomData<C>,
++    phantom: core::marker::PhantomData<C>,
+ }
+ 
+ impl<C: CopyBytes> CopyGOBLines for CopyGOBTuring2D<C> {
+@@ -279,7 +279,7 @@ impl<C: CopyBytes> CopyGOBLines for CopyGOBTuring2D<C> {
+ 
+ /// Implements copies for [`GOBType::Blackwell16Bit`]
+ struct CopyGOBBlackwell2D2BPP<C: CopyBytes> {
+-    phantom: std::marker::PhantomData<C>,
++    phantom: core::marker::PhantomData<C>,
+ }
+ 
+ impl<C: CopyBytes> CopyGOBLines for CopyGOBBlackwell2D2BPP<C> {
+@@ -327,7 +327,7 @@ impl<C: CopyBytes> CopyGOBLines for CopyGOBBlackwell2D2BPP<C> {
+ 
+ /// Implements copies for [`GOBType::Blackwell8Bit`]
+ struct CopyGOBBlackwell2D1BPP<C: CopyBytes> {
+-    phantom: std::marker::PhantomData<C>,
++    phantom: core::marker::PhantomData<C>,
+ }
+ 
+ impl<C: CopyBytes> CopyGOBLines for CopyGOBBlackwell2D1BPP<C> {
+@@ -370,7 +370,7 @@ fn chunk_range(
+ ) -> Range<u32> {
+     debug_assert!(chunk_start < whole.end);
+     let start = whole.start.saturating_sub(chunk_start);
+-    let end = std::cmp::min(whole.end - chunk_start, chunk_len);
++    let end = core::cmp::min(whole.end - chunk_start, chunk_len);
+     start..end
+ }
+ 
+@@ -652,7 +652,7 @@ impl CopyBytes for RawCopyToTiled {
+     unsafe fn copy(tiled: *mut u8, linear: *mut u8, bytes: usize) {
+         // This is backwards from memcpy
+         unsafe {
+-            std::ptr::copy_nonoverlapping(linear, tiled, bytes);
++            core::ptr::copy_nonoverlapping(linear, tiled, bytes);
+         }
+     }
+ }
+@@ -665,7 +665,7 @@ impl CopyBytes for RawCopyToLinear {
+     unsafe fn copy(tiled: *mut u8, linear: *mut u8, bytes: usize) {
+         // This is backwards from memcpy
+         unsafe {
+-            std::ptr::copy_nonoverlapping(tiled, linear, bytes);
++            core::ptr::copy_nonoverlapping(tiled, linear, bytes);
+         }
+     }
+ }
+diff --git a/src/nouveau/nil/descriptor.rs b/src/nouveau/nil/descriptor.rs
+index 4b6aa66..5fd72bf 100644
+--- a/src/nouveau/nil/descriptor.rs
++++ b/src/nouveau/nil/descriptor.rs
+@@ -18,7 +18,7 @@ use nvidia_headers::classes::clc397::VOLTA_A;
+ use nvidia_headers::classes::clcb97::tex as clcb97;
+ use nvidia_headers::classes::clcb97::HOPPER_A;
+ use paste::paste;
+-use std::ops::Range;
++use core::ops::Range;
+ 
+ use crate::extent::{units, Extent4D};
+ use crate::format::Format;
+@@ -43,7 +43,15 @@ impl<T: SetFieldU64> SetUFixed for T {
+         assert!(range.len() >= FIXED_FRAC_BITS as usize);
+         let scaled = val * ((1 << FIXED_FRAC_BITS) as f32);
+         let scaled_max = ((1 << range.len()) - 1) as f32;
+-        let u_val = scaled.clamp(0.0, scaled_max).round() as u32;
++        // f32::round() is a std method, not a core one: core has no
++        // libm. newlib supplies roundf() and the driver already links
++        // -lm, so the C function is used directly rather than pulling
++        // in a Rust libm crate for one call.
++        extern "C" {
++            fn roundf(x: f32) -> f32;
++        }
++        let u_val =
++            unsafe { roundf(scaled.clamp(0.0, scaled_max)) } as u32;
+         self.set_field(range, u_val);
+     }
+ }
+diff --git a/src/nouveau/nil/extent.rs b/src/nouveau/nil/extent.rs
+index d498c2a..ed7b06c 100644
+--- a/src/nouveau/nil/extent.rs
++++ b/src/nouveau/nil/extent.rs
+@@ -6,7 +6,7 @@ use crate::image::SampleLayout;
+ use crate::tiling::{GOBType, Tiling};
+ use crate::Minify;
+ 
+-use std::ops::Add;
++use core::ops::Add;
+ 
+ pub mod units {
+     #[derive(Clone, Debug, Copy, PartialEq)]
+@@ -35,7 +35,7 @@ pub struct Extent4D<U> {
+     pub height: u32,
+     pub depth: u32,
+     pub array_len: u32,
+-    phantom: std::marker::PhantomData<U>,
++    phantom: core::marker::PhantomData<U>,
+ }
+ 
+ impl<U> Extent4D<U> {
+@@ -50,7 +50,7 @@ impl<U> Extent4D<U> {
+             height,
+             depth,
+             array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -60,7 +60,7 @@ impl<U> Extent4D<U> {
+             height: self.height.next_multiple_of(alignment.height),
+             depth: self.depth.next_multiple_of(alignment.depth),
+             array_len: self.array_len.next_multiple_of(alignment.array_len),
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -78,7 +78,7 @@ impl<U> Extent4D<U> {
+             height: self.height * other.height,
+             depth: self.depth * other.depth,
+             array_len: self.array_len * other.array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -88,7 +88,7 @@ impl<U> Extent4D<U> {
+             height: self.height.div_ceil(other.height),
+             depth: self.depth.div_ceil(other.depth),
+             array_len: self.array_len.div_ceil(other.array_len),
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -98,7 +98,7 @@ impl<U> Extent4D<U> {
+             height: self.height,
+             depth: self.depth,
+             array_len: self.array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ }
+@@ -205,7 +205,7 @@ pub struct Offset4D<U> {
+     pub y: u32,
+     pub z: u32,
+     pub a: u32,
+-    phantom: std::marker::PhantomData<U>,
++    phantom: core::marker::PhantomData<U>,
+ }
+ 
+ impl<U> Offset4D<U> {
+@@ -215,7 +215,7 @@ impl<U> Offset4D<U> {
+             y,
+             z,
+             a,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -232,7 +232,7 @@ impl<U> Offset4D<U> {
+             y: self.y / other.height,
+             z: self.z / other.depth,
+             a: self.a / other.array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -242,7 +242,7 @@ impl<U> Offset4D<U> {
+             y: self.y * other.height,
+             z: self.z * other.depth,
+             a: self.a * other.array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ 
+@@ -252,7 +252,7 @@ impl<U> Offset4D<U> {
+             y: self.y,
+             z: self.z,
+             a: self.a,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ }
+@@ -266,7 +266,7 @@ impl<U> Add<Extent4D<U>> for Offset4D<U> {
+             y: self.y + rhs.height,
+             z: self.z + rhs.depth,
+             a: self.a + rhs.array_len,
+-            phantom: std::marker::PhantomData,
++            phantom: core::marker::PhantomData,
+         }
+     }
+ }
+diff --git a/src/nouveau/nil/image.rs b/src/nouveau/nil/image.rs
+index 52acda8..37097c6 100644
+--- a/src/nouveau/nil/image.rs
++++ b/src/nouveau/nil/image.rs
+@@ -10,7 +10,6 @@ use crate::Minify;
+ use nil_rs_bindings::*;
+ use nvidia_headers::classes::{cl9097, cla097, clb197, clc597, clcd97};
+ 
+-use std::panic;
+ 
+ pub const MAX_LEVELS: usize = 16;
+ 
+@@ -194,14 +193,17 @@ impl Image {
+         image_out: *mut Self,
+         info: &ImageInitInfo,
+     ) -> bool {
+-        panic::catch_unwind(|| {
+-            let image = Self::new(dev, std::slice::from_ref(info), 0);
+-            unsafe {
+-                assert!(!image_out.is_null());
+-                image_out.write(image);
+-            }
+-        })
+-        .is_ok()
++        // std::panic::catch_unwind cannot catch anything on a target
++        // whose panic strategy is "abort", which is what
++        // aarch64-nintendo-switch-freestanding sets. The Result it used
++        // to produce could therefore only ever be Ok, so the body runs
++        // directly and the answer is unconditionally true.
++        let image = Self::new(dev, core::slice::from_ref(info), 0);
++        unsafe {
++            assert!(!image_out.is_null());
++            image_out.write(image);
++        }
++        true
+     }
+ 
+     #[no_mangle]
+@@ -212,17 +214,16 @@ impl Image {
+         plane: usize,
+         plane_count: usize,
+     ) -> bool {
+-        panic::catch_unwind(|| {
+-            assert!(plane < plane_count);
+-            let infos =
+-                unsafe { std::slice::from_raw_parts(info, plane_count) };
+-            let image = Self::new(dev, infos, plane);
+-            unsafe {
+-                assert!(!image_out.is_null());
+-                image_out.write(image);
+-            }
+-        })
+-        .is_ok()
++        // Same as nil_image_init above: nothing to catch under
++        // panic = "abort".
++        assert!(plane < plane_count);
++        let infos = unsafe { core::slice::from_raw_parts(info, plane_count) };
++        let image = Self::new(dev, infos, plane);
++        unsafe {
++            assert!(!image_out.is_null());
++            image_out.write(image);
++        }
++        true
+     }
+ 
+     fn new_linear(
+@@ -339,11 +340,11 @@ impl Image {
+                     info.max_alignment_B,
+                 );
+                 min_tiling.x_log2 =
+-                    std::cmp::min(min_tiling.x_log2, plane_tiling.x_log2);
++                    core::cmp::min(min_tiling.x_log2, plane_tiling.x_log2);
+                 min_tiling.y_log2 =
+-                    std::cmp::min(min_tiling.y_log2, plane_tiling.y_log2);
++                    core::cmp::min(min_tiling.y_log2, plane_tiling.y_log2);
+                 min_tiling.z_log2 =
+-                    std::cmp::min(min_tiling.z_log2, plane_tiling.z_log2);
++                    core::cmp::min(min_tiling.z_log2, plane_tiling.z_log2);
+             }
+             min_tiling
+         } else {
+@@ -390,7 +391,7 @@ impl Image {
+ 
+             if tiling != lvl_tiling {
+                 image.mip_tail_first_lod =
+-                    std::cmp::min(image.mip_tail_first_lod, level);
++                    core::cmp::min(image.mip_tail_first_lod, level);
+             }
+ 
+             // Align the size to tiles
+@@ -430,7 +431,7 @@ impl Image {
+         // or else sparse binding may fail.  This is true regardless of
+         // whether or not we actually select a 64K tile format.
+         if (info.usage & IMAGE_USAGE_SPARSE_RESIDENCY_BIT) != 0 {
+-            image.align_B = std::cmp::max(image.align_B, 1 << 16);
++            image.align_B = core::cmp::max(image.align_B, 1 << 16);
+         }
+ 
+         image.pte_kind =
+@@ -448,7 +449,7 @@ impl Image {
+         image.tile_mode = (u16::from(image.levels[0].tiling.y_log2) << 4)
+             | (u16::from(image.levels[0].tiling.z_log2) << 8);
+ 
+-        image.align_B = std::cmp::max(image.align_B, 4096);
++        image.align_B = core::cmp::max(image.align_B, 4096);
+         image.size_B = image.size_B.next_multiple_of(image.align_B.into());
+ 
+         image
+diff --git a/src/nouveau/nil/lib.rs b/src/nouveau/nil/lib.rs
+index 64044be..2929289 100644
+--- a/src/nouveau/nil/lib.rs
++++ b/src/nouveau/nil/lib.rs
+@@ -1,6 +1,20 @@
+ // Copyright © 2024 Collabora, Ltd.
+ // SPDX-License-Identifier: MIT
+ 
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
+ extern crate nil_rs_bindings;
+ extern crate nvidia_headers;
+ 
+@@ -35,6 +49,6 @@ pub trait Minify<Rhs> {
+ 
+ impl Minify<u32> for u32 {
+     fn minify(self, level: u32) -> u32 {
+-        std::cmp::max(1, self >> level)
++        core::cmp::max(1, self >> level)
+     }
+ }
+diff --git a/src/nouveau/nil/meson.build b/src/nouveau/nil/meson.build
+index eee265d..8e58ff3 100644
+--- a/src/nouveau/nil/meson.build
++++ b/src/nouveau/nil/meson.build
+@@ -47,6 +47,9 @@ _nil_bindings_rs = rust.bindgen(
+   include_directories : [inc_include, inc_src, include_directories('.')],
+   args: [
+     bindgen_output_args,
++    # A crate root of its own, unlike the compiler crate's
++    # bindings, which are a module of it.
++    '--raw-line', '#![no_std]',
+     '--allowlist-function', 'util_format_description',
+     '--allowlist-function', 'util_format_get_blocksize',
+     '--allowlist-function', 'util_format_is_compressed',
+@@ -75,11 +78,13 @@ _libnil_rs_bindings = static_library(
+   rust_abi: 'rust',
+ )
+ 
++# See src/nouveau/rust_runtime/meson.build for why this is an rlib
++# where there is no std.
+ _libnil = static_library(
+   'nil',
+   files('lib.rs'),
+   gnu_symbol_visibility: 'hidden',
+-  rust_abi: 'c',
++  rust_abi: with_rust_std ? 'c' : 'rust',
+   rust_args: nouveau_rust_args,
+   link_with: [_libnil_format_table, _libnil_rs_bindings],
+   dependencies: _libnil_deps,
+@@ -127,8 +132,11 @@ idep_nil_h = declare_dependency(
+   sources : [_nil_h],
+ )
+ 
++# Same as NAK's: where there is no std this is an rlib and cannot be
++# linked into a C target, so only the header and include path are
++# published here and src/nouveau/rust_runtime carries the code.
+ idep_nil = declare_dependency(
+   include_directories : include_directories('.'),
+-  link_with : _libnil,
++  link_with : with_rust_std ? [_libnil] : [],
+   sources : [_nil_h],
+ )
+diff --git a/src/nouveau/nil/modifiers.rs b/src/nouveau/nil/modifiers.rs
+index ba177e3..9a68f8d 100644
+--- a/src/nouveau/nil/modifiers.rs
++++ b/src/nouveau/nil/modifiers.rs
+@@ -401,6 +401,6 @@ pub extern "C" fn nil_select_best_drm_format_mod(
+     modifiers: *const u64,
+ ) -> u64 {
+     let modifiers =
+-        unsafe { std::slice::from_raw_parts(modifiers, modifier_count) };
++        unsafe { core::slice::from_raw_parts(modifiers, modifier_count) };
+     select_best_drm_format_mod(dev, format, modifiers)
+ }
+diff --git a/src/nouveau/nil/tiling.rs b/src/nouveau/nil/tiling.rs
+index 8f14245..8377295 100644
+--- a/src/nouveau/nil/tiling.rs
++++ b/src/nouveau/nil/tiling.rs
+@@ -266,8 +266,8 @@ impl Tiling {
+         let ceil_h = extent_GOB.height.ilog2_ceil() as u8;
+         let ceil_d = extent_GOB.depth.ilog2_ceil() as u8;
+ 
+-        tiling.y_log2 = std::cmp::min(tiling.y_log2, ceil_h);
+-        tiling.z_log2 = std::cmp::min(tiling.z_log2, ceil_d);
++        tiling.y_log2 = core::cmp::min(tiling.y_log2, ceil_h);
++        tiling.z_log2 = core::cmp::min(tiling.z_log2, ceil_d);
+         tiling
+     }
+ 
+diff --git a/src/nouveau/nil/zcull.rs b/src/nouveau/nil/zcull.rs
+index 6b7a84e..ee7c670 100644
+--- a/src/nouveau/nil/zcull.rs
++++ b/src/nouveau/nil/zcull.rs
+@@ -174,7 +174,7 @@ mod tests {
+             let subregion_aliquots = item[0];
+             let subregion_format = u16::try_from(item[1]).unwrap();
+             let subregion_format: SetZcullSubregionAllocationFormat =
+-                unsafe { std::mem::transmute(subregion_format) };
++                unsafe { core::mem::transmute(subregion_format) };
+             let expected = SetZcullSubregionAllocation {
+                 subregion_id: i.try_into().unwrap(),
+                 aliquots: subregion_aliquots,
+diff --git a/src/nouveau/rust/bitview/lib.rs b/src/nouveau/rust/bitview/lib.rs
+index bc5d5e8..a2a38f5 100644
+--- a/src/nouveau/rust/bitview/lib.rs
++++ b/src/nouveau/rust/bitview/lib.rs
+@@ -1,9 +1,23 @@
++#![no_std]
++// A Vulkan driver for a platform with no operating-system runtime has no
++// `std` to link: `aarch64-nintendo-switch-freestanding` is a tier-3 target
++// whose spec says `"std": false`, and Rust's `horizon` support in `std` is
++// the 3DS's, reached through the unix PAL this target does not have. What
++// these crates actually use from `std` is `core` and `alloc` under another
++// name; the handful of genuinely operating-system uses are replaced
++// individually.
++//
++// `#[macro_use]` so `vec!` and `format!` keep working crate-wide, as they
++// do through the std prelude.
++#[macro_use]
++extern crate alloc;
++
+ /*
+  * Copyright © 2022 Collabora, Ltd.
+  * SPDX-License-Identifier: MIT
+  */
+ 
+-use std::ops::Range;
++use core::ops::Range;
+ 
+ pub trait BitViewable {
+     fn bits(&self) -> usize;
+diff --git a/src/nouveau/rust_runtime/lib.rs b/src/nouveau/rust_runtime/lib.rs
+new file mode 100644
+index 0000000..5a691b3
+--- /dev/null
++++ b/src/nouveau/rust_runtime/lib.rs
+@@ -0,0 +1,83 @@
++// Copyright (c) mesa-nvk-horizon contributors
++// SPDX-License-Identifier: MIT
++
++//! The one Rust staticlib in a driver built without `std`.
++//!
++//! Rust requires exactly one `#[global_allocator]` and one
++//! `#[panic_handler]` per linked artefact, and emits both into every
++//! `--crate-type staticlib` it produces. Mesa builds NAK and NIL as two
++//! staticlibs, which works with `std` because `std` supplies the shim
++//! and the archive member holding it is simply not pulled in a second
++//! time. Without `std` each archive defines the shim itself, beside the
++//! code that uses it, and the two collide:
++//!
++//! ```text
++//! ld: libnil.a(...): multiple definition of `__rustc::__rust_alloc';
++//!     libnak_rs.a(...): first defined here
++//! ```
++//!
++//! So NAK and NIL become rlibs and this crate is the staticlib. It adds
++//! no code of its own: it names the two crates so the linker keeps
++//! them, and supplies the two items only a whole program can decide.
++
++#![no_std]
++
++extern crate alloc;
++
++// Not unused. A staticlib only pulls in an upstream rlib that something
++// references, and nothing in *this* crate calls NAK or NIL — the callers
++// are on the C side. Naming them here is what puts their code, and their
++// `#[no_mangle]` entry points, into the archive.
++// nak_rs, not nak: Meson derives a Rust crate's name from its target
++// name, and the target that builds nak/lib.rs is called 'nak_rs' — 'nak'
++// is the C archive around it.
++extern crate nak_rs;
++extern crate nil;
++
++use core::alloc::{GlobalAlloc, Layout};
++
++extern "C" {
++    /// The C library's aligned allocator. Every allocation in the
++    /// driver already goes through this one on the C side, so routing
++    /// Rust's through it too means one heap and one set of statistics
++    /// rather than two.
++    fn memalign(alignment: usize, size: usize) -> *mut u8;
++    fn free(ptr: *mut u8);
++    fn abort() -> !;
++}
++
++struct CLibAlloc;
++
++unsafe impl GlobalAlloc for CLibAlloc {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        // memalign() requires a power-of-two alignment that is a
++        // multiple of sizeof(void *); Layout guarantees the first, and
++        // the second is why the alignment is raised rather than passed
++        // through. A null return is what GlobalAlloc expects on
++        // failure, so no check is needed here.
++        let align = if layout.align() < core::mem::size_of::<usize>() {
++            core::mem::size_of::<usize>()
++        } else {
++            layout.align()
++        };
++        unsafe { memalign(align, layout.size()) }
++    }
++
++    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
++        unsafe { free(ptr) }
++    }
++}
++
++#[global_allocator]
++static ALLOCATOR: CLibAlloc = CLibAlloc;
++
++/// The target's panic strategy is `abort`, so this is only ever reached
++/// through `panic!` itself and never through unwinding. It ends the
++/// process rather than returning, which is what `abort` means, and it
++/// does not try to print: a panic in a shader compiler on a console has
++/// no terminal to print to, and the alternative — allocating a message
++/// while the program is already failing — is worse than silence.
++#[panic_handler]
++fn panic(_info: &core::panic::PanicInfo) -> ! {
++    unsafe { abort() }
++}
+diff --git a/src/nouveau/rust_runtime/meson.build b/src/nouveau/rust_runtime/meson.build
+new file mode 100644
+index 0000000..128b715
+--- /dev/null
++++ b/src/nouveau/rust_runtime/meson.build
+@@ -0,0 +1,25 @@
++# Copyright (c) mesa-nvk-horizon contributors
++# SPDX-License-Identifier: MIT
++#
++# The single Rust staticlib for a driver built without std. See lib.rs
++# for why there can only be one.
++
++_libnouveau_rust_runtime = static_library(
++  'nouveau_rust_runtime',
++  files('lib.rs'),
++  gnu_symbol_visibility : 'hidden',
++  rust_abi : 'c',
++  rust_args : [
++    nouveau_rust_args,
++    # Otherwise, rustc trips up on -pthread
++    '-Clink-arg=-Wno-unused-command-line-argument',
++  ],
++  link_with : [
++    _libnak_rs,
++    _libnil,
++  ],
++)
++
++idep_nouveau_rust_runtime = declare_dependency(
++  link_with : _libnouveau_rust_runtime,
++)
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index 37d8709..afaee53 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -122,6 +122,10 @@ nvk_deps = [
+   dep_libdrm,
+   idep_nak,
+   idep_nil,
++  # Empty where std exists: idep_nak and idep_nil are complete
++  # staticlibs then. Where it does not, they are rlibs and this is the
++  # one archive that carries them plus the allocator and panic handler.
++  idep_nouveau_rust_runtime,
+   idep_nir,
+   idep_mesautil,
+   idep_nouveau_mme,
+diff --git a/subprojects/packagefiles/hashbrown-0.14-rs/meson.build b/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
+index 04ad19f..3c3703c 100644
+--- a/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
++++ b/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
+@@ -22,3 +22,20 @@ lib = static_library(
+ dep_hashbrown = declare_dependency(
+   link_with : [lib],
+ )
++
++# The same crate for the host machine. hashbrown is the hash map `alloc`
++# does not have, so a driver built without `std` needs it compiled for
++# the target rather than for the build machine. The native build above
++# is left exactly as it was — indexmap, its only other user here, is a
++# build-machine dependency of the etnaviv ISA generator.
++lib_host = static_library(
++  'hashbrown_host',
++  'src/lib.rs',
++  rust_args : rust_args,
++  override_options : ['rust_std=2021', 'warning_level=0'],
++  rust_abi : 'rust',
++)
++
++dep_hashbrown_host = declare_dependency(
++  link_with : [lib_host],
++)
+diff --git a/subprojects/packagefiles/rustc-hash-2-rs/meson.build b/subprojects/packagefiles/rustc-hash-2-rs/meson.build
+index 55b9549..4e2c37b 100644
+--- a/subprojects/packagefiles/rustc-hash-2-rs/meson.build
++++ b/subprojects/packagefiles/rustc-hash-2-rs/meson.build
+@@ -6,9 +6,12 @@ project(
+   meson_version : '>= 1.7.0',
+ )
+ 
+-rust_args = [
+-  '--cfg', 'feature="std"'
+-]
++# No `feature="std"`. rustc-hash is itself #![no_std]; that feature only
++# adds the FxHashMap/FxHashSet aliases over std::collections, and a
++# platform with no std cannot have them. FxHasher and FxBuildHasher —
++# the parts Mesa's own code uses to build a map — are unconditional, and
++# the aliases are reconstructed over hashbrown where they are needed.
++rust_args = []
+ 
+ lib = static_library(
+   'rustc_hash',
+-- 
+2.43.0
+

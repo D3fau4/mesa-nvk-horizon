@@ -26,6 +26,12 @@ struct horizon_gpu_device {
     horizon_log log;
     bool debug_synchronous;
 
+    /* Opt-in (device.h) and the sticky record of it having been used. The
+     * flag is written by channel creation from any thread, so it is atomic
+     * like the counters below. */
+    bool allow_untrusted_syncpt_baseline;
+    _Atomic bool untrusted_syncpt_seen;
+
     /* Leak accounting (memory-model § 8) only. These counters are atomic
      * so they can be read (horizon_gpu_device_get_counters) while another
      * thread is creating or destroying an unrelated object, but that is

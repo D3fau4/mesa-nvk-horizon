@@ -1,0 +1,90 @@
+From eea2ad195d54ed30fd1e0caf05f605d2e015422d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 13:50:49 +0000
+Subject: [PATCH 21/30] meson,util,nouveau/vk: link the driver where there is
+ no DRM and no regex
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three things the first full link of the nouveau Vulkan driver found on a
+platform with no DRM and a C library without POSIX regex.
+
+meson.build asked whether regex exists only on Windows. Whether regcomp
+exists is a property of the C library, not of the operating system, and
+newlib is another C library that does not have it. The question is now
+asked with cc.has_function() everywhere, and the NO_REGEX fallback
+xmlconfig.c already carries works on newlib for exactly the reason it
+works on Windows: every pattern fails to match, so no per-application
+configuration is applied.
+
+nvk_device.c set vk.copy_sync_payloads to vk_drm_syncobj_copy_payloads
+unconditionally. Copying a payload between syncobjs is a DRM operation
+on a DRM fd; where there is no DRM the runtime does not build the helper
+and leaving the hook NULL is what it expects.
+
+Both are conditional on properties Mesa already computes and change
+nothing where DRM and regex exist.
+
+mesa-nvk-horizon: Phase 4 — the mandatory Vulkan sequence
+Evidence: t_vulkan.nro links at 14 000 184 bytes with zero undefined
+  symbols and zero multiple definitions. That last number also answers
+  the question docs/rust-toolchain.md left open since step 3: linking
+  compiler_builtins beside newlib does NOT collide on the memcpy family.
+Upstream: yes, both.
+---
+ meson.build                     | 15 +++++++++++----
+ src/nouveau/vulkan/nvk_device.c |  7 +++++++
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 0817173..013889c 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1855,13 +1855,20 @@ endif
+ # it's not linux and wont
+ dep_m = cc.find_library('m', required : false)
+ 
+-if host_machine.system() == 'windows'
+-  dep_regex = meson.get_compiler('c').find_library('regex', required : false)
++# POSIX regex, which xmlconfig uses to match executable and application
++# names. Whether it exists is a property of the C library, not of the
++# operating system: it was asked about only on Windows, but newlib is
++# another C library that does not have it, and the fallback
++# xmlconfig.c already carries under NO_REGEX works there for the same
++# reason it works on Windows — every pattern simply fails to match, so
++# no per-application configuration is applied.
++if cc.has_function('regcomp', prefix : '#include <regex.h>')
++  dep_regex = null_dep
++else
++  dep_regex = cc.find_library('regex', required : false)
+   if not dep_regex.found()
+     dep_regex = declare_dependency(compile_args : ['-DNO_REGEX'])
+   endif
+-else
+-  dep_regex = null_dep
+ endif
+ 
+ if with_platform_haiku
+diff --git a/src/nouveau/vulkan/nvk_device.c b/src/nouveau/vulkan/nvk_device.c
+index 0514113..6dc93fd 100644
+--- a/src/nouveau/vulkan/nvk_device.c
++++ b/src/nouveau/vulkan/nvk_device.c
+@@ -261,7 +261,14 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
+       dev->vk.command_buffer_ops = &nvk_cmd_buffer_ops;
+ 
+       dev->vk.get_timestamp = nvk_device_get_timestamp;
++#ifdef NVK_USE_DRM
++      /* Copying a sync payload between syncobjs is a DRM operation on a
++       * DRM fd. Where there is no DRM there is no syncobj to copy
++       * between, and the runtime does not build the helper; leaving the
++       * hook NULL is what it expects then.
++       */
+       dev->vk.copy_sync_payloads = vk_drm_syncobj_copy_payloads;
++#endif
+ 
+       result = nvk_upload_queue_init(dev, &dev->upload);
+       if (result != VK_SUCCESS)
+-- 
+2.43.0
+

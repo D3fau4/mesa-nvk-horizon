@@ -115,7 +115,12 @@ mk_dir=$(sed -n 's/^MESA_BUILD  *:*= *\$(or \$(MESA_BUILD_DIR),\(.*\))$/\1/p' \
          Makefile | tokens)
 sh_dir=$(sed -n 's/^MESA_BUILD_DIR="\${MESA_BUILD_DIR:-\(.*\)}"$/\1/p' \
          scripts/toolchain-env.sh | tokens)
-op_dir=$(sed -n "/option($/,/^)/{ s/^ *value *: *'\(.*\)',*$/\1/p; }" \
+# Scoped to the mesa_build_dir option, not to every option that has a
+# string value. It used to take them all, which was right while
+# meson.options had one such option and wrong the moment a second
+# arrived: nvk_build_dir made this read "build/mesa-nvk build/mesa-probe"
+# and the check failed on a difference that was not one.
+op_dir=$(sed -n "/^ *'mesa_build_dir',/,/^)/{ s/^ *value *: *'\(.*\)',*$/\1/p; }" \
          meson.options | tokens)
 compare "default mesa build dir" "Makefile:$mk_dir" \
         "scripts/toolchain-env.sh:$sh_dir" "meson.options:$op_dir"

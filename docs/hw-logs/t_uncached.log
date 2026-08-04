@@ -1,0 +1,23 @@
+== t_uncached ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   control: CACHED allocation of 0x1000 (status=ok nv=0x00000000)
+  ok   UNCACHED allocation of 0x1000 — svcSetMemoryAttribute accepted the range (status=ok nv=0x00000000)
+  ok   the object reports the policy it was created with
+  ok   control: the CACHED object reports CACHED
+  ok   uncached mapping has a CPU pointer
+  note about to touch the uncached range; if the log ends here, the kernel gave us Device memory and normal loads and stores fault on it
+  ok   dword stores and loads read back (0/1024 wrong)
+  ok   memcpy over the uncached range round-trips
+  ok   flush on uncached memory succeeds as a no-op (status=ok)
+  ok   invalidate on uncached memory succeeds as a no-op (status=ok)
+  ok   channel_create (status=ok nv=0x00000000)
+  ok   reserved VA for the uncached buffer (status=ok)
+  ok   mapped uncached memory at a GPU VA (status=ok nv=0x00000000)
+  ok   built a 64-pair NOP list in uncached memory
+  ok   submitted it with NO cache maintenance (status=ok nv=0x00000000)
+  ok   the GPU read the un-flushed list and completed (status=ok)
+  note D14 holds: CPU writes to UNCACHED memory are visible to the GPU without a flush
+  ok   uncached memory destroyed (status=ok)
+  ok   a second uncached allocation after the first was freed (status=ok nv=0x00000000)
+  ok   device destroyed with no live objects (status=ok)
+RESULT: PASS (19/19)

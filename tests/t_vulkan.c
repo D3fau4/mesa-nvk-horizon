@@ -1,0 +1,856 @@
+/*
+ * Test 14 — the mandatory Vulkan sequence (docs/milestones.md Phase 4).
+ *
+ *   vkCreateInstance
+ *   vkEnumeratePhysicalDevices
+ *   vkCreateDevice
+ *   vkCreateBuffer
+ *   vkAllocateMemory
+ *   vkBindBufferMemory
+ *   vkCmdFillBuffer
+ *   vkQueueSubmit
+ *   vkWaitForFences
+ *   -> the CPU reads back the filled pattern and validates it
+ *
+ * WHAT THIS TEST IS FOR. Not "does it run without errors" — the exit
+ * criterion is that the CPU reads the pattern the GPU wrote. A fill of a
+ * known value into a known range is the smallest piece of work that
+ * proves the whole path: memory that the GPU can reach, a command buffer
+ * it executed, a fence that told the truth about when, and cache
+ * maintenance that made the result visible.
+ *
+ * NO LOADER. Horizon has no dynamic loader, so there is no libvulkan and
+ * no ICD to open (mesa-patches 0015). The driver is linked in and
+ * entered through vk_icdGetInstanceProcAddr, which is what a loader
+ * would have called. Every other entry point is fetched by name from
+ * there, exactly as the loader does — so this test exercises the same
+ * dispatch the real thing would.
+ *
+ * NO WAIT-IDLE. Phase 4's exit criterion forbids inserting
+ * vkQueueWaitIdle or vkDeviceWaitIdle to make the result appear. The
+ * only wait here is vkWaitForFences, which is where Vulkan says a CPU
+ * stall belongs.
+ *
+ * Copyright (c) mesa-nvk-horizon contributors
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <stdint.h>
+#include <stdlib.h>   /* setenv, getenv */
+#include <string.h>
+
+/* For the D16 timing check at the end: a test binary may call libnx
+ * directly — the layer rule that forbids it applies to nvkmd_horizon,
+ * not to tests — and the tick counter is the monotonic clock here,
+ * which is the whole point of measuring with it rather than with
+ * anything derived from the date (decision D8). */
+#include <switch.h>
+
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+
+#include "common/testfw.h"
+
+#include "horizon_gpu/device.h"
+#include "horizon_gpu/channel.h"
+
+const char *const test_name = "t_vulkan";
+
+/* The one symbol the driver exports for a loader to find. Declared
+ * rather than included: vk_icd.h is the loader's header and this is not
+ * a loader — it is the application standing in for one.
+ */
+extern PFN_vkVoidFunction
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+
+/* The pattern and the buffer. 4 KiB is one small page, which is the
+ * granularity everything below works in, and 0xa5c3f00d is a value no
+ * uninitialised allocation is likely to hold by accident — a test that
+ * passes on zeroed memory proves nothing.
+ */
+#define FILL_SIZE_B   4096u
+#define FILL_PATTERN  0xa5c3f00du
+
+/* Where the driver's own error messages come out. Mesa builds every
+ * vk_errorf into a VK_EXT_debug_utils message and then, in a release
+ * build, drops it unless somebody is listening; this listens.
+ */
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debug_messenger_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                   VkDebugUtilsMessageTypeFlagsEXT types,
+                   const VkDebugUtilsMessengerCallbackDataEXT *data,
+                   void *user_data)
+{
+   (void)types;
+
+   const char *sev = "info";
+   if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+      sev = "error";
+   else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+      sev = "warning";
+
+   /* Both fields are optional in the spec, and a null here would be a
+    * crash inside the driver's error path — the worst possible place to
+    * lose the message that says what went wrong. */
+   t_note((test_ctx *)user_data, "vk %s [%s]: %s", sev,
+          data->pMessageIdName ? data->pMessageIdName : "-",
+          data->pMessage ? data->pMessage : "(no message)");
+
+   /* VK_FALSE: report, never abort the call the message came from. */
+   return VK_FALSE;
+}
+
+#define GET_INSTANCE_PROC(inst, name)                                    \
+   do {                                                                  \
+      name = (PFN_##name)vk_icdGetInstanceProcAddr(inst, #name);         \
+      if (!t_check(t, name != NULL, "GetInstanceProcAddr(%s)", #name))   \
+         return 1;                                                       \
+   } while (0)
+
+int
+run_test(test_ctx *t)
+{
+   /* --- entry points, through the ICD hook a loader would use ------- */
+   PFN_vkCreateInstance vkCreateInstance;
+   PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
+   PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
+   PFN_vkGetPhysicalDeviceQueueFamilyProperties
+      vkGetPhysicalDeviceQueueFamilyProperties;
+   PFN_vkGetPhysicalDeviceMemoryProperties
+      vkGetPhysicalDeviceMemoryProperties;
+   PFN_vkCreateDevice vkCreateDevice;
+   PFN_vkGetDeviceQueue vkGetDeviceQueue;
+   PFN_vkCreateBuffer vkCreateBuffer;
+   PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
+   PFN_vkAllocateMemory vkAllocateMemory;
+   PFN_vkBindBufferMemory vkBindBufferMemory;
+   PFN_vkMapMemory vkMapMemory;
+   PFN_vkCreateCommandPool vkCreateCommandPool;
+   PFN_vkAllocateCommandBuffers vkAllocateCommandBuffers;
+   PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
+   PFN_vkCmdFillBuffer vkCmdFillBuffer;
+   PFN_vkEndCommandBuffer vkEndCommandBuffer;
+   PFN_vkCreateFence vkCreateFence;
+   PFN_vkQueueSubmit vkQueueSubmit;
+   PFN_vkWaitForFences vkWaitForFences;
+   PFN_vkFlushMappedMemoryRanges vkFlushMappedMemoryRanges;
+   PFN_vkInvalidateMappedMemoryRanges vkInvalidateMappedMemoryRanges;
+   PFN_vkDestroyFence vkDestroyFence;
+   PFN_vkDestroyCommandPool vkDestroyCommandPool;
+   PFN_vkFreeMemory vkFreeMemory;
+   PFN_vkDestroyBuffer vkDestroyBuffer;
+   PFN_vkDestroyDevice vkDestroyDevice;
+   PFN_vkDestroyInstance vkDestroyInstance;
+
+   /* --- opting in to an untested driver, on purpose ------------------
+    *
+    * nvk_is_conformant() opens with
+    *
+    *     "Tegra is not currently supported"
+    *     if (info->type != NV_DEVICE_TYPE_DIS)
+    *        return false;
+    *
+    * and GM20B is NV_DEVICE_TYPE_SOC, which is what it is. NVK then
+    * refuses the device with VK_ERROR_INCOMPATIBLE_DRIVER, and under
+    * NDEBUG it does so with no message at all — so vkEnumeratePhysical-
+    * Devices returns VK_SUCCESS and no devices. Measured on console:
+    * the first hardware run of this test failed at exactly that line.
+    *
+    * NVK supplies the escape hatch and this is what it is for. Setting
+    * it here rather than patching nvk_is_conformant() is deliberate:
+    * the check is telling the truth. NVK is not conformant on this
+    * chip, nobody has run the CTS on it, and saying otherwise in the
+    * patch series would be a claim this project cannot support. The
+    * application is the right place to say "I know, proceed" —
+    * vk_warn_non_conformant_implementation() still fires.
+    *
+    * Before vkCreateInstance, because the flag is read while the
+    * physical device is being created.
+    */
+   setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
+
+   /* And ask horizon_gpu to say what it is doing. Its default level is
+    * WARN, which is right for a driver in use and wrong for a bring-up
+    * test: the fourth hardware run failed inside channel creation and
+    * the one number that would have identified which channel — its
+    * syncpoint id — is logged at INFO. This is set here rather than
+    * lowered in the library, because the library's default is correct
+    * and it is the test that wants more.
+    */
+   setenv("HORIZON_GPU_LOG", "3", 1);
+
+   /* NVK's own instrumentation, which turns out to be exactly what the
+    * hardware MMU fault needs and costs no driver code at all.
+    *
+    * `push_dump` decodes every push nvkmd_ctx_exec submits — methods and
+    * the addresses inside them — through nvkmd_ctx_exec_dump, which
+    * finds the memory by VA (working here only because patch 0031 gives
+    * every allocation one) and prints it with vk_push_print. `vm` logs
+    * every VA reservation and bind as it happens.
+    *
+    * Together they answer the question the console could not: the
+    * emulator reaches vkQueueSubmit successfully, so the push stream it
+    * builds is the same one that faults on real nvgpu, and every address
+    * in it can be checked against the map by reading — no hardware in
+    * the loop.
+    *
+    * Both are print-only. Unlike HORIZON_GPU_SYNC below they change no
+    * behaviour and insert no CPU stall, so a run with them on is still a
+    * valid run — just a very verbose one. Off by default because the
+    * MME microcode upload alone decodes to thousands of lines.
+    */
+#define T_VULKAN_PUSH_DUMP 0
+
+#if T_VULKAN_PUSH_DUMP
+   setenv("NVK_DEBUG", "push_dump,vm", 1);
+#endif
+
+   /* Diagnostic build switch, flipped by hand and never on for a run
+    * that is meant to satisfy Phase 4's exit criterion.
+    *
+    * Submission is asynchronous by design, so a channel fault is
+    * reported at the *next* kickoff, not by the submit that caused it.
+    * The third hardware run of 2026-07-28 showed exactly that: the push
+    * named in the failure was perfectly mapped, and every reservation on
+    * the device had what it should. Something earlier on that channel
+    * faulted — nvk_queue_init_context_state submits the MME microcode
+    * and a privileged-register macro during vkCreateDevice, and nobody
+    * waits on it.
+    *
+    * HORIZON_GPU_SYNC=1 is the documented answer (synchronization.md
+    * § 8): it waits on each submit's fence and logs the notifier, so the
+    * first submit with a non-zero one is the culprit by name.
+    *
+    * It is a diagnostic and it taints the run — "no test may pass only
+    * with the mode enabled" — so the run is failed at the end, exactly
+    * like a degraded syncpoint baseline.
+    *
+    * Off for an emulator run: the mode waits on each fence, and that
+    * wait needs the very syncpoint read the emulator does not implement,
+    * so it would replace every notifier reading with the same read
+    * failure. On that platform the degraded baseline carries the run
+    * instead, and it is enabled by the probe rather than from here.
+    */
+#define T_VULKAN_DEBUG_SYNC 0
+
+#if T_VULKAN_DEBUG_SYNC
+   setenv("HORIZON_GPU_SYNC", "1", 1);
+#endif
+
+   /* --- the syncpoint probe, before any Vulkan call ------------------
+    *
+    * The fifth hardware run showed NVK's *first* channel coming back
+    * with syncpoint id 1, which nvhost-ctrl then refuses to read, while
+    * t_channel gets 26 on this same console. Both call
+    * horizon_gpu_device_create(NULL, ...) and
+    * horizon_gpu_channel_create(dev, NULL, ...) — the same function
+    * with the same arguments — so the difference is what the process
+    * did in between. In NVK's path that is Mesa's instance and
+    * physical-device creation and the device's heaps and VA
+    * reservations, all before its first channel exists.
+    *
+    * This creates one channel with none of that behind it and reports
+    * its id. Two answers, both useful:
+    *
+    *   a real id (26-ish) -> the process is fine here and something
+    *                         between this point and NVK's channel
+    *                         breaks it
+    *   1                  -> the difference is the process or the nv
+    *                         session, not the ordering
+    *
+    * Created and destroyed immediately so NVK's channel is still the
+    * first one alive when it is made, which is the case being
+    * compared.
+    *
+    * It answered on 2026-07-27: a real console gives id 26 here and 26
+    * to NVK, and every horizon_gpu test passes; the environment that
+    * reported id 1 and then 0x55c (LibnxNvidiaError_NotImplemented) does
+    * not implement NVHOST_IOCTL_CTRL_SYNCPT_READ at all. So the probe's
+    * job is now to tell those two apart *at run time*, because the same
+    * .nro is run on both, and to decide whether the rest of this test
+    * runs degraded.
+    */
+   bool degraded = T_VULKAN_DEBUG_SYNC ? true : false;
+   if (T_VULKAN_DEBUG_SYNC) {
+      t_note(t, "DIAGNOSTIC RUN: HORIZON_GPU_SYNC=1. Every submit waits on "
+                "its fence and logs the channel notifier, so the submit that "
+                "faults is named instead of the one after it. The CPU stalls "
+                "that this inserts are not the shipping behaviour, so this "
+                "run cannot satisfy the Phase 4 exit criterion whatever it "
+                "prints.");
+   }
+
+   horizon_gpu_device *probe_dev = NULL;
+   horizon_gpu_result pres = horizon_gpu_device_create(NULL, &probe_dev);
+   if (t_check(t, pres.status == HORIZON_GPU_OK,
+                     "probe: horizon_gpu_device_create -> %d",
+                     (int)pres.status)) {
+      horizon_gpu_channel *probe_chan = NULL;
+      pres = horizon_gpu_channel_create(probe_dev, NULL, &probe_chan);
+      if (pres.status == HORIZON_GPU_OK) {
+         t_check(t, horizon_gpu_channel_syncpt_baseline_trusted(probe_chan),
+                       "probe: the syncpoint baseline is readable (id=%u, "
+                       "value=%u)",
+                       horizon_gpu_channel_syncpt_id(probe_chan),
+                       horizon_gpu_channel_syncpt_value_at_create(probe_chan));
+         horizon_gpu_channel_destroy(probe_chan);
+      } else {
+         /* No syncpoint here. Everything from vkCreateDevice onwards would
+          * stop at the same read, so nothing below this line has ever been
+          * executed anywhere. Opt in to untrusted baselines to get that
+          * code running — and record, right here, that whatever it prints
+          * afterwards is not a measurement. */
+         degraded = true;
+         setenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE", "1", 1);
+         t_note(t, "probe: horizon_gpu_channel_create -> %d; this platform "
+                   "does not implement the syncpoint read",
+                   (int)pres.status);
+         t_note(t, "DEGRADED RUN: untrusted syncpoint baselines enabled so "
+                   "the steps after vkCreateDevice can be exercised. Fences "
+                   "are guesses from here on; this run cannot satisfy the "
+                   "Phase 4 exit criterion whatever it prints.");
+      }
+      horizon_gpu_device_destroy(probe_dev);
+   }
+   t_check(t, getenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER") != NULL,
+                  "the non-conformance opt-in is set in the environment");
+
+   GET_INSTANCE_PROC(VK_NULL_HANDLE, vkCreateInstance);
+
+   /* --- vkCreateInstance -------------------------------------------- */
+   const VkApplicationInfo app = {
+      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+      .pApplicationName = "t_vulkan",
+      .apiVersion = VK_API_VERSION_1_1,
+   };
+   /* Every vk_errorf in the driver is silent in this build, and that is
+    * not a build mistake to fix: vk_log.c returns before printing unless
+    * the instance has debug logging on or a messenger is registered
+    * (release builds compile the #if !MESA_DEBUG guard in). The hardware
+    * run of 2026-07-28 paid for this — vkCreateDevice returned
+    * VK_ERROR_UNKNOWN with nothing in the log but an unrelated message,
+    * and finding the cause took a full console round trip.
+    *
+    * A messenger is the fix, and it belongs here rather than in Mesa:
+    * VK_EXT_debug_utils is the API's own answer to "tell me why", it
+    * costs a test one struct, and the driver stays untouched. Chained
+    * into pNext as well as created as an object, because the two cover
+    * different windows: the chained one is live during vkCreateInstance
+    * itself, the object from then on.
+    */
+   const VkDebugUtilsMessengerCreateInfoEXT dumci = {
+      .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+      .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
+      .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+      .pfnUserCallback = debug_messenger_cb,
+      .pUserData = t,
+   };
+   const char *const instance_exts[] = {
+      VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+   };
+   const VkInstanceCreateInfo ici = {
+      .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+      .pNext = &dumci,
+      .pApplicationInfo = &app,
+      .enabledExtensionCount = 1,
+      .ppEnabledExtensionNames = instance_exts,
+   };
+   VkInstance instance = VK_NULL_HANDLE;
+   VkResult r = vkCreateInstance(&ici, NULL, &instance);
+   t_check(t, r == VK_SUCCESS, "vkCreateInstance -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* From here to vkDestroyInstance. Not fatal if it fails: the chained
+    * messenger above already covers the interesting window, and losing
+    * diagnostics is not a reason to fail a test that can still run. */
+   PFN_vkCreateDebugUtilsMessengerEXT p_vkCreateDebugUtilsMessengerEXT =
+      (PFN_vkCreateDebugUtilsMessengerEXT)
+      vk_icdGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+   PFN_vkDestroyDebugUtilsMessengerEXT p_vkDestroyDebugUtilsMessengerEXT =
+      (PFN_vkDestroyDebugUtilsMessengerEXT)
+      vk_icdGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+   VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+   if (t_check(t, p_vkCreateDebugUtilsMessengerEXT != NULL &&
+                  p_vkDestroyDebugUtilsMessengerEXT != NULL,
+                  "VK_EXT_debug_utils entry points resolved")) {
+      r = p_vkCreateDebugUtilsMessengerEXT(instance, &dumci, NULL, &messenger);
+      t_check(t, r == VK_SUCCESS,
+                    "vkCreateDebugUtilsMessengerEXT -> %d (driver errors will "
+                    "be reported below)", (int)r);
+   }
+
+   GET_INSTANCE_PROC(instance, vkEnumeratePhysicalDevices);
+   GET_INSTANCE_PROC(instance, vkGetPhysicalDeviceProperties);
+   GET_INSTANCE_PROC(instance, vkGetPhysicalDeviceQueueFamilyProperties);
+   GET_INSTANCE_PROC(instance, vkGetPhysicalDeviceMemoryProperties);
+   GET_INSTANCE_PROC(instance, vkCreateDevice);
+   GET_INSTANCE_PROC(instance, vkGetDeviceQueue);
+   GET_INSTANCE_PROC(instance, vkCreateBuffer);
+   GET_INSTANCE_PROC(instance, vkGetBufferMemoryRequirements);
+   GET_INSTANCE_PROC(instance, vkAllocateMemory);
+   GET_INSTANCE_PROC(instance, vkBindBufferMemory);
+   GET_INSTANCE_PROC(instance, vkMapMemory);
+   GET_INSTANCE_PROC(instance, vkCreateCommandPool);
+   GET_INSTANCE_PROC(instance, vkAllocateCommandBuffers);
+   GET_INSTANCE_PROC(instance, vkBeginCommandBuffer);
+   GET_INSTANCE_PROC(instance, vkCmdFillBuffer);
+   GET_INSTANCE_PROC(instance, vkEndCommandBuffer);
+   GET_INSTANCE_PROC(instance, vkCreateFence);
+   GET_INSTANCE_PROC(instance, vkQueueSubmit);
+   GET_INSTANCE_PROC(instance, vkWaitForFences);
+   GET_INSTANCE_PROC(instance, vkFlushMappedMemoryRanges);
+   GET_INSTANCE_PROC(instance, vkInvalidateMappedMemoryRanges);
+   GET_INSTANCE_PROC(instance, vkDestroyFence);
+   GET_INSTANCE_PROC(instance, vkDestroyCommandPool);
+   GET_INSTANCE_PROC(instance, vkFreeMemory);
+   GET_INSTANCE_PROC(instance, vkDestroyBuffer);
+   GET_INSTANCE_PROC(instance, vkDestroyDevice);
+   GET_INSTANCE_PROC(instance, vkDestroyInstance);
+
+   /* --- vkEnumeratePhysicalDevices ---------------------------------- */
+   uint32_t pdev_count = 0;
+   r = vkEnumeratePhysicalDevices(instance, &pdev_count, NULL);
+   t_check(t, r == VK_SUCCESS, "vkEnumeratePhysicalDevices -> %d",
+                  (int)r);
+   t_check(t, pdev_count == 1, "one physical device, got %u",
+                  pdev_count);
+   if (pdev_count == 0) {
+      /* Vulkan says an empty list, not an error, so the call above
+       * succeeded and there is nothing in the result to say why. The
+       * driver logs the reason to the screen — it cannot reach this
+       * log file — so point at it rather than leave the reader to
+       * guess.
+       */
+      t_note(t, "the driver found no GPU; its reason is on screen, "
+                "above this list, as an \"nvkmd_horizon:\" line");
+      return 1;
+   }
+
+   VkPhysicalDevice pdev = VK_NULL_HANDLE;
+   pdev_count = 1;
+   r = vkEnumeratePhysicalDevices(instance, &pdev_count, &pdev);
+   t_check(t, r == VK_SUCCESS || r == VK_INCOMPLETE,
+                  "vkEnumeratePhysicalDevices(list) -> %d", (int)r);
+
+   VkPhysicalDeviceProperties props;
+   vkGetPhysicalDeviceProperties(pdev, &props);
+   t_note(t, "device: %s (api %u.%u.%u)", props.deviceName,
+             VK_VERSION_MAJOR(props.apiVersion),
+             VK_VERSION_MINOR(props.apiVersion),
+             VK_VERSION_PATCH(props.apiVersion));
+
+   /* --- vkCreateDevice ---------------------------------------------- */
+   uint32_t qf_count = 0;
+   vkGetPhysicalDeviceQueueFamilyProperties(pdev, &qf_count, NULL);
+   t_check(t, qf_count >= 1, "at least one queue family, got %u",
+                  qf_count);
+   if (qf_count == 0)
+      return 1;
+
+   const float prio = 1.0f;
+   const VkDeviceQueueCreateInfo qci = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+      .queueFamilyIndex = 0,
+      .queueCount = 1,
+      .pQueuePriorities = &prio,
+   };
+   const VkDeviceCreateInfo dci = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .queueCreateInfoCount = 1,
+      .pQueueCreateInfos = &qci,
+   };
+   VkDevice dev = VK_NULL_HANDLE;
+   r = vkCreateDevice(pdev, &dci, NULL, &dev);
+   t_check(t, r == VK_SUCCESS, "vkCreateDevice -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(dev, 0, 0, &queue);
+   t_check(t, queue != VK_NULL_HANDLE, "vkGetDeviceQueue");
+
+   /* --- vkCreateBuffer ---------------------------------------------- */
+   const VkBufferCreateInfo bci = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = FILL_SIZE_B,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer buf = VK_NULL_HANDLE;
+   r = vkCreateBuffer(dev, &bci, NULL, &buf);
+   t_check(t, r == VK_SUCCESS, "vkCreateBuffer -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* --- vkAllocateMemory -------------------------------------------- */
+   VkMemoryRequirements mreq;
+   vkGetBufferMemoryRequirements(dev, buf, &mreq);
+
+   VkPhysicalDeviceMemoryProperties mprops;
+   vkGetPhysicalDeviceMemoryProperties(pdev, &mprops);
+
+   /* HOST_VISIBLE so the CPU can read the result back, which is the
+    * point of the test. HOST_COHERENT is *not* required: this platform's
+    * memory is CPU-cached and the invalidate below is what makes the
+    * GPU's write visible, which is exactly the mechanism decision D5 is
+    * about. Asking only for HOST_VISIBLE keeps the test honest about
+    * which of the two is doing the work.
+    */
+   uint32_t type_index = UINT32_MAX;
+   for (uint32_t i = 0; i < mprops.memoryTypeCount; i++) {
+      if (!(mreq.memoryTypeBits & (1u << i)))
+         continue;
+      if (mprops.memoryTypes[i].propertyFlags &
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+         type_index = i;
+         break;
+      }
+   }
+   t_check(t, type_index != UINT32_MAX,
+                  "a host-visible memory type the buffer accepts");
+   if (type_index == UINT32_MAX)
+      return 1;
+
+   /* Which type it turned out to be, spelled out, because it decides
+    * what the readback at the end actually depends on and it is the
+    * first thing anyone will want to know if that readback comes back
+    * wrong.
+    *
+    * COHERENT means nvkmd asks for NVKMD_MEM_COHERENT, which on this
+    * backend is an uncached CPU mapping (D14, proven on hardware by
+    * t_uncached) and makes the flush and invalidate no-ops. CACHED
+    * without COHERENT means the mapping is cached, so Mesa's aarch64
+    * cache ops (dc cvac / dc civac) have to reach the point the GPU
+    * reads from.
+    *
+    * That used to say the readback rested on those cache ops, and the
+    * hardware disagreed. When this readback failed on 2026-08-04,
+    * t_gpuwrite reproduced it below Vulkan and failed *identically* on
+    * cached and uncached memory — which no CPU-cache explanation
+    * survives. What it rested on was the GPU's own L2: a GPU write lands
+    * there first, and nothing about a syncpoint increment obliges that
+    * L2 to reach the memory a CPU reads. The channel's fence block now
+    * ends every submit with wait-for-idle at SCOPE_ALL, a dirty-L2
+    * writeback, and only then the increment.
+    *
+    * The CPU-side ops are still required and still called — they are
+    * simply not what was broken. The note below names the memory type
+    * because that is still the first thing anyone will want if this
+    * readback ever comes back wrong again; it no longer claims to name
+    * the cause.
+    */
+   {
+      const VkMemoryPropertyFlags f =
+         mprops.memoryTypes[type_index].propertyFlags;
+      t_note(t, "memory type %u: flags 0x%x =%s%s%s%s — the readback %s",
+             type_index, f,
+             (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)  ? " DEVICE_LOCAL"  : "",
+             (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)  ? " HOST_VISIBLE"  : "",
+             (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " HOST_COHERENT" : "",
+             (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)   ? " HOST_CACHED"   : "",
+             (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                ? "uses the uncached mapping (D14)"
+                : "uses CPU cache maintenance; GPU-side visibility is the "
+                  "channel's L2 writeback");
+   }
+
+   const VkMemoryAllocateInfo mai = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mreq.size,
+      .memoryTypeIndex = type_index,
+   };
+   VkDeviceMemory mem = VK_NULL_HANDLE;
+   r = vkAllocateMemory(dev, &mai, NULL, &mem);
+   t_check(t, r == VK_SUCCESS, "vkAllocateMemory -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* --- vkBindBufferMemory ------------------------------------------ */
+   r = vkBindBufferMemory(dev, buf, mem, 0);
+   t_check(t, r == VK_SUCCESS, "vkBindBufferMemory -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* Map before the submit and poison the buffer with the complement of
+    * the pattern. A test that reads back the right value out of memory
+    * that already held it proves nothing; this makes the GPU's write
+    * the only way the check can pass.
+    */
+   void *map = NULL;
+   r = vkMapMemory(dev, mem, 0, VK_WHOLE_SIZE, 0, &map);
+   t_check(t, r == VK_SUCCESS && map != NULL, "vkMapMemory -> %d",
+                  (int)r);
+   if (r != VK_SUCCESS || map == NULL)
+      return 1;
+
+   uint32_t *words = map;
+   for (uint32_t i = 0; i < FILL_SIZE_B / 4; i++)
+      words[i] = ~FILL_PATTERN;
+
+   /* And flush it, which is not a formality.
+    *
+    * The memory type chosen above is HOST_VISIBLE and HOST_CACHED but
+    * NOT HOST_COHERENT, so those writes are sitting in the CPU's cache
+    * as dirty lines. Vulkan requires vkFlushMappedMemoryRanges for them
+    * to become visible to the device — but the reason it matters here
+    * is worse than visibility. A dirty line can be evicted at any time,
+    * including *after* the GPU's fill has landed in memory, and the
+    * eviction would then overwrite the GPU's result with the poison.
+    * The test would report that the GPU had not written, and it would
+    * be the test that was wrong.
+    *
+    * So the poison has to be pushed out of the cache before the submit.
+    * Without this it is not a poison, it is a landmine.
+    */
+   const VkMappedMemoryRange poison_range = {
+      .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+      .memory = mem,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+   };
+   r = vkFlushMappedMemoryRanges(dev, 1, &poison_range);
+   t_check(t, r == VK_SUCCESS, "vkFlushMappedMemoryRanges (poison) -> %d",
+                  (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* --- vkCmdFillBuffer --------------------------------------------- */
+   const VkCommandPoolCreateInfo cpci = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .queueFamilyIndex = 0,
+   };
+   VkCommandPool pool = VK_NULL_HANDLE;
+   r = vkCreateCommandPool(dev, &cpci, NULL, &pool);
+   t_check(t, r == VK_SUCCESS, "vkCreateCommandPool -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   const VkCommandBufferAllocateInfo cbai = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1,
+   };
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   r = vkAllocateCommandBuffers(dev, &cbai, &cmd);
+   t_check(t, r == VK_SUCCESS, "vkAllocateCommandBuffers -> %d",
+                  (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   const VkCommandBufferBeginInfo cbbi = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+   };
+   r = vkBeginCommandBuffer(cmd, &cbbi);
+   t_check(t, r == VK_SUCCESS, "vkBeginCommandBuffer -> %d", (int)r);
+
+   vkCmdFillBuffer(cmd, buf, 0, FILL_SIZE_B, FILL_PATTERN);
+
+   r = vkEndCommandBuffer(cmd);
+   t_check(t, r == VK_SUCCESS, "vkEndCommandBuffer -> %d", (int)r);
+
+   /* --- vkQueueSubmit ----------------------------------------------- */
+   const VkFenceCreateInfo fci = {
+      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+   };
+   VkFence fence = VK_NULL_HANDLE;
+   r = vkCreateFence(dev, &fci, NULL, &fence);
+   t_check(t, r == VK_SUCCESS, "vkCreateFence -> %d", (int)r);
+   /* Stop here, unlike the checks above it, because vkQueueSubmit takes
+    * VK_NULL_HANDLE legitimately — a submit with no fence is valid
+    * Vulkan — so the guard below would let a failed creation through
+    * and hand the null handle to vkWaitForFences, which is not valid
+    * and may take the process down before the framework can print its
+    * FAIL line. A crash reports nothing; a FAIL reports everything.
+    *
+    * `goto teardown`, not `return 1`: this function had sixteen bare
+    * returns, every one of them jumping over the destroy block at the
+    * end and leaking the VkDevice — which on Horizon means channels and
+    * NvMap objects never released, against CLAUDE.md's rule that a
+    * partially-initialised object is torn down in reverse order on the
+    * error path. Adding a seventeenth would have been noticing the
+    * asymmetry and joining the wrong side of it.
+    */
+   if (r != VK_SUCCESS)
+      goto teardown;
+
+   const VkSubmitInfo si = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &cmd,
+   };
+   r = vkQueueSubmit(queue, 1, &si, fence);
+   t_check(t, r == VK_SUCCESS, "vkQueueSubmit -> %d", (int)r);
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* --- vkWaitForFences --------------------------------------------- */
+   /*
+    * The only CPU stall in this test, and the one Vulkan puts here. No
+    * vkQueueWaitIdle and no vkDeviceWaitIdle before the readback: the
+    * phase's exit criterion says the result must be visible because the
+    * fence said the work was done, not because the driver was told to
+    * drain.
+    *
+    * One second, not infinite. A hang is a result to report, and a test
+    * that never returns reports nothing.
+    */
+   r = vkWaitForFences(dev, 1, &fence, VK_TRUE, 1000000000ull);
+   t_check(t, r == VK_SUCCESS, "vkWaitForFences -> %d%s", (int)r,
+                  r == VK_TIMEOUT ? " (TIMEOUT — the GPU did not finish)"
+                                  : "");
+   if (r != VK_SUCCESS)
+      return 1;
+
+   /* The GPU wrote through its own view of this memory; the CPU's cache
+    * may still hold what was there before. This is the invalidate side
+    * of decision D5, and it is not optional on a platform whose memory
+    * is CPU-cached.
+    */
+   const VkMappedMemoryRange range = {
+      .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+      .memory = mem,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+   };
+   r = vkInvalidateMappedMemoryRanges(dev, 1, &range);
+   t_check(t, r == VK_SUCCESS, "vkInvalidateMappedMemoryRanges -> %d",
+                  (int)r);
+
+   /* --- the readback, which is the actual exit criterion ------------ */
+   uint32_t bad = 0;
+   uint32_t first_bad_index = 0;
+   uint32_t first_bad_value = 0;
+   for (uint32_t i = 0; i < FILL_SIZE_B / 4; i++) {
+      if (words[i] != FILL_PATTERN) {
+         if (bad == 0) {
+            first_bad_index = i;
+            first_bad_value = words[i];
+         }
+         bad++;
+      }
+   }
+
+   t_check(t, bad == 0,
+                  "readback: %u/%u words wrong; first at [%u] = 0x%08x, "
+                  "expected 0x%08x",
+                  bad, FILL_SIZE_B / 4, first_bad_index, first_bad_value,
+                  FILL_PATTERN);
+
+   if (bad == 0) {
+      t_note(t, "readback: %u/%u words are 0x%08x — the GPU wrote it",
+                FILL_SIZE_B / 4, FILL_SIZE_B / 4, FILL_PATTERN);
+   }
+
+   /* A degraded run waited on a fence built from a baseline nobody read,
+    * so "the GPU wrote it" above is not established even when every word
+    * matches — the wait may simply have believed itself finished. Fail the
+    * run outright rather than let a PASS line be quoted as Phase 4
+    * evidence. This is the only check whose failure means "nothing was
+    * verified" instead of "something is broken". */
+   t_check(t, !degraded,
+                 "the run was neither degraded nor diagnostic (such a run "
+                 "verifies nothing)");
+
+   /* --- D16: a wait on a fence nothing has submitted ------------------
+    *
+    * After the exit criterion, so it cannot perturb it, and single
+    * threaded, because the defect it catches does not need a second
+    * thread to show itself.
+    *
+    * nvk_horizon_sync_wait used to sample the sync's state once and
+    * report VK_TIMEOUT when nothing had been submitted with it — which
+    * is a legal thing to wait on, and which Vulkan says must block until
+    * the timeout. The result was still VK_TIMEOUT, so only the *clock*
+    * distinguishes the fix from the bug: the old code returned in
+    * microseconds, the new one returns when the caller said to.
+    *
+    * A fresh unsignalled fence is exactly that object. 200 ms asked for,
+    * and the bound below is deliberately loose at both ends: over 150 ms
+    * says it really blocked, under 2 s says it did not block forever.
+    */
+   VkFence idle_fence = VK_NULL_HANDLE;
+   r = vkCreateFence(dev, &fci, NULL, &idle_fence);
+   if (t_check(t, r == VK_SUCCESS, "D16: vkCreateFence (unsignalled) -> %d",
+               (int)r)) {
+      const uint64_t d16_timeout_ns = UINT64_C(200000000);
+      const uint64_t t0 = armTicksToNs(armGetSystemTick());
+      r = vkWaitForFences(dev, 1, &idle_fence, VK_TRUE, d16_timeout_ns);
+      const uint64_t waited_ns = armTicksToNs(armGetSystemTick()) - t0;
+      const uint64_t waited_ms = waited_ns / UINT64_C(1000000);
+
+      t_note(t, "D16: vkWaitForFences(200 ms) on a never-submitted fence "
+                "returned %d after %llu ms", (int)r,
+             (unsigned long long)waited_ms);
+      t_check(t, r == VK_TIMEOUT,
+              "D16: waiting on a never-submitted fence times out (%d)",
+              (int)r);
+      t_check(t, waited_ms >= 150,
+              "D16: it waited rather than answering at once (%llu ms, "
+              "expected >= 150)", (unsigned long long)waited_ms);
+      t_check(t, waited_ms < 2000,
+              "D16: and it stopped waiting when asked (%llu ms, expected "
+              "< 2000)", (unsigned long long)waited_ms);
+
+      /* A timeout SHORTER than one condvar chunk.
+       *
+       * The check above cannot see this, and the reason is that 200 ms
+       * is exactly two 100 ms chunks: a loop that clamped its last
+       * chunk to the time remaining and one that always waited a whole
+       * chunk both land on 200 ms. So it says nothing about the clamp,
+       * and the clamp is what stops a short wait being rounded up to
+       * the chunk size — 5 ms becoming 100 ms is a twentyfold overshoot
+       * of what the caller asked for, and vkWaitForFences with a small
+       * timeout is how an application polls without spinning.
+       *
+       * 5 ms requested. Under 50 ms proves it did not wait a chunk;
+       * the bound is loose because a scheduler on a busy console owes
+       * nobody millisecond precision, and this is testing an
+       * arithmetic clamp, not the kernel's timer accuracy.
+       */
+      const uint64_t t1 = armTicksToNs(armGetSystemTick());
+      r = vkWaitForFences(dev, 1, &idle_fence, VK_TRUE, UINT64_C(5000000));
+      const uint64_t short_ms =
+         (armTicksToNs(armGetSystemTick()) - t1) / UINT64_C(1000000);
+
+      t_note(t, "D16: vkWaitForFences(5 ms) returned %d after %llu ms",
+             (int)r, (unsigned long long)short_ms);
+      t_check(t, r == VK_TIMEOUT,
+              "D16: a sub-chunk timeout still times out (%d)", (int)r);
+      t_check(t, short_ms < 50,
+              "D16: and is not rounded up to a whole 100 ms chunk (%llu ms, "
+              "expected < 50)", (unsigned long long)short_ms);
+
+      vkDestroyFence(dev, idle_fence, NULL);
+   }
+
+   /* --- teardown, in reverse order ----------------------------------
+    *
+    * Reachable by `goto` as well as by falling through, so an error
+    * path can leave without leaking the device. Every object here is
+    * either VK_NULL_HANDLE or live: the Vulkan destroy calls all accept
+    * VK_NULL_HANDLE and do nothing with it, so one label serves every
+    * point after the objects are declared. The other bare returns above
+    * predate this and are not converted here — that is a separate
+    * change, not something to bundle into a review fix.
+    */
+teardown:
+   vkDestroyFence(dev, fence, NULL);
+   vkDestroyCommandPool(dev, pool, NULL);
+   vkDestroyBuffer(dev, buf, NULL);
+   vkFreeMemory(dev, mem, NULL);
+   vkDestroyDevice(dev, NULL);
+   /* Before the instance that owns it, and only if it was created. */
+   if (messenger != VK_NULL_HANDLE)
+      p_vkDestroyDebugUtilsMessengerEXT(instance, messenger, NULL);
+   vkDestroyInstance(instance, NULL);
+
+   return 0;
+}

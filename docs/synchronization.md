@@ -237,3 +237,154 @@ Rules:
   taken otherwise.
 - No test may pass only with the mode enabled. If it does, that is the bug.
 - `STATUS.md` records whether a result was obtained with the mode on or off.
+
+## 9. Untrusted syncpoint baselines
+
+Enabled by `HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1` (env) or a device-creation flag.
+Like § 8 it is a diagnostic, but a narrower and more dangerous one, so it is described
+separately.
+
+Channel creation reads the hardware syncpoint once and initialises the 64-bit shadow
+(§ 1.1) from it. That read failing is normally fatal: without a baseline, every threshold
+this channel computes is offset by an unknown amount, and a wait can return "reached"
+before the GPU has done anything. Some environments do not implement
+`NVHOST_IOCTL_CTRL_SYNCPT_READ` at all — the 2026-07-27 comparison in `STATUS.md` has one
+that answers `0x55c` (`LibnxNvidiaError_NotImplemented`) where a real console answers with
+a value. On those, nothing above channel creation can be executed at all.
+
+With the opt-in, such a channel comes up with a baseline of zero, marked untrusted:
+
+- `horizon_gpu_channel_syncpt_baseline_trusted()` is false for that channel.
+- `horizon_gpu_device_untrusted_syncpt_seen()` is true for its device, and stays true.
+- Both the opt-in and each degraded channel are logged at `ERROR` level, so no log from
+  such a run can be mistaken for a clean one.
+
+Rules:
+- Off by default. Nothing degrades unless the application asks for it by name.
+- A degraded channel's fences are arithmetic, not observation. **No result obtained on
+  one may be reported as hardware behaviour**, including a readback that matches: the
+  wait it passed through proves nothing. `t_vulkan` enforces this by failing any run in
+  which it enabled the mode, whatever the readback said.
+- It is not a fallback for a real syncpoint failure on hardware that has syncpoints.
+  There, a failed read is a defect and stays fatal.
+
+### 9.1 What a degraded channel does with a failed read
+
+The opt-in is not enough on its own: `horizon_gpu_submit` reaps before it
+queues (§ 3), and reaping reads the syncpoint, so on a platform without
+the read *every submit* fails — including the engine bind, which happens
+at channel creation. Measured on the emulator, 2026-07-28:
+`horizon_gpu_channel_bind_engines failed: ... nv 0x0000055c`.
+
+So on an untrusted-baseline channel, and only there, a failed read is
+answered rather than propagated:
+
+- `horizon_gpu_channel_reap` reports **nothing retired** and succeeds.
+- `horizon_gpu_channel_destroy` skips the in-flight check and says so,
+  because refusing would strand the channel and the device with it.
+- Waits are **not** degraded. `horizon_gpu_fence_wait` and
+  `horizon_gpu_channel_wait_fence` still fail, which is the point: a
+  wait that cannot be ordered must not return success.
+
+Of the two possible answers to a failed read, "nothing retired" is the
+safe one. The other — treating everything as complete — would let a wait
+return without the GPU having run, and that is the one answer this
+project must never give. The cost is that nothing is ever recycled on
+such a channel, which a bring-up run can afford and a real one would
+not.
+
+### 9.2 Asking the fence's question a different way
+
+The counter and the fence are two different questions, and a platform can
+answer one and not the other:
+
+- `NVHOST_IOCTL_CTRL_SYNCPT_READ` — "what is the counter now?"
+- `NVHOST_IOCTL_CTRL_SYNCPT_WAIT`, under `nvFenceWait` — "has (id,
+  threshold) been reached?"
+
+Everything in this layer was built on the first, and the emulator
+measured on 2026-07-28 does not implement it — while games on that same
+emulator wait on fences constantly, which is the second. The wait was
+never even reached there: `horizon_gpu_fence_wait` read the counter at
+the top of its loop and returned that error before calling `nvFenceWait`
+at the bottom.
+
+So on a channel whose baseline could not be read, and only there, the
+read's failure falls through to the wait: `nvFenceWait(fence, 0)` for a
+poll, and for the remaining deadline in a wait. The channel notifier is
+still re-checked between chunks, so a faulted channel cannot hang.
+
+**What this does and does not buy.** It is not a weaker answer — it is
+the kernel answering the exact question a fence asks, with no counter and
+no shadow involved. What it cannot rescue is the *threshold*: that was
+computed from a baseline nobody read, so "reached" is only as sound as
+that assumption. Where the real counter starts at zero for a fresh
+channel the assumption holds and the answer is right; where it does not,
+the wait returns early and the data the fence was ordering is not there
+yet — which a readback notices. The channel stays untrusted either way,
+and `t_vulkan` still refuses to call such a run a pass.
+
+Where the read works it stays the primary path. It is one ioctl for any
+number of fences on the same syncpoint, and it feeds the 64-bit shadow,
+which this cannot.
+
+### 9.3 Recovering the value from the predicate
+
+§ 9.2 stops one step short: the wait answers the fence's question, but the
+*threshold* it is asked about was still computed from a baseline nobody
+measured. That baseline is the last thing keeping a degraded channel
+untrustworthy, and it does not have to stay unmeasured — the predicate is
+enough to recover the counter outright.
+
+The thresholds a counter `C` has reached are exactly the modular
+half-space
+
+```
+{ T : (int32_t)(C - T) >= 0 }  =  { C - 2^31 + 1, ..., C }
+```
+
+whose upper end *is* `C`. So `C` is recoverable by finding the largest
+reached threshold. Two facts make that a binary search rather than a scan:
+
+1. For any `v`, exactly one of `v` and `v + 2^31` is in the half-space —
+   the two conditions partition the 2³² possible values of `C - v`. One
+   probe therefore always lands an **anchor** inside it.
+2. Measured as an offset `d` from an anchor, `reached(anchor + d)` is
+   monotone over `d ∈ [0, 2^31 - 1]`: true up to `d = C - anchor`, false
+   after. The circular order that makes a plain `>=` wrong is gone.
+
+31 halvings then pin `d`, for **33 probes total** — one anchor, 31
+halvings, one verification.
+
+**The result is never an overestimate.** For a monotonically increasing
+counter a "reached" answer never becomes false, so every `d` the search
+accepted is still reached at the end: the value returned is one the
+counter genuinely had. A counter that moves underneath the search can
+therefore only make the result *stale* — the direction that would make a
+later fence look signalled early, which is the one worth catching.
+
+The last probe catches it exactly, not heuristically. It asks whether
+`value + 1` has been reached, which is true precisely when the counter has
+moved past the result. So `OK` does not mean "probably right": it means
+the value returned is the counter's value at that instant.
+
+`horizon_syncpt_search_value` (`horizon/sync/syncpt_math.h`) is the
+arithmetic, taking the predicate as a callback so the file never learns
+what an ioctl is. It is unit-tested on the host against an oracle that
+answers only yes/no — every wrap corner, a 4096-value sweep, a counter
+advancing mid-search, and the predicate being unavailable at the first
+probe and mid-search (`tests/host/h_syncpt_math.c`).
+
+**Nothing calls it yet, deliberately.** The arithmetic is validated; the
+premise is not. Whether `nvFenceWait` answers where `SyncptRead` does not
+is what the pending emulator run measures, and wiring a search onto an
+unmeasured predicate would be the mistake the shader-window block-off
+already made once — a change that looked obviously right and broke
+`vkCreateDevice` outright. The half that could be proven today is proven;
+the half that depends on a measurement waits for it.
+
+When it is wired, the payoff is that "untrusted baseline" stops being a
+category: the value would be *measured*, by a different ioctl than the one
+that failed, and the thresholds, the 64-bit shadow and the fences derived
+from it become as sound as on a platform that can read the counter. The
+cost is 33 ioctls once per channel, and only where the read is missing.

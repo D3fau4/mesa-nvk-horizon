@@ -54,6 +54,60 @@ static int one_cycle(test_ctx *t, int cycle)
            (unsigned long long)info.va_regions[1].pages,
            info.va_regions[1].page_size);
 
+    /* The two device queries closed as Phase 4 extensions 1 and 6. Both
+     * run at device level and neither had ever been executed anywhere
+     * when they were written, so they are exercised here rather than
+     * left to be discovered by the first caller.
+     */
+    uint64_t ts1 = 0, ts2 = 0;
+    horizon_gpu_result tres = horizon_gpu_device_get_timestamp(dev, &ts1);
+    if (t_check(t, tres.status == HORIZON_GPU_OK,
+                "cycle %d: GPU timestamp readable (status=%s)", cycle,
+                horizon_gpu_status_str(tres.status))) {
+        t_note(t, "GPU timestamp: %llu ns", (unsigned long long)ts1);
+        t_check(t, ts1 != 0, "cycle %d: GPU timestamp is not zero", cycle);
+        /* Monotonic within one call pair. Not a rate measurement — that
+         * needs a known interval and belongs in t_ostime — only that the
+         * clock is a clock and not a constant. */
+        tres = horizon_gpu_device_get_timestamp(dev, &ts2);
+        if (tres.status == HORIZON_GPU_OK) {
+            t_check(t, ts2 >= ts1,
+                    "cycle %d: GPU timestamp did not go backwards "
+                    "(%llu then %llu)", cycle,
+                    (unsigned long long)ts1, (unsigned long long)ts2);
+        }
+    }
+
+    horizon_gpu_zcull_info zc;
+    horizon_gpu_result zres = horizon_gpu_device_get_zcull_info(dev, &zc);
+    if (zres.status == HORIZON_GPU_OK) {
+        t_note(t, "zcull: align=%ux%u aliquots=%u total=%u subregions=%u "
+               "ctx_size=0x%llx", zc.width_align_pixels,
+               zc.height_align_pixels, zc.pixel_squares_by_aliquots,
+               zc.aliquot_total, zc.subregion_count,
+               (unsigned long long)zc.ctx_size);
+        /* The context size is what channel.c reserves a Zcull buffer of,
+         * so it has to be a size a buffer can have. "Nonzero" was the
+         * first version of this check and it passed on the emulator's
+         * 0x1 — a one-byte Zcull context is not a small answer, it is a
+         * stub. A check that cannot reject an obviously wrong value is
+         * not checking anything.
+         *
+         * One page is the floor: horizon_gpu_mem_create allocates in
+         * pages, so anything under that cannot describe a real buffer.
+         */
+        t_check(t, zc.ctx_size >= 0x1000,
+                "cycle %d: zcull context size is a plausible buffer size "
+                "(0x%llx)", cycle, (unsigned long long)zc.ctx_size);
+        t_check(t, zc.width_align_pixels > 0 && zc.height_align_pixels > 0,
+                "cycle %d: zcull alignments nonzero", cycle);
+    } else {
+        /* Advisory, exactly as nouveau treats it — reported, not failed. */
+        t_note(t, "zcull info unavailable (status=%s); this is advisory and "
+               "NVK carries on with has_zcull_info false",
+               horizon_gpu_status_str(zres.status));
+    }
+
     t_check(t, strcmp(info.chipname, "gm20b") == 0, "cycle %d: chipname is "
             "gm20b (got '%s')", cycle, info.chipname);
     t_check(t, info.num_gpc >= 1 && info.num_tpc_per_gpc >= 1,

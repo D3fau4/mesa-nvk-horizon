@@ -69,7 +69,16 @@ nacptool  = 'nacptool'
 #
 # The target is the one rustc already ships (tier 3, os = "horizon");
 # docs/rust-toolchain.md explains why no custom target is defined.
-rust      = ['rustc', '--target', 'aarch64-nintendo-switch-freestanding']
+#
+# --sysroot is what makes that target usable at all. It is tier 3, so
+# rustup has no prebuilt core for it, and Meson drives rustc directly
+# rather than through cargo — there is no -Zbuild-std in a Meson build.
+# scripts/build-rust-sysroot.sh compiles core, alloc and
+# compiler_builtins once and installs them in the layout rustc looks
+# for; the rust_sysroot constant, like devkitpro, comes from the
+# generated cross file because it is an absolute path.
+rust      = ['rustc', '--target', 'aarch64-nintendo-switch-freestanding',
+             '--sysroot', rust_sysroot]
 
 # rust.bindgen() generates NAK's and NIL's C bindings.
 bindgen   = 'bindgen'
@@ -196,14 +205,61 @@ pkg_config_libdir = devkitpro + '/portlibs/switch/lib/pkgconfig'
 libnx_prefix = devkitpro + '/libnx'
 devkitpro_prefix = devkitpro
 
+# bindgen parses Mesa's headers with libclang, not with the cross gcc,
+# and libclang knows nothing about devkitA64. Given only
+# --target=aarch64-nintendo-switch-freestanding it looks for the C
+# library in the *build machine's* /usr/include and stops at
+#
+#   /usr/include/stdio.h:27:10: fatal error: 'bits/libc-header-start.h'
+#                              file not found
+#
+# — Debian's glibc headers, reached while cross-parsing for a Switch
+# target, failing on a multiarch header clang did not add a path for.
+# Measured on the first NAK/NIL bindings generation.
+#
+# --sysroot points it at devkitA64's newlib instead, which is the C
+# library the generated bindings must describe. The gcc include
+# directory has to be listed as well: newlib's headers include
+# <stddef.h> and <stdint.h>, and those come from the *compiler*, not
+# from the sysroot. clang ships its own, but they are not on the search
+# path once --sysroot names a tree clang did not configure for.
+#
+# Meson passes these to every rust.bindgen() call
+# (mesonbuild/envconfig.py get_bindgen_clang_args), so they belong here
+# rather than in a Mesa patch: it is a description of the toolchain,
+# which is what a cross file is for.
+bindgen_clang_arguments = [
+  '--sysroot=' + devkitpro + '/devkitA64/aarch64-none-elf',
+  '-isystem' + devkitpro + '/devkitA64/aarch64-none-elf/include',
+  '-D__SWITCH__',
+  '-I' + devkitpro + '/libnx/include',
+  ]
+
 [host_machine]
 system = 'horizon'
 cpu_family = 'aarch64'
 cpu = 'cortex-a57'
 endian = 'little'
+# Meson reads `kernel` in exactly one place: its Rust compiler
+# (mesonbuild/compilers/rust.py). With anything other than 'none' the
+# sanity check compiles `fn main() {}`, which needs libstd, and
+# configure stops with E0463 — measured against the pinned Mesa tree,
+# and it is the first thing that fails when the nouveau Vulkan driver
+# is enabled. With 'none' it compiles a `#![no_std] #![no_main]`
+# program instead, which is the shape this target actually supports,
+# and it also stops Meson from insisting that `--print
+# native-static-libs` name any libraries.
+#
+# It says "freestanding Rust runtime", not "Horizon has no kernel":
+# that is the only question Meson asks it, and it is the same word
+# rustc's own target name uses (aarch64-nintendo-switch-freestanding,
+# "std": false). Mesa never reads host_machine.kernel(); verified by
+# grep over the pinned tree.
+kernel = 'none'
 
 [target_machine]
 system = 'horizon'
 cpu_family = 'aarch64'
 cpu = 'cortex-a57'
 endian = 'little'
+kernel = 'none'

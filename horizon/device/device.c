@@ -78,6 +78,20 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     dev->debug_synchronous = create_info->debug_synchronous ||
                              (sync_env && sync_env[0] == '1');
 
+    const char *untrusted_env = getenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE");
+    dev->allow_untrusted_syncpt_baseline =
+        create_info->allow_untrusted_syncpt_baseline ||
+        (untrusted_env && untrusted_env[0] == '1');
+    if (dev->allow_untrusted_syncpt_baseline) {
+        /* Announced at ERROR level on purpose: this is the one setting that
+         * makes a fence a guess, so it must be impossible to read a log from
+         * such a run and mistake it for a measurement. */
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "untrusted syncpoint baselines are ALLOWED on this "
+                     "device: fences from a degraded channel are not "
+                     "measurements (synchronization.md § 9)");
+    }
+
     horizon_gpu_result res;
     Result rc;
 
@@ -231,6 +245,11 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
     return horizon_gpu_ok();
 }
 
+bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev)
+{
+    return dev ? atomic_load(&dev->untrusted_syncpt_seen) : false;
+}
+
 horizon_gpu_result horizon_gpu_device_destroy(horizon_gpu_device *dev)
 {
     if (!dev)
@@ -257,5 +276,59 @@ horizon_gpu_result horizon_gpu_device_destroy(horizon_gpu_device *dev)
     nvFenceExit();
     nvExit();
     free(dev);
+    return horizon_gpu_ok();
+}
+
+horizon_gpu_result horizon_gpu_device_get_timestamp(horizon_gpu_device *dev,
+                                                    uint64_t *out_ts)
+{
+    if (!dev || !out_ts)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* /dev/nvhost-ctrl-gpu, open since bring-up step 4 (nvGpuInit).
+     * libnx wraps NVGPU_GPU_IOCTL_GET_GPU_TIME as nvGpuGetTimestamp. */
+    Result rc = nvGpuGetTimestamp(out_ts);
+    if (R_FAILED(rc)) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "nvGpuGetTimestamp failed: 0x%08x", rc);
+        return horizon_gpu_err_nv(rc);
+    }
+    return horizon_gpu_ok();
+}
+
+horizon_gpu_result
+horizon_gpu_device_get_zcull_info(horizon_gpu_device *dev,
+                                  horizon_gpu_zcull_info *out_info)
+{
+    if (!dev || !out_info)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* Queried once by nvGpuInit and cached; no ioctl from here. A NULL
+     * means the query failed at bring-up, which is not fatal — nouveau
+     * lets this one fail too (nouveau_device.c:484) and NVK carries on
+     * with has_zcull_info false. */
+    const nvioctl_zcull_info *zi = nvGpuGetZcullInfo();
+    if (!zi) {
+        horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                     "Zcull info unavailable (advisory query)");
+        return horizon_gpu_err(HORIZON_GPU_ERR_UNSUPPORTED);
+    }
+
+    /* Field by field, never a struct copy: nouveau's
+     * drm_nouveau_get_zcull_info carries the same ten numbers in a
+     * different order — subregion_count is last here and third from last
+     * there — so a memcpy would put a count where an alignment goes. */
+    out_info->width_align_pixels = zi->width_align_pixels;
+    out_info->height_align_pixels = zi->height_align_pixels;
+    out_info->pixel_squares_by_aliquots = zi->pixel_squares_by_aliquots;
+    out_info->aliquot_total = zi->aliquot_total;
+    out_info->region_byte_multiplier = zi->region_byte_multiplier;
+    out_info->region_header_size = zi->region_header_size;
+    out_info->subregion_header_size = zi->subregion_header_size;
+    out_info->subregion_width_align_pixels = zi->subregion_width_align_pixels;
+    out_info->subregion_height_align_pixels = zi->subregion_height_align_pixels;
+    out_info->subregion_count = zi->subregion_count;
+    out_info->ctx_size = nvGpuGetZcullCtxSize();
+
     return horizon_gpu_ok();
 }

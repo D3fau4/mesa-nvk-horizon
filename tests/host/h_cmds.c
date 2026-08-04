@@ -29,10 +29,20 @@ int main(void)
     uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS];
     uint32_t n = horizon_cmds_fence_incr(buf, 42);
     H_CHECK(n == HORIZON_CMDS_FENCE_INCR_DWORDS, "incr dword count");
-    H_CHECK(buf[0] == 0x2001001E && buf[1] == 0, "incr: WFI first");
-    H_CHECK(buf[2] == 0x2001001C && buf[3] == 0, "incr: payload 0");
-    H_CHECK(buf[4] == 0x2001001D, "incr: SYNCPOINTB header");
-    H_CHECK(buf[5] == ((42u << 8) | 1u), "incr: (id<<8) | OPERATION_INCR");
+    /* WFI first, and SCOPE must be ALL (1). It was 0 — CURRENT_SCG_TYPE
+     * per clb06f.h:141-143 — under a comment claiming 0 meant "all", and
+     * a copy-engine transfer is not in the graphics scheduling class
+     * group, so the narrower scope never waited for it. */
+    H_CHECK(buf[0] == 0x2001001E, "incr: WFI first");
+    H_CHECK(buf[1] == 1, "incr: WFI SCOPE_ALL, not CURRENT_SCG_TYPE");
+    /* Then the dirty-L2 writeback, and *after* the wait: flushing before
+     * it would leave anything that completed during the wait in L2. */
+    H_CHECK(buf[2] == 0x2002000C && buf[3] == 0,
+            "incr: MEM_OP_C/D after the WFI");
+    H_CHECK(buf[4] == (0x10u << 27), "incr: L2_FLUSH_DIRTY");
+    H_CHECK(buf[5] == 0x2001001C && buf[6] == 0, "incr: payload 0");
+    H_CHECK(buf[7] == 0x2001001D, "incr: SYNCPOINTB header");
+    H_CHECK(buf[8] == ((42u << 8) | 1u), "incr: (id<<8) | OPERATION_INCR");
     H_CHECK(horizon_cmds_fence_incr(buf, 0x1000) == 0,
             "id beyond 12-bit index rejected");
 
@@ -85,6 +95,48 @@ int main(void)
     H_CHECK(horizon_cmds_nop(nbuf, 8, 0) == 0, "nop: zero pairs is a no-op");
     H_CHECK(horizon_cmds_nop(nbuf, 8, 5) == 0,
             "nop: pairs that would overrun the buffer is rejected");
+
+    /* Host semaphore release — the GPU write used by t_gpuwrite. Field
+     * positions per clb06f.h:74-95 for the class GM20B reports. */
+    uint32_t sem[HORIZON_CMDS_SEM_RELEASE_DWORDS];
+    n = horizon_cmds_semaphore_release(sem, UINT64_C(0x8712345678), 0xC0FFEE01u);
+    H_CHECK(n == HORIZON_CMDS_SEM_RELEASE_DWORDS, "sem: dword count");
+    /* One increasing-methods header covering SEMAPHOREA..D: opcode 001b,
+     * count 4, subch 0, dword method address 0x10 >> 2 = 4. */
+    H_CHECK(sem[0] == 0x20040004u, "sem: hdr(0, SEMAPHOREA=0x10, 4)");
+    H_CHECK(sem[1] == 0x87u, "sem: OFFSET_UPPER is VA bits 39:32");
+    H_CHECK(sem[2] == 0x12345678u, "sem: OFFSET_LOWER is VA bits 31:2");
+    H_CHECK(sem[3] == 0xC0FFEE01u, "sem: payload verbatim");
+    /* RELEASE(2) | RELEASE_WFI_EN(0 at bit 20) | RELEASE_SIZE_4BYTE(1 at
+     * bit 24) = 0x01000002. A 16-byte release would also write a
+     * timestamp over the following three dwords. */
+    H_CHECK(sem[4] == 0x01000002u, "sem: RELEASE | WFI enabled | 4-byte");
+
+    /* An address the encoding cannot carry is rejected rather than
+     * truncated — a truncated GPU address is still an address, and the
+     * GPU would write to it. */
+    H_CHECK(horizon_cmds_semaphore_release(sem, UINT64_C(0x1002), 1) == 0,
+            "sem: misaligned address rejected");
+    H_CHECK(horizon_cmds_semaphore_release(sem, UINT64_C(1) << 40, 1) == 0,
+            "sem: address beyond 40 VA bits rejected");
+    H_CHECK(horizon_cmds_semaphore_release(sem, 0, 0) ==
+            HORIZON_CMDS_SEM_RELEASE_DWORDS,
+            "sem: VA 0 is encodable (rejection is about width, not value)");
+
+    /* MEM_OP — the L2/barrier operations, clb06f.h:112-136. */
+    uint32_t mop[HORIZON_CMDS_MEM_OP_DWORDS];
+    n = horizon_cmds_mem_op(mop, HORIZON_MEM_OP_L2_FLUSH_DIRTY);
+    H_CHECK(n == HORIZON_CMDS_MEM_OP_DWORDS, "memop: dword count");
+    /* hdr: opcode 001b, count 2, subch 0, dword method 0x30 >> 2 = 0xc. */
+    H_CHECK(mop[0] == 0x2002000Cu, "memop: hdr(0, MEM_OP_C=0x30, 2)");
+    H_CHECK(mop[1] == 0, "memop: operand unused by a non-TLB operation");
+    H_CHECK(mop[2] == (0x10u << 27), "memop: L2_FLUSH_DIRTY at OPERATION 31:27");
+    H_CHECK(horizon_cmds_mem_op(mop, HORIZON_MEM_OP_MEMBAR) == n &&
+            mop[2] == (0x05u << 27), "memop: MEMBAR encoding");
+    /* An operation wider than the 5-bit field would become a different,
+     * valid operation. Reject. */
+    H_CHECK(horizon_cmds_mem_op(mop, 0x20) == 0,
+            "memop: out-of-range operation rejected, not truncated");
 
     return h_summary("h_cmds");
 }

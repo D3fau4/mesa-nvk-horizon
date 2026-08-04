@@ -97,10 +97,64 @@ HORIZON_MESA_TEST_LIBS="src/c11/impl/libmesa_util_c11.a src/util/libmesa_util.a"
 # exist *before* meson setup runs (see build-compat.sh).
 HORIZON_COMPAT_LIBDIR="build/toolchain/lib"
 
+# Where core, alloc and compiler_builtins for $RUST_TARGET live. Its
+# value depends on which toolchain mode is in use and is therefore set
+# below, next to $HORIZON_DEVKITPRO, which is resolved the same way:
+# both are paths *as the compiler sees them*, and in container mode
+# that is a path inside the image, not in this tree.
+#
+# It is needed before meson setup either way — the cross file names it,
+# and Meson's Rust sanity check compiles a program against it.
+#
+# Where bindgen, cbindgen and libclang live is not a variable at all in
+# container mode: the derived image installs them on PATH and in the
+# system library path (toolchain/Dockerfile).
+HORIZON_RUST_SYSROOT_REL="build/toolchain/rust-sysroot"
+
+# Where scripts/build-mesa-clc.sh installs the two *build-machine*
+# binaries the cross build's -Dmesa-clc=system looks for on PATH:
+# mesa_clc and vtn_bindgen2. In the tree rather than in the image
+# because they are built from the pinned Mesa checkout, which is not in
+# the image and changes with MESA_COMMIT.
+HORIZON_NATIVE_TOOLS_DIR="build/toolchain/native-tools"
+
+# Where scripts/build-mesa-nvk.sh configures and builds the driver.
+# Named here because two scripts and meson.options have to agree on
+# it, and scripts/check-dispatch-complete.sh reads a generated file
+# out of it.
+# $MESA_NVK_BUILD_DIR is the name, because it is the one the scripts
+# that actually build there already read (build-mesa-nvk.sh:19,
+# configure-mesa-nvk.sh:88). This used to read $NVK_BUILD_DIR, which
+# nothing sets — so the moment a caller pointed MESA_NVK_BUILD_DIR
+# somewhere else, everything here went on describing build/mesa-nvk: a
+# state string naming a directory the build never used, which is
+# precisely the failure horizon_mesa_state exists to prevent, one layer
+# further down.
+#
+# Exported so a caller who sets neither gets the same answer from every
+# script, and so the value a function reads is the value the build used
+# rather than whatever was in scope when this file happened to be
+# sourced.
+MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
+# Kept as the old name for anything still reading it; same value, one
+# source of truth.
+NVK_BUILD_DIR_DEFAULT="$MESA_NVK_BUILD_DIR"
+
+# The NVK equivalent of $HORIZON_MESA_TEST_LIBS, and a sentinel for the
+# same reason: meson.build decides whether to build t_vulkan by asking
+# fs.exists() over the full archive list, and this is the pair whose
+# absence means that answer will be "no". build-mesa-nvk.sh calls them
+# "the two that matter" for the same reason — libnvk.a is the driver and
+# libnouveau_rust_runtime.a is the half that has to link with it.
+HORIZON_NVK_TEST_LIBS="src/nouveau/vulkan/libnvk.a src/nouveau/rust_runtime/libnouveau_rust_runtime.a"
+
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
     HORIZON_TOOLCHAIN_DESC="local devkitA64 at \$DEVKITPRO"
+    # Built in the tree by scripts/build-rust-sysroot.sh: there is no
+    # image to bake it into in this mode.
+    HORIZON_RUST_SYSROOT="$PWD/$HORIZON_RUST_SYSROOT_REL"
 else
     command -v docker >/dev/null 2>&1 || {
         echo "error: \$DEVKITPRO is not set and docker is unavailable." >&2
@@ -110,6 +164,7 @@ else
     HORIZON_IN_CONTAINER=1
     # Inside the image the prefix is the image's, not this machine's.
     HORIZON_DEVKITPRO="$HORIZON_NX_IMAGE_DEVKITPRO"
+    HORIZON_RUST_SYSROOT="$HORIZON_IMAGE_RUST_SYSROOT"
 
     # The Switch toolchain belongs to the environment (see the
     # ENVIRONMENT header in toolchain/versions.env), so the image is
@@ -119,23 +174,43 @@ else
     # HORIZON_NX_IMAGE overrides the reference entirely — including with
     # a digest, when rebuilding the artefacts behind a recorded hardware
     # run (build/pkg/MANIFEST.txt prints the exact command).
-    HORIZON_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}:${HORIZON_NX_IMAGE_TAG}}"
-    HORIZON_TOOLCHAIN_DESC="$HORIZON_IMAGE"
+    HORIZON_BASE_IMAGE="${HORIZON_NX_IMAGE:-${HORIZON_NX_IMAGE_REPO}:${HORIZON_NX_IMAGE_TAG}}"
+
+    # Mesa's Rust half needs three things the base image does not have
+    # and a container cannot install for itself (no network): libclang,
+    # bindgen/cbindgen, and a Rust sysroot for a tier-3 target.
+    # scripts/build-toolchain-image.sh adds them in one layer on top of
+    # the base image; toolchain/Dockerfile explains each.
+    #
+    # The derived image is used when it exists, and the base image when
+    # it does not — so everything built before Phase 4 keeps building
+    # with exactly the toolchain it was built with, and the extra layer
+    # is only paid for by the part that needs it.
+    HORIZON_DERIVED_IMAGE="${HORIZON_NX_DERIVED_IMAGE:-$HORIZON_NX_DERIVED_REPO:$HORIZON_NX_IMAGE_TAG}"
+    if docker image inspect "$HORIZON_DERIVED_IMAGE" >/dev/null 2>&1; then
+        HORIZON_IMAGE="$HORIZON_DERIVED_IMAGE"
+        HORIZON_TOOLCHAIN_DESC="$HORIZON_DERIVED_IMAGE (from $HORIZON_BASE_IMAGE)"
+    else
+        HORIZON_IMAGE="$HORIZON_BASE_IMAGE"
+        HORIZON_TOOLCHAIN_DESC="$HORIZON_BASE_IMAGE"
+    fi
 fi
 
 export HORIZON_BUILD_DIR HORIZON_CROSS_CONST_FILE HORIZON_CROSS_FILE
 export HORIZON_MESON_DIR HORIZON_IN_CONTAINER HORIZON_DEVKITPRO
 export HORIZON_TOOLCHAIN_DESC HORIZON_COMPAT_LIBDIR MESA_BUILD_DIR
-export HORIZON_MESA_TEST_LIBS
+export HORIZON_MESA_TEST_LIBS HORIZON_RUST_SYSROOT
+export HORIZON_NATIVE_TOOLS_DIR NVK_BUILD_DIR_DEFAULT MESA_NVK_BUILD_DIR
 
 # True when every archive tests 12 and 13 link is present. Both build
 # paths decide whether to build those two tests on exactly this
 # question; they just ask it at different times, which is what
 # scripts/build-horizon.sh has to reconcile.
 horizon_mesa_libs_present() {
-    for _hz_lib in $HORIZON_MESA_TEST_LIBS; do
-        [ -f "$MESA_BUILD_DIR/$_hz_lib" ] || return 1
+    for _hz_mesa_lib in $HORIZON_MESA_TEST_LIBS; do
+        [ -f "$MESA_BUILD_DIR/$_hz_mesa_lib" ] || return 1
     done
+    unset _hz_mesa_lib
     return 0
 }
 
@@ -154,12 +229,41 @@ horizon_mesa_libs_present() {
 #
 # One function, called from both sides, so the two cannot record and
 # compare different things.
+# True when the archives t_vulkan links are present. Separate from
+# horizon_mesa_libs_present because they live in a different build
+# directory, produced by a different script, at a different time.
+horizon_nvk_libs_present() {
+    for _hz_nvk_lib in $HORIZON_NVK_TEST_LIBS; do
+        [ -f "$MESA_NVK_BUILD_DIR/$_hz_nvk_lib" ] || return 1
+    done
+    unset _hz_nvk_lib
+    return 0
+}
+
+# Both halves, because the Meson path bakes both answers into
+# build.ninja at configure time and t_vulkan depends on the second one.
+#
+# The NVK half was missing here and the consequence was specific:
+# build-mesa-nvk.sh runs build-horizon.sh *before* it compiles NVK, so
+# on a clean tree the horizon build is configured at the one moment the
+# NVK archives are guaranteed absent, and meson.build's fs.exists()
+# answers "no" — t_vulkan, the phase's exit-criterion test, is left out
+# of build.ninja. Every later run compared only the core-Mesa half,
+# found it unchanged, and never reconfigured, so the omission was
+# permanent for that build directory.
+#
+# It went unnoticed because the hardware .nro came from the Makefile
+# path, which re-evaluates its $(wildcard) on every invocation and
+# therefore never had the problem. That is the same asymmetry the
+# comment in build-horizon.sh describes for core Mesa: the fix landed
+# there for one directory and this is the second one.
 horizon_mesa_state() {
-    if horizon_mesa_libs_present; then
-        echo "present $MESA_BUILD_DIR"
-    else
-        echo "absent $MESA_BUILD_DIR"
-    fi
+    _hz_st_mesa=absent
+    _hz_st_nvk=absent
+    horizon_mesa_libs_present && _hz_st_mesa=present
+    horizon_nvk_libs_present && _hz_st_nvk=present
+    echo "$_hz_st_mesa $MESA_BUILD_DIR $_hz_st_nvk $MESA_NVK_BUILD_DIR"
+    unset _hz_st_mesa _hz_st_nvk
 }
 
 # Run a command with the cross toolchain reachable. The image's default
@@ -171,10 +275,15 @@ horizon_mesa_state() {
 # host, so paths in diagnostics, depfiles and Meson's build.ninja are
 # valid on both sides — and no container workdir is hardcoded
 # (scripts/check-no-abs-paths.sh).
+#
+# $HORIZON_IMAGE_RUST_TOOLS_BIN is prepended too. `docker run -e PATH`
+# overrides the image's own ENV PATH, so the Dockerfile setting it is
+# not enough — it has to be repeated here or bindgen is not found.
 horizon_run() {
-    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}"
+    _hz_bins="${HORIZON_DEVKITPRO}/${HORIZON_TOOLCHAIN_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_TOOLS_BINDIR_REL}:${HORIZON_DEVKITPRO}/${HORIZON_PORTLIBS_BINDIR_REL}:${PWD}/${HORIZON_NATIVE_TOOLS_DIR}/bin"
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
-        # A local install's rustc is already on the developer's PATH.
+        # A local install's rustc, bindgen and cbindgen are already on
+        # the developer's PATH; this mode installs nothing of its own.
         PATH="${_hz_bins}:${PATH}" "$@"
     else
         # The image keeps rustup outside the default PATH; Mesa's build
@@ -182,7 +291,7 @@ horizon_run() {
         # every caller know where it lives.
         docker run --rm \
             -e DEVKITPRO="$HORIZON_DEVKITPRO" \
-            -e "PATH=${_hz_bins}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            -e "PATH=${_hz_bins}:${HORIZON_IMAGE_RUST_TOOLS_BIN}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
             -v "$PWD":"$PWD" -w "$PWD" \
             "$HORIZON_IMAGE" "$@"
     fi
@@ -321,16 +430,68 @@ horizon_ensure_python_deps() {
 # Prints "local" when building against a machine-local devkitA64, and
 # "unknown" if the image is not present locally (nothing has pulled it
 # yet, or docker cannot answer).
+# The identity of the image a build actually ran in, for the manifest
+# that ties a hardware result to the toolchain that produced it.
+#
+# Two kinds of image reach $HORIZON_IMAGE and only one of them has a
+# registry digest. The base image is pulled, so it carries a RepoDigest.
+# The derived image (toolchain/Dockerfile, the layer that adds libclang,
+# bindgen and the Rust sysroot) is built locally and never pushed, so it
+# has *no* RepoDigests at all — and since Phase 4 it is the image almost
+# every build uses.
+#
+# Filtering RepoDigests for the base repository therefore returned
+# "unknown" for the normal case, and package-horizon.sh recorded a
+# rebuild command of the form <base-repo>@unknown: not merely imprecise
+# but unusable, which is the one thing a provenance record must not be.
+#
+# A locally built image always has an Id, so that is what identifies it,
+# tagged with which kind it is so nobody mistakes a local content hash
+# for something they can `docker pull`.
+#
+# The whole reference is returned, not the bare hash, because the caller
+# cannot reconstruct the repository half: it used to assume
+# $HORIZON_NX_IMAGE_REPO and that assumption is exactly what was wrong
+# whenever the derived image was in use. One of four answers, each
+# distinguishable by its prefix:
+#
+#   local                    built against a local devkitA64, no image
+#   <repo>@sha256:...        pullable; use it verbatim in HORIZON_NX_IMAGE
+#   local-image-id:sha256:.. built here and never pushed; not pullable
+#   unknown                  docker could not describe it at all
 horizon_image_digest() {
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         echo "local"
         return 0
     fi
-    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-        "$HORIZON_IMAGE" 2>/dev/null |
-        grep -m1 "^${HORIZON_NX_IMAGE_REPO}@" |
-        sed 's/.*@//' |
-        grep . || echo unknown
+    # Prefer a digest for one of the repositories this project actually
+    # names. The first attempt at this widened the match to any '@',
+    # which was more than the problem needed: the derived image fails
+    # because it has no RepoDigests at all, and the .Id branch below is
+    # what answers that. All the widening changed was the multi-tagged
+    # case, where it would hand back whichever repository docker listed
+    # first — possibly one the reader has no access to — in the field
+    # whose whole job is telling them how to reproduce the build.
+    for _hz_repo in "$HORIZON_NX_DERIVED_REPO" "$HORIZON_NX_IMAGE_REPO"; do
+        [ -n "$_hz_repo" ] || continue
+        _hz_ref=$(docker image inspect \
+                      --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+                      "$HORIZON_IMAGE" 2>/dev/null |
+                  grep -m1 "^${_hz_repo}@")
+        if [ -n "$_hz_ref" ]; then
+            echo "$_hz_ref"
+            unset _hz_repo _hz_ref
+            return 0
+        fi
+    done
+    unset _hz_repo _hz_ref
+    _hz_id=$(docker image inspect --format '{{.Id}}' "$HORIZON_IMAGE" \
+                 2>/dev/null | grep -m1 .)
+    if [ -n "$_hz_id" ]; then
+        echo "local-image-id:$_hz_id"
+        return 0
+    fi
+    echo unknown
 }
 
 # pip writes the *installing* interpreter's absolute path into the

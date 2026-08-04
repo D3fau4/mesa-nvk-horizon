@@ -1,0 +1,23 @@
+== t_alloc ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   create(1 byte) (status=ok)
+  ok   size rounded to one page (0x1000)
+  ok   cpu ptr page-aligned (0x3e53bc9000)
+  ok   destroy
+  ok   create(0x11000, align 0x10000)
+  ok   cpu ptr 64 KiB-aligned (0x3e53bd0000)
+  ok   size rounded to alignment (0x20000)
+  ok   destroy
+  ok   size 0 rejected (invalid argument)
+  ok   non-pow2 alignment rejected (invalid argument)
+  ok   sub-page alignment rejected (invalid argument)
+  ok   size near UINT64_MAX rejected as overflow (arithmetic overflow)
+  ok   size beyond the 32-bit nvmap limit rejected (arithmetic overflow)
+  ok   create(0x2000)
+  ok   flush in-range ok
+  ok   flush past the end rejected (arithmetic overflow)
+  ok   invalidate with wrapping range rejected (arithmetic overflow)
+  ok   destroy
+  ok   no leaked memory objects (0)
+  ok   device_destroy (status=ok)
+RESULT: PASS (21/21)

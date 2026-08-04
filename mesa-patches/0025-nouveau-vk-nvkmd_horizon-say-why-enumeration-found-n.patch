@@ -1,0 +1,94 @@
+From e3d030aedd18cfd335891db166288f13b92b37d1 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 28 Jul 2026 14:12:46 +0000
+Subject: [PATCH 25/30] nouveau/vk: nvkmd_horizon, say why enumeration found no
+ GPU
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vkEnumeratePhysicalDevices returning an empty list is not an error and
+must not be reported as one — but it must not be silent either. Both
+paths that produce it here swallowed a VK_ERROR_INCOMPATIBLE_DRIVER
+without a word, and the two causes are very different: the nv services
+could not be opened, or the GPU was found and NVK declined it.
+
+The second one is the common case on this chip and the one with no
+other trace. nvk_is_conformant() opens with "Tegra is not currently
+supported" and GM20B is NV_DEVICE_TYPE_SOC, so NVK refuses unless the
+application sets NVK_I_WANT_A_BROKEN_VULKAN_DRIVER — and under NDEBUG
+that refusal prints nothing at all.
+
+Each path now logs which it was, and the second names the flag.
+
+mesa-nvk-horizon: Phase 4 — the mandatory Vulkan sequence
+Why: the first hardware run of t_vulkan failed at
+    ok   vkEnumeratePhysicalDevices -> 0
+    FAIL one physical device, got 0
+  with nothing anywhere saying why, which cost a console round trip.
+Evidence: the console log above; the cause was found by reading
+  nvk_physical_device.c:91-106 and 1442-1453 rather than from any
+  diagnostic the driver produced.
+Upstream: no — this is the Horizon backend's own entry point.
+---
+ .../nvkmd/horizon/nvkmd_horizon_enumerate.c   | 27 +++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
+index 299997b..dc0ef2b 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
+@@ -21,6 +21,7 @@
+ #include "nvk_instance.h"
+ #include "nvk_physical_device.h"
+ 
++#include "util/log.h"
+ #include "vk_alloc.h"
+ #include "vk_log.h"
+ #include "vk_physical_device.h"
+@@ -38,9 +39,18 @@ nvk_horizon_enumerate_physical_devices(struct vk_instance *_instance)
+       /* No GPU is not an error: a process that cannot reach the nv
+        * services simply has no Vulkan device, and Vulkan says that is
+        * an empty list rather than a failed call.
++       *
++       * Said out loud, though. Returning an empty list silently is
++       * what turned the first hardware run of the Phase 4 sequence
++       * into a console round trip: vkEnumeratePhysicalDevices returned
++       * VK_SUCCESS with a count of zero and nothing anywhere said why.
+        */
+-      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
++         mesa_logw("nvkmd_horizon: no GPU — the nv services could not "
++                   "be opened. A process without the nv permissions "
++                   "has no Vulkan device.");
+          return VK_SUCCESS;
++      }
+       return result;
+    }
+ 
+@@ -51,8 +61,21 @@ nvk_horizon_enumerate_physical_devices(struct vk_instance *_instance)
+        * it on every failure path of its own, so there is nothing to
+        * free here.
+        */
+-      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
++         /* The GPU is there and NVK declined it. On this chip that is
++          * almost always nvk_is_conformant(), whose first line is
++          * "Tegra is not currently supported" — GM20B is
++          * NV_DEVICE_TYPE_SOC, so NVK refuses unless the application
++          * asks for it. Under NDEBUG that check prints nothing at all,
++          * which is exactly the case worth naming here.
++          */
++         mesa_logw("nvkmd_horizon: the GPU was found and NVK declined "
++                   "it (VK_ERROR_INCOMPATIBLE_DRIVER). NVK is not "
++                   "conformant on Tegra; set "
++                   "NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1 to proceed "
++                   "anyway.");
+          return VK_SUCCESS;
++      }
+       return result;
+    }
+ 
+-- 
+2.43.0
+

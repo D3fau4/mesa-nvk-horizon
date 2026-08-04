@@ -187,6 +187,19 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
 
     chan->syncpt_id = nvGpuChannelGetSyncpointId(&chan->gc);
 
+    /* Logged at creation, not only on failure. The fourth hardware run
+     * of the Phase 4 sequence failed here with syncpoint id 1, where
+     * t_channel had reported 26 on the same console — so the channel
+     * came back from libnx reporting success without a real syncpoint.
+     * NVK creates two or three channels during vkCreateDevice (upload
+     * queue, exec, and bind when the queue family advertises sparse),
+     * and one line per creation is what says which one degrades. Cheap,
+     * and the alternative is another console round trip per guess. */
+    horizon_logf(&dev->log, HORIZON_LOG_INFO,
+                 "channel %p: created, syncpt id=%u (live channels now %u)",
+                 (void *)chan, chan->syncpt_id,
+                 atomic_load(&dev->live_channels) + 1u);
+
     /* Shadow initialisation from the observed hardware value; whether
      * Horizon resets the counter at channel creation is the R5 open
      * question — t_channel reports this number. */
@@ -195,7 +208,19 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "initial SyncptRead(%u) failed: 0x%08x",
                      chan->syncpt_id, res.nv);
-        goto fail_channel;
+        if (!dev->allow_untrusted_syncpt_baseline)
+            goto fail_channel;
+        /* Opt-in path only (docs/synchronization.md § 9). The baseline is
+         * whatever calloc left — zero — and it is recorded as untrusted so
+         * no caller can mistake this channel's fences for measurements. */
+        chan->syncpt_value_at_create = 0;
+        atomic_store(&dev->untrusted_syncpt_seen, true);
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "channel %p: continuing with an UNTRUSTED syncpoint "
+                     "baseline of 0 (opt-in); its fences are not "
+                     "measurements", (void *)chan);
+    } else {
+        chan->syncpt_baseline_trusted = true;
     }
     chan->shadow_target = chan->syncpt_value_at_create;
 
@@ -246,8 +271,17 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     if (horizon_gpu_failed(res))
         goto fail_range;
 
-    /* Write the per-submit fence-increment list once; its content only
-     * depends on the syncpoint id. */
+    /* Write the per-submit fence block once; its content only depends on
+     * the syncpoint id.
+     *
+     * horizon_cmds_fence_incr emits wait-for-idle (SCOPE_ALL), then a
+     * dirty-L2 writeback, then the increment — see its comment for the
+     * hardware measurement that put the flush there and for why the order
+     * is load-bearing. The consequence here is the one that matters: on
+     * this channel a fence means the work is done *and* its writes are
+     * visible to a CPU, which is the only thing a fence can usefully
+     * mean.
+     */
     uint32_t *cmds = horizon_gpu_mem_cpu_ptr(chan->cmdbuf_mem);
     chan->fence_cmds_dwords =
         horizon_cmds_fence_incr(cmds + CHANNEL_FENCE_CMDS_OFFSET / 4,
@@ -297,9 +331,10 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
 
     atomic_fetch_add(&dev->live_channels, 1);
     horizon_logf(&dev->log, HORIZON_LOG_INFO,
-                 "channel %p: up, syncpt=%u initial=%u zcull=%s",
+                 "channel %p: up, syncpt=%u initial=%u%s zcull=%s",
                  (void *)chan, chan->syncpt_id,
                  chan->syncpt_value_at_create,
+                 chan->syncpt_baseline_trusted ? "" : " (UNTRUSTED)",
                  create_info->bind_zcull ? "bound" : "off");
 
     *out_chan = chan;
@@ -336,6 +371,12 @@ uint32_t
 horizon_gpu_channel_syncpt_value_at_create(const horizon_gpu_channel *chan)
 {
     return chan ? chan->syncpt_value_at_create : 0;
+}
+
+bool
+horizon_gpu_channel_syncpt_baseline_trusted(const horizon_gpu_channel *chan)
+{
+    return chan ? chan->syncpt_baseline_trusted : false;
 }
 
 uint64_t horizon_gpu_channel_shadow_target(const horizon_gpu_channel *chan)
@@ -416,8 +457,27 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
 
     uint32_t hw;
     horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
-    if (horizon_gpu_failed(res))
+    if (horizon_gpu_failed(res)) {
+        /* An untrusted-baseline channel (docs/synchronization.md § 9) is
+         * one whose platform has no syncpoint read at all, so this fails
+         * every time and would fail every submit with it —
+         * horizon_gpu_submit reaps before it queues.
+         *
+         * Report "nothing retired" and carry on. Retirement on such a
+         * channel is meaningless anyway, and of the two possible
+         * answers this is the safe one: the alternative — treating
+         * everything as complete — would make a wait return without the
+         * GPU having run, which is the one answer that must never be
+         * given. The cost is that nothing is ever recycled, which a
+         * bring-up run can afford.
+         */
+        if (!chan->syncpt_baseline_trusted) {
+            if (out_retired)
+                *out_retired = 0;
+            return horizon_gpu_ok();
+        }
         return res;
+    }
     uint64_t now64 = horizon_syncpt_extend(chan->shadow_target, hw);
 
     uint32_t retired = 0;
@@ -481,8 +541,52 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
     for (;;) {
         uint32_t hw;
         horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
-        if (horizon_gpu_failed(res))
-            return res;
+        if (horizon_gpu_failed(res)) {
+            if (chan->syncpt_baseline_trusted)
+                return res;
+            /* No counter on this platform (§ 9). The fence's own
+             * question can still be asked, through the wait ioctl that
+             * nvFenceWait drives — a different call, which a platform
+             * can implement while leaving the read out. The notifier is
+             * still re-checked between chunks, so a faulted channel does
+             * not hang here either.
+             *
+             * What this does NOT rescue is the threshold: it was
+             * computed from a baseline nobody read, so "reached" is only
+             * as good as that assumption. The channel stays untrusted
+             * and t_vulkan still refuses to call such a run a pass. */
+            uint64_t used = armTicksToNs(armGetSystemTick() - start);
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT && used >= timeout_ns)
+                return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+
+            int32_t w_us = CHANNEL_WAIT_CHUNK_US;
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
+                int32_t rem =
+                    horizon_timeout_ns_to_us_clamped(timeout_ns - used);
+                if (rem < w_us)
+                    w_us = rem;
+            }
+
+            Result rc = nvFenceWait(&nvf, w_us);
+            if (R_SUCCEEDED(rc))
+                return horizon_gpu_ok();
+            if (rc != KERNELRESULT(TimedOut))
+                return horizon_gpu_err_nv(rc);
+
+            if (channel_check_fault(chan))
+                return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+            /* Round the loop rather than returning: one expired chunk is
+             * not the caller's deadline. Returning TIMEOUT here made
+             * every finite wait on this path last CHANNEL_WAIT_CHUNK_US
+             * and no longer — a requested two seconds failed after 100
+             * ms, reporting a timeout for a fence that had 1.9 seconds
+             * left to signal in. The top of this branch recomputes
+             * `used` and returns TIMEOUT there when the deadline has
+             * genuinely passed, which is the same shape the syncpoint-
+             * read path below uses; the two disagreed only here.
+             */
+            continue;
+        }
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
             return horizon_gpu_ok();
 
@@ -538,6 +642,49 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
     if (!chan->lost) {
         uint32_t hw;
         horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
+        if (horizon_gpu_failed(res) && !chan->syncpt_baseline_trusted) {
+            /* Same reasoning as reap (§ 9): the read never works on this
+             * platform, so refusing the destroy would strand the channel
+             * and, through the live-object count, the device with it.
+             * Whether work is still in flight is unknowable here — say
+             * so rather than imply it was checked.
+             *
+             * A REJECTED ALTERNATIVE, recorded because it looks right
+             * and is not. It was briefly true that this polled the last
+             * fence with nvFenceWait and returned BUSY when it had not
+             * been reached: the counter cannot be *read* here, but the
+             * wait ioctl is a different call a platform might still
+             * implement.
+             *
+             * The value it would have to ask about is the problem. When
+             * the baseline is untrusted, the read at channel creation
+             * failed too, so syncpt_value_at_create is 0 and
+             * shadow_target counts *submits from zero* — it is not the
+             * hardware counter and the code that sets it says so:
+             * "its fences are not measurements". Whether Horizon resets
+             * a syncpoint at channel creation is R5, still open. If it
+             * does not, a threshold of 3 is compared against a live
+             * counter in the thousands, which is already past it, so the
+             * poll succeeds instantly and the destroy proceeds reporting
+             * that work retired when nothing was verified.
+             *
+             * That is worse than not checking. horizon_gpu_channel_
+             * wait_fence already says of this same number that "reached"
+             * is only as good as an assumption nobody verified; turning
+             * that into a hard BUSY-or-OK decision would have two
+             * functions in this file drawing opposite conclusions from
+             * one unreliable value, with the destroy biased toward false
+             * assurance.
+             *
+             * A real check needs a trustworthy baseline, which is R5's
+             * job, not this function's.
+             */
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "channel %p: destroying with an UNTRUSTED "
+                         "baseline; whether submitted work retired was "
+                         "not checked", (void *)chan);
+            goto skip_inflight_check;
+        }
         if (horizon_gpu_failed(res))
             return res;
         uint64_t now64 = horizon_syncpt_extend(chan->shadow_target, hw);
@@ -549,6 +696,7 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
             return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
         }
     }
+skip_inflight_check:
     /* Reap even on a lost channel: whatever did retire before the fault
      * still fires normally. This is a plain syncpoint read, harmless
      * regardless of channel health. */
