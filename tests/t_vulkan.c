@@ -518,10 +518,25 @@ run_test(test_ctx *t)
     * COHERENT means nvkmd asks for NVKMD_MEM_COHERENT, which on this
     * backend is an uncached CPU mapping (D14, proven on hardware by
     * t_uncached) and makes the flush and invalidate no-ops. CACHED
-    * without COHERENT means the opposite: the mapping is cached and the
-    * whole result rests on Mesa's aarch64 cache ops (dc cvac / dc civac)
-    * reaching the point the GPU reads from — which nothing has measured
-    * on Horizon, in either direction.
+    * without COHERENT means the mapping is cached, so Mesa's aarch64
+    * cache ops (dc cvac / dc civac) have to reach the point the GPU
+    * reads from.
+    *
+    * That used to say the readback rested on those cache ops, and the
+    * hardware disagreed. When this readback failed on 2026-08-04,
+    * t_gpuwrite reproduced it below Vulkan and failed *identically* on
+    * cached and uncached memory — which no CPU-cache explanation
+    * survives. What it rested on was the GPU's own L2: a GPU write lands
+    * there first, and nothing about a syncpoint increment obliges that
+    * L2 to reach the memory a CPU reads. The channel's fence block now
+    * ends every submit with wait-for-idle at SCOPE_ALL, a dirty-L2
+    * writeback, and only then the increment.
+    *
+    * The CPU-side ops are still required and still called — they are
+    * simply not what was broken. The note below names the memory type
+    * because that is still the first thing anyone will want if this
+    * readback ever comes back wrong again; it no longer claims to name
+    * the cause.
     */
    {
       const VkMemoryPropertyFlags f =
@@ -533,8 +548,9 @@ run_test(test_ctx *t)
              (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " HOST_COHERENT" : "",
              (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)   ? " HOST_CACHED"   : "",
              (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                ? "rests on the uncached mapping (D14)"
-                : "rests on cache maintenance (D5)");
+                ? "uses the uncached mapping (D14)"
+                : "uses CPU cache maintenance; GPU-side visibility is the "
+                  "channel's L2 writeback");
    }
 
    const VkMemoryAllocateInfo mai = {

@@ -140,11 +140,17 @@ vkWaitForFences
 → CPU reads back the filled pattern and validates it
 ```
 
-**Exit criteria**
+**Exit criteria** — **MET on hardware, 2026-08-04.** `t_vulkan` PASS
+(56/56); log in `STATUS.md` and `docs/hw-logs/t_vulkan-PASS-20260804.log`.
 
 - The sequence above runs on **HW** and the CPU-side validation passes.
-- No `vkQueueWaitIdle`/`vkDeviceWaitIdle` inserted internally to make it pass.
-- Recorded console log in `STATUS.md`.
+  *0/1024 words wrong; 1024/1024 hold the pattern, which was poisoned with
+  its complement and flushed out of the CPU cache before the submit, so it
+  could only arrive by being written.*
+- No `vkQueueWaitIdle`/`vkDeviceWaitIdle` inserted internally to make it
+  pass. *`T_VULKAN_DEBUG_SYNC` is 0 in the artefact; the only CPU stall is
+  `vkWaitForFences`.*
+- Recorded console log in `STATUS.md`. *Done, verbatim.*
 
 ---
 
