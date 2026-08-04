@@ -5054,6 +5054,180 @@ enables it only where channel creation fails for want of the syncpoint
 read, and real nvgpu implements that read. The final `t_check(!degraded)`
 stays as the guard.
 
+## PHASE 4 EXIT CRITERION MET — hardware, 2026-08-04
+
+`t_vulkan` **PASS (56/56)** on a Nintendo Switch. The mandatory Vulkan
+sequence runs end to end and the CPU reads back exactly what the GPU
+wrote:
+
+```
+  ok   readback: 0/1024 words wrong; first at [0] = 0x00000000, expected 0xa5c3f00d
+  note readback: 1024/1024 words are 0xa5c3f00d — the GPU wrote it
+  ok   the run was neither degraded nor diagnostic (such a run verifies nothing)
+RESULT: PASS (56/56)
+```
+
+Every condition the milestone attached to it holds, and each is checked
+by the run itself rather than asserted here:
+
+- **Real hardware.** Not the emulator: the syncpoint baseline was
+  readable (`id=26, value=47515`), which is the read the emulator does
+  not implement.
+- **No wait-idle inserted.** `T_VULKAN_DEBUG_SYNC` is 0 in the artefact —
+  no `vkQueueWaitIdle`, no `vkDeviceWaitIdle`, no debug-synchronous
+  stall. Submission stayed asynchronous.
+- **Not degraded and not diagnostic.** The last check before the result
+  is exactly that, and it passed.
+- **The readback is the GPU's work, not memory that already held it.**
+  The buffer was poisoned with `~0xa5c3f00d` and flushed out of the CPU
+  cache before the submit, so the pattern could only arrive by being
+  written.
+
+Artefact provenance is in `build/pkg/MANIFEST.txt` (sha256 per .nro,
+devkitA64 r29.2-1, gcc 15.2.0-7, image `ghcr.io/d3fau4/nx-dev:latest`).
+The full log is `docs/hw-logs/t_vulkan-PASS-20260804.log` and reproduced
+verbatim at the end of this section.
+
+**The Phase 3 debt closed in the same batch.** `t_threads` (67/67) and
+`t_ostime` (43/43) had never run on a console; they have now, and they
+pass. Nothing from Phase 3 is owed.
+
+### What it took, in the order it was found
+
+Four defects stood between the last console run and this one, and only
+the first was on anybody's list:
+
+1. **R18** — privileged GR register writes reset a homebrew channel.
+   Recorded in Phase 0 as a Phase 5 risk; it fired in Phase 4. Patch 0038
+   disabled them behind `has_priv_reg_writes`, and the MMU fault stopped
+   reproducing.
+2. **The GPU's L2 held every write.** Measured, not guessed: a four-arm
+   matrix showed no flush never made the write visible, `MEMBAR` did not
+   help, and `L2_FLUSH_DIRTY` did. NVK raises the right barrier for this
+   (`VK_ACCESS_2_HOST_READ_BIT` → `NVK_BARRIER_HOST_WFI_FLUSH_SYSMEM`)
+   but below Hopper emits only `NV906F_SET_REFERENCE`, with no writeback.
+3. **The fence's WFI used the wrong scope** — `CURRENT_SCG_TYPE` under a
+   comment claiming it meant "all", while `clb06f.h:141-143` says `ALL`
+   is 1. A copy-engine transfer is not in the graphics scheduling class
+   group, so the fence never waited for `vkCmdFillBuffer`'s NV90B5 work.
+4. **The L2 writeback was emitted before the wait**, so anything
+   completing during the wait was never flushed.
+
+Defects 3 and 4 were invisible to every test below `t_vulkan`, and the
+reason is worth keeping: they all wrote with **host** methods, which the
+PBDMA executes inline and which therefore need no waiting. Only
+asynchronous engine work exposes them. That is also why `t_gpuwrite`
+passed 51/51 while the ordering was still wrong.
+
+**What found them was a test, not a hunch.** Nothing below `t_vulkan` had
+ever asked memory a question — `t_submit` proves command lists execute,
+fences order, and cross-channel GPU waits unblock, but every one of those
+observations goes through a syncpoint, which on Tegra is a host1x counter
+and not memory. `t_gpuwrite` was written to close that gap and closed it
+in one run.
+
+### Honest accounting of the last step
+
+The L2 flush (defect 2) was **measured**. The scope and ordering fixes
+(defects 3 and 4) were **reasoned** — stated as such in `STATUS.md`
+before the run, not after — and this run is what turned them into
+measurement. The prediction was recorded first and it held.
+
+### Still open, and not hidden by a green result
+
+- **The shader local/shared window overlap.** `MESA: error:
+  nvkmd_horizon: reservation [0xa14a000, 0x10a14a000) overlaps the shader
+  local/shared memory window [0xfe000000, 0x100000000)` is still printed
+  on every `vkCreateDevice`. It did not stop this sequence, which uses no
+  shaders. It is not fixed, and blocking off the window was tried once
+  and broke `vkCreateDevice` outright (patches 0039/0040).
+- **The L2 flush is unconditional**, one dirty-L2 writeback per submit.
+  Narrowing it Mesa-side, at the barrier where NVK already knows a host
+  read is coming, is a pending decision — now measurable against a
+  working baseline rather than guessed at.
+- **`t_vulkan`'s memory-type note is now stale.** It says the readback
+  rests on cache maintenance (D5); the measurement says it rests on the
+  GPU L2 writeback. The note is left untouched in the artefact that
+  produced the log above, and corrected separately so this log
+  corresponds exactly to a commit.
+- One Vulkan sequence passing is not a driver. Phase 5 is unchanged.
+
+### The passing log, verbatim
+
+```
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+== t_vulkan ==
+  ok   probe: horizon_gpu_device_create -> 0
+[horizon_gpu:I] channel 0x47fbb21050: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x47fbb21050: up, syncpt=26 initial=47515 zcull=off
+  ok   probe: the syncpoint baseline is readable (id=26, value=47515)
+  ok   the non-conformance opt-in is set in the environment
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> 0
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> 0 (driver errors will be reported below)
+  ok   GetInstanceProcAddr(vkEnumeratePhysicalDevices)
+  ok   GetInstanceProcAddr(vkGetPhysicalDeviceProperties)
+  ok   GetInstanceProcAddr(vkGetPhysicalDeviceQueueFamilyProperties)
+  ok   GetInstanceProcAddr(vkGetPhysicalDeviceMemoryProperties)
+  ok   GetInstanceProcAddr(vkCreateDevice)
+  ok   GetInstanceProcAddr(vkGetDeviceQueue)
+  ok   GetInstanceProcAddr(vkCreateBuffer)
+  ok   GetInstanceProcAddr(vkGetBufferMemoryRequirements)
+  ok   GetInstanceProcAddr(vkAllocateMemory)
+  ok   GetInstanceProcAddr(vkBindBufferMemory)
+  ok   GetInstanceProcAddr(vkMapMemory)
+  ok   GetInstanceProcAddr(vkCreateCommandPool)
+  ok   GetInstanceProcAddr(vkAllocateCommandBuffers)
+  ok   GetInstanceProcAddr(vkBeginCommandBuffer)
+  ok   GetInstanceProcAddr(vkCmdFillBuffer)
+  ok   GetInstanceProcAddr(vkEndCommandBuffer)
+  ok   GetInstanceProcAddr(vkCreateFence)
+  ok   GetInstanceProcAddr(vkQueueSubmit)
+  ok   GetInstanceProcAddr(vkWaitForFences)
+  ok   GetInstanceProcAddr(vkFlushMappedMemoryRanges)
+  ok   GetInstanceProcAddr(vkInvalidateMappedMemoryRanges)
+  ok   GetInstanceProcAddr(vkDestroyFence)
+  ok   GetInstanceProcAddr(vkDestroyCommandPool)
+  ok   GetInstanceProcAddr(vkFreeMemory)
+  ok   GetInstanceProcAddr(vkDestroyBuffer)
+  ok   GetInstanceProcAddr(vkDestroyDevice)
+  ok   GetInstanceProcAddr(vkDestroyInstance)
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> 0
+  ok   one physical device, got 1
+  ok   vkEnumeratePhysicalDevices(list) -> 0
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354)
+  ok   at least one queue family, got 1
+[horizon_gpu:I] channel 0x47fbb2a6e0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x47fbb2a6e0: up, syncpt=26 initial=47515 zcull=off
+MESA: error: nvkmd_horizon: reservation [0xa14a000, 0x10a14a000) overlaps the shader local/shared memory window [0xfe000000, 0x100000000). Shader local and shared accesses go through that aperture; anything bound here will be read as locals and vice versa.
+[horizon_gpu:I] channel 0x47fbb6a020: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x47fbb6a020: up, syncpt=27 initial=16 zcull=off
+  ok   vkCreateDevice -> 0
+  ok   vkGetDeviceQueue
+  ok   vkCreateBuffer -> 0
+  ok   a host-visible memory type the buffer accepts
+  note memory type 0: flags 0xb = DEVICE_LOCAL HOST_VISIBLE HOST_CACHED — the readback rests on cache maintenance (D5)
+  ok   vkAllocateMemory -> 0
+  ok   vkBindBufferMemory -> 0
+  ok   vkMapMemory -> 0
+  ok   vkFlushMappedMemoryRanges (poison) -> 0
+  ok   vkCreateCommandPool -> 0
+  ok   vkAllocateCommandBuffers -> 0
+  ok   vkBeginCommandBuffer -> 0
+  ok   vkEndCommandBuffer -> 0
+  ok   vkCreateFence -> 0
+  ok   vkQueueSubmit -> 0
+  ok   vkWaitForFences -> 0
+  ok   vkInvalidateMappedMemoryRanges -> 0
+  ok   readback: 0/1024 words wrong; first at [0] = 0x00000000, expected 0xa5c3f00d
+  note readback: 1024/1024 words are 0xa5c3f00d — the GPU wrote it
+  ok   the run was neither degraded nor diagnostic (such a run verifies nothing)
+RESULT: PASS (56/56)
+```
+
 ## The console run of 2026-08-04, and what it moved
 
 ### R18 is fixed, and that is measured now, not argued

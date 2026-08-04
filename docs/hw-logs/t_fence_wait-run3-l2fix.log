@@ -1,0 +1,17 @@
+== t_fence_wait ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   channel_create (status=ok nv=0x00000000)
+  ok   submit
+  ok   wait on submitted fence returned success (status=ok)
+  ok   already-signalled wait returns immediately (44 us)
+  ok   poll(signalled) == true
+  ok   poll(future) == false
+  note 200 ms timeout wait took 200 ms
+  ok   unsignalled wait returned TIMEOUT (status=timeout)
+  ok   wait honoured the full timeout
+  ok   wait did not inflate the timeout (unit bug guard)
+  ok   channel wait also times out cleanly (status=timeout)
+  ok   zero timeout returns TIMEOUT immediately (status=timeout)
+  ok   channel destroy
+  ok   device_destroy (status=ok)
+RESULT: PASS (14/14)
