@@ -45,6 +45,18 @@ extern "C" {
 #define HORIZON_SEMAPHORED_RELEASE_WFI_EN  UINT32_C(0)
 #define HORIZON_SEMAPHORED_RELEASE_SIZE_4B (UINT32_C(1) << 24)
 
+/* MEM_OP_C/D — memory-barrier and L2 operations, also host methods, so
+ * they need no engine object either. MEM_OP_A/B were removed for gm20x
+ * and C/D carry their functionality (clb06f.h:112-136). OPERATION is
+ * bits 31:27 of MEM_OP_D; the operands are only used by the TLB
+ * invalidate operations, so the barrier and flush forms write zero. */
+#define HORIZON_NVA06F_MEM_OP_C    UINT32_C(0x0030)
+#define HORIZON_NVA06F_MEM_OP_D    UINT32_C(0x0034)
+#define HORIZON_MEM_OP_D_OP_SHIFT  27u
+#define HORIZON_MEM_OP_MEMBAR              UINT32_C(0x05)
+#define HORIZON_MEM_OP_L2_SYSMEM_INVALIDATE UINT32_C(0x0e)
+#define HORIZON_MEM_OP_L2_FLUSH_DIRTY      UINT32_C(0x10)
+
 /* SYNCPOINTB fields (cla06f.h): OPERATION 0:0, WAIT_SWITCH 4:4,
  * SYNCPT_INDEX 19:8. */
 #define HORIZON_SYNCPOINTB_OP_WAIT         UINT32_C(0)
@@ -64,6 +76,7 @@ extern "C" {
 #define HORIZON_CMDS_SET_OBJECTS_DWORDS  (2u * HORIZON_CMDS_NUM_SUBCHANNELS)
 #define HORIZON_CMDS_SYNCPT_WAIT_DWORDS  4u
 #define HORIZON_CMDS_SEM_RELEASE_DWORDS  5u
+#define HORIZON_CMDS_MEM_OP_DWORDS       3u
 
 /* Pushbuffer method header, "increasing methods" opcode (001b in bits
  * 31:29; count 28:16; subchannel 15:13; dword method address 12:0) —
@@ -118,6 +131,15 @@ horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
 uint32_t
 horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
                                uint64_t gpu_va, uint32_t payload);
+
+/* A MEM_OP with no operand: MEMBAR, L2_SYSMEM_INVALIDATE or
+ * L2_FLUSH_DIRTY. A GPU write lands in the GPU's L2 first, and nothing
+ * about a syncpoint increment obliges that L2 to reach memory the CPU
+ * reads — which is a candidate explanation for a write the GPU made and
+ * the CPU cannot see. Returns the dword count, or 0 for an operation
+ * that does not fit the 5-bit OPERATION field. */
+uint32_t horizon_cmds_mem_op(uint32_t buf[HORIZON_CMDS_MEM_OP_DWORDS],
+                             uint32_t operation);
 
 /* `pairs` NOP methods (2 dwords each) into buf, which holds `buf_dwords`
  * dwords of capacity. Returns the dword count, or 0 without writing

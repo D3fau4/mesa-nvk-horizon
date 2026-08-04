@@ -1,0 +1,19 @@
+== t_nvmap ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   create A
+  ok   create B
+  note A: id=1916 handle=1916  B: id=1920 handle=1920
+  ok   NvMap ids nonzero
+  ok   NvMap handles nonzero
+  ok   ids distinct across objects
+  ok   handles distinct across objects
+  ok   fresh object has no recorded GPU VA
+  ok   destroy A
+  ok   create C after closing A (close left nvmap usable)
+  ok   C handle valid
+  ok   destroy(NULL) rejected, no crash (invalid argument)
+  ok   destroy B
+  ok   destroy C
+  ok   live_mem back to zero (0)
+  ok   device_destroy (status=ok)
+RESULT: PASS (16/16)

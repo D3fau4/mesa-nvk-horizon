@@ -113,5 +113,20 @@ int main(void)
             HORIZON_CMDS_SEM_RELEASE_DWORDS,
             "sem: VA 0 is encodable (rejection is about width, not value)");
 
+    /* MEM_OP — the L2/barrier operations, clb06f.h:112-136. */
+    uint32_t mop[HORIZON_CMDS_MEM_OP_DWORDS];
+    n = horizon_cmds_mem_op(mop, HORIZON_MEM_OP_L2_FLUSH_DIRTY);
+    H_CHECK(n == HORIZON_CMDS_MEM_OP_DWORDS, "memop: dword count");
+    /* hdr: opcode 001b, count 2, subch 0, dword method 0x30 >> 2 = 0xc. */
+    H_CHECK(mop[0] == 0x2002000Cu, "memop: hdr(0, MEM_OP_C=0x30, 2)");
+    H_CHECK(mop[1] == 0, "memop: operand unused by a non-TLB operation");
+    H_CHECK(mop[2] == (0x10u << 27), "memop: L2_FLUSH_DIRTY at OPERATION 31:27");
+    H_CHECK(horizon_cmds_mem_op(mop, HORIZON_MEM_OP_MEMBAR) == n &&
+            mop[2] == (0x05u << 27), "memop: MEMBAR encoding");
+    /* An operation wider than the 5-bit field would become a different,
+     * valid operation. Reject. */
+    H_CHECK(horizon_cmds_mem_op(mop, 0x20) == 0,
+            "memop: out-of-range operation rejected, not truncated");
+
     return h_summary("h_cmds");
 }

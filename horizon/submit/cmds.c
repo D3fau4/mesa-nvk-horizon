@@ -71,6 +71,23 @@ horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
     return n;
 }
 
+uint32_t horizon_cmds_mem_op(uint32_t buf[HORIZON_CMDS_MEM_OP_DWORDS],
+                             uint32_t operation)
+{
+    /* OPERATION is 5 bits (31:27). Reject rather than truncate: a
+     * truncated operation code is a *different, valid* operation. */
+    if (operation > 0x1Fu)
+        return 0;
+
+    uint32_t n = 0;
+    /* MEM_OP_C and MEM_OP_D are consecutive; the operands are only read
+     * by the TLB-invalidate operations, so C is zero here. */
+    buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_MEM_OP_C, 2);
+    buf[n++] = 0;
+    buf[n++] = operation << HORIZON_MEM_OP_D_OP_SHIFT;
+    return n;
+}
+
 uint32_t
 horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
                          const uint32_t classes[HORIZON_CMDS_NUM_SUBCHANNELS])

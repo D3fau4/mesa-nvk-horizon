@@ -43,7 +43,7 @@
   ok   cnd_broadcast woke every waiter within 2000 ms (4 of 4)
   ok   no cnd_wait failed (0)
   ok   no mutex call failed in a cnd_broadcast worker (0)
-  ok   broadcast to all woken took 6 ms, under the 100 ms bound
+  ok   broadcast to all woken took 7 ms, under the 100 ms bound
   ok   created the cnd_timedwait watchdog
   ok   main thread took the mutex for cnd_timedwait
   ok   main thread released the mutex cnd_timedwait reacquired

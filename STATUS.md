@@ -5054,6 +5054,109 @@ enables it only where channel creation fails for want of the syncpoint
 read, and real nvgpu implements that read. The final `t_check(!degraded)`
 stays as the guard.
 
+## The console run of 2026-08-04, and what it moved
+
+### R18 is fixed, and that is measured now, not argued
+
+The MMU fault that ended the last console run **does not reproduce**.
+`vkCreateDevice -> 0`, `vkQueueSubmit -> 0`, `vkWaitForFences -> 0`, and
+`t_vulkan` reached its readback for the first time anywhere: **55/56**.
+Patch 0038 — the privileged GR register writes disabled behind
+`has_priv_reg_writes` — was the right diagnosis. R18 was recorded in
+Phase 0 as a Phase 5 risk; it fired in Phase 4 and is now closed on
+hardware.
+
+That is the first hardware evidence for any of the five fixes made since
+2026-07-28, and four of the five are exercised by this run reaching the
+readback at all.
+
+`t_init` on console also settled two things the emulator could not:
+`zcull ctx_size = 0x10200` against the emulator's obviously-wrong `0x1`
+— the check tightened blind from `> 0` to `>= 0x1000` was right and
+would have rejected the emulator value — and a GPU timestamp that is
+real and monotonic.
+
+### The readback failed, and the cause is not where it was expected
+
+Every one of the 1024 words came back as the poison, `0x5a3c0ff2`, which
+is exactly `~0xa5c3f00d`. The memory type is `DEVICE_LOCAL HOST_VISIBLE
+HOST_CACHED` with no COHERENT, so the standing expectation — recorded in
+the test's own note — was cache maintenance, D5.
+
+**It is not.** `t_gpuwrite`, written for this and run on the same
+console, removes Vulkan, Mesa and NVK entirely and asks the bottom layer
+with the channel's own semaphore release. It failed **identically on
+CPU-cached and on CPU-uncached memory**:
+
+```
+cached:   target[0] before invalidate = 0x3f0011fe, after = 0x3f0011fe
+uncached: target[0] before invalidate = 0x3f0011fe, after = 0x3f0011fe
+          VERDICT the write never reached this memory
+```
+
+Two things follow, and both narrow the search hard:
+
+- **CPU cache maintenance is eliminated.** It cannot explain a failure
+  that is identical with caching on and off. D5 is not what is breaking
+  the readback.
+- **The defect is below NVK.** No Mesa code runs in `t_gpuwrite`. Whatever
+  is wrong is in the channel, the mapping, or the GPU's own write path,
+  and every Vulkan-level explanation — the shader local/shared window
+  overlap included — is a separate question that this failure does not
+  need.
+
+Note also what still worked: the fence reached in both arms, so the
+pushbuffer executed, and the GPU **read** its command list from a mapping
+made exactly like the target's. GPU reads from small-page mappings work.
+Only the write is missing.
+
+### Why nothing below t_vulkan had caught this
+
+`t_submit` proves a command list executes, that fences order by
+submission, and that a GPU-side cross-channel syncpoint wait unblocks
+(R10). Every one of those observations is made through a **syncpoint**,
+which on Tegra is a host1x counter and not memory. Until `t_gpuwrite`
+this project had never asked memory a question below the Vulkan layer.
+That is the gap `STATUS.md` had recorded as owed, and it is exactly the
+gap the bug was hiding in.
+
+### The next measurement, and why it is a matrix
+
+A GPU write lands in the GPU's L2 first, and nothing about a syncpoint
+increment obliges that L2 to reach the memory a CPU reads. The failing
+mapping was created L2-cacheable
+(`NVGPU_AS_MAP_BUFFER_FLAGS_CACHEABLE`), so the next run varies that and
+what is around it rather than guessing:
+
+| arm | mapping | extra command | decisive about |
+|---|---|---|---|
+| A | L2-cacheable | none | the baseline, re-measured in the same run |
+| B | **non**-cacheable | none | the mapping attribute |
+| C | L2-cacheable | `MEMBAR` | whether a barrier suffices |
+| D | L2-cacheable | `L2_FLUSH_DIRTY` | an explicit writeback — the fix to want |
+
+D is the outcome to hope for: it keeps GPU caching on and pays only
+where a CPU is going to read, where B would disable caching wholesale.
+
+If all four fail, that is equally definite — it is not L2 residency, and
+the CPU and GPU are not looking at the same memory. A failing arm
+therefore also scans the whole allocation for the payload and reports
+the offset if it landed anywhere, which separates "wrong offset" from
+"did not land" without another round trip.
+
+`MEM_OP_C`/`MEM_OP_D` and the semaphore encoding were both taken from
+`mesa/src/nouveau/headers/nvidia/classes/clb06f.h` — the channel class
+GM20B's own characteristics report, `gpfifo=0xb06f` — and not recalled.
+Host checks cover every field and were broken on purpose: four ways for
+the semaphore and the search, twice for MEM_OP.
+
+### The push dump is parked
+
+`t_vulkan-pushdump.nro` blackscreens on console and its log truncates in
+the middle of the MME microcode upload, which alone decodes to thousands
+of lines. It is not needed now: `t_gpuwrite` localised the defect below
+Vulkan, so NVK's push stream is not where the answer is.
+
 ### The state it was blocked in (2026-07-28)
 
 The owner no longer had access to a Nintendo Switch; only an emulator

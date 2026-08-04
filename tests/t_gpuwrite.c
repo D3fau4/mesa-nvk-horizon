@@ -9,34 +9,42 @@
  * question was t_vulkan's readback, and on 2026-08-04 that readback came
  * back holding every byte of its poison.
  *
- * That failure has at least three candidate causes and the Vulkan test
- * cannot separate them: the GPU may not have written, it may have
- * written somewhere else, or it may have written correctly and the CPU
- * may be reading a stale cache line. This test removes Vulkan, Mesa and
- * NVK from the picture entirely and asks the bottom layer directly.
- *
  * The instrument is the channel's own semaphore release: a *host* method,
  * so no engine object has to be bound to any subchannel first, which
- * makes it the smallest possible GPU write to memory. If this fails,
- * everything above it is chasing a ghost.
+ * makes it the smallest possible GPU write to memory. Vulkan, Mesa and
+ * NVK are not in the picture at all.
  *
- * The experiment is controlled rather than pass/fail. The target is
- * poisoned with the complement of the payload and read twice — once
- * before any cache maintenance and once after — and the pair of readings
- * is what identifies the cause:
+ * WHAT THE FIRST RUN MEASURED (2026-08-04, hardware). The write did not
+ * arrive, and it did not arrive identically on CPU-cached and on
+ * CPU-uncached memory. That kills the cache-maintenance explanation: the
+ * CPU-side policy is not the variable, so this revision stops varying it
+ * and varies what is left instead.
+ *
+ * What is left is the GPU's own L2. A GPU write lands there first, and
+ * nothing about a syncpoint increment obliges that L2 to reach the memory
+ * the CPU reads. The mapping in the failing run was created L2-cacheable
+ * (NVGPU_AS_MAP_BUFFER_FLAGS_CACHEABLE), so this revision runs a matrix:
+ *
+ *   A  L2-cacheable mapping, nothing else      the failing baseline
+ *   B  NON-cacheable mapping                   is the mapping attribute it?
+ *   C  L2-cacheable + MEMBAR                   does a barrier suffice?
+ *   D  L2-cacheable + L2_FLUSH_DIRTY           does an explicit writeback?
+ *
+ * Each arm is decisive about a different fix, and if all four fail the
+ * conclusion is equally definite: the write is not an L2 residency
+ * problem and the CPU and GPU are not looking at the same memory. To
+ * catch exactly that, a failing arm also scans the whole allocation for
+ * the payload and reports where it landed if it landed anywhere.
+ *
+ * Each arm reads the target twice, before and after CPU cache
+ * maintenance, and names which of four cases it saw:
  *
  *   before      after       what it means
  *   ---------------------------------------------------------------
- *   payload     payload     the GPU wrote; this mapping needed no
- *                           maintenance to see it
- *   poison      payload     the GPU wrote; cache maintenance is
- *                           REQUIRED here and it WORKS
+ *   payload     payload     the GPU wrote; no maintenance was needed
+ *   poison      payload     the GPU wrote; maintenance is REQUIRED and works
  *   poison      poison      the write never reached this memory
  *   payload     poison      the invalidate is destroying data
- *
- * and the whole thing runs twice, once on cached memory and once on
- * uncached, because "cached fails, uncached works" is a different defect
- * from "both fail" and points at a different fix.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -64,6 +72,10 @@ const char *const test_name = "t_gpuwrite";
  * three, so a wrong RELEASE_SIZE is reported rather than mistaken for
  * something else. */
 #define NEIGHBOURS 3u
+/* No extra barrier or flush in this arm. MEM_OP operation codes are
+ * 5-bit and 0 is not one of them (clb06f.h:130-136), so it is free to
+ * mean "none" here. */
+#define NO_MEM_OP  UINT32_C(0)
 
 typedef struct target {
     horizon_gpu_mem *mem;
@@ -74,18 +86,22 @@ typedef struct target {
 } target;
 
 static horizon_gpu_result target_create(horizon_gpu_device *dev,
-                                        horizon_gpu_cache_policy policy,
-                                        target *out)
+                                        bool gpu_cacheable, target *out)
 {
+    /* CPU-side policy is fixed at CACHED: the first hardware run showed
+     * cached and uncached failing identically, so it is not the
+     * variable. */
     horizon_gpu_result res =
-        horizon_gpu_mem_create(dev, ALLOC_B, 0, policy, &out->mem);
+        horizon_gpu_mem_create(dev, ALLOC_B, 0, HORIZON_GPU_MEM_CACHED,
+                               &out->mem);
     if (horizon_gpu_failed(res))
         return res;
     res = horizon_gpu_vm_reserve(dev, 0x10000, 0x1000, 0, &out->range);
     if (horizon_gpu_failed(res))
         return res;
     res = horizon_gpu_vm_map(out->range, 0, out->mem, 0, ALLOC_B,
-                             HORIZON_GPU_PTE_KIND_PITCH, true, &out->map);
+                             HORIZON_GPU_PTE_KIND_PITCH, gpu_cacheable,
+                             &out->map);
     if (horizon_gpu_failed(res))
         return res;
     out->gpu_va = horizon_gpu_mapping_va(out->map);
@@ -106,37 +122,39 @@ static void target_destroy(target *tg)
     tg->mem = NULL;
 }
 
-/* One full experiment on one cache policy. */
-static void run_policy(test_ctx *t, horizon_gpu_device *dev,
-                       horizon_gpu_channel *chan,
-                       horizon_gpu_cache_policy policy, const char *what)
+/* One arm of the matrix. */
+static void run_arm(test_ctx *t, horizon_gpu_device *dev,
+                    horizon_gpu_channel *chan, bool gpu_cacheable,
+                    uint32_t mem_op, const char *what)
 {
     target tg = { 0 };
     target cmd = { 0 };
 
-    horizon_gpu_result res = target_create(dev, policy, &tg);
+    horizon_gpu_result res = target_create(dev, gpu_cacheable, &tg);
     if (!t_check(t, horizon_gpu_succeeded(res),
                  "%s: target allocated and mapped (status=%s nv=0x%08x)",
                  what, horizon_gpu_status_str(res.status), res.nv))
         goto out;
 
-    /* The command list is always cached: it is CPU-written and
-     * GPU-*read*, which is the direction t_submit already exercises. Only
-     * the target's policy is under test here. */
-    res = target_create(dev, HORIZON_GPU_MEM_CACHED, &cmd);
+    /* The command list is always L2-cacheable: it is CPU-written and
+     * GPU-*read*, the direction t_submit already proves works. Only the
+     * target's mapping is under test. */
+    res = target_create(dev, true, &cmd);
     if (!t_check(t, horizon_gpu_succeeded(res),
                  "%s: command list allocated and mapped (status=%s)",
                  what, horizon_gpu_status_str(res.status)))
         goto out;
 
-    t_note(t, "%s: target gpu_va=0x%" PRIx64 " cpu=%p, cmdlist gpu_va=0x%"
-              PRIx64, what, tg.gpu_va, (void *)tg.cpu, cmd.gpu_va);
+    t_note(t, "%s: target gpu_va=0x%" PRIx64 " cpu=%p gpu_cacheable=%d "
+              "mem_op=0x%02" PRIx32, what, tg.gpu_va, (void *)tg.cpu,
+           (int)gpu_cacheable, mem_op);
 
-    /* Poison, then push it out of the CPU cache. This is not a
-     * formality: a dirty line evicted *after* the GPU's write would
-     * overwrite the result with the poison, and the test would report a
-     * GPU failure that was really its own. */
-    for (uint32_t i = 0; i < 1u + NEIGHBOURS; i++)
+    /* Poison the whole allocation, so the scan below can tell "landed
+     * elsewhere in this object" from "did not land". Then push it out of
+     * the CPU cache: a dirty line evicted *after* the GPU's write would
+     * overwrite the result, and the test would report a GPU failure that
+     * was really its own. */
+    for (uint32_t i = 0; i < ALLOC_B / 4; i++)
         tg.cpu[i] = ~PAYLOAD;
     res = horizon_gpu_mem_flush(tg.mem, 0, ALLOC_B);
     if (!t_check(t, horizon_gpu_succeeded(res),
@@ -144,13 +162,21 @@ static void run_policy(test_ctx *t, horizon_gpu_device *dev,
                  what, horizon_gpu_status_str(res.status)))
         goto out;
 
-    /* semaphore release -> target, then the fence increment. */
+    /* semaphore release -> target, optional barrier/flush, fence. */
     uint32_t *dw = cmd.cpu;
     uint32_t n = horizon_cmds_semaphore_release(dw, tg.gpu_va, PAYLOAD);
     if (!t_check(t, n == HORIZON_CMDS_SEM_RELEASE_DWORDS,
                  "%s: semaphore release encoded for 0x%" PRIx64 " (%u dwords)",
                  what, tg.gpu_va, n))
         goto out;
+    if (mem_op != NO_MEM_OP) {
+        uint32_t nm = horizon_cmds_mem_op(dw + n, mem_op);
+        if (!t_check(t, nm == HORIZON_CMDS_MEM_OP_DWORDS,
+                     "%s: MEM_OP 0x%02" PRIx32 " encoded (%u dwords)",
+                     what, mem_op, nm))
+            goto out;
+        n += nm;
+    }
     uint32_t nf = horizon_cmds_fence_incr(dw + n,
                                           horizon_gpu_channel_syncpt_id(chan));
     if (!t_check(t, nf == HORIZON_CMDS_FENCE_INCR_DWORDS,
@@ -180,7 +206,7 @@ static void run_policy(test_ctx *t, horizon_gpu_device *dev,
                  what, horizon_gpu_status_str(res.status)))
         goto out;
 
-    /* Reading 1: no cache maintenance at all. */
+    /* Reading 1: no CPU cache maintenance at all. */
     const uint32_t before = tg.cpu[0];
 
     res = horizon_gpu_mem_invalidate(tg.mem, 0, ALLOC_B);
@@ -193,23 +219,36 @@ static void run_policy(test_ctx *t, horizon_gpu_device *dev,
     const uint32_t after = tg.cpu[0];
 
     t_note(t, "%s: target[0] before invalidate = 0x%08" PRIx32
-              ", after = 0x%08" PRIx32 " (payload 0x%08" PRIx32
-              ", poison 0x%08" PRIx32 ")",
-           what, before, after, PAYLOAD, ~PAYLOAD);
+              ", after = 0x%08" PRIx32, what, before, after);
 
-    /* The verdict is the pair, so say which of the four cases this is
-     * rather than only whether it passed. */
     if (after == PAYLOAD && before == PAYLOAD) {
         t_note(t, "%s: VERDICT the GPU wrote, and this mapping needed no "
                   "cache maintenance to see it", what);
     } else if (after == PAYLOAD) {
-        t_note(t, "%s: VERDICT the GPU wrote, and cache maintenance is "
+        t_note(t, "%s: VERDICT the GPU wrote, and CPU cache maintenance is "
                   "REQUIRED here and works", what);
     } else if (before == PAYLOAD) {
         t_note(t, "%s: VERDICT the invalidate DESTROYED the result — it is "
                   "writing a stale line back over it", what);
     } else {
         t_note(t, "%s: VERDICT the write never reached this memory", what);
+        /* Did it land somewhere else in the same object? That would be a
+         * mapping offset defect rather than an L2 one, and it is the
+         * question the arms cannot answer between them. */
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < ALLOC_B / 4; i++) {
+            if (tg.cpu[i] == PAYLOAD) {
+                t_note(t, "%s: the payload IS present at byte offset 0x%x — "
+                          "the write landed, at the wrong offset",
+                       what, i * 4u);
+                found++;
+                if (found == 4)
+                    break;
+            }
+        }
+        if (found == 0)
+            t_note(t, "%s: the payload appears nowhere in the %" PRIu64
+                      "-byte allocation", what, ALLOC_B);
     }
 
     t_check(t, after == PAYLOAD,
@@ -253,12 +292,20 @@ int run_test(test_ctx *t)
         return 1;
     }
 
-    /* Cached first: it is what every ordinary allocation uses, and what
-     * t_vulkan's failing readback was made of. */
-    run_policy(t, dev, chan, HORIZON_GPU_MEM_CACHED, "cached");
-    /* Then uncached, because "cached fails, uncached works" is a
-     * different defect from "both fail" and has a different fix. */
-    run_policy(t, dev, chan, HORIZON_GPU_MEM_UNCACHED, "uncached");
+    t_note(t, "poison 0x%08" PRIx32 ", payload 0x%08" PRIx32,
+           ~PAYLOAD, PAYLOAD);
+
+    /* A: the failing baseline, reproduced so the matrix has a control
+     * measured in the same run rather than remembered from the last. */
+    run_arm(t, dev, chan, true,  NO_MEM_OP, "A/cacheable");
+    /* B: same write, mapping not L2-cacheable. */
+    run_arm(t, dev, chan, false, NO_MEM_OP, "B/noncacheable");
+    /* C: cacheable, with a memory barrier before the fence. */
+    run_arm(t, dev, chan, true,  HORIZON_MEM_OP_MEMBAR, "C/membar");
+    /* D: cacheable, with an explicit dirty-L2 writeback before the
+     * fence. This is the fix to want if L2 is the cause — it keeps GPU
+     * caching on and pays only where a CPU is going to read. */
+    run_arm(t, dev, chan, true,  HORIZON_MEM_OP_L2_FLUSH_DIRTY, "D/l2flush");
 
     res = horizon_gpu_channel_wait_idle(chan, WAIT_NS);
     t_check(t, horizon_gpu_succeeded(res), "wait_idle before teardown");
