@@ -188,12 +188,21 @@ static void run_arm(test_ctx *t, horizon_gpu_device *dev,
             goto out;
         n += nm;
     }
-    uint32_t nf = horizon_cmds_fence_incr(dw + n,
-                                          horizon_gpu_channel_syncpt_id(chan));
-    if (!t_check(t, nf == HORIZON_CMDS_FENCE_INCR_DWORDS,
-                 "%s: fence increment encoded (%u dwords)", what, nf))
-        goto out;
-    res = horizon_gpu_mem_flush(cmd.mem, 0, (n + nf) * 4);
+    /* No fence increment here on purpose. horizon_gpu_submit appends the
+     * channel's own fence block to every submit and advances
+     * shadow_target by exactly one; a second increment in this span
+     * would advance the *hardware* counter twice per submit while the
+     * accounting moved once, leaving hardware permanently one ahead.
+     *
+     * The failure that causes is silent and it is this test's own
+     * measurement that it destroys: from the second arm onwards the
+     * threshold handed to wait_fence has already been passed by the
+     * previous arm's extra increment, so the wait returns before this
+     * arm's release has run, and the readback below races the GPU
+     * instead of following it. The first arm is unaffected — which is
+     * exactly why the run still looked plausible.
+     */
+    res = horizon_gpu_mem_flush(cmd.mem, 0, n * 4);
     if (!t_check(t, horizon_gpu_succeeded(res),
                  "%s: command list flushed (status=%s)",
                  what, horizon_gpu_status_str(res.status)))
@@ -201,7 +210,7 @@ static void run_arm(test_ctx *t, horizon_gpu_device *dev,
 
     const horizon_gpu_cmd_span span = {
         .gpu_va = cmd.gpu_va,
-        .num_dwords = n + nf,
+        .num_dwords = n,
     };
     horizon_gpu_fence fence;
     res = horizon_gpu_submit(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
