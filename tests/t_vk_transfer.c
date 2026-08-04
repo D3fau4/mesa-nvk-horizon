@@ -173,6 +173,120 @@ out:
    return ok;
 }
 
+/* F — what run 1 found, turned into a measurement.
+ *
+ * Case B asked for [1028, 3480) and the bytes that changed were
+ * [1024, 3488): the start rounded down and the end rounded up, both to a
+ * multiple of 16. NVK does no rounding — nvk_CmdCopyBuffer2 programs
+ * OFFSET_IN/OFFSET_OUT with the exact addresses and LINE_LENGTH_IN with
+ * the exact size (nvk_cmd_copy.c:373-415) — so the granularity is the
+ * NV90B5 copy engine's, and neither the driver nor this test knows what
+ * it is.
+ *
+ * This finds out. For each region it poisons the destination, copies,
+ * and reports the first and last byte that actually changed. The
+ * granularity falls straight out of the differences, and with it the
+ * answer to whether the fix is "NVK must handle the unaligned head and
+ * tail another way" or "this copy engine cannot be asked for unaligned
+ * regions at all".
+ *
+ * The check per probe is the one Vulkan requires and which nothing about
+ * the hardware excuses: a copy writes its region and nothing else. It is
+ * expected to fail on the unaligned probes; the notes beside it say by
+ * how much.
+ */
+struct copy_probe {
+   uint32_t off_B;
+   uint32_t size_B;
+   const char *why;
+};
+
+static uint8_t poison_byte(uint32_t i)
+{
+   return (uint8_t)(POISON >> (8u * (i & 3u)));
+}
+
+static void copy_bounds_sweep(vkfw *fw, const vkfw_buffer *src,
+                              vkfw_buffer *dst)
+{
+   test_ctx *t = fw->t;
+
+   static const struct copy_probe probes[] = {
+      {    0,  256, "aligned both ends — the control" },
+      {    4,  256, "start 4, size 256" },
+      {    8,  256, "start 8, size 256" },
+      {   16,  256, "start 16, size 256" },
+      {   32,  256, "start 32, size 256" },
+      {    0,    4, "one word at zero" },
+      {    0,   12, "three words at zero" },
+      {   64,  260, "aligned start, unaligned size" },
+      { 1028, 2452, "exactly case B, so the two must agree" },
+   };
+
+   uint32_t unaligned_spill = 0;
+
+   for (uint32_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+      const struct copy_probe *pr = &probes[i];
+
+      if (vkfw_device_lost(fw))
+         return;
+      if (!vkfw_buffer_poison(fw, dst, POISON))
+         return;
+
+      VkCommandBuffer cb;
+      if (!vkfw_cmd_begin(fw, &cb))
+         return;
+      const VkBufferCopy copy = {
+         .srcOffset = pr->off_B,
+         .dstOffset = pr->off_B,
+         .size = pr->size_B,
+      };
+      fw->vk.vkCmdCopyBuffer(cb, src->buf, dst->buf, 1, &copy);
+      if (!vkfw_submit_and_wait(fw, cb, "F copy probe"))
+         return;
+      if (!vkfw_buffer_invalidate(fw, dst))
+         return;
+
+      /* Byte-level, because the granularity being measured may be finer
+       * than a word and a word-level scan would round the answer to the
+       * very thing it is trying to measure. */
+      const uint8_t *got = (const uint8_t *)dst->map;
+      int64_t first = -1, last = -1;
+      for (uint32_t b = 0; b < BUF_BYTES; b++) {
+         if (got[b] != poison_byte(b)) {
+            if (first < 0)
+               first = b;
+            last = b;
+         }
+      }
+
+      if (first < 0) {
+         t_check(t, false, "F [%u, %u): %s — nothing changed at all",
+                 pr->off_B, pr->off_B + pr->size_B, pr->why);
+         continue;
+      }
+
+      const uint32_t want_end = pr->off_B + pr->size_B;
+      const bool exact = (uint64_t)first == pr->off_B &&
+                         (uint64_t)last + 1 == want_end;
+      t_check(t, exact, "F [%u, %u): %s", pr->off_B, want_end, pr->why);
+      if (!exact) {
+         t_note(t, "F [%u, %u): bytes [%lld, %lld) changed — %lld before, "
+                "%lld after", pr->off_B, want_end, (long long)first,
+                (long long)last + 1, (long long)pr->off_B - first,
+                (long long)last + 1 - want_end);
+         unaligned_spill++;
+      }
+   }
+
+   t_note(t, "F: %u of %u probes wrote outside their region. A start "
+             "rounded down and an end rounded up to the same power of two "
+             "is the copy engine's transfer granularity; the driver "
+             "programs the exact byte address and length.",
+          unaligned_spill,
+          (unsigned)(sizeof(probes) / sizeof(probes[0])));
+}
+
 int run_test(test_ctx *t)
 {
    vkfw fw;
@@ -286,6 +400,9 @@ int run_test(test_ctx *t)
                     "D buffer→image→buffer, optimal");
    image_round_trip(&fw, VK_IMAGE_TILING_LINEAR, &src, &dst,
                     "E buffer→image→buffer, linear");
+
+   /* --- F: how far outside its region does a copy actually write? ---- */
+   copy_bounds_sweep(&fw, &src, &dst);
 
 out:
    vkfw_buffer_destroy(&fw, &dst);

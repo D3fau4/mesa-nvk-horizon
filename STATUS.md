@@ -12,13 +12,13 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 4 complete. **Exit criterion met on hardware, 2026-08-04.** Phase 5 started: step 0, de-mining, before any item |
-| **What runs on a Switch** | The full mandatory Vulkan sequence, CPU readback verified: `t_vulkan` **PASS 60/60** (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`). All 15 `horizon/` tests pass on console |
-| **Next concrete task** | **The first hardware batch**: `t_vulkan`, `t_va_window`, `t_vk_transfer`, `t_vk_image`, `t_vk_compute`. Items 1, 2, 3 and 4 have tests; none has run on a console |
-| **Known failures** | None outstanding on hardware |
-| **Open, not blocking** | Shader local/shared window overlap warns on every `vkCreateDevice` (blocking it off broke `vkCreateDevice` once — patches 0039/0040); the L2 writeback is unconditional, one per submit |
+| **Phase** | 5 in progress. **Item 2 (compute dispatch) met on hardware, 2026-08-04.** Items 1, 3, 4 have tests and known defects; 5–9 not started |
+| **What runs on a Switch** | The mandatory Vulkan sequence (`t_vulkan` **PASS 62/62**) and **a compute shader compiled by NAK** (`t_vk_compute` **PASS 35/35**, 4096/4096 words verified by CPU readback). All 16 `horizon/` tests pass on console |
+| **Next concrete task** | **Hardware batch 2**: the MMU-fault experiment (`t_vk_image`), the copy-granularity sweep (`t_vk_transfer` probe F), and revalidation with the window blocked off |
+| **Known failures** | Item 3/4: the first 3D render pass MMU-faults, no shader having been uploaded (hypothesis under test). Item 1: `vkCmdCopyBuffer` writes outside an unaligned region, granularity 16 bytes or finer |
+| **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | Everything committed after `t_vulkan-run6`: the fixes in that review round, the sub-chunk D16 check, and all of Phase 5 |
+| **Never verified on hardware** | Everything after batch 1: the window block-off (patch 0047), the fence/notifier fix in `horizon/channel`, `alloc_tiled_mem` (patch 0045), the extension gating (patch 0046) |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,152 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## FIRST HARDWARE BATCH OF PHASE 5 — item 2 met, three real defects (2026-08-04)
+
+**Class: hardware (HW).** Five `.nro` from `build/pkg`, run by the owner
+on a real console. Logs in `docs/hw-logs/`:
+`t_vulkan-run7-phase5-batch1-PASS.log`, `t_va_window-run1-PASS.log`,
+`t_vk_compute-run1-PASS.log`, `t_vk_transfer-run1-FAIL.log`,
+`t_vk_image-run1-FAIL.log`.
+
+| | result | |
+|---|---|---|
+| `t_vulkan` | **PASS 62/62** | the revalidation. Everything committed after run 6 works, including the sub-chunk D16 check |
+| `t_va_window` | **PASS 22/22** | the probe answered, and the answer overturns a recorded conclusion |
+| `t_vk_compute` | **PASS 35/35** | **item 2 met** |
+| `t_vk_transfer` | FAIL 82/84 | item 1, one real defect |
+| `t_vk_image` | FAIL 43/46 | items 3 and 4 blocked, two real defects |
+
+### ITEM 2 IS MET: a shader compiled by NAK ran on this GPU
+
+```
+ok   vkCreateShaderModule(584 bytes) -> VK_SUCCESS
+ok   vkCreateComputePipelines -> VK_SUCCESS  (NAK compiled a shader)
+ok   the dispatch computed every word: 4096/4096 words match
+ok   nothing was written past the last invocation: 64/64 words are 0xdeadbeef
+```
+
+4096 invocations, each computing `(id * 2654435769) ^ 0xa5c3f00d`, every
+word different from every other, every one of them right, and the 64
+words past the last invocation still holding their poison. **This is the
+first machine code NAK has produced that has ever executed**, and it is
+verified by CPU readback rather than by absence of errors — the phase's
+exit criterion, for this item.
+
+### The window: the emulator was wrong, and this file recorded its answer as fact
+
+`t_va_window` P3 asked the exact question patch 0039 failed on, on real
+hardware, and got the opposite answer:
+
+```
+note small-page region [0x8000000, 0x3fffff000) page=0x1000
+note P2 window fixed @0xfe000000: ok size=0x2000000
+note P3 heap 4 GiB non-fixed, window held: ok base=0x100000000 clears the window
+note P4 heap 4 GiB fixed @0x100000000: ok
+note P7 heap first, fixed @0x100000000: ok  /  then window fixed: ok
+note VERDICT strategy A (block the window, place the heap above it) is VIABLE
+```
+
+Patch 0040 backed the block-off out because the 4 GiB reservation failed
+with `InsufficientMemory`, and recorded the reason as "the window splits
+the small-page region at precisely the wrong address and the heap no
+longer fits below it". **That measurement was on the emulator**, and the
+explanation was a fact about the hardware that nobody had asked the
+hardware. The real allocator places the reservation *above* the hole;
+about 12 GiB of small-page space sits up there. Same shape as the
+syncpoint failure of 2026-07-28.
+
+Patch 0047 blocks the window off again, on the pdev this time rather
+than the dev, because the address space belongs to the pdev (D9).
+
+### `vkWaitForFences` returned VK_SUCCESS for work that MMU-faulted
+
+The worst of the three, and the one that made the others hard to read.
+
+`t_vk_image` case 1 submitted, waited, and was told the work was done.
+The readback buffer still held its poison, every word of it. The fault
+appeared one case later, at the *next* kickoff:
+
+```
+[horizon_gpu:E] Kickoff failed: 0x00000d5c (notifier: 31 'MMU fault')
+```
+
+The syncpoint had genuinely reached the threshold, because **nvgpu's
+channel recovery force-increments a faulted channel's syncpoints** to
+their maximum submitted value so waiters do not hang. The counter
+therefore says "finished" for work that never ran.
+
+`horizon_gpu_channel_wait_fence` did check the error notifier — but
+*after* the two success returns, never before them:
+
+```c
+if (horizon_gpu_syncpt_reached(hw, fence.threshold))
+    return horizon_gpu_ok();          /* <- never looked */
+if (channel_check_fault(chan))
+    return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+```
+
+Both success paths now go through `channel_reached_or_lost`, which
+consults the notifier first. Deliberately stricter than "did this fence
+complete before the fault": the notifier is sticky and per-channel, so
+work that genuinely finished before a later fault is also reported lost.
+That is the safe direction; the unsafe one is what was measured.
+
+**This is a `horizon/` change, which CLAUDE.md permits only for a real
+and measured bug. It is both.**
+
+### Items 3 and 4: the first render pass MMU-faults
+
+The clear never happened, on a plain 64×64 two-layer OPTIMAL image. What
+the map dump printed alongside the fault is the lead:
+
+```
+map VA 0xa14a000+0x100000000 page 0x1000  (nothing bound)
+```
+
+That is NVK's shader heap: 4 GiB of contiguous VA reserved at device
+creation, first chunk bound only when a shader is first uploaded, and
+`SET_PROGRAM_REGION` points at its base. **`t_vk_image` compiled no
+shader; `t_vk_compute`, which did, ran on the same console without
+faulting.** So the hypothesis is that the 3D engine begins a render pass
+with its program region pointing at unbacked address space.
+
+`t_vk_image` is now the experiment: it creates a throwaway compute
+pipeline before the first clear, purely so NVK uploads something to the
+shader heap, and says so in its own log. If the clears pass, that was
+why — and the fix then belongs in the driver, not in a test. The cases
+are also reordered simplest-first; run 1 began with the two-layer image,
+which confounded layered rendering with the first render pass of any
+kind.
+
+Also learned, and unhelpful: **a linear image cannot be a colour
+attachment here** — `vkGetPhysicalDeviceImageFormatProperties` answers
+`FORMAT_NOT_SUPPORTED`. The linear-tiled-shadow path, and with it
+`alloc_tiled_mem`, is therefore *still* unexercised on hardware.
+
+### `vkCmdCopyBuffer` writes outside its region
+
+`t_vk_transfer` asked for bytes `[1028, 3480)` and the bytes that changed
+were `[1024, 3488)`: start rounded down, end rounded up, both to a
+multiple of 16. The two extra words at each end held the *source's*
+pattern, so the copy genuinely transferred them.
+
+NVK does no rounding — `nvk_CmdCopyBuffer2` programs `OFFSET_IN`,
+`OFFSET_OUT` and `LINE_LENGTH_IN` with the exact byte address and length
+(`nvk_cmd_copy.c:373-415`) — so this is the NV90B5 copy engine's
+transfer granularity, and Vulkan puts no alignment requirement on
+`VkBufferCopy`. Everything else in the test passed, including the
+buffer→image→buffer round trip in **both** tilings, so block-linear
+surface interpretation by the copy engine is correct.
+
+`t_vk_transfer` gains probe F, which measures the granularity instead of
+inferring it from one data point: nine regions, and for each the first
+and last byte that actually changed. That decides whether the fix is
+"NVK must handle the unaligned head and tail another way" or "this
+engine cannot be asked for unaligned regions at all".
 
 ---
 

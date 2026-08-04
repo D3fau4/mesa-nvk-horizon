@@ -329,7 +329,9 @@ nvk_tests = [
 nvk_test_shaders = {
   't_vulkan' : [],
   't_vk_transfer' : [],
-  't_vk_image' : [],
+  # Not for what it computes: the test creates a throwaway pipeline to
+  # make the driver upload a shader before the first render pass.
+  't_vk_image' : ['comp_write_id'],
   't_vk_compute' : ['comp_write_id'],
 }
 
@@ -432,24 +434,36 @@ if nvk_libs_present
   spirv_val = find_program('spirv-val')
   spv_embed = find_program('scripts/spv-embed.py')
 
+  # Each shader is assembled ONCE, however many tests include it: two
+  # custom_targets writing the same output is a configure error, and
+  # t_vk_image and t_vk_compute already share one.
+  shader_header_by_name = {}
+  foreach t : nvk_tests
+    foreach s : nvk_test_shaders.get(t, [])
+      if not shader_header_by_name.has_key(s)
+        shader_header_by_name += { s : custom_target(
+          s + '.spv.h',
+          input : files('tests/shaders' / (s + '.spvasm')),
+          output : s + '.spv.h',
+          # --target-env vulkan1.1 is SPIR-V 1.3, which is where
+          # StorageBuffer becomes a core storage class. Higher would work
+          # on this device and buy nothing the tests need.
+          command : [
+            spv_embed,
+            '--spirv-as', spirv_as.full_path(),
+            '--spirv-val', spirv_val.full_path(),
+            '--target-env', 'vulkan1.1',
+            '-o', '@OUTPUT@', '@INPUT@',
+          ],
+        ) }
+      endif
+    endforeach
+  endforeach
+
   foreach t : nvk_tests
     t_headers = []
     foreach s : nvk_test_shaders.get(t, [])
-      t_headers += custom_target(
-        s + '.spv.h',
-        input : files('tests/shaders' / (s + '.spvasm')),
-        output : s + '.spv.h',
-        # --target-env vulkan1.1 is SPIR-V 1.3, which is where
-        # StorageBuffer becomes a core storage class. Higher would work
-        # on this device and buy nothing the tests need.
-        command : [
-          spv_embed,
-          '--spirv-as', spirv_as.full_path(),
-          '--spirv-val', spirv_val.full_path(),
-          '--target-env', 'vulkan1.1',
-          '-o', '@OUTPUT@', '@INPUT@',
-        ],
-      )
+      t_headers += shader_header_by_name[s]
     endforeach
     nvk_shader_headers += { t : t_headers }
   endforeach

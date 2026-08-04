@@ -552,6 +552,7 @@ bool vkfw_cmd_end_submit(vkfw *fw, VkCommandBuffer cb, VkFence fence)
       .pCommandBuffers = &cb,
    };
    r = fw->vk.vkQueueSubmit(fw->queue, 1, &si, fence);
+   fw->last_submit_result = r;
    return t_check(t, r == VK_SUCCESS, "vkQueueSubmit -> %s",
                   vkfw_result_str(r));
 }
@@ -578,6 +579,10 @@ bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what)
    if (ok) {
       r = fw->vk.vkWaitForFences(fw->dev, 1, &fence, VK_TRUE,
                                  VKFW_FENCE_TIMEOUT_NS);
+      /* Not overwritten with a success: a submit that already reported
+       * DEVICE_LOST has lost the device whatever the wait says. */
+      if (r != VK_SUCCESS)
+         fw->last_submit_result = r;
       ok = t_check(t, r == VK_SUCCESS, "vkWaitForFences(%s) -> %s", what,
                    vkfw_result_str(r));
    }

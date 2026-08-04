@@ -154,7 +154,21 @@ typedef struct vkfw {
    VkDevice dev;
    VkQueue queue;
    VkCommandPool pool;
+
+   /* The last result from a submit or a fence wait. A test with several
+    * independent cases uses this to stop after the first VK_ERROR_DEVICE_LOST
+    * rather than reporting the same failure once per remaining case: once
+    * the channel is gone nothing else can be measured, and N identical
+    * failures hide which one was first.
+    */
+   VkResult last_submit_result;
 } vkfw;
+
+/* True once a submit or wait has reported VK_ERROR_DEVICE_LOST. */
+static inline bool vkfw_device_lost(const vkfw *fw)
+{
+   return fw->last_submit_result == VK_ERROR_DEVICE_LOST;
+}
 
 /* Brings up instance → physical device → device → queue → command pool,
  * checking each step. Returns false with everything it did create torn

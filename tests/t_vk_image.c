@@ -40,6 +40,35 @@
  * that cleared everything to black, or ignored the second clear, is
  * caught by the value and not only by the position.
  *
+ * RUN 1 FAILED WITH AN MMU FAULT, AND THIS VERSION IS THE EXPERIMENT.
+ * On 2026-08-04 the first render pass this project ever submitted
+ * MMU-faulted: nothing was written, the fault surfaced one case later at
+ * the next kickoff, and vkWaitForFences had already returned VK_SUCCESS
+ * for it (fixed separately in horizon/channel — a faulted channel's
+ * syncpoints are force-incremented by nvgpu's recovery, so a reached
+ * threshold is not evidence the work ran).
+ *
+ * The leading hypothesis is in the VA map that run printed:
+ *
+ *   map VA 0xa14a000+0x100000000 page 0x1000  (nothing bound)
+ *
+ * That is NVK's shader heap — 4 GiB of contiguous VA reserved at device
+ * creation, with its first chunk bound only when a shader is first
+ * uploaded. SET_PROGRAM_REGION points at its base. Nothing in this test
+ * compiled a shader, so the 3D engine began a render pass with a program
+ * region pointing at unbacked address space; t_vk_compute, which does
+ * compile one, ran on the same console without faulting.
+ *
+ * So this version creates a throwaway compute pipeline before the first
+ * clear, purely to make NVK upload something to the shader heap and bind
+ * that first chunk. It is an experiment and not a fix — if it is what
+ * the fault was, the fix belongs in the driver — and it is stated in the
+ * log so the run cannot be misread as an unmodified pass.
+ *
+ * The cases are also reordered simplest-first. Run 1 started with the
+ * two-layer image, which confounded "layered rendering" with "the first
+ * render pass at all".
+ *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
@@ -47,6 +76,10 @@
 #include <string.h>
 
 #include "common/vkfw.h"
+
+/* Only to make the driver upload a shader; what it computes is
+ * irrelevant here. See the header comment. */
+#include "comp_write_id.spv.h"
 
 const char *const test_name = "t_vk_image";
 
@@ -109,6 +142,68 @@ static void image_barrier(vkfw *fw, VkCommandBuffer cb, VkImage img,
    };
    fw->vk.vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0,
                                0, NULL, 0, NULL, 1, &b);
+}
+
+/* Creates and destroys a compute pipeline for no reason except its side
+ * effect: NVK uploads the compiled shader into dev->shader_heap, which
+ * binds that heap's first chunk. See the header comment for why this is
+ * the experiment rather than a fix. */
+static void warm_shader_heap(vkfw *fw)
+{
+   test_ctx *t = fw->t;
+
+   VkShaderModule module = VK_NULL_HANDLE;
+   VkPipelineLayout layout = VK_NULL_HANDLE;
+   VkPipeline pipeline = VK_NULL_HANDLE;
+
+   const VkShaderModuleCreateInfo smci = {
+      .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+      .codeSize = sizeof(comp_write_id_spv),
+      .pCode = comp_write_id_spv,
+   };
+   VkResult r = fw->vk.vkCreateShaderModule(fw->dev, &smci, NULL, &module);
+   if (!t_check(t, r == VK_SUCCESS, "warm-up: vkCreateShaderModule -> %s",
+                vkfw_result_str(r)))
+      return;
+
+   /* No descriptor set layout: the shader declares a storage buffer, but
+    * nothing is dispatched, and an empty pipeline layout is enough to
+    * compile and upload. */
+   const VkPipelineLayoutCreateInfo plci = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+   };
+   r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL, &layout);
+   if (!t_check(t, r == VK_SUCCESS, "warm-up: vkCreatePipelineLayout -> %s",
+                vkfw_result_str(r)))
+      goto out;
+
+   const VkComputePipelineCreateInfo cpci = {
+      .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .stage = {
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+         .module = module,
+         .pName = "main",
+      },
+      .layout = layout,
+   };
+   r = fw->vk.vkCreateComputePipelines(fw->dev, VK_NULL_HANDLE, 1, &cpci,
+                                       NULL, &pipeline);
+   t_check(t, r == VK_SUCCESS,
+           "warm-up: a shader is uploaded, so the shader heap has its "
+           "first chunk bound (vkCreateComputePipelines -> %s)",
+           vkfw_result_str(r));
+   t_note(t, "EXPERIMENT: this run compiles a throwaway shader before the "
+             "first render pass. Run 1 MMU-faulted with the shader heap "
+             "reservation carrying nothing bound. If the clears pass now, "
+             "that was why.");
+
+out:
+   if (pipeline != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipeline(fw->dev, pipeline, NULL);
+   if (layout != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipelineLayout(fw->dev, layout, NULL);
+   fw->vk.vkDestroyShaderModule(fw->dev, module, NULL);
 }
 
 struct image_case {
@@ -262,13 +357,28 @@ int run_test(test_ctx *t)
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &dst))
       goto out;
 
+   warm_shader_heap(&fw);
+
+   /* Simplest first. Run 1 began with the two-layer image, so a failure
+    * there could not distinguish layered rendering from the first render
+    * pass of any kind. */
    static const struct image_case cases[] = {
-      { "optimal 64x64, two layers", VK_IMAGE_TILING_OPTIMAL, 64, 64, 2 },
+      { "optimal 64x64",             VK_IMAGE_TILING_OPTIMAL, 64, 64, 1 },
       { "optimal 67x53",             VK_IMAGE_TILING_OPTIMAL, 67, 53, 1 },
+      { "optimal 64x64, two layers", VK_IMAGE_TILING_OPTIMAL, 64, 64, 2 },
       { "linear 64x64",              VK_IMAGE_TILING_LINEAR,  64, 64, 1 },
    };
-   for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+   for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      /* Once the channel is gone every later case fails the same way, and
+       * N identical failures bury which one was first. */
+      if (vkfw_device_lost(&fw)) {
+         t_note(t, "device lost; %u case(s) after \"%s\" not attempted",
+                (unsigned)(sizeof(cases) / sizeof(cases[0]) - i),
+                cases[i - 1].name);
+         break;
+      }
       run_case(&fw, &cases[i], &dst);
+   }
 
 out:
    vkfw_buffer_destroy(&fw, &dst);
