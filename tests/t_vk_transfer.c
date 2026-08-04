@@ -173,22 +173,25 @@ out:
    return ok;
 }
 
-/* F — what run 1 found, turned into a measurement.
+/* F — the sweep that found the L2 bug, kept as the regression test for it.
  *
- * Case B asked for [1028, 3480) and the bytes that changed were
- * [1024, 3488): the start rounded down and the end rounded up, both to a
- * multiple of 16. NVK does no rounding — nvk_CmdCopyBuffer2 programs
- * OFFSET_IN/OFFSET_OUT with the exact addresses and LINE_LENGTH_IN with
- * the exact size (nvk_cmd_copy.c:373-415) — so the granularity is the
- * NV90B5 copy engine's, and neither the driver nor this test knows what
- * it is.
+ * It started as "measure the copy engine's transfer granularity", after
+ * case B asked for [1028, 3480) and [1024, 3488) changed. That framing
+ * was wrong twice over. NVK programs the exact byte address and length
+ * (nvk_cmd_copy.c:373-415) and the engine honours them; what moved the
+ * edges was this project's own missing L2 invalidate before a submit.
  *
- * This finds out. For each region it poisons the destination, copies,
- * and reports the first and last byte that actually changed. The
- * granularity falls straight out of the differences, and with it the
- * answer to whether the fix is "NVK must handle the unaligned head and
- * tail another way" or "this copy engine cannot be asked for unaligned
- * regions at all".
+ * What made it findable was running nine regions instead of one and
+ * scanning byte by byte for the first and last byte that actually
+ * changed. Every spill turned out to be the distance back to a 32-byte
+ * boundary, and to happen exactly when the previous submit had touched
+ * that line — eleven data points, one model, and this GPU's L2 line at
+ * 32 bytes. Fixed in horizon/submit; PASS 202/202 on hardware,
+ * 2026-08-04.
+ *
+ * It stays because a partial write picking up cached data instead of
+ * memory is invisible to any test that writes whole buffers, which is
+ * every other case in this file.
  *
  * The check per probe is the one Vulkan requires and which nothing about
  * the hardware excuses: a copy writes its region and nothing else.
@@ -292,10 +295,17 @@ static void copy_bounds_sweep(vkfw *fw, const vkfw_buffer *src,
       }
    }
 
-   t_note(t, "F: %u of %u probes wrote outside their region. A start "
-             "rounded down and an end rounded up to the same power of two "
-             "is the copy engine's transfer granularity; the driver "
-             "programs the exact byte address and length.",
+   /* The sentence that used to stand here called a spill "the copy
+    * engine's transfer granularity". It was wrong — the engine programs
+    * and honours the exact byte address and length, and the spill was
+    * this project's own missing L2 invalidate before a submit
+    * (horizon/submit). Left as a live summary rather than a conclusion:
+    * it says what was measured and what a non-zero count would mean, and
+    * nothing about why. */
+   t_note(t, "F: %u of %u probes wrote outside their region. A non-zero "
+             "count means a partial write to an L2 line picked up data "
+             "the GPU had cached rather than what is in memory — the "
+             "spill is always the distance to a 32-byte boundary.",
           unaligned_spill,
           (unsigned)(sizeof(probes) / sizeof(probes[0])));
 }

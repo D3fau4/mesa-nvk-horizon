@@ -12,10 +12,10 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Items 2, 3 and 4 met on hardware, 2026-08-04** (3 and 4 with a documented workaround in the test). Item 1 has one defect, fixed and unverified; 5–9 not started |
-| **What runs on a Switch** | The mandatory Vulkan sequence (`t_vulkan` **PASS 62/62**) and **a compute shader compiled by NAK** (`t_vk_compute` **PASS 35/35**, 4096/4096 words verified by CPU readback). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | **Hardware batch 4**: the L2-invalidate prologue, which should make `t_vk_transfer` pass outright. Then item 5, the triangle |
-| **Known failures** | Item 1: a GPU write to part of a 32-byte L2 line reverted the rest of that line to what the GPU last saw there — half the coherence was missing, fixed by an `L2_SYSMEM_INVALIDATE` before every submit, **not yet run on hardware**. Items 3/4 pass only because the test uploads a shader the driver should have uploaded itself |
+| **Phase** | 5 in progress. **Items 1, 2, 3 and 4 met on hardware, 2026-08-04**, each by CPU readback. Items 5–9 not started |
+| **What runs on a Switch** | Transfers (`t_vk_transfer` **202/202**), a compute shader compiled by NAK (`t_vk_compute` **37/37**), off-screen images and clears through the 3D engine (`t_vk_image` **76/76**), the mandatory sequence (`t_vulkan` **62/62**). All 16 `horizon/` tests pass on console |
+| **Next concrete task** | The NVK fix for the shader heap, so items 3 and 4 stop leaning on a test workaround; then item 5, the triangle |
+| **Known failures** | None outstanding on hardware. Items 3/4 pass only because the test uploads a shader the driver should upload itself — a driver defect with a known fix, not a failing measurement |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
 | **Never verified on hardware** | `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
@@ -229,6 +229,45 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## HARDWARE BATCH 4 — the L2 fix holds; items 1, 2, 3 and 4 are met (2026-08-04)
+
+**Class: hardware (HW).** Six for six, logs in `docs/hw-logs/*-run4-l2fix-PASS.log`:
+
+| | | |
+|---|---|---|
+| `t_gpuwrite` | **PASS 47/47** | `horizon_gpu` only. The submit path with the new prologue |
+| `t_submit` | **PASS 30/30** | the entry queue and back-pressure, now two own entries per submit |
+| `t_vulkan` | **PASS 62/62** | the control, ninth consecutive pass |
+| `t_vk_compute` | **PASS 37/37** | item 2, plus the two new poison checks |
+| `t_vk_transfer` | **PASS 202/202** | **item 1 met** |
+| `t_vk_image` | **PASS 76/76** | items 3 and 4 |
+
+The transfer result is the one that was in doubt:
+
+```
+ok   B words before the region untouched: 257/257 words are 0xdeadbeef
+ok   B words after  the region untouched: 3226/3226 words are 0xdeadbeef
+ok   F [4, 260)   ok   F [8, 264)   ok   F [16, 272)   ok   F [0, 4)   ok   F [0, 12)
+note F: 0 of 9 probes wrote outside their region
+```
+
+Nine regions, five of which used to spill, all exact. One
+`L2_SYSMEM_INVALIDATE` before the work was the whole fix, and nothing
+regressed: `t_gpuwrite` and `t_submit` — the two tests that measure the
+submit path directly, with no driver in them — pass unchanged.
+
+**Items 1, 2, 3 and 4 of Phase 5 are met on hardware by CPU readback.**
+Items 3 and 4 still lean on the test uploading a shader the driver
+should upload itself; that is the next driver change, not a hardware
+question.
+
+One correction landed with this: probe F's summary line still called a
+spill "the copy engine's transfer granularity" — the explanation that
+was withdrawn two runs ago — and would have printed it beside "0 of 9".
+A passing log carrying a wrong explanation is worse than a failing one.
 
 ---
 
