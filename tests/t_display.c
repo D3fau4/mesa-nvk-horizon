@@ -36,6 +36,7 @@
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
+#include <inttypes.h>
 #include <stdbool.h>
 
 #include <switch.h>
@@ -49,8 +50,18 @@ const bool test_uses_display = true;
 
 int run_test(test_ctx *t)
 {
-   t_check(t, test_uses_display,
-           "this test claims the display, so main() started no console");
+   /* NOT `t_check(t, test_uses_display, ...)`. That was the first
+    * version and it asserted a constant this file defines two lines
+    * above — it could not fail, and it did not test the thing its own
+    * message claimed. Found in review of PR #7.
+    *
+    * PrintConsole::consoleInitialised is the console's own record of
+    * whether consoleInit ran. It is the difference between "this test
+    * intends to own the display" and "main() acted on that intent". */
+   const PrintConsole *con = consoleGetDefault();
+   t_check(t, con != NULL && !con->consoleInitialised,
+           "no console was started: main() acted on test_uses_display "
+           "rather than merely being told about it");
 
    /* The default window exists and is ours to ask about. Nothing is
     * configured or dequeued here: Phase 6 does that, and doing it now
@@ -60,13 +71,17 @@ int run_test(test_ctx *t)
    t_check(t, win != NULL, "nwindowGetDefault() returned a window");
 
    if (win != NULL) {
-      u64 w = 0, h = 0;
-      Result rc = nwindowGetDimensions(win, (u32 *)&w, (u32 *)&h);
+      /* u32, because that is what nwindowGetDimensions writes.
+       * The first version declared u64 and cast the pointers, which
+       * read correctly only because the variables were zeroed and the
+       * platform is little-endian — CLAUDE.md asks for explicit widths
+       * for exactly this. Found in review of PR #7. */
+      u32 w = 0, h = 0;
+      Result rc = nwindowGetDimensions(win, &w, &h);
       t_check(t, R_SUCCEEDED(rc),
-              "nwindowGetDimensions -> 0x%08x (%llu x %llu)", rc,
-              (unsigned long long)w, (unsigned long long)h);
-      t_note(t, "the default window is %llu x %llu",
-             (unsigned long long)w, (unsigned long long)h);
+              "nwindowGetDimensions -> 0x%08x (%" PRIu32 " x %" PRIu32 ")",
+              rc, w, h);
+      t_note(t, "the default window is %" PRIu32 " x %" PRIu32, w, h);
    }
 
    t_note(t, "if you are reading this line, a console-less run reported "

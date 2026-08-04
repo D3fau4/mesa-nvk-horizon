@@ -32,9 +32,11 @@
  * number — not in horizon/channel/, run forever by everybody.
  *
  * WHAT THIS MEASURES, AND WHY EACH RUNG IS VERIFIED RATHER THAN
- * COUNTED. A rung is a push buffer of N dwords: N-4 dwords of NOP
- * methods followed by a semaphore release of a payload unique to that
- * rung. Accepting the submit proves nothing — the interesting failure
+ * COUNTED. A rung is a push buffer of N dwords: N-5 dwords of NOP
+ * methods followed by a five-dword semaphore release carrying a
+ * payload unique to that rung. (This comment said N-4 while the rungs
+ * were being corrected for exactly that off-by-one — found in review
+ * of PR #7.) Accepting the submit proves nothing — the interesting failure
  * is an entry the channel takes and then does not finish. So each rung
  * waits for its fence and then reads the payload back, and a rung
  * passes only when the last dword of a very long entry actually

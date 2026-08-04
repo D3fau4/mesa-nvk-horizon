@@ -20,10 +20,23 @@ record — every phase's narrative, every review round, the commit logs —
 moves to docs/history/ in its original order, so a reader following a
 link lands on the same text in the same sequence.
 
---check recomputes each history file's digest against the manifest and
-reports drift. History is evidence: it may be appended to deliberately,
-but an edit that nobody meant to make should be visible, and the
-manifest is what makes it visible.
+--check recomputes the digests in docs/history/ AND docs/hw-logs/
+against their manifests and reports drift. --record-logs regenerates
+the hw-logs manifest, which is how a new hardware log is declared.
+
+WHAT THE MANIFESTS ARE AND ARE NOT, said plainly because the reviewer
+of PR #7 was right to press on it. They are a change-DECLARATION
+mechanism, not an integrity guarantee: anyone who edits a file and its
+digest in the same commit passes, by design, because appending to a
+record is legitimate. What they stop is the silent case — an edit
+nobody meant, or nobody mentioned — by putting the old and new digests
+side by side in a diff a reviewer reads. Nothing here defends against
+a determined rewrite, and this file should not be read as claiming to.
+
+The pre-split STATUS.md digest recorded in the history manifest is a
+provenance note, not a check: that file no longer exists, so the
+reassembly proof cannot be re-run by anyone. It was run once, before
+anything was written, and this documents which bytes it was run on.
 
 Copyright (c) mesa-nvk-horizon contributors
 SPDX-License-Identifier: MIT
@@ -36,6 +49,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATUS = os.path.join(ROOT, "STATUS.md")
 HISTORY = os.path.join(ROOT, "docs", "history")
 MANIFEST = os.path.join(HISTORY, "MANIFEST.sha256")
+HWLOGS = os.path.join(ROOT, "docs", "hw-logs")
+HWLOGS_MANIFEST = os.path.join(HWLOGS, "MANIFEST.sha256")
 
 STAY = "STATUS.md"
 
@@ -82,9 +97,18 @@ commit logs — lives in `docs/history/`, moved there verbatim by
 | `docs/history/commit-logs.md` | the per-phase commit logs |
 
 `scripts/check-history-intact.sh` recomputes their digests against
-`docs/history/MANIFEST.sha256`. History is evidence: appending to it is
-a deliberate act that updates the manifest in the same commit, and any
-other change shows up as a failing gate.
+`docs/history/MANIFEST.sha256`, and does the same for the hardware logs
+in `docs/hw-logs/`. Both are change-*declaration* mechanisms rather
+than integrity guarantees: an edit declared in the same commit passes
+by design, because appending to a record is legitimate. What they stop
+is the undeclared case, by putting old and new digests side by side in
+a diff.
+
+`phase-4-narrative.md` is the one file the script did not cut. It was
+lifted out of the Current state block by hand afterwards, because it
+was a running narrative living inside the block that is supposed to say
+what is true now; its provenance is that commit and the note in its own
+header, not the reassembly proof that covers the other eight.
 
 """
 
@@ -98,42 +122,91 @@ def sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def do_check():
-    if not os.path.exists(MANIFEST):
-        print("check-history: %s does not exist; run the split first"
-              % os.path.relpath(MANIFEST, ROOT), file=sys.stderr)
-        return 1
+def check_tree(label, directory, manifest, how_to_declare):
+    """Compares every file in `directory` against `manifest`."""
+    if not os.path.exists(manifest):
+        print("%s: %s does not exist" % (label,
+              os.path.relpath(manifest, ROOT)), file=sys.stderr)
+        return 1, 0
     bad = 0
     seen = set()
-    with open(MANIFEST, "r", encoding="utf-8") as f:
+    with open(manifest, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             digest, name = line.split(None, 1)
             seen.add(name)
-            path = os.path.join(HISTORY, name)
+            path = os.path.join(directory, name)
             if not os.path.exists(path):
-                print("HISTORY (%s): listed in the manifest and missing "
-                      "from disk." % name)
+                print("%s (%s): listed in the manifest and missing from "
+                      "disk." % (label, name))
                 bad = 1
                 continue
-            with open(path, "r", encoding="utf-8") as h:
+            with open(path, "r", encoding="utf-8", errors="surrogateescape") as h:
                 got = sha(h.read())
             if got != digest:
-                print("HISTORY (%s): content differs from the manifest." % name)
+                print("%s (%s): content differs from the manifest." % (label, name))
                 print("  manifest: %s" % digest)
                 print("  on disk:  %s" % got)
-                print("  History is evidence. If the change was meant, say so")
-                print("  in the commit and update MANIFEST.sha256 with it.")
+                print("  This is evidence. If the change was meant, say so in")
+                print("  the commit and %s" % how_to_declare)
                 bad = 1
-    for name in sorted(os.listdir(HISTORY)):
-        if name.endswith(".md") and name not in seen:
-            print("HISTORY (%s): on disk and not in the manifest." % name)
+    # Every file, not only *.md: the first version looked at one
+    # extension, so a record added with any other name — or in a
+    # subdirectory — was invisible to the check that exists to see it.
+    # Found in review of PR #7.
+    for root, _dirs, files in os.walk(directory):
+        for name in sorted(files):
+            rel = os.path.relpath(os.path.join(root, name), directory)
+            if rel == "MANIFEST.sha256" or rel in seen:
+                continue
+            print("%s (%s): on disk and not in the manifest." % (label, rel))
             bad = 1
-    if bad == 0:
-        print("check-history-intact: OK (%d file(s))" % len(seen))
-    return bad
+    return bad, len(seen)
+
+
+def do_check():
+    bad_h, n_h = check_tree("HISTORY", HISTORY, MANIFEST,
+                            "update docs/history/MANIFEST.sha256 with it.")
+    bad_l, n_l = check_tree("HW LOG", HWLOGS, HWLOGS_MANIFEST,
+                            "run scripts/split-status.py --record-logs.")
+    if bad_h == 0 and bad_l == 0:
+        print("check-history-intact: OK (%d history file(s), %d hardware "
+              "log(s))" % (n_h, n_l))
+    return 1 if (bad_h or bad_l) else 0
+
+
+def do_record_logs():
+    """Regenerates the hardware-log manifest.
+
+    docs/hw-logs/ is the evidence every Phase 5 claim rests on, and it
+    had no manifest and no check while the narrative *about* that
+    evidence had both. .gitignore already argues a lost log is the one
+    kind of file this project cannot afford to lose; a silently
+    reworded one is worse. Found in review of PR #7.
+    """
+    lines = ["# Digests of the hardware logs. Checked by "
+             "scripts/check-history-intact.sh.",
+             "# A new log is declared by running "
+             "scripts/split-status.py --record-logs,",
+             "# which shows up as added lines; a CHANGED line for a log "
+             "that already",
+             "# existed is the thing this exists to make visible."]
+    count = 0
+    for root, _dirs, files in os.walk(HWLOGS):
+        for name in sorted(files):
+            rel = os.path.relpath(os.path.join(root, name), HWLOGS)
+            if rel == "MANIFEST.sha256":
+                continue
+            with open(os.path.join(HWLOGS, rel), "r", encoding="utf-8",
+                      errors="surrogateescape") as f:
+                lines.append("%s  %s" % (sha(f.read()), rel))
+            count += 1
+    with open(HWLOGS_MANIFEST, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("split-status: recorded %d hardware log(s)" % count)
+    return 0
 
 
 def do_split():
@@ -217,7 +290,10 @@ def do_split():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--check":
         sys.exit(do_check())
+    if len(sys.argv) > 1 and sys.argv[1] == "--record-logs":
+        sys.exit(do_record_logs())
     if len(sys.argv) > 1:
-        print("usage: scripts/split-status.py [--check]", file=sys.stderr)
+        print("usage: scripts/split-status.py [--check | --record-logs]",
+              file=sys.stderr)
         sys.exit(1)
     sys.exit(do_split())

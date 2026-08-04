@@ -33,10 +33,17 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
         flags != HORIZON_GPU_SUBMIT_ENTRY_FLAGS_ZERO)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     /* Bound num_spans against the queue capacity before it is used for
-     * anything: unbounded, it would let the validation loop below read
-     * spans[] out of the caller's array, and would let the back-pressure
-     * arithmetic further down wrap silently (CLAUDE.md: overflow-check
-     * every size computation) instead of refusing the submit.
+     * anything, so the back-pressure arithmetic further down cannot
+     * wrap silently (CLAUDE.md: overflow-check every size computation)
+     * instead of refusing the submit.
+     *
+     * This used to also claim an unbounded count "would let the
+     * validation loop below read spans[] out of the caller's array".
+     * It would not: the loop reads exactly the num_spans entries the
+     * caller declared, and a caller who lies about that has already
+     * lost. The wrap is the real reason and it is sufficient. A guard
+     * with a wrong stated rationale invites the next person to weaken
+     * it — found in review of PR #7.
      *
      * SUBTRACTION, NOT ADDITION, and that is the whole point. This
      * check was written as `num_spans + 2 > GPFIFO_QUEUE_SIZE`, which

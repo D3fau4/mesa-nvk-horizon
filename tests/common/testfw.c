@@ -120,12 +120,28 @@ int main(void)
     }
 
     printf("\nLog: %s\nPress + to exit.\n", path);
+    /* With no console there is no screen to read that on, so the log —
+     * which is the whole record for such a run — says it instead.
+     * Found in review of PR #7. */
+    if (test_uses_display && t.log) {
+        fprintf(t.log, "  note the run is finished; press + to exit "
+                       "(there is no console to show this)\n");
+        fflush(t.log);
+    }
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
             break;
-        if (!test_uses_display)
+        if (test_uses_display) {
+            /* consoleUpdate is what blocked on vsync. Without it this
+             * loop was an unthrottled spin on a core until a human
+             * pressed +, on the one path t_display exists to validate.
+             * A frame's worth of sleep costs nothing and is not hiding
+             * a failure — there is nothing here to fail. */
+            svcSleepThread(UINT64_C(16000000));
+        } else {
             consoleUpdate(NULL);
+        }
     }
 
     if (!test_uses_display)

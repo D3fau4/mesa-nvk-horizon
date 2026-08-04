@@ -114,10 +114,15 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
         return horizon_gpu_err_nv(rc);
     }
 
-    /* A notification with a zero timestamp has never fired. */
-    *out_type = (notif.timestamp != 0) ? notif.info32 : 0;
-    if (*out_type != 0)
-        chan->last_error_type = *out_type;
+    /* A notification with a zero timestamp has never fired — and that
+     * is the same "nothing pending now" the TimedOut branch above
+     * reports, so it gets the same answer. The first version latched
+     * only in the other branch, which left this one telling a lost
+     * channel it had no error; found in review of PR #7. */
+    const uint32_t live = (notif.timestamp != 0) ? notif.info32 : 0;
+    if (live != 0)
+        chan->last_error_type = live;
+    *out_type = (live != 0) ? live : chan->last_error_type;
     if (out_desc)
         *out_desc = channel_error_desc(*out_type);
     return horizon_gpu_ok();
@@ -389,10 +394,21 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     }
 
     /* One flush covering both blocks: they share the page, and the
-     * cmdbuf is CPU-cached like everything else here. */
+     * cmdbuf is CPU-cached like everything else here.
+     *
+     * The third argument is a LENGTH. It was written as
+     * CHANNEL_PROLOGUE_CMDS_OFFSET + n*4, which is a length only
+     * because the fence block starts at zero — correct by coincidence,
+     * and silently short if the fence block ever moved. Every other
+     * layout relationship in this file is pinned by a _Static_assert;
+     * this one was not. Found in review of PR #7. */
+    _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET > CHANNEL_FENCE_CMDS_OFFSET,
+                   "the prologue block must follow the fence block");
+    const uint64_t flush_len =
+        (CHANNEL_PROLOGUE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
+        (uint64_t)chan->prologue_cmds_dwords * 4;
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
-                                CHANNEL_PROLOGUE_CMDS_OFFSET +
-                                chan->prologue_cmds_dwords * 4);
+                                flush_len);
     if (horizon_gpu_failed(res))
         goto fail_cmdbuf_map;
 
@@ -554,6 +570,30 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
 {
     if (!chan)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* THE FAULT CHECK BELONGS HERE TOO, and for the same reason it
+     * belongs in the wait: nvgpu's recovery force-increments a faulted
+     * channel's syncpoints, so the counter this function is about to
+     * read says "finished" for work that never ran. Without this,
+     * every retirement whose threshold that counter passed fired and
+     * reap returned ok — buffers recycled for work the GPU abandoned,
+     * with no caller told. horizon_gpu_submit reaps before it queues
+     * and wait_idle returns this function's result, so two more paths
+     * were answering "fine" about a dead channel.
+     *
+     * Fixed in the wait only, first time round; found in review of
+     * PR #7. The callbacks are not run here — horizon_gpu_channel_
+     * destroy still runs them, which is the documented path
+     * (add_retirement's comment) and the one that lets a callback ask
+     * horizon_gpu_channel_is_lost() and behave differently.
+     *
+     * COST, stated because it is a hot path: one non-blocking event
+     * wait and one ioctl per reap, therefore per submit. Measured
+     * against the 85 us of CPU a vkQueueSubmit already costs on this
+     * platform (t_vk_submits), it is not the expensive part — and a
+     * cheap wrong answer here is what this whole fix is about. */
+    if (channel_check_fault(chan))
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
 
     uint32_t hw;
     horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);

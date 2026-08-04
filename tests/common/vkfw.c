@@ -5,6 +5,7 @@
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
+#include <stdio.h>    /* snprintf */
 #include <stdlib.h>   /* setenv, getenv */
 #include <string.h>
 
@@ -37,8 +38,24 @@ const char *vkfw_result_str(VkResult r)
    case VK_ERROR_FRAGMENTED_POOL:          return "FRAGMENTED_POOL";
    case VK_ERROR_OUT_OF_POOL_MEMORY:       return "OUT_OF_POOL_MEMORY";
    case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
-   default:                                return "VkResult";
+   default:                                break;
    }
+
+   /* THE FALLBACK THE HEADER PROMISED AND THIS DID NOT HAVE. It
+    * returned the literal "VkResult", so anything outside the list
+    * above — VK_ERROR_VALIDATION_FAILED_EXT, INVALID_EXTERNAL_HANDLE,
+    * PIPELINE_COMPILE_REQUIRED, anything a newer header adds — logged
+    * as `vkCreateDevice -> VkResult` with the code thrown away. This
+    * is the string every failure line in the suite is built on. Found
+    * in review of PR #7.
+    *
+    * A small rotation of buffers, because a check line can name two
+    * results in one printf. */
+   static char buf[4][24];
+   static uint32_t next;
+   char *out = buf[next++ % 4];
+   snprintf(out, sizeof(buf[0]), "VkResult %d", (int)r);
+   return out;
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -89,8 +106,16 @@ bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
    setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
 
    /* horizon_gpu's default level is WARN, which is right for a driver
-    * in use and wrong for a bring-up test. */
-   setenv("HORIZON_GPU_LOG", "3", 1);
+    * in use and wrong for a bring-up test. Overwriting, not
+    * defaulting: this one is set from outside often enough while
+    * debugging that a silent override would waste somebody's
+    * afternoon, so it defers to an existing value and says which it
+    * used. Found in review of PR #7. */
+   if (getenv("HORIZON_GPU_LOG") == NULL)
+      setenv("HORIZON_GPU_LOG", "3", 1);
+   else
+      t_note(t, "HORIZON_GPU_LOG was already %s in the environment; "
+                "leaving it", getenv("HORIZON_GPU_LOG"));
 
    PFN_vkCreateInstance create_instance = (PFN_vkCreateInstance)
       vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
@@ -262,6 +287,18 @@ fail:
 void vkfw_finish(vkfw *fw)
 {
    if (fw->dev != VK_NULL_HANDLE) {
+      /* This fixture deliberately exposes a submit that does not wait,
+       * so item 9 can keep eight in flight — which means any test
+       * taking a failure path mid-flight arrives here with work
+       * outstanding, and destroying a command pool or a device with
+       * outstanding work is invalid usage. Found in review of PR #7.
+       *
+       * Unchecked on purpose: this runs on the teardown path, often
+       * after a failure, and a device that is already lost will report
+       * it again here. The point is to drain when draining is possible,
+       * not to add a check to the end of every test. */
+      if (fw->vk.vkDeviceWaitIdle != NULL)
+         (void)fw->vk.vkDeviceWaitIdle(fw->dev);
       if (fw->pool != VK_NULL_HANDLE)
          fw->vk.vkDestroyCommandPool(fw->dev, fw->pool, NULL);
       fw->vk.vkDestroyDevice(fw->dev, NULL);
@@ -626,6 +663,7 @@ bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what)
       return false;
 
    bool ok = vkfw_cmd_end_submit(fw, cb, fence);
+   bool safe_to_destroy = !ok;   /* nothing was submitted */
    if (ok) {
       r = fw->vk.vkWaitForFences(fw->dev, 1, &fence, VK_TRUE,
                                  VKFW_FENCE_TIMEOUT_NS);
@@ -635,9 +673,22 @@ bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what)
          fw->last_submit_result = r;
       ok = t_check(t, r == VK_SUCCESS, "vkWaitForFences(%s) -> %s", what,
                    vkfw_result_str(r));
+      /* VK_SUCCESS means the submit retired. DEVICE_LOST means it never
+       * will and the fence is not in use by anything that can still
+       * run. VK_TIMEOUT means it is STILL PENDING, and destroying a
+       * fence a pending submit owns is invalid usage — triggered
+       * exactly on a hang, which is the case where the report has to
+       * be trustworthy. Found in review of PR #7. */
+      safe_to_destroy = (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST);
+      if (!safe_to_destroy) {
+         t_note(t, "%s: the fence is still pending after the wait, so it "
+                   "is leaked rather than destroyed — a fence a submit "
+                   "still owns must not be destroyed", what);
+      }
    }
 
-   fw->vk.vkDestroyFence(fw->dev, fence, NULL);
+   if (safe_to_destroy)
+      fw->vk.vkDestroyFence(fw->dev, fence, NULL);
    return ok;
 }
 

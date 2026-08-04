@@ -35,7 +35,10 @@ VK_EXT_map_memory_placed's features move with it. They were stated flat
 in nvk_get_device_features, which would otherwise report the features of
 an extension the same physical device does not support.
 
-Cross build: libnvk.a builds. Not run on a console.
+Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
+52/52 checks the gate in both directions -- the three extensions
+absent, EXT_image_drm_format_modifier present, and no sparse feature
+advertised (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---

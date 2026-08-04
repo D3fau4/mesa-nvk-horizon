@@ -370,18 +370,32 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
 /* Reverse order, safe on a partially-built or zeroed vkfw_gfx. */
 void vkfw_gfx_destroy(vkfw *fw, vkfw_gfx *g);
 
-/* Compares `n` 32-bit words against `expect`, reporting the first
- * mismatch by index with both values, and passes exactly one check.
- * Returns the number of words that differ. */
+/* Compares `n` 32-bit WORDS — not bytes — against `expect`, reporting
+ * the first mismatch by index with both values, and passes exactly one
+ * check. Returns the number of words that differ.
+ *
+ * THE UNIT IS THE TRAP. Four of the six findings in the PR #7 review
+ * were readback checks measuring the wrong extent, and every one of
+ * them funnels through here; a caller passing a byte count reads four
+ * times past its buffer and the helper cannot tell. It has no size to
+ * validate against, so the macros the tests use are spelled
+ * `.../ 4u` at every call site and the reader can see the division.
+ * Passing a byte count is a defect this signature cannot catch —
+ * stated here rather than left to be discovered. */
 uint32_t vkfw_expect_words(vkfw *fw, const void *got, uint32_t expect,
                            uint32_t n, const char *what);
 
-/* Same, against an array. */
+/* Same, against an array, and the same warning about the unit. */
 uint32_t vkfw_expect_words_array(vkfw *fw, const void *got,
                                  const uint32_t *expect, uint32_t n,
                                  const char *what);
 
-/* VkResult as a short name, for check lines. Falls back to the number. */
+/* VkResult as a short name, for check lines. A result outside the list
+ * it knows comes back as "VkResult <n>" with the number, which is what
+ * the promise here always said and what the code did not do until the
+ * PR #7 review. The returned pointer is one of a small rotation of
+ * static buffers, so a printf may name up to four results at once and
+ * no more. */
 const char *vkfw_result_str(VkResult r);
 
 #endif /* HORIZON_VKFW_H */

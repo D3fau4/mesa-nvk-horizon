@@ -141,6 +141,24 @@ sh_nvk_libs=$(sed -n "/^HORIZON_NVK_TEST_LIBS=\"/,/\"\$/p" \
 compare "NVK archive paths" "meson.build:$ms_nvk_libs" \
         "scripts/toolchain-env.sh:$sh_nvk_libs"
 
+# 6b. The standalone tests, which two build systems list separately.
+#     This is the comparison that was missing when t_fault, t_pbsize and
+#     t_display went into meson.build and not into the Makefile: the
+#     Makefile is a supported path — the one whose output was verified
+#     on hardware first — and scripts/build-switch.sh silently built
+#     three fewer .nro than the Meson path. Found by a reviewer's eye in
+#     PR #7, which is exactly the job a gate is supposed to do instead.
+#
+#     Only the tests that need nothing but the toolchain: the Mesa ones
+#     are comparison 1 and the NVK ones exist on the Meson path alone,
+#     which is a deliberate asymmetry rather than a divergence.
+mk_horizon=$(sed -n '/^TESTS  *:*= *[^#]/,/[^\\]$/p' Makefile |
+             sed 's/^TESTS  *:*= *//' | tokens)
+ms_horizon=$(sed -n '/^horizon_tests  *= *\[/,/^\]/p' meson.build |
+             grep -o "'[^']*'" | tr -d "'" | LC_ALL=C sort -u | tr '\n' ' ')
+compare "standalone test names" "Makefile:$mk_horizon" \
+        "meson.build:$ms_horizon"
+
 # 7. Which shaders each NVK test compiles in. Two files state it:
 #    meson.build's nvk_test_shaders decides which headers are assembled
 #    and added to that test's sources, and the test's own #include lines
@@ -201,6 +219,7 @@ done
 
 if [ "$fail" -eq 0 ]; then
     echo "check-mesa-test-parity: OK (tests, archives, defines, includes," \
-         "default build dir, NVK archives, test shaders)"
+         "default build dir, NVK archives, standalone tests," \
+         "test shaders)"
 fi
 exit "$fail"

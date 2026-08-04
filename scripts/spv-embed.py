@@ -84,16 +84,34 @@ def main() -> int:
         " * SPIR-V version %d.%d, %d words, validated for %s.\n"
         " */\n" % (src, (words[1] >> 16) & 0xFF, (words[1] >> 8) & 0xFF,
                    len(words), args.target_env),
+        "/* Include guard, because the array is a file-scope definition\n"
+        " * and a second include is a redefinition error rather than a\n"
+        " * no-op. Two tests already share a shader; a third sharing one\n"
+        " * twice in a translation unit should not be a build failure.\n"
+        " * Found in review of PR #7. */\n",
+        "#ifndef HORIZON_SPV_%s_H\n#define HORIZON_SPV_%s_H\n\n"
+        % (symbol.upper(), symbol.upper()),
         "#include <stdint.h>\n\n",
         "static const uint32_t %s_spv[] = {\n" % symbol,
     ]
     for i in range(0, len(words), 6):
         row = ", ".join("0x%08x" % w for w in words[i:i + 6])
         out.append("   %s,\n" % row)
-    out.append("};\n")
+    out.append("};\n\n")
+    out.append("#endif /* HORIZON_SPV_%s_H */\n" % symbol.upper())
 
     with open(args.output, "w") as f:
         f.write("".join(out))
+
+    # The intermediate .spv is meson's business too: it is written
+    # beside the output and was declared to nothing, so a clean build
+    # left it behind and no rule knew it existed. Removing it here
+    # keeps the build directory describable by the build system that
+    # owns it. Found in review of PR #7.
+    try:
+        os.unlink(spv)
+    except OSError:
+        pass
     return 0
 
 

@@ -12,17 +12,155 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
-| **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
+| **Phase** | **5's nine items were each met on hardware, 2026-08-04**, by CPU readback of the result, item 9 with eight submits in flight. **Not "complete" as of the PR #7 review:** two of the tests that produced that evidence — `t_vk_transfer` for item 1, `t_vk_depth` for item 7 — were found to be measuring less than they claimed and have changed since. The items stand on the binaries that ran; the current ones have not |
+| **What runs on a Switch** | *Counts from the binaries that ran; several have changed since — see the last row.* Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
 | **Next concrete task** | Re-run the five tests the PR #7 review changed, then Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
-| **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
-| **Known failures** | **`t_fault` crashes the console on exit.** All 15 checks pass, the log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
-| **Open, not blocking** | The L2 writeback is unconditional, one per submit |
+| **The debt batch** | Seven of seven back. Six PASS, and `t_fault`, whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
+| **Known failures** | **`t_fault` crashes the console on exit.** Its checks pass — 14/15 on run 1, 15/15 with the latch that failure earned, 20/20 once the two diagnostic sections were added; three numbers for three builds, which this table used to give as though they described one. The log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
+| **Open, not blocking** | **Two** unconditional L2 operations per submit, not one: the dirty writeback in the fence epilogue and the sysmem invalidate in the prologue this phase added — which also took a second GPFIFO entry per submit, permanently reducing usable queue depth from 0x800 to 0x7fe. Neither cost is measured on its own; the nearest number is 126 us per serialised round trip with both of them in it (`t_vk_submits`) |
 | **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | Nothing outstanding: every measurement this project owed itself has been made on a console. What is not *explained* is `t_fault`'s exit crash |
+| **Never verified on hardware** | **Every test changed since the last console run**, which after the PR #7 review is `t_submit`, `t_pbsize`, `t_vk_caps`, `t_vk_depth`, `t_vk_transfer`, `t_display`, and the whole suite through `vkfw` and `testfw`. The binaries that produced the pass counts in the row above no longer exist in this tree |
 
 
 ---
+
+## Second review of PR #7 — thirty findings, thirty real (2026-08-04)
+
+**Class: cross build (CB).** A full adversarial pass over the whole
+branch, and nothing in it was wrong. Grouped by what it says about this
+tree rather than by file.
+
+### The fault fix was applied to one of three paths
+
+`horizon_gpu_channel_wait_fence` got the notifier check. The premise —
+nvgpu force-increments a faulted channel's syncpoints, so the counter
+says "finished" for work that never ran — applies just as exactly to
+`horizon_gpu_channel_reap`, which **reads that counter and fires
+retirement callbacks on it**, recycling buffers for abandoned work and
+returning `ok`. It is on the submit hot path, and `wait_idle`'s return
+value comes from it. Fixed: reap consults the notifier before the
+syncpoint, returns `CHANNEL_LOST`, and runs nothing.
+
+`horizon_gpu_channel_get_error` had the latch in one branch of two. The
+success path with a never-fired notification answered "none" for a
+latched, lost channel — the exact bug the latch was added for, in the
+other half of the same function.
+
+Both headers understated their contracts. `wait_fence` now says in the
+header what it does: **it returns `CHANNEL_LOST` for a fence that
+genuinely reached its threshold**, which every caller sees, and no
+header said.
+
+### The L2 prologue, and the cost that was asserted
+
+Three things. The justification is single-channel and
+`L2_SYSMEM_INVALIDATE` is device-global, with nothing said about what a
+prologue invalidate on one channel does to another channel's in-flight
+work — and this suite runs multi-channel. The cost is *asserted*
+("the same shape and order of cost as the writeback that has always
+been there") in a file where every other claim carries a number. And
+the flush passed `CHANNEL_PROLOGUE_CMDS_OFFSET + n*4` where a length
+belongs — correct only because the fence block is at zero, unpinned by
+any `_Static_assert` while every other layout relationship in that file
+has one.
+
+The length is now computed as a length with an assertion behind it. The
+two open ones are recorded in the state block rather than answered:
+**two L2 operations per submit, not one**, and a queue depth
+permanently 0x7fe rather than 0x800.
+
+And the `num_spans` guard's stated rationale was wrong — it claimed an
+unbounded count would read past the caller's array, which it would not;
+the wrap is the real and sufficient reason. A guard with a wrong reason
+invites the next person to weaken it.
+
+### The fixture, which every failure line goes through
+
+`vkfw_result_str`'s header promised "falls back to the number" and
+returned the literal string `"VkResult"`, so every result outside its
+list logged with the code discarded. `vkfw_submit_and_wait` destroyed
+the fence unconditionally — including after `VK_TIMEOUT`, when a
+pending submit still owns it, which is invalid usage triggering exactly
+on a hang. `vkfw_finish` tore down the pool and device with no
+`vkDeviceWaitIdle`, on a fixture that deliberately exposes non-waiting
+submit. All three fixed.
+
+`vkfw_expect_words` takes a word count and no size, and four of the six
+findings in the *previous* review were readback checks measuring the
+wrong extent — all of them through this helper. It cannot validate what
+it is given; the header now says so instead of leaving it to be
+discovered.
+
+### The display path, which Phase 6 depends on
+
+Dropping `consoleUpdate` dropped the vsync block with it, so the exit
+loop was an **unthrottled spin on a core** until somebody pressed + —
+on the one path `t_display` exists to validate. The "Press + to exit"
+prompt went to a `printf` with no console behind it, so a console-less
+run left the operator no indication it had finished. `t_display` passed
+`(u32 *)&w` for a `u64`, which reads correctly only by little-endian
+accident and is what CLAUDE.md's explicit-width rule is for. And its
+first check asserted a constant defined two lines above it: it could
+not fail, and it did not test the thing its own message claimed. It now
+asks the console whether it was initialised.
+
+### Gates that did not exist, for defects already found by eye
+
+Nothing compared the Makefile's `TESTS` against meson's
+`horizon_tests` — the one list that had just diverged, found by a
+reviewer rather than by a gate. Comparison 6b now does, broken to
+confirm it fails.
+
+`docs/hw-logs/` — 41 files, the evidence every Phase 5 claim rests on —
+had no manifest and no check, while the narrative *about* that evidence
+had both. Now covered, and `--check` no longer looks only at `*.md`, so
+a record added with any other name is visible.
+
+**And the manifests are described honestly now.** They are a
+change-*declaration* mechanism, not an integrity guarantee: an edit
+declared in the same commit passes by design. The pre-split digest is a
+provenance note, not a check — the file it describes is gone and the
+reassembly cannot be re-run. `phase-4-narrative.md` is the one history
+file the script did not cut; it was lifted out by hand afterwards and
+its provenance is that commit, which the script now says.
+
+**There is still no CI.** Every gate is a script somebody has to
+remember to run, and `split-status.py` promised an undeclared edit
+"shows up as a failing gate" while nothing makes it fail. That needs
+the owner's decision about GitHub Actions minutes and a container, so
+it is named here and not invented.
+
+### The patches
+
+0048 carried none of the four trailers `mesa-patches/README.md` calls
+mandatory, under a README saying "Evidence is not optional" — and it is
+the one patch here that changes `nvk_CreateDevice` for every device on
+the platform. It has them now, with the hardware evidence. Its subject
+was a bare `[PATCH]`; it is `[PATCH 48/48]`.
+
+0045, 0046 and 0047 all still said "Not run on a console" while this
+same PR ships the logs of those runs. Corrected to say what was
+measured and where the log is.
+
+And 0040 — the revert of the window block-off — reasoned from an
+emulator failure to a claim about the hardware that `t_va_window` later
+disproved. It stays in the series, because the series is the record of
+what was believed and when, but the correction is now in its message so
+a rebase or an upstream submission carries it with the claim.
+
+### What this review is evidence of
+
+The first pass found six; this one found thirty and every one held. The
+pattern across both is the same and it is worth naming: **the failures
+are in the things that report, not in the things that compute.** A
+guard whose rationale was wrong, a latch in one branch of two, a
+promise in a header the code did not keep, a state block whose summary
+row contradicted its own body, gates for defects already found by eye.
+The GPU work has been right; the machinery that says whether it is
+right has been where the defects are.
+
+Not run on hardware. Everything in the suite changed.
+
 
 ## Codex review of PR #7 — six findings, six real (2026-08-04)
 

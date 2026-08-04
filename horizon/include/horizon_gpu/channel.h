@@ -89,7 +89,14 @@ horizon_gpu_channel_bind_engines(horizon_gpu_channel *chan,
                                  horizon_gpu_fence *out_fence);
 
 /* Non-blocking: reads the syncpoint once and runs every retirement
- * callback whose fence has been reached (docs/synchronization.md § 3). */
+ * callback whose fence has been reached (docs/synchronization.md § 3).
+ *
+ * Returns HORIZON_GPU_ERR_CHANNEL_LOST, and runs nothing, when the
+ * channel has faulted. A faulted channel's syncpoints are force-
+ * incremented by nvgpu's recovery, so the counter this reads says
+ * "finished" for work that never ran; retiring on it would recycle
+ * buffers for abandoned work and report success. Callers on the submit
+ * path see the fault here. */
 horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
                                             uint32_t *out_retired);
 
@@ -104,15 +111,25 @@ horizon_gpu_channel_add_retirement(horizon_gpu_channel *chan,
                                    horizon_gpu_fence fence,
                                    void (*fn)(void *ctx), void *ctx);
 
-/* Fence wait that re-checks this channel's error notifier while waiting,
- * so a faulted channel yields HORIZON_GPU_ERR_CHANNEL_LOST instead of an
- * eternal timeout (docs/synchronization.md § 6). */
+/* Fence wait that consults this channel's error notifier as well as the
+ * syncpoint (docs/synchronization.md § 6).
+ *
+ * IT RETURNS HORIZON_GPU_ERR_CHANNEL_LOST FOR A FENCE THAT REACHED ITS
+ * THRESHOLD, when the channel faulted — not only for one that would
+ * otherwise have timed out. That is the whole point: nvgpu's recovery
+ * force-increments a faulted channel's syncpoints, so "reached" is not
+ * evidence the work ran, and a wait that reported success on the
+ * counter alone was measured doing exactly that (2026-08-04,
+ * t_vk_image run 1). Every caller sees this: success means the work
+ * ran, and CHANNEL_LOST means it may not have. */
 horizon_gpu_result
 horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                                horizon_gpu_fence fence, uint64_t timeout_ns);
 
 /* Waits on the fence of the most recent submit, then reaps. It does not
- * iterate or sleep (docs/synchronization.md § 5). */
+ * iterate or sleep (docs/synchronization.md § 5). Both halves report a
+ * faulted channel, so this returns HORIZON_GPU_ERR_CHANNEL_LOST rather
+ * than success for work a fault abandoned. */
 horizon_gpu_result horizon_gpu_channel_wait_idle(horizon_gpu_channel *chan,
                                                  uint64_t timeout_ns);
 

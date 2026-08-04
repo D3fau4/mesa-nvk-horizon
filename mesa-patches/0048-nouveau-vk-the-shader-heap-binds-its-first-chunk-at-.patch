@@ -1,8 +1,8 @@
 From 6057ada4ea8b6c4d17b34f4b4cb08ca02cb95472 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 20:00:00 +0000
-Subject: [PATCH] nouveau/vk: the shader heap binds its first chunk at device
- creation
+Subject: [PATCH 48/48] nouveau/vk: the shader heap binds its first chunk at
+ device creation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -30,6 +30,25 @@ the heap by one chunk in vkCreateDevice, under the same
 cls_eng3d < VOLTA_A that decides the heap is contiguous in the first
 place. It costs one 64K allocation on a device that was going to make it
 as soon as anything was compiled.
+
+mesa-nvk-horizon: Phase 5 items 3 and 4 (off-screen images, clears)
+Why: the first render pass on a device that has compiled nothing MMU-
+ faults, because SET_PROGRAM_REGION is programmed once at device
+ creation from a contiguous heap that binds nothing until the first
+ upload. The engines are handed a valid VA that maps nothing, and the
+ instruction cache pre-fetches from it.
+Evidence: measured on hardware (GM20B), 2026-08-04. t_vk_image run 1
+ faulted with nothing written; run 3, identical except for a throwaway
+ shader compiled first, passed 76/76. With this patch the workaround is
+ gone from the test and it passes 72/72 -- the four missing checks are
+ the workaround's own (docs/hw-logs/t_vk_image-run5-batch5-PASS.log).
+Upstream: candidate. The defect is not Horizon-specific -- any KMD that
+ faults on an unmapped read rather than absorbing it will see it -- but
+ nobody else has reported it, so it would need a reproducer on a
+ desktop nouveau before it is worth sending.
+
+Cross build: libnvk.a builds, 0 TLS relocations. Run on a console
+2026-08-04, as above.
 
 Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 ---

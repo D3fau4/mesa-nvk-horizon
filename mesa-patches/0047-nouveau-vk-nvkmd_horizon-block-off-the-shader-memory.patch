@@ -45,7 +45,11 @@ about a hazard that was already prevented.
 Still not fatal on failure, for a smaller reason than before: without it
 the collision is back to being detected and logged, which is what it was.
 
-Cross build: libnvk.a builds, 0 TLS relocations. Not run on a console.
+Cross build: libnvk.a builds, 0 TLS relocations. RUN ON A CONSOLE
+2026-08-04: the shader-window overlap warning is gone from all four
+logs of that batch and vkCreateDevice still succeeds
+(docs/hw-logs/t_vulkan-run8-window-blocked-PASS.log and the three
+beside it).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---

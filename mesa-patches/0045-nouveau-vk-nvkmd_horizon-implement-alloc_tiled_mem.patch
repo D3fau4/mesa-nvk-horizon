@@ -53,7 +53,11 @@ the advertised set; nothing enables it here, and an advertised extension
 costs nothing until an application asks for it.
 
 Cross build: libnvk.a builds and carries nvkmd_horizon_alloc_tiled_mem.
-Not run on a console.
+Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
+52/52 reaches this operation through the one path that can -- a
+DRM_FORMAT_MOD_LINEAR image used as a colour attachment, which makes
+NVK allocate a tiled shadow here -- and all 4096 texels come back
+correct (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---
