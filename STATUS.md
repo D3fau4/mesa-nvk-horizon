@@ -2281,6 +2281,27 @@ sides by measurement. **Nothing is owed on hardware.**
 
 ---
 
+## Comparative audit: `nxvk` (2026-07-28)
+
+Owner asked for a comparison against `github.com/PalindromicBreadLoaf/nxvk`, an unrelated
+third-party NVK/Switch port discovered outside Phase 0. Not part of the phase ladder;
+documentation only, no code changed. Method: shallow `git clone --depth 1 --branch switch`
+(default branch is `switch`, not `main`) at commit `02b642f9b9…`, files read directly
+(`nvkmd_nvgpu.{h,c}*`, `wsi_switch.c`) rather than summarised, matching this document's own
+evidentiary standard. Written up as `docs/reference-analysis.md` § 12.5.
+
+Headline findings: `nxvk` is a direct Mesa fork (no `mesa-patches/` equivalent) with a
+native two-layer `nvkmd_nvgpu` backend that calls libnx directly — no DRM/nouveau shim,
+same rejection as this project, but no `horizon/`-equivalent Vulkan-free layer either.
+Its submit path is asynchronous (converges with `docs/synchronization.md`), and one Phase 6
+finding lands here too: its WSI implements real `WSI_SWAPCHAIN_NO_BLIT` zero-copy (something
+the `switch-nvk` reference only planned) but still does a CPU-blocking
+`WaitForFences(..., UINT64_MAX)` before `nwindowQueueBuffer(..., NULL)` at present — the
+exact defect `docs/wsi.md` § 4 designs around. No code was copied; new pending decision
+below.
+
+---
+
 ## Codex PR review, PR #4 (2026-07-27) — 8 findings, 7 real
 
 `chatgpt-codex-connector` reviewed PR #4 at `1b5e0bf` and left **2 × P1
@@ -4175,6 +4196,24 @@ emitters), and found no regression in either mode.
 | D12 | Sparse binding: implement the bind context, or add a kmd capability and turn the feature off | **open** — Phase 4 item 6. `sparseBinding` is `cls_eng3d >= MAXWELL_B` and GM20B's queried 3D class is `0xb197` = MAXWELL_B, so NVK advertises it on this chip unless the condition changes |
 | D14 | An uncached memory policy in `horizon/` | **open, raised with the owner; does NOT block Phase 4** (traced: the fill path touches no COHERENT allocation, and vkCmdFillBuffer is DMA-engine methods, not a shader) — Vulkan requires a `HOST_VISIBLE + HOST_COHERENT` memory type; NVK advertises one on SoC and means an *uncached* map by it; `horizon_gpu` offers only `HORIZON_GPU_MEM_CACHED`, and `NVKMD_MEM_COHERENT` makes nvkmd skip cache maintenance entirely. The mechanism exists (`svcSetMemoryAttribute` + `MemoryAttribute_Uncached`, as deko3d does) but it means touching `horizon/` |
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
+| D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **open** — no design done, no code written; recorded only because it is a genuinely new idea not seen in the `switch-nvk` audit. **Was numbered D9 on `main`**; renumbered on merge, see the note below |
+
+### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
+
+Two decisions were given the number **D9** independently: this branch used it from
+Phase 4 step 1 onwards for the `nvkmd` pdev/dev split, and `main` used it — via the
+`nxvk` audit merged as PR #5 — for the channel warm-up ramp. Merging the two histories
+put both rows in this table.
+
+The branch's D9 kept the number, because it is load-bearing: it is cited in four places
+inside `mesa-patches/0018-…`, which is applied source, and in six places in this file.
+The `nxvk` row was cited nowhere — `docs/reference-analysis.md` § 12.5.2 and § 12.5.5
+describe the idea without naming a number — so renumbering it to **D15** changes no other
+file and loses no history. Nothing was dropped; only one identifier moved.
+
+`main`'s D8 row still read **open**. It is superseded here, not by argument but by the
+work: items 6-10 convert the absolute deadline to a relative duration exactly once, which
+is what the question was blocking.
 
 ### D2 — Mesa version: `mesa-26.1.5`
 
