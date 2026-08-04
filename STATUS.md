@@ -14,11 +14,11 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | 5 in progress. **Items 1, 2, 3, 4, 5, 7, 8 and 9 met on hardware, 2026-08-04**, each by CPU readback. **Item 6 is the only one open**: its test passes now, but a failure it produced once has not been explained |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), **a rasterised triangle with interpolated vertex colours** (**84/84**), **the depth test with the depth buffer read back** (**66/66**), **twelve colour formats** (**282/282**), **eight submits outstanding at once** (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console. Sampling is the one thing that does not |
-| **Next concrete task** | Run `t_vk_texture` with the three-variant matrix, which separates the usage flag from the early readback as the reason run 1's failure stopped reproducing |
-| **Known failures** | **Item 6, unexplained.** Run 1: rows 4 and 5 of an 8x8 tiled source read as transparent black. Run 2: the same configuration passes 213/213 with the source verified byte for byte — but three things changed at once between them, so nothing is explained and the item stays open |
+| **Next concrete task** | Run `t_vk_texture` with the repeated variants — 24 fresh iterations of the configuration that failed once — since the call sequence has been ruled out and only intermittency is left |
+| **Known failures** | **Item 6, unexplained and not reproducible.** Run 1: rows 4 and 5 of an 8x8 tiled source read as transparent black. Runs 2 and 3: the same configuration passes, including run 1's exact call sequence with no `TRANSFER_SRC` and no readback. The usage flag, the early readback and L2 coherence are all ruled out; only intermittency is left, and the next run repeats the configuration 24 times to test it |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
-| **Never verified on hardware** | `t_vk_texture`'s three-variant matrix; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
+| **Never verified on hardware** | `t_vk_texture`'s repeated variants; `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
 
 **Phase 4 was:** `nvkmd_horizon`, the backend NVK talks to. All ten milestone
 items implemented, the driver linked as a `.nro`, and the mandatory sequence
@@ -229,6 +229,55 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## Item 6, run 3: the call sequence is not the trigger (2026-08-04)
+
+**Class: hardware (HW), then cross build (CB).** `t_vk_texture`
+**PASS 340/340** — all three variants of the 8x8 tiled source, including
+**run 1 shape**: no `TRANSFER_SRC`, no readback, the same sequence of
+Vulkan calls that produced 3072/4096 in batch 5.
+
+So the matrix answered, and its answer is the third branch: **neither
+candidate is the trigger.**
+
+- not the usage flag: run-1 shape has no `TRANSFER_SRC` and passes;
+- not the early readback: "checked after" has none before the sampling
+  and passes, and its copy-out afterwards shows the image intact;
+- and not L2 coherence, which is closed by construction as well as by
+  this run — `horizon_cmds_fence_incr` already emits wait-for-idle, a
+  dirty-L2 writeback and then the increment, so a fence means the
+  previous submit's writes are in memory before the next submit's
+  invalidate prologue runs.
+
+### What is left is the hypothesis a replica cannot test
+
+Run 1 was the sixth of eleven binaries on a console that had been
+working for a while. Runs 2 and 3 were one binary on its own. If the
+failure is intermittent, reproducing the *shape* of the call sequence
+is worth nothing and **repetition** is worth everything.
+
+So the two 8x8 rows are now repeated: the run-1 shape sixteen times and
+the attributable variant eight, each iteration building, uploading and
+sampling a fresh source image. Any single failing iteration is named in
+the log, and for the attributable variant the copy-out afterwards says
+whether the image was right all along — that is, whether the texture
+unit read something the copy engine did not.
+
+### And if that passes too
+
+Then the honest record is: **a real failure was observed once, with a
+signature two independent cases agreed on to the byte, and it has
+resisted thirty-two further attempts under the same configuration.**
+That is not a conclusion that item 6 works and it is not a conclusion
+that it is broken. The attribution machinery stays in the test so that
+the next occurrence is diagnosed rather than merely seen, and Phase 5
+does not stall on it — the other eight items are met and the exit
+criterion for item 6 is satisfied by a test that checks everything item
+6 requires.
+
+Gates 4/4, host tests 6/6, 23 `.nro`. Not run yet.
 
 ---
 

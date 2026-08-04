@@ -29,33 +29,32 @@
  * not been explained, and calling it fixed would be the same mistake as
  * a check that reports success without measuring anything.
  *
- * So the 8x8 tiled source now runs three ways, and the three separate
- * the two candidates this file can control:
+ * Run 3 then ran the 8x8 tiled source three ways — with the flag and
+ * an early readback, with the flag and a late one, and with neither,
+ * which is run 1's call sequence exactly — and **all three passed**,
+ * 340/340. So neither of the two candidates is the trigger, and what
+ * is left is the hypothesis that replicating a call sequence cannot
+ * test: that the failure is not a function of the call sequence at all.
  *
- *   checked first    upload, copy out, check, sample     (run 2)
- *   checked after    upload, sample, then copy out       (run 1's shape,
- *                                                         attributable)
- *   run 1 shape      no TRANSFER_SRC, no copy out at all (run 1 exactly)
+ * WHICH IS WHY THE FIRST TWO ROWS OF THE TABLE ARE REPEATED. Run 1 was
+ * the sixth of eleven binaries on a console that had been working for a
+ * while; runs 2 and 3 were one binary on its own. Against something
+ * intermittent, reproducing the shape is worth nothing and repetition
+ * is worth everything, so the run-1 shape is now built, uploaded and
+ * sampled from scratch sixteen times over, and the attributable
+ * variant eight. If any single iteration fails, the log says which one
+ * and — for the attributable variant — whether the image was right all
+ * along.
  *
- * Between upload and sampling, "checked after" is identical to "run 1
- * shape" except for the usage flag, and identical to "checked first"
- * except for the readback. So:
+ * If they all pass again, the honest conclusion is that a real failure
+ * was observed once and has resisted thirty-two further attempts, and
+ * that the machinery to attribute it stays in place for the next time
+ * it appears. It is not a conclusion that item 6 works and it is not a
+ * conclusion that it is broken.
  *
- *   after passes, run-1-shape fails -> the usage flag, i.e. the layout
- *   both fail                       -> the early readback was masking it
- *   all three pass                  -> neither; what is left uncontrolled
- *                                      is allocation order, the
- *                                      addresses that follow from it,
- *                                      and run 1's data pattern
- *
- * The uncomfortable part, stated because it is a limit of the method:
- * a source without TRANSFER_SRC cannot be read back at all, so if the
- * usage flag is the trigger, the verification added in run 2 is
- * structurally unable to see it. That is exactly why "run 1 shape" is
- * in the table even though it cannot attribute its own failure — the
- * other two rows are what attribute it.
- *
- * THE THREE SOURCES BEYOND THAT. A Maxwell GOB is 64 bytes by 8 rows.
+ * THE OTHER THREE ROWS ARE THE CHARACTERISED BASELINE, and they still
+ * separate the candidates if a repeated iteration ever does fail. A
+ * Maxwell GOB is 64 bytes by 8 rows.
  * An 8x8 RGBA8 image is 32 bytes by 8 rows — half a GOB wide — and its
  * rows 4 and 5 are exactly the third 64-byte group of the GOB's
  * swizzle. A 64x64 source is a full GOB wide and eight GOBs tall, so if
@@ -195,6 +194,10 @@ struct source {
     * unable to see it. */
    bool transfer_src;
    enum verify verify;
+   /* How many times to build, upload and sample this source from
+    * scratch. One for a configuration being characterised; many for one
+    * being hunted. See the header. */
+   uint32_t repeats;
 };
 
 /* THE MATRIX, and what each row can conclude.
@@ -212,33 +215,34 @@ struct source {
  *                               addresses, or run 1's data pattern)
  */
 static const struct source SOURCES[] = {
-   /* Run 2's arrangement, which passed: half a GOB wide, exactly one
-    * GOB tall, with its rows 4 and 5 at the third 64-byte group of the
-    * GOB swizzle — the ones that came back as zero in run 1. */
-   { "8x8 optimal, checked first", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
-     true, VERIFY_BEFORE },
-   /* The same image, sampled straight after the upload the way run 1
-    * did, and only then copied out. If sampling fails here and the
-    * copy-out afterwards shows the image was right all along, the
-    * texture unit is reading something the copy engine is not. */
-   { "8x8 optimal, checked after", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
-     true, VERIFY_AFTER },
-   /* Run 1 exactly: no TRANSFER_SRC, no readback, sample and see. It
-    * cannot attribute a failure on its own — the two rows above are
-    * what attribute it. */
+   /* Run 1's shape, repeated. No TRANSFER_SRC and no readback, built
+    * and uploaded and sampled from scratch every iteration, because a
+    * failure that survives three exact reproductions is more likely to
+    * be intermittent than structural. This is the row that is hunting
+    * rather than characterising. */
    { "8x8 optimal, run 1 shape", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
-     false, VERIFY_NONE },
+     false, VERIFY_NONE, 16 },
+   /* The same, but with the source copied out after the sampling, so
+    * an iteration that does fail says whether the texture unit read
+    * something the copy engine did not. Fewer iterations because each
+    * one costs an extra submit and a second full comparison. */
+   { "8x8 optimal, checked after", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
+     true, VERIFY_AFTER, 8 },
+   /* Run 2's arrangement: copy out and check before sampling. Kept as
+    * the characterised baseline. */
+   { "8x8 optimal, checked first", 8, 8, 2, VK_IMAGE_TILING_OPTIMAL,
+     true, VERIFY_BEFORE, 1 },
    /* A full GOB wide and eight tall. If the fault is about surfaces
     * narrower than a GOB, this one is clean and the ones above are
     * not. */
    { "64x64 optimal", 64, 64, 2, VK_IMAGE_TILING_OPTIMAL,
-     true, VERIFY_BEFORE },
+     true, VERIFY_BEFORE, 1 },
    /* No tiling at all, and one level: LINEAR images are limited to one
     * mip on most implementations, so this source runs cases A and C
     * only. If this passes where a tiled 8x8 fails, the fault is in the
     * tiled layout and not in the sampler. */
    { "8x8 linear", 8, 8, 1, VK_IMAGE_TILING_LINEAR,
-     true, VERIFY_BEFORE },
+     true, VERIFY_BEFORE, 1 },
 };
 #define NUM_SOURCES (sizeof(SOURCES) / sizeof(SOURCES[0]))
 
@@ -354,7 +358,7 @@ static void level_regions(const struct source *s, VkBufferImageCopy *out)
  * (0,32)" and "1024 wrong from (0,32) to (63,47)" are different
  * findings and only the second one identifies a band of rows. */
 static bool check_source(vkfw *fw, const struct source *s,
-                         const uint32_t *back)
+                         const char *label, const uint32_t *back)
 {
    test_ctx *t = fw->t;
    bool all_ok = true;
@@ -380,13 +384,13 @@ static bool check_source(vkfw *fw, const struct source *s,
 
       const bool ok = t_check(t, wrong == 0,
                               "%s: level %u came back as it went in "
-                              "(%u/%u texels)", s->name, l,
+                              "(%u/%u texels)", label, l,
                               lw * lh - wrong, lw * lh);
       all_ok = all_ok && ok;
       if (wrong != 0) {
          t_note(t, "%s: level %u wrong from (%u,%u) to (%u,%u), %u of %u "
                    "are zero; first got 0x%08x want 0x%08x",
-                s->name, l, first % lw, first / lw, last % lw, last / lw,
+                label, l, first % lw, first / lw, last % lw, last / lw,
                 zeroes, wrong, lv[first],
                 src_texel(l, first % lw, first / lw));
       }
@@ -587,7 +591,10 @@ struct sampling {
    VkSampler nearest, linear;
 };
 
-static void run_source(vkfw *fw, const struct source *s,
+/* `label` is the source's name, with the iteration appended when the
+ * source is repeated, so a failure in a hunt of sixteen says which one
+ * of the sixteen it was. */
+static void run_source(vkfw *fw, const struct source *s, const char *label,
                        const struct sampling *smp, vkfw_buffer *staging,
                        vkfw_buffer *src_back, vkfw_buffer *dst,
                        VkImage target, VkImageView target_view)
@@ -601,9 +608,9 @@ static void run_source(vkfw *fw, const struct source *s,
       (s->transfer_src ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u);
 
    if (!vkfw_image_supported(fw, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D,
-                             s->tiling, usage, s->name)) {
+                             s->tiling, usage, label)) {
       t_note(t, "%s: the driver does not support this source "
-                "configuration; skipped, not failed", s->name);
+                "configuration; skipped, not failed", label);
       return;
    }
 
@@ -685,13 +692,13 @@ static void run_source(vkfw *fw, const struct source *s,
    if (s->verify == VERIFY_BEFORE) {
       if (!vkfw_buffer_invalidate(fw, src_back))
          goto out;
-      if (!check_source(fw, s, (const uint32_t *)src_back->map)) {
+      if (!check_source(fw, s, label, (const uint32_t *)src_back->map)) {
          /* The sampling cases would now fail on the source's contents
           * and say nothing about sampling. Reporting three more
           * failures for one cause is noise. */
          t_note(t, "%s: the source did not survive the round trip, so the "
                    "sampling cases below would be measuring the upload; "
-                   "skipped", s->name);
+                   "skipped", label);
          goto out;
       }
    }
@@ -709,7 +716,7 @@ static void run_source(vkfw *fw, const struct source *s,
    };
    VkResult r = fw->vk.vkCreateImageView(fw->dev, &ivci, NULL, &view);
    if (!t_check(t, r == VK_SUCCESS, "%s: vkCreateImageView(%u level(s)) "
-                "-> %s", s->name, s->levels, vkfw_result_str(r)))
+                "-> %s", label, s->levels, vkfw_result_str(r)))
       goto out;
 
    const VkDescriptorSetLayout layouts[2] = { smp->set_layout,
@@ -722,7 +729,7 @@ static void run_source(vkfw *fw, const struct source *s,
    };
    r = fw->vk.vkAllocateDescriptorSets(fw->dev, &dsai, sets);
    if (!t_check(t, r == VK_SUCCESS, "%s: vkAllocateDescriptorSets(2) -> %s",
-                s->name, vkfw_result_str(r)))
+                label, vkfw_result_str(r)))
       goto out;
 
    const VkDescriptorImageInfo dii[2] = {
@@ -743,10 +750,12 @@ static void run_source(vkfw *fw, const struct source *s,
    };
    fw->vk.vkUpdateDescriptorSets(fw->dev, 2, writes, 0, NULL);
 
-   char what[80];
+   /* Long enough for the longest label plus the longest case
+    * suffix; -Wformat-truncation checks the arithmetic. */
+   char what[160];
 
    /* ---- A: nearest, level 0 -------------------------------------- */
-   snprintf(what, sizeof(what), "%s A: nearest, implicit LOD", s->name);
+   snprintf(what, sizeof(what), "%s A: nearest, implicit LOD", label);
    if (!vkfw_buffer_poison(fw, dst, POISON))
       goto out;
    if (render(fw, what, &smp->gfx_sample, sets[0], target, target_view,
@@ -758,7 +767,7 @@ static void run_source(vkfw *fw, const struct source *s,
 
    /* ---- B: nearest, level 1 -------------------------------------- */
    if (s->levels > 1 && !vkfw_device_lost(fw)) {
-      snprintf(what, sizeof(what), "%s B: nearest, explicit LOD 1", s->name);
+      snprintf(what, sizeof(what), "%s B: nearest, explicit LOD 1", label);
       if (!vkfw_buffer_poison(fw, dst, POISON))
          goto out;
       if (render(fw, what, &smp->gfx_lod1, sets[0], target, target_view,
@@ -769,12 +778,12 @@ static void run_source(vkfw *fw, const struct source *s,
       }
    } else if (s->levels == 1) {
       t_note(t, "%s: one mip level, so there is no explicit-LOD case",
-             s->name);
+             label);
    }
 
    /* ---- C: linear, level 0 --------------------------------------- */
    if (!vkfw_device_lost(fw)) {
-      snprintf(what, sizeof(what), "%s C: linear, implicit LOD", s->name);
+      snprintf(what, sizeof(what), "%s C: linear, implicit LOD", label);
       if (!vkfw_buffer_poison(fw, dst, POISON))
          goto out;
       if (render(fw, what, &smp->gfx_sample, sets[1], target, target_view,
@@ -813,7 +822,7 @@ static void run_source(vkfw *fw, const struct source *s,
        * something the copy engine did not — the descriptor or a cache,
        * not the upload. If this fails too, the upload never landed and
        * the sampler was reporting it faithfully. */
-      check_source(fw, s, (const uint32_t *)src_back->map);
+      check_source(fw, s, label, (const uint32_t *)src_back->map);
    }
 
 out:
@@ -918,17 +927,21 @@ int run_test(test_ctx *t)
                 vkfw_result_str(r)))
       goto out;
 
-   /* Two sets per source, and sources are not torn down between cases,
-    * so the pool holds two for each. A descriptor set must not be
-    * rewritten while a submit that uses it is in flight, and separate
-    * sets make that impossible to get wrong. */
+   /* Two sets per ITERATION, not per source: a repeated source builds a
+    * fresh image and fresh sets every time, and nothing is freed until
+    * the test ends. A descriptor set must not be rewritten while a
+    * submit that uses it is in flight, and separate sets make that
+    * impossible to get wrong. */
+   uint32_t total_sets = 0;
+   for (uint32_t i = 0; i < NUM_SOURCES; i++)
+      total_sets += 2u * SOURCES[i].repeats;
    const VkDescriptorPoolSize psize = {
       .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-      .descriptorCount = 2u * NUM_SOURCES,
+      .descriptorCount = total_sets,
    };
    const VkDescriptorPoolCreateInfo dpci = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-      .maxSets = 2u * NUM_SOURCES,
+      .maxSets = total_sets,
       .poolSizeCount = 1,
       .pPoolSizes = &psize,
    };
@@ -956,13 +969,26 @@ int run_test(test_ctx *t)
       goto out;
 
    for (uint32_t i = 0; i < NUM_SOURCES; i++) {
-      if (vkfw_device_lost(&fw)) {
-         t_note(t, "device lost; %u source(s) from \"%s\" on not attempted",
-                (unsigned)(NUM_SOURCES - i), SOURCES[i].name);
-         break;
+      const struct source *s = &SOURCES[i];
+      if (s->repeats > 1) {
+         t_note(t, "%s: %u iterations, each building, uploading and "
+                   "sampling the source from scratch", s->name, s->repeats);
       }
-      run_source(&fw, &SOURCES[i], &smp, &staging, &src_back, &dst,
-                 target.img, target_view);
+      for (uint32_t n = 0; n < s->repeats; n++) {
+         if (vkfw_device_lost(&fw)) {
+            t_note(t, "device lost during \"%s\"; iteration %u of %u and "
+                      "everything after it not attempted", s->name, n + 1,
+                   s->repeats);
+            goto out;
+         }
+         char label[96];
+         if (s->repeats > 1)
+            snprintf(label, sizeof(label), "%s #%u", s->name, n + 1);
+         else
+            snprintf(label, sizeof(label), "%s", s->name);
+         run_source(&fw, s, label, &smp, &staging, &src_back, &dst,
+                    target.img, target_view);
+      }
    }
 
 out:
