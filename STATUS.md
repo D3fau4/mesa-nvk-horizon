@@ -15,6 +15,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
 | **Next concrete task** | Run the debt batch — seven binaries that between them close every measurement this project owes itself — then Phase 6 |
+| **The debt batch** | `t_vulkan` (control) · `t_threads` and `t_ostime`, Phase 3's owed console run · `t_fault`, the fence/notifier fix firing for the first time · `t_pbsize`, the number D15 turns on · `t_vk_caps`, patch 0046's gating both ways and patch 0045's `alloc_tiled_mem` at last · `t_display`, console-less reporting for Phase 6. Order: `t_vulkan`, `t_threads`, `t_ostime`, `t_vk_caps`, `t_pbsize`, `t_display`, `t_fault` last, because it loses its channel on purpose |
 | **Known failures** | None outstanding. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit. `alloc_tiled_mem` now has a test that reaches it: a `VK_IMAGE_TILING_LINEAR` image can never be a colour attachment in NVK, but a `DRM_FORMAT_MOD_LINEAR` one can, and rendering into it is what allocates the tiled shadow |
 | **Open decisions** | **D15**, pending one hardware run, and **D7**, which is written up and needs a person to file it. D17 is closed |
@@ -22,6 +23,22 @@ long. This block is the state itself, and it is the part that must be true.*
 
 
 ---
+
+### One thing about the Phase 3 debt, said rather than slipped in
+
+`t_threads` and `t_ostime` link Mesa's own `libmesa_util.a` and
+`libmesa_util_c11.a` rather than sources recompiled with flags of our
+own, because the object under test has to be the object Mesa builds.
+They were built for this batch against **`build/mesa-nvk`** — the full
+NVK build — instead of the separate `build/mesa-probe` the default
+points at, with `MESA_BUILD_DIR=build/mesa-nvk`.
+
+That is not a shortcut. `build/mesa-nvk` is the Mesa the driver
+actually uses, built with the same cross file and the same defines, so
+the measurement describes the build that ships rather than a second one
+kept alive only for these two tests. The default is left alone because
+somebody who wants only the Phase 3 tests should not have to build the
+whole Vulkan driver first.
 
 ## The working record
 
