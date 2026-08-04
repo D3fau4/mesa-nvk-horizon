@@ -12,10 +12,10 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | 5 in progress. **Item 2 (compute dispatch) met on hardware, 2026-08-04.** Items 1, 3, 4 have tests and known defects; 5–9 not started |
+| **Phase** | 5 in progress. **Items 2, 3 and 4 met on hardware, 2026-08-04** (3 and 4 with a documented workaround in the test). Item 1 has one defect, fixed and unverified; 5–9 not started |
 | **What runs on a Switch** | The mandatory Vulkan sequence (`t_vulkan` **PASS 62/62**) and **a compute shader compiled by NAK** (`t_vk_compute` **PASS 35/35**, 4096/4096 words verified by CPU readback). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | **Hardware batch 3**: `t_vk_image` with the crash fixed, so the MMU-fault experiment finally runs; `t_vk_transfer` with the poison verified |
-| **Known failures** | Item 3/4: the first 3D render pass MMU-faults, no shader having been uploaded — the experiment is written but has not run, batch 2 crashed before it. Item 1: something writes outside an unaligned copy's region, **cause unknown** — the batch-1 "16-byte granularity" reading is withdrawn, two measurements of one region disagreed |
+| **Next concrete task** | **Hardware batch 4**: the L2-invalidate prologue, which should make `t_vk_transfer` pass outright. Then item 5, the triangle |
+| **Known failures** | Item 1: a GPU write to part of a 32-byte L2 line reverted the rest of that line to what the GPU last saw there — half the coherence was missing, fixed by an `L2_SYSMEM_INVALIDATE` before every submit, **not yet run on hardware**. Items 3/4 pass only because the test uploads a shader the driver should have uploaded itself |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit; `alloc_tiled_mem` is implemented but **still unexercised on hardware** — a linear image cannot be a colour attachment here |
 | **Open decisions** | **D7, D15, D17** — and only those three. All others closed; see the table |
 | **Never verified on hardware** | `alloc_tiled_mem` (patch 0045) — a linear image cannot be a colour attachment here, so nothing reaches it; the extension gating (patch 0046); the fence/notifier fix, which has not yet had a fault to catch. Patch 0047 **is** verified: the overlap warning is gone from all four batch-2 logs |
@@ -229,6 +229,85 @@ fires when a `VK_IMAGE_TILING_LINEAR` image is used as an attachment —
 that is, precisely if a Phase 5 test renders straight into a linear
 image to make readback easy. It moves the hazard from item 3 to item 5,
 and the NULL pointer has to go regardless.
+
+---
+
+## HARDWARE BATCH 3 — items 3 and 4 met, and the L2 was only half coherent (2026-08-04)
+
+**Class: hardware (HW).** Logs: `t_vk_image-run3-PASS.log`,
+`t_vk_transfer-run3-FAIL.log`.
+
+### Items 3 and 4 are met, and the hypothesis is confirmed
+
+`t_vk_image` **PASS 76/76**. Every clear landed, verified texel by texel:
+
+```
+ok  optimal 64x64: 4096/4096 words are 0x78563412 (all of them)
+ok  optimal 67x53: 3551/3551 words are 0x78563412 (all of them)
+ok  optimal 64x64, two layers: 4096/4096 words are 0x78563412
+ok  layer 1 holds the second colour: 4096/4096 words are 0xf0debc9a
+ok  the readback buffer past the image is untouched
+```
+
+67 × 53 = 3551, so the non-power-of-two extent came back exactly, with
+no stride padding leaking into the readback. Layer 0 kept the first
+colour while layer 1 took the second, so the clear respects its
+subresource range.
+
+**The only difference from run 1 is the warm-up shader.** The 3D engine
+MMU-faults when it begins a render pass with `SET_PROGRAM_REGION`
+pointing into NVK's shader heap while that heap has nothing bound — and
+does not fault once a single shader has been uploaded. That is now
+measured, not hypothesised.
+
+So items 3 and 4 pass **with a workaround in the test**, which is not
+the same as passing. The driver fix belongs in NVK — the shader heap's
+first chunk must exist before the 3D engine can be given a program
+region — and until it does, `t_vk_image` states in its own log that it
+compiled a shader it never used.
+
+`alloc_tiled_mem` remains unexercised: a linear image still cannot be a
+colour attachment (`FORMAT_NOT_SUPPORTED`).
+
+### The transfer failure is ours, and it is coherence, not the copy engine
+
+The poison verification passed every time — `the poison reached memory
+(4096/4096 words)` before each case — and case B still failed while
+probe F's identical region passed. That killed the stale-poison
+explanation and left the numbers, which turn out to fit one model
+exactly:
+
+| probe | previous submit had touched | result |
+|---|---|---|
+| `[0, 4)` | `[0, 32)` | 28 bytes after — one 32-byte line minus the four written |
+| `[0, 12)` | `[0, 32)` | 20 bytes after — again to the 32-byte boundary |
+| `[4, 260)` | `[0, 256)` | 4 bytes before |
+| `[8, 264)` | `[0, 260)` | 8 bytes before |
+| `[16, 272)` | `[0, 264)` | 16 bytes before |
+| `[32, 288)` | `[0, 272)` | exact — both ends 32-byte aligned |
+| `[64, 324)` | `[0, 32)` | exact — the tail line was not resident |
+| `[1028, 3480)` | `[64, 324)` | exact — neither edge line was resident |
+| case B, same region | case A, the **whole** buffer | both edges wrong |
+
+**Every spill is the distance back to a 32-byte boundary, and it happens
+exactly when the previous submit had touched that line.** The model:
+`horizon_cmds_fence_incr` writes dirty L2 back after work, so a GPU
+write reaches memory — but the line stays resident, *clean*. A later CPU
+write updates memory and leaves that line alone. When the GPU next
+writes part of that line it merges into its own stale copy instead of
+fetching memory, and the writeback then sends the whole line back,
+silently reverting bytes the caller never asked to be written.
+
+The copy engine is exact. **Only half of the coherence was ever done**:
+dirty lines out after work, nothing invalidated before it. Every submit
+now begins with one `L2_SYSMEM_INVALIDATE` — the constant was already
+named in `cmds.h` and `horizon_cmds_mem_op` could already emit it;
+nothing had ever put one in a submit.
+
+It also puts this GPU's L2 line at **32 bytes**, from eleven data points
+that agree.
+
+**Not verified yet.** The fix is built and has not run on a console.
 
 ---
 

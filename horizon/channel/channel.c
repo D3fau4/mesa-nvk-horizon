@@ -24,6 +24,7 @@
 #define CHANNEL_CMDBUF_SIZE        UINT64_C(0x1000)
 #define CHANNEL_FENCE_CMDS_OFFSET  UINT64_C(0x000)
 #define CHANNEL_SETOBJ_CMDS_OFFSET UINT64_C(0x100)
+#define CHANNEL_PROLOGUE_CMDS_OFFSET UINT64_C(0x200)
 
 /* Zcull context buffer VA alignment. Source: the reference's
  * hardware-tested channel bring-up (reference-analysis § 4: Zcull BO
@@ -37,8 +38,12 @@ _Static_assert(HORIZON_CMDS_FENCE_INCR_DWORDS * 4 <=
                CHANNEL_SETOBJ_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET,
                "fence-increment list would overrun the SET_OBJECT list");
 _Static_assert(CHANNEL_SETOBJ_CMDS_OFFSET +
-               HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
-               "SET_OBJECT list would overrun the cmdbuf page");
+               HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <=
+               CHANNEL_PROLOGUE_CMDS_OFFSET,
+               "SET_OBJECT list would overrun the prologue list");
+_Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
+               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
+               "prologue list would overrun the cmdbuf page");
 
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
  * re-checked at a useful rate without busy-polling
@@ -323,8 +328,63 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
         goto fail_cmdbuf_map;
     }
+    /* And the per-submit PROLOGUE, which runs before the caller's work:
+     * one MEM_OP, L2_SYSMEM_INVALIDATE.
+     *
+     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04
+     * (docs/hw-logs/t_vk_transfer-run3-FAIL.log). The fence block above
+     * writes dirty L2 back after the work, so a GPU write reaches memory.
+     * Nothing did the other direction: a line the GPU has touched stays
+     * resident in L2 after that writeback, *clean*, and a later CPU write
+     * to the same address updates memory and leaves that line alone. The
+     * GPU then reads its own stale copy.
+     *
+     * It bites hardest where a GPU write covers only part of an L2 line.
+     * The engine merges into the resident stale line instead of fetching
+     * memory, the writeback then sends the whole line back, and the bytes
+     * the caller never asked to be written are silently reverted to what
+     * the GPU last saw there. That is what t_vk_transfer measured, and
+     * the numbers are exact:
+     *
+     *   copy [0, 4)  after a copy that had touched [0, 32):
+     *                bytes [4, 32) came back holding the *previous*
+     *                copy's data — 28 bytes, one line minus the four
+     *                that were written
+     *   copy [0, 12) likewise: 20 bytes, again to the 32-byte boundary
+     *   copy [4, 260), [8, 264), [16, 272): 4, 8 and 16 bytes before the
+     *                region, each exactly the distance back to a
+     *                32-byte boundary
+     *   copy [32, 288), [64, 324), [1028, 3480): exact, because either
+     *                both ends are 32-byte aligned or the partial line
+     *                was not resident from an earlier submit
+     *
+     * Eleven data points, one model, and it puts this GPU's L2 line at 32
+     * bytes. The same measurement is what withdrew the earlier reading of
+     * this data as a "copy engine transfer granularity": the copy engine
+     * is exact, and the staleness is ours.
+     *
+     * Cost: one MEM_OP per submit, which is the same shape and order of
+     * cost as the writeback that has always been there. It is
+     * unconditional for the same reason the writeback is — this layer
+     * does not know what the caller's memory has been used for, and a
+     * conditional invalidate would be a guess with silent corruption as
+     * its failure mode.
+     */
+    chan->prologue_cmds_dwords =
+        horizon_cmds_mem_op(cmds + CHANNEL_PROLOGUE_CMDS_OFFSET / 4,
+                            HORIZON_MEM_OP_L2_SYSMEM_INVALIDATE);
+    if (chan->prologue_cmds_dwords == 0) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "the L2 invalidate prologue could not be encoded");
+        res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+        goto fail_cmdbuf_map;
+    }
+
+    /* One flush covering both blocks: they share the page, and the
+     * cmdbuf is CPU-cached like everything else here. */
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
-                                chan->fence_cmds_dwords * 4);
+                                CHANNEL_PROLOGUE_CMDS_OFFSET +
+                                chan->prologue_cmds_dwords * 4);
     if (horizon_gpu_failed(res))
         goto fail_cmdbuf_map;
 
@@ -332,6 +392,8 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                           CHANNEL_FENCE_CMDS_OFFSET;
     chan->setobj_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                            CHANNEL_SETOBJ_CMDS_OFFSET;
+    chan->prologue_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
+                             CHANNEL_PROLOGUE_CMDS_OFFSET;
 
     /* Optional Zcull context. */
     if (create_info->bind_zcull) {

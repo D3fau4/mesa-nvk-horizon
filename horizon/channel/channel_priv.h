@@ -37,6 +37,11 @@ struct horizon_gpu_channel {
     uint64_t fence_cmds_va;
     uint32_t fence_cmds_dwords;
     uint64_t setobj_cmds_va;
+    /* Runs before every submit's work: one L2_SYSMEM_INVALIDATE, so the
+     * GPU cannot merge into an L2 line the CPU has since overwritten.
+     * See horizon_gpu_channel_create for the hardware measurement. */
+    uint64_t prologue_cmds_va;
+    uint32_t prologue_cmds_dwords;
 
     /* Zcull context (optional). */
     horizon_gpu_mem *zcull_mem;
