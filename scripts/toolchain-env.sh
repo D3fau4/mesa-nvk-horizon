@@ -124,6 +124,14 @@ HORIZON_NATIVE_TOOLS_DIR="build/toolchain/native-tools"
 # out of it.
 NVK_BUILD_DIR_DEFAULT="${NVK_BUILD_DIR:-build/mesa-nvk}"
 
+# The NVK equivalent of $HORIZON_MESA_TEST_LIBS, and a sentinel for the
+# same reason: meson.build decides whether to build t_vulkan by asking
+# fs.exists() over the full archive list, and this is the pair whose
+# absence means that answer will be "no". build-mesa-nvk.sh calls them
+# "the two that matter" for the same reason — libnvk.a is the driver and
+# libnouveau_rust_runtime.a is the half that has to link with it.
+HORIZON_NVK_TEST_LIBS="src/nouveau/vulkan/libnvk.a src/nouveau/rust_runtime/libnouveau_rust_runtime.a"
+
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
@@ -204,12 +212,39 @@ horizon_mesa_libs_present() {
 #
 # One function, called from both sides, so the two cannot record and
 # compare different things.
+# True when the archives t_vulkan links are present. Separate from
+# horizon_mesa_libs_present because they live in a different build
+# directory, produced by a different script, at a different time.
+horizon_nvk_libs_present() {
+    for _hz_lib in $HORIZON_NVK_TEST_LIBS; do
+        [ -f "$NVK_BUILD_DIR_DEFAULT/$_hz_lib" ] || return 1
+    done
+    return 0
+}
+
+# Both halves, because the Meson path bakes both answers into
+# build.ninja at configure time and t_vulkan depends on the second one.
+#
+# The NVK half was missing here and the consequence was specific:
+# build-mesa-nvk.sh runs build-horizon.sh *before* it compiles NVK, so
+# on a clean tree the horizon build is configured at the one moment the
+# NVK archives are guaranteed absent, and meson.build's fs.exists()
+# answers "no" — t_vulkan, the phase's exit-criterion test, is left out
+# of build.ninja. Every later run compared only the core-Mesa half,
+# found it unchanged, and never reconfigured, so the omission was
+# permanent for that build directory.
+#
+# It went unnoticed because the hardware .nro came from the Makefile
+# path, which re-evaluates its $(wildcard) on every invocation and
+# therefore never had the problem. That is the same asymmetry the
+# comment in build-horizon.sh describes for core Mesa: the fix landed
+# there for one directory and this is the second one.
 horizon_mesa_state() {
-    if horizon_mesa_libs_present; then
-        echo "present $MESA_BUILD_DIR"
-    else
-        echo "absent $MESA_BUILD_DIR"
-    fi
+    _hz_mesa=absent
+    _hz_nvk=absent
+    horizon_mesa_libs_present && _hz_mesa=present
+    horizon_nvk_libs_present && _hz_nvk=present
+    echo "$_hz_mesa $MESA_BUILD_DIR $_hz_nvk $NVK_BUILD_DIR_DEFAULT"
 }
 
 # Run a command with the cross toolchain reachable. The image's default
@@ -376,16 +411,54 @@ horizon_ensure_python_deps() {
 # Prints "local" when building against a machine-local devkitA64, and
 # "unknown" if the image is not present locally (nothing has pulled it
 # yet, or docker cannot answer).
+# The identity of the image a build actually ran in, for the manifest
+# that ties a hardware result to the toolchain that produced it.
+#
+# Two kinds of image reach $HORIZON_IMAGE and only one of them has a
+# registry digest. The base image is pulled, so it carries a RepoDigest.
+# The derived image (toolchain/Dockerfile, the layer that adds libclang,
+# bindgen and the Rust sysroot) is built locally and never pushed, so it
+# has *no* RepoDigests at all — and since Phase 4 it is the image almost
+# every build uses.
+#
+# Filtering RepoDigests for the base repository therefore returned
+# "unknown" for the normal case, and package-horizon.sh recorded a
+# rebuild command of the form <base-repo>@unknown: not merely imprecise
+# but unusable, which is the one thing a provenance record must not be.
+#
+# A locally built image always has an Id, so that is what identifies it,
+# tagged with which kind it is so nobody mistakes a local content hash
+# for something they can `docker pull`.
+#
+# The whole reference is returned, not the bare hash, because the caller
+# cannot reconstruct the repository half: it used to assume
+# $HORIZON_NX_IMAGE_REPO and that assumption is exactly what was wrong
+# whenever the derived image was in use. One of four answers, each
+# distinguishable by its prefix:
+#
+#   local                    built against a local devkitA64, no image
+#   <repo>@sha256:...        pullable; use it verbatim in HORIZON_NX_IMAGE
+#   local-image-id:sha256:.. built here and never pushed; not pullable
+#   unknown                  docker could not describe it at all
 horizon_image_digest() {
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         echo "local"
         return 0
     fi
-    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-        "$HORIZON_IMAGE" 2>/dev/null |
-        grep -m1 "^${HORIZON_NX_IMAGE_REPO}@" |
-        sed 's/.*@//' |
-        grep . || echo unknown
+    _hz_ref=$(docker image inspect \
+                  --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+                  "$HORIZON_IMAGE" 2>/dev/null | grep -m1 '@')
+    if [ -n "$_hz_ref" ]; then
+        echo "$_hz_ref"
+        return 0
+    fi
+    _hz_id=$(docker image inspect --format '{{.Id}}' "$HORIZON_IMAGE" \
+                 2>/dev/null | grep -m1 .)
+    if [ -n "$_hz_id" ]; then
+        echo "local-image-id:$_hz_id"
+        return 0
+    fi
+    echo unknown
 }
 
 # pip writes the *installing* interpreter's absolute path into the

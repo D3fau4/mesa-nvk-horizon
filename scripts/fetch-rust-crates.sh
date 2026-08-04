@@ -72,9 +72,47 @@ fetch_lockfile() {
     trap - EXIT
 }
 
-if [ ! -f "$LOCKFILE" ] || [ "$FORCE" -eq 1 ]; then
+# Re-read it when the toolchain moves, not only when it is missing.
+#
+# The header above says this script pins nothing and therefore cannot
+# drift from the toolchain. That was true of the *contents* and false of
+# the *caching*: `[ ! -f "$LOCKFILE" ]` alone kept the first lockfile
+# ever fetched for as long as the file survived, while versions.env
+# deliberately lets rustc and the base image float. A newer compiler
+# ships a newer library/Cargo.lock, and the vendor closure built from
+# the old one then satisfies neither its versions nor its checksums —
+# so `cargo --offline -Zbuild-std` fails for a reason that points at
+# crates.io rather than at a stale cache, and --force is not something
+# anyone knows to reach for from that error.
+#
+# The identity is the same question horizon_mesa_state asks about Mesa's
+# archives: record what it was fetched for, compare, redo when they
+# differ. In container mode the image *is* the compiler, so its
+# reference answers it without starting a container; locally, rustc's
+# own version string does.
+TOOLCHAIN_ID_FILE="$LOCKFILE.toolchain"
+
+rust_toolchain_id() {
+    if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
+        rustc --version 2>/dev/null || echo "rustc-unavailable"
+    else
+        echo "$HORIZON_IMAGE $(horizon_image_digest)"
+    fi
+}
+
+toolchain_now=$(rust_toolchain_id)
+toolchain_then=$(cat "$TOOLCHAIN_ID_FILE" 2>/dev/null || true)
+
+if [ ! -f "$LOCKFILE" ] || [ "$FORCE" -eq 1 ] ||
+   [ "$toolchain_now" != "$toolchain_then" ]; then
+    if [ -f "$LOCKFILE" ] && [ "$FORCE" -eq 0 ] &&
+       [ -n "$toolchain_then" ]; then
+        echo "fetch-rust-crates: toolchain is now [$toolchain_now], the"
+        echo "  cached lockfile was read from [$toolchain_then] — re-reading"
+    fi
     echo "fetch-rust-crates: reading library/Cargo.lock from the toolchain"
     fetch_lockfile
+    printf '%s\n' "$toolchain_now" > "$TOOLCHAIN_ID_FILE"
 fi
 
 # --- 2. the package list: name, version and Rust's own checksum -------
