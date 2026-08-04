@@ -1,0 +1,55 @@
+# The gates, run by something other than somebody's memory.
+#
+# WHY THIS EXISTS. Every check in this repository was a script a person
+# had to remember to invoke, and scripts/split-status.py's own
+# documentation promised that an undeclared edit to the record "shows up
+# as a failing gate" while nothing made it fail. A review of PR #7
+# caught the promise being empty. This makes it true for the checks that
+# need nothing but bash, python and a C compiler.
+#
+# WHAT IS NOT HERE, and why. check-dispatch-complete.sh reads the
+# generated Vulkan dispatch table out of a linked Horizon ELF, and
+# check-tls-relocs.sh scans devkitA64 objects; both need the
+# cross-toolchain image, which is a container pull and several minutes
+# per run. Those stay manual until somebody decides that cost is worth
+# paying — naming the gap rather than pretending the coverage is
+# complete.
+#
+# Delete this file if the minutes are not wanted. Nothing depends on it.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: gates
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The record is evidence. An edit nobody declared is what this is
+      # for, and it costs a second.
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      # Two build systems describing the same tests. This is the one
+      # that had already diverged, found by a reviewer instead.
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      # horizon/ must not reach for Vulkan, Mesa or nwindow.
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      # horizon_gpu's pure logic, compiled and run natively. No
+      # toolchain, no device.
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
