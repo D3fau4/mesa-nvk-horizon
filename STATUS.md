@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **5 COMPLETE, 2026-08-04.** All nine items met on hardware, each by CPU readback of the result. Item 9's extra requirement met with eight submits in flight, no CPU wait between them |
 | **What runs on a Switch** | Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
+| **Next concrete task** | Re-run the five tests the PR #7 review changed, then Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
 | **The debt batch** | Seven of seven back. Six PASS, and `t_fault` 14/15 whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
 | **Known failures** | **`t_fault` crashes the console on exit.** All 15 checks pass, the log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
 | **Open, not blocking** | The L2 writeback is unconditional, one per submit |
@@ -23,6 +23,98 @@ long. This block is the state itself, and it is the part that must be true.*
 
 
 ---
+
+## Codex review of PR #7 — six findings, six real (2026-08-04)
+
+**Class: cross build (CB).** Every one held up against the code. Two of
+them are defects in shipped behaviour, four are tests that were
+measuring less than they claimed.
+
+| where | finding | verdict |
+|---|---|---|
+| `horizon/submit/submit.c` | `num_spans + 2` wraps | **real, and the sharpest** |
+| `tests/t_pbsize.c` | every rung was one dword short of its name | **real** |
+| `tests/t_vk_caps.c` | the DRM modifier extension was never enabled | **real** |
+| `tests/t_vk_depth.c` | the depth barrier missed EARLY_FRAGMENT_TESTS | **real** |
+| `Makefile` | three standalone tests only exist on the Meson path | **real** |
+| `tests/t_vk_transfer.c` | case C checked the prefix and not the suffix | **real** |
+
+### The overflow, which is the one that stings
+
+    if (num_spans + 2 > GPFIFO_QUEUE_SIZE)
+
+`num_spans` is `uint32_t`, so `UINT32_MAX + 2` is 1, the guard passes,
+and the validation loop below walks four billion entries of an array
+with one in it. **The check written to stop an overflow overflowed** —
+and the comment above it says, in as many words, that it exists so the
+arithmetic further down cannot "wrap silently (CLAUDE.md:
+overflow-check every size computation)".
+
+Now `num_spans > GPFIFO_QUEUE_SIZE - 2`, with a `_Static_assert` that
+the queue is at least two entries so the subtraction cannot underflow,
+and a note at the second sum saying it is safe *because of* this bound
+rather than on its own. `t_submit` gained the regression: a count of
+`UINT32_MAX` must be refused, and so must `GPFIFO_QUEUE_SIZE - 1`,
+which is the boundary either side of the real limit. On the old code
+the first of those did not return.
+
+### The rungs were a dword short, every one of them
+
+`t_pbsize`'s release is five dwords and its filler comes in NOP pairs
+of two, so `filler = dwords - 5` was odd and `pairs = filler / 2`
+truncated. Every entry was `dwords - 1`, and the log said `dwords`. The
+log from the hardware run says it plainly once you look:
+`32 dwords: 13 NOP pair(s) encoded (26 dwords)` — 26 + 5 = 31.
+
+**The 524288-dword boundary D15 reports was never tested at 524288.**
+The conclusion survives — a limit does not sit one dword below a power
+of two — but the number in the record was not the number measured. The
+rungs are now odd (33, 129, … 524289) so the arithmetic is exact, and
+`run_rung` asserts the entry is the size it names before submitting.
+
+### The extension was advertised, checked, and never enabled
+
+`t_vk_caps` created a `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` image
+on a device where `vkfw_init` had enabled no extensions at all. That is
+invalid usage, and with no validation layers it is a wrong answer
+rather than an error: the test passed while measuring something other
+than the enabled-extension path patches 0045 and 0046 are about.
+`vkfw_init_ext` now takes the list, and the test enables the one it
+uses.
+
+### The depth barrier waited on the wrong half of the pipeline
+
+None of `t_vk_depth`'s shaders writes `gl_FragDepth` or discards, so
+the implementation may do the depth test and write in the **early**
+fragment-test stage — and the barrier before the copy named only
+`LATE_FRAGMENT_TESTS`. It passed on this hardware, which is exactly how
+a synchronisation bug survives. Both stages now.
+
+### Two build paths, one of them missing three tests
+
+`t_fault`, `t_pbsize` and `t_display` went into `meson.build` and not
+into the `Makefile`'s `TESTS`, so `scripts/build-switch.sh` — a
+supported path, and the one whose output was verified on hardware
+first — never built or packaged them. Added.
+
+### And a bounds check with one side
+
+`t_vk_transfer`'s case C poisoned the whole destination and then
+verified only the words *before* the `vkCmdUpdateBuffer` range. An
+implementation writing past the end passed. That is the same shape as
+the L2 defect this suite found in item 1, and the neighbouring case B
+checks both sides. The suffix check is there now.
+
+**What this review is evidence of.** Four of the six are tests that
+reported success while measuring less than they said — the failure mode
+this project keeps naming and keeps producing anyway. The two in
+shipped code were both in guards: one that overflowed, one that
+synchronised half of what it needed to. Worth writing down that the
+adversarial pass found things the author's own passes did not.
+
+Not run on hardware. `t_submit`, `t_pbsize`, `t_vk_caps`, `t_vk_depth`
+and `t_vk_transfer` all changed and all need a re-run.
+
 
 ## The debt batch on hardware (2026-08-04)
 

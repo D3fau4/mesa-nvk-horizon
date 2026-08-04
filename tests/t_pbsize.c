@@ -67,16 +67,25 @@ const bool test_uses_display = false;
 #define WAIT_NS      UINT64_C(3000000000)
 #define TARGET_B     UINT64_C(0x1000)
 
-/* The rungs, in dwords. Doubling from nxvk's smallest to well past its
- * largest: the point of going further is that 8192 is where somebody
- * else stopped looking, not where the hardware stops. */
+/* The rungs, in dwords: doubling from nxvk's smallest to well past its
+ * largest, because 8192 is where somebody else stopped looking and not
+ * where the hardware stops.
+ *
+ * ODD, AND THAT IS NOT A TYPO. The release is five dwords and the
+ * filler comes in NOP pairs of two, so an entry of exactly N dwords
+ * needs N-5 to be even, which needs N odd. Run 1 used the round even
+ * numbers, `pairs = filler / 2` truncated, and every rung submitted
+ * N-1 dwords while the log said N — the "524288-dword" entry was
+ * 524287 and the boundary it claimed to test was never tested. Found
+ * in review of PR #7; run_rung now asserts the entry is exactly the
+ * size it names. */
 static const uint32_t RUNGS[] = {
-   32, 128, 512, 2048, 8192, 32768, 131072, 524288,
+   33, 129, 513, 2049, 8193, 32769, 131073, 524289,
 };
 #define NUM_RUNGS (sizeof(RUNGS) / sizeof(RUNGS[0]))
 
 /* Capacity for the largest rung, in bytes. */
-#define PB_B  ((uint64_t)524288u * 4u)
+#define PB_B  ((uint64_t)524289u * 4u)
 
 typedef struct region {
    horizon_gpu_mem *mem;
@@ -164,6 +173,12 @@ static bool run_rung(test_ctx *t, horizon_gpu_device *dev, region *pb,
       goto out;
 
    const uint32_t total = n_nop + n_rel;
+   /* THE CHECK RUN 1 DID NOT HAVE. Every earlier rung was one dword
+    * short of the size it advertised, and nothing said so. */
+   if (!t_check(t, total == dwords,
+                "%u dwords: the entry is exactly the size it claims "
+                "(built %u)", dwords, total))
+      goto out;
 
    tgt->cpu[0] = 0;
    res = horizon_gpu_mem_flush(tgt->mem, 0, TARGET_B);

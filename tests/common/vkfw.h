@@ -185,6 +185,24 @@ static inline bool vkfw_device_lost(const vkfw *fw)
  */
 bool vkfw_init(vkfw *fw, test_ctx *t, const void *features2);
 
+/* The same, with device extensions enabled.
+ *
+ * An extension being *advertised* does not make it usable: its tiling
+ * modes, pNext structures and entry points are invalid usage on a
+ * device that did not enable it, and with no validation layers here
+ * that is a wrong answer rather than an error. t_vk_caps created a
+ * VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT image on a device with no
+ * extensions enabled and passed, which is the failure mode — found in
+ * review of PR #7.
+ *
+ * Every name passed must be one the physical device advertises; the
+ * caller checks that, because "the driver does not offer this" and
+ * "the driver offers it and it does not work" are different findings
+ * and only the second one is a bug. */
+bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
+                   const char *const *device_exts,
+                   uint32_t device_ext_count);
+
 /* Reverse order of vkfw_init. Safe on a partially-initialised fixture. */
 void vkfw_finish(vkfw *fw);
 

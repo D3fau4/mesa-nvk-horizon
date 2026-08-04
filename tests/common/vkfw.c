@@ -67,6 +67,12 @@ vkfw_debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 
 bool vkfw_init(vkfw *fw, test_ctx *t, const void *features2)
 {
+   return vkfw_init_ext(fw, t, features2, NULL, 0);
+}
+
+bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
+                   const char *const *device_exts, uint32_t device_ext_count)
+{
    memset(fw, 0, sizeof(*fw));
    fw->t = t;
 
@@ -224,6 +230,8 @@ bool vkfw_init(vkfw *fw, test_ctx *t, const void *features2)
       .pNext = features2,
       .queueCreateInfoCount = 1,
       .pQueueCreateInfos = &qci,
+      .enabledExtensionCount = device_ext_count,
+      .ppEnabledExtensionNames = device_exts,
    };
    r = fw->vk.vkCreateDevice(fw->pdev, &dci, NULL, &fw->dev);
    if (!t_check(t, r == VK_SUCCESS, "vkCreateDevice -> %s",

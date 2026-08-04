@@ -485,8 +485,18 @@ int run_test(test_ctx *t)
       .dynamicRendering = VK_TRUE,
    };
 
+   /* Part B creates a VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT image, so
+    * the extension has to be ENABLED on the device and not merely
+    * advertised by it. Run 1 of this test enabled nothing and passed
+    * anyway, which is what invalid usage looks like when there are no
+    * validation layers: a wrong answer instead of an error. Found in
+    * review of PR #7. */
+   static const char *const device_exts[] = {
+      "VK_EXT_image_drm_format_modifier",
+   };
+
    vkfw fw;
-   if (!vkfw_init(&fw, t, &features13))
+   if (!vkfw_init_ext(&fw, t, &features13, device_exts, 1))
       return 1;
 
    vkfw_buffer dst = { 0 };

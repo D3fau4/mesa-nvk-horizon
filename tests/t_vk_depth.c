@@ -384,12 +384,20 @@ int run_test(test_ctx *t)
            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
            VK_PIPELINE_STAGE_TRANSFER_BIT);
+   /* BOTH fragment-test stages, not just the late one. None of these
+    * shaders writes gl_FragDepth or discards, so the implementation is
+    * free to do the depth test and the depth write in the EARLY stage,
+    * and a barrier that waits only on LATE would let the copy below
+    * read before those writes were available. It passed on this
+    * hardware, which is exactly how this kind of bug survives. Found in
+    * review of PR #7. */
    barrier(&fw, cb, depth.img, VK_IMAGE_ASPECT_DEPTH_BIT,
            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
            VK_ACCESS_TRANSFER_READ_BIT,
-           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
            VK_PIPELINE_STAGE_TRANSFER_BIT);
 
    VkBufferImageCopy region = {

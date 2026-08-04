@@ -418,6 +418,15 @@ int run_test(test_ctx *t)
                               UPDATE_LEN_B / 4, "C inline update landed");
       vkfw_expect_words(&fw, got, POISON, UPDATE_OFF_B / 4,
                         "C words before the update untouched");
+      /* And after it. The prefix alone would let an implementation
+       * that writes past UPDATE_OFF_B + UPDATE_LEN_B pass, which is
+       * precisely the bounds regression case B checks on the other
+       * side — and precisely the shape of the L2 defect this suite
+       * already found once. Found in review of PR #7. */
+      vkfw_expect_words(&fw, got + (UPDATE_OFF_B + UPDATE_LEN_B) / 4,
+                        POISON,
+                        (BUF_BYTES - UPDATE_OFF_B - UPDATE_LEN_B) / 4u,
+                        "C words after the update untouched");
    }
 
    /* --- D and E: through an image, both tilings ---------------------- */

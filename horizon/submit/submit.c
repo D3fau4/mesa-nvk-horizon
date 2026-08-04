@@ -36,8 +36,20 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
      * anything: unbounded, it would let the validation loop below read
      * spans[] out of the caller's array, and would let the back-pressure
      * arithmetic further down wrap silently (CLAUDE.md: overflow-check
-     * every size computation) instead of refusing the submit. */
-    if (num_spans + 2 > GPFIFO_QUEUE_SIZE)
+     * every size computation) instead of refusing the submit.
+     *
+     * SUBTRACTION, NOT ADDITION, and that is the whole point. This
+     * check was written as `num_spans + 2 > GPFIFO_QUEUE_SIZE`, which
+     * wraps: num_spans is uint32_t, so UINT32_MAX + 2 is 1, the guard
+     * lets it through, and the loop below walks four billion entries of
+     * the caller's array. The check written to stop an overflow
+     * overflowed. Found in review of PR #7.
+     *
+     * GPFIFO_QUEUE_SIZE is libnx's (0x800), so the subtraction cannot
+     * underflow; the assertion says so rather than trusting it. */
+    _Static_assert(GPFIFO_QUEUE_SIZE >= 2,
+                   "the two entries every submit adds must fit the queue");
+    if (num_spans > GPFIFO_QUEUE_SIZE - 2)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     for (uint32_t i = 0; i < num_spans; i++) {
         if (spans[i].gpu_va == 0 || spans[i].num_dwords == 0)
@@ -65,6 +77,10 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
      * append, and the partial-append unwind below would have to undo an
      * entry the arithmetic said would fit. */
     const uint32_t own_entries = 2;
+    /* Safe to add here, and only because of the bound above: num_spans
+     * is at most GPFIFO_QUEUE_SIZE - 2 and num_entries at most
+     * GPFIFO_QUEUE_SIZE, so the sum is at most 2*0x800 + 2. Written
+     * down because the same sum without that bound is what wrapped. */
     if (chan->gc.num_entries + num_spans + own_entries > GPFIFO_QUEUE_SIZE) {
         horizon_logf(&dev->log, HORIZON_LOG_WARN,
                      "channel %p: GPFIFO entry queue full (%u queued, %u "
