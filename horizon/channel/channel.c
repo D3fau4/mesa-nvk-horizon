@@ -575,8 +575,16 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
             if (channel_check_fault(chan))
                 return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
-            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT)
-                return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+            /* Round the loop rather than returning: one expired chunk is
+             * not the caller's deadline. Returning TIMEOUT here made
+             * every finite wait on this path last CHANNEL_WAIT_CHUNK_US
+             * and no longer — a requested two seconds failed after 100
+             * ms, reporting a timeout for a fence that had 1.9 seconds
+             * left to signal in. The top of this branch recomputes
+             * `used` and returns TIMEOUT there when the deadline has
+             * genuinely passed, which is the same shape the syncpoint-
+             * read path below uses; the two disagreed only here.
+             */
             continue;
         }
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
@@ -638,12 +646,46 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
             /* Same reasoning as reap (§ 9): the read never works on this
              * platform, so refusing the destroy would strand the channel
              * and, through the live-object count, the device with it.
-             * Whether work is still in flight is unknowable here — say
-             * so rather than imply it was checked. */
+             *
+             * "Unknowable" was too strong, though, and it was this
+             * function's own wait path that showed why: the counter
+             * cannot be *read* here, but the fence can still be *asked*,
+             * through the wait ioctl nvFenceWait drives — a different
+             * call, which a platform can implement while leaving the
+             * read out, and which horizon_gpu_channel_wait_fence already
+             * relies on for exactly this case. Poll it with no timeout
+             * at all: this is a question, not a wait.
+             *
+             * A negative answer is now a real BUSY instead of a
+             * teardown that unmaps command buffers the GPU is still
+             * fetching from — the outcome horizon_gpu_channel_destroy()
+             * documents as impossible.
+             */
+            NvFence last = {
+                .id = chan->syncpt_id,
+                .value = (u32)chan->shadow_target,
+            };
+            Result wrc = nvFenceWait(&last, 0);
+            if (R_SUCCEEDED(wrc))
+                goto skip_inflight_check;
+            if (wrc == KERNELRESULT(TimedOut)) {
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "channel %p: destroy refused, syncpt %u has "
+                             "not reached %u (baseline UNTRUSTED, so this "
+                             "is the fence wait's answer, not the "
+                             "counter's)", (void *)chan, chan->syncpt_id,
+                             last.value);
+                return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
+            }
+            /* Neither signalled nor timed out: the platform does not
+             * answer this question either. Only now is it unknowable,
+             * and the destroy proceeds for the original reason — but it
+             * says which of the two cases it is in. */
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "channel %p: destroying with an UNTRUSTED "
-                         "baseline; whether submitted work retired was "
-                         "not checked", (void *)chan);
+                         "baseline and no usable fence wait (0x%08x); "
+                         "whether submitted work retired was not checked",
+                         (void *)chan, wrc);
             goto skip_inflight_check;
         }
         if (horizon_gpu_failed(res))
