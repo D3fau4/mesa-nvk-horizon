@@ -51,6 +51,19 @@ horizon_meson compile -C "$MESA_NVK_BUILD_DIR" "$@"
 # the artefacts this build produces. -mtp=soft -fPIC miscompiles
 # thread-local storage on this toolchain (STATUS.md), and a Rust
 # staticlib is one more place TLS could appear.
+#
+# This has to be the gate, not a count. The miscompile's signature is a
+# call to __aarch64_read_tp with NO relocation following it, so the
+# broken build reports *zero* TLS relocations — the same number a build
+# with no thread-locals at all reports, and the number a bare `grep -c`
+# prints as if it were good news. check-tls-relocs.sh is what
+# distinguishes the two, by looking for the call rather than for the
+# relocation; build-mesa.sh has always run it and this path did not.
+scripts/check-tls-relocs.sh "$MESA_NVK_BUILD_DIR"
+
+# The counts stay, after the gate rather than instead of it: they say
+# how much TLS the two archives actually carry, which the pass/fail
+# result deliberately does not.
 for _lib in "src/nouveau/vulkan/libnvk.a" \
             "src/nouveau/rust_runtime/libnouveau_rust_runtime.a"; do
     [ -f "$MESA_NVK_BUILD_DIR/$_lib" ] || continue

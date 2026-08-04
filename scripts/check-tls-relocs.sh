@@ -65,7 +65,23 @@ if [ "${#present[@]}" -eq 0 ]; then
     exit 0
 fi
 
-mapfile -t objs < <(find "${present[@]}" -name '*.o' -type f | sort)
+# Archives as well as loose objects, because a Rust staticlib has no
+# loose objects at all: `find -name '*.o'` over build/mesa-nvk finds 821
+# of them and none under src/nouveau/rust_runtime, whose members exist
+# only inside libnouveau_rust_runtime.a. Checking only loose objects
+# would have left the Rust half — "one more place TLS could appear",
+# which is why build-mesa-nvk.sh looked at it in the first place —
+# scanned by nothing.
+#
+# Granularity differs between the two, and the difference is worth
+# stating rather than hiding: a loose object is judged on its own, while
+# an archive is judged whole. An archive whose members disagreed (one
+# with relocations, one without) would pass. That is not a shape this
+# toolchain produces — an archive comes out of one cargo or one meson
+# invocation with one set of flags — and per-member extraction costs a
+# temporary directory per archive for a case that cannot arise here.
+mapfile -t objs < <(find "${present[@]}" \
+                        \( -name '*.o' -o -name '*.a' \) -type f | sort)
 
 if [ "${#objs[@]}" -eq 0 ]; then
     echo "check-tls-relocs: nothing to check (no objects under ${present[*]})"
@@ -112,6 +128,6 @@ if [ "$bad" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-tls-relocs: OK ($ok object(s) use TLS, all with relocations," \
-     "${#objs[@]} scanned)"
+echo "check-tls-relocs: OK ($ok object(s)/archive(s) use TLS, all with" \
+     "relocations, ${#objs[@]} scanned)"
 exit 0
