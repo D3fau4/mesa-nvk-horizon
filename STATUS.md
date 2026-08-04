@@ -232,6 +232,49 @@ and the NULL pointer has to go regardless.
 
 ---
 
+## Phase 5 — the series did not apply on a fresh clone (2026-08-04)
+
+**Class: host (H).** Found by doing the bring-up from nothing in a new
+environment, which is a thing this project had not done since the series
+was written.
+
+`scripts/fetch-mesa.sh` then `scripts/apply-mesa-patches.sh`:
+
+```
+error: .gitkeep: already exists in working directory
+Patch failed at 0017 nouveau,compiler: build the Rust half without a
+                     standard library
+error: the series does not apply cleanly to 6a02618ccf6c…
+```
+
+**Patch 0017 created `/.gitkeep` at Mesa's root.** It is our file:
+`.gitignore` keeps `mesa/` out of the tree except for `!/mesa/.gitkeep`,
+which is what makes the directory survive a clone. When the series was
+generated inside the checkout, `git add -A` swept it up, and a zero-byte
+scaffolding file of ours became part of a patch about `#![no_std]`.
+
+**Why no gate caught it.** Once the series has been applied once,
+`.gitkeep` is tracked *by Mesa*, so `git reset --hard $MESA_COMMIT`
+deletes it — and the next apply recreates it, cleanly. The
+"apply-mesa-patches twice on a reset `mesa/`" check therefore only ever
+exercised the state the bug had already produced. The one broken case is
+the first apply on a clone that has never been patched, and no run
+started there. Observed here in both directions: with the stray hunk the
+first apply fails; without it, two consecutive applies succeed and the
+second correctly reports "all 44 patches already applied". As a bonus
+the reset stops deleting a file this repository tracks, which it had
+been doing silently on every reset.
+
+**This edits an earlier patch rather than adding one at the end**, which
+is not the idiom this project uses for corrections. The idiom cannot
+apply: a new patch at position 45 cannot make patch 17 applicable, and
+until 17 applies there is no tree to patch. The change removes a
+three-line empty-file creation and its two summary lines; no Mesa
+content moves, and the diffstat count goes 78 → 77 to stay true. Flagged
+to the owner rather than done quietly.
+
+---
+
 ## Phase 4 — step 1: what `nvkmd` requires, against what `horizon_gpu` has (2026-07-28)
 
 **Class: reading of the pinned tree (S).** No build was run in this
