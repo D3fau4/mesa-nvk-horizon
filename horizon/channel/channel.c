@@ -646,46 +646,43 @@ horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan)
             /* Same reasoning as reap (§ 9): the read never works on this
              * platform, so refusing the destroy would strand the channel
              * and, through the live-object count, the device with it.
+             * Whether work is still in flight is unknowable here — say
+             * so rather than imply it was checked.
              *
-             * "Unknowable" was too strong, though, and it was this
-             * function's own wait path that showed why: the counter
-             * cannot be *read* here, but the fence can still be *asked*,
-             * through the wait ioctl nvFenceWait drives — a different
-             * call, which a platform can implement while leaving the
-             * read out, and which horizon_gpu_channel_wait_fence already
-             * relies on for exactly this case. Poll it with no timeout
-             * at all: this is a question, not a wait.
+             * A REJECTED ALTERNATIVE, recorded because it looks right
+             * and is not. It was briefly true that this polled the last
+             * fence with nvFenceWait and returned BUSY when it had not
+             * been reached: the counter cannot be *read* here, but the
+             * wait ioctl is a different call a platform might still
+             * implement.
              *
-             * A negative answer is now a real BUSY instead of a
-             * teardown that unmaps command buffers the GPU is still
-             * fetching from — the outcome horizon_gpu_channel_destroy()
-             * documents as impossible.
+             * The value it would have to ask about is the problem. When
+             * the baseline is untrusted, the read at channel creation
+             * failed too, so syncpt_value_at_create is 0 and
+             * shadow_target counts *submits from zero* — it is not the
+             * hardware counter and the code that sets it says so:
+             * "its fences are not measurements". Whether Horizon resets
+             * a syncpoint at channel creation is R5, still open. If it
+             * does not, a threshold of 3 is compared against a live
+             * counter in the thousands, which is already past it, so the
+             * poll succeeds instantly and the destroy proceeds reporting
+             * that work retired when nothing was verified.
+             *
+             * That is worse than not checking. horizon_gpu_channel_
+             * wait_fence already says of this same number that "reached"
+             * is only as good as an assumption nobody verified; turning
+             * that into a hard BUSY-or-OK decision would have two
+             * functions in this file drawing opposite conclusions from
+             * one unreliable value, with the destroy biased toward false
+             * assurance.
+             *
+             * A real check needs a trustworthy baseline, which is R5's
+             * job, not this function's.
              */
-            NvFence last = {
-                .id = chan->syncpt_id,
-                .value = (u32)chan->shadow_target,
-            };
-            Result wrc = nvFenceWait(&last, 0);
-            if (R_SUCCEEDED(wrc))
-                goto skip_inflight_check;
-            if (wrc == KERNELRESULT(TimedOut)) {
-                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                             "channel %p: destroy refused, syncpt %u has "
-                             "not reached %u (baseline UNTRUSTED, so this "
-                             "is the fence wait's answer, not the "
-                             "counter's)", (void *)chan, chan->syncpt_id,
-                             last.value);
-                return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
-            }
-            /* Neither signalled nor timed out: the platform does not
-             * answer this question either. Only now is it unknowable,
-             * and the destroy proceeds for the original reason — but it
-             * says which of the two cases it is in. */
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "channel %p: destroying with an UNTRUSTED "
-                         "baseline and no usable fence wait (0x%08x); "
-                         "whether submitted work retired was not checked",
-                         (void *)chan, wrc);
+                         "baseline; whether submitted work retired was "
+                         "not checked", (void *)chan);
             goto skip_inflight_check;
         }
         if (horizon_gpu_failed(res))
