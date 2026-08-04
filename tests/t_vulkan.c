@@ -663,15 +663,23 @@ run_test(test_ctx *t)
    VkFence fence = VK_NULL_HANDLE;
    r = vkCreateFence(dev, &fci, NULL, &fence);
    t_check(t, r == VK_SUCCESS, "vkCreateFence -> %d", (int)r);
-   /* Return here, unlike the checks above it, because vkQueueSubmit
-    * takes VK_NULL_HANDLE legitimately — a submit with no fence is
-    * valid Vulkan — so the guard below would let a failed creation
-    * through and hand the null handle to vkWaitForFences, which is not
-    * valid and may take the process down before the framework can print
-    * its FAIL line. A crash reports nothing; a FAIL reports everything.
+   /* Stop here, unlike the checks above it, because vkQueueSubmit takes
+    * VK_NULL_HANDLE legitimately — a submit with no fence is valid
+    * Vulkan — so the guard below would let a failed creation through
+    * and hand the null handle to vkWaitForFences, which is not valid
+    * and may take the process down before the framework can print its
+    * FAIL line. A crash reports nothing; a FAIL reports everything.
+    *
+    * `goto teardown`, not `return 1`: this function had sixteen bare
+    * returns, every one of them jumping over the destroy block at the
+    * end and leaking the VkDevice — which on Horizon means channels and
+    * NvMap objects never released, against CLAUDE.md's rule that a
+    * partially-initialised object is torn down in reverse order on the
+    * error path. Adding a seventeenth would have been noticing the
+    * asymmetry and joining the wrong side of it.
     */
    if (r != VK_SUCCESS)
-      return 1;
+      goto teardown;
 
    const VkSubmitInfo si = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -823,7 +831,17 @@ run_test(test_ctx *t)
       vkDestroyFence(dev, idle_fence, NULL);
    }
 
-   /* --- teardown, in reverse order ---------------------------------- */
+   /* --- teardown, in reverse order ----------------------------------
+    *
+    * Reachable by `goto` as well as by falling through, so an error
+    * path can leave without leaking the device. Every object here is
+    * either VK_NULL_HANDLE or live: the Vulkan destroy calls all accept
+    * VK_NULL_HANDLE and do nothing with it, so one label serves every
+    * point after the objects are declared. The other bare returns above
+    * predate this and are not converted here — that is a separate
+    * change, not something to bundle into a review fix.
+    */
+teardown:
    vkDestroyFence(dev, fence, NULL);
    vkDestroyCommandPool(dev, pool, NULL);
    vkDestroyBuffer(dev, buf, NULL);
