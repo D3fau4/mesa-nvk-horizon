@@ -710,11 +710,18 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
     * down in t_vk_image run 2 — no validation layers here to say so.
     * The caller passes the set layout its shaders were written for, or
     * VK_NULL_HANDLE when they declare nothing. */
+   const VkPushConstantRange pcr = {
+      .stageFlags = desc->push_constant_stages,
+      .offset = 0,
+      .size = desc->push_constant_B,
+   };
    const VkPipelineLayoutCreateInfo plci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
       .setLayoutCount = desc->set_layout != VK_NULL_HANDLE ? 1u : 0u,
       .pSetLayouts = desc->set_layout != VK_NULL_HANDLE ? &desc->set_layout
                                                         : NULL,
+      .pushConstantRangeCount = desc->push_constant_B != 0 ? 1u : 0u,
+      .pPushConstantRanges = desc->push_constant_B != 0 ? &pcr : NULL,
    };
    VkResult r = fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL,
                                               &out->layout);

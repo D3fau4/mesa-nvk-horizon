@@ -308,6 +308,13 @@ typedef struct vkfw_gfx_desc {
    /* VK_NULL_HANDLE when the shaders declare no descriptors. */
    VkDescriptorSetLayout set_layout;
 
+   /* One push constant range at offset 0, or zero bytes for none. The
+    * stages must be exactly the ones whose SPIR-V declares the block:
+    * a range that names a stage the shader does not declare, or omits
+    * one it does, is invalid usage that nothing here would report. */
+   uint32_t push_constant_B;
+   VkShaderStageFlags push_constant_stages;
+
    /* Vertex input; leave the counts at zero for a shader that builds
     * its own positions from gl_VertexIndex. */
    uint32_t binding_count;

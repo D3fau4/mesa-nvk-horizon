@@ -321,6 +321,9 @@ nvk_tests = [
   't_vk_triangle',
   # Phase 5 item 6 — sampling: descriptors, samplers and mip levels.
   't_vk_texture',
+  # Phase 5 item 7 — the depth test, and the depth buffer read back as
+  # a value rather than trusted because the colours came out right.
+  't_vk_depth',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -349,6 +352,9 @@ nvk_test_shaders = {
   # implicit and explicit LOD are different instructions.
   't_vk_texture' : ['tex_vert_fullscreen', 'tex_frag_sample',
                     'tex_frag_lod1'],
+  # One pair for all four draws: what differs between them is twenty
+  # bytes of push constant and a scissor rectangle.
+  't_vk_depth' : ['depth_vert_z', 'depth_frag_pc'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
