@@ -11,9 +11,12 @@ says so and names what disproved it. Those corrections are § 2.2, § 2.3, § 2.
 § 3.1, § 4 and § 5 — the whole of what the design got wrong is in this file
 rather than in a changelog.
 
-**Nothing in this file has run on a console yet.** Every claim below is either a
-fact about libnx or Mesa (readable, and cited), or a cross-build result. The
-hardware evidence lives in `STATUS.md` and `docs/hw-logs/` when it exists.
+**It has now run on a console** (2026-08-05): zero-copy on the first attempt,
+90 frames at a mean of 16662 us with 89 of 89 intervals inside 10% of a 60 Hz
+refresh, and two swapchains coexisting over one window. Three defects came out
+of that run and two of them are fixed here; see `STATUS.md`. Two paragraphs
+below were disproved by it rather than by reading, and say so: § 2.3's retry
+set and the alignment prediction that did not happen.
 
 ---
 
@@ -187,6 +190,15 @@ Phase 6 test rather than a formality.
   `buffer_producer.h`, neither of which declares one. The criticism of the
   reference was therefore also wrong, and it is withdrawn here rather than left
   standing.
+- **A full BufferQueue does not always say `WOULD_BLOCK`.** Measured: a
+  two-image swapchain with both buffers queued gets `LibnxBinderError_NoInit`
+  — Android's `NO_INIT` — and an acquire that retried only on `WOULD_BLOCK`
+  turned it into `VK_ERROR_OUT_OF_DATE_KHR` at the third frame. Three images
+  never reach the condition. The retry set is `WOULD_BLOCK`, `NO_INIT` and
+  `INVALID_OPERATION`; anything else still ends the acquire.
+- **How many slots the producer may hold: all of them.** Measured on
+  hardware — 3 of 3 registered buffers dequeued at once, and 2 of 2. libnx's
+  single `cur_slot` is its `NWindow` wrapper's rule, not the platform's.
 - The knob that does exist is the **swap interval**, per queued buffer
   (`BqBufferInput::swapInterval`). `VK_PRESENT_MODE_FIFO_KHR` is interval 1 and
   `VK_PRESENT_MODE_IMMEDIATE_KHR` is 0 — which libnx documents as honoured only
@@ -212,7 +224,7 @@ The rendered `VkImage` *is* the scanout buffer. Requirements:
 |---|---|
 | Image is block-linear with a NIL-computed `block_height_log2` | NIL |
 | `row_stride_B` divides exactly by the format's bytes-per-pixel | validated |
-| The image's memory is a single `NvMap` whose id we can obtain | `horizon/surface/` |
+| The image's memory is a single `NvMap` whose id we can obtain | `nvkmd_mem_export_scanout_id`, not `horizon/surface/` — nothing in the struct needs horizon_gpu's own code, so it lives in `wsi_common.h` where the driver fills it in |
 | `size_B` and `offset_B` fit in the graphic buffer's 32-bit fields | validated |
 | The display kind is compatible with the image's PTE kind | validated, not forced |
 
@@ -247,6 +259,16 @@ Fermi gets `FermiColor` (`nil/tiling.rs:144-151`). Both are 512-byte 64x8 GOBs,
 so accepting the wrong one passes every size and stride check and puts a
 scrambled image on screen. `TegraColor` is what Horizon's display block reads as
 "generic 16Bx2", and it is the only one accepted.
+
+### 3.1.1 The alignment that turned out not to matter
+
+Predicted before the first run, and it did not happen: libnx creates its
+framebuffers' `NvMap` with `align = 0x20000` while a swapchain image's memory
+is aligned to whatever NIL asked for, which is smaller.
+`nwindowConfigureBuffer` accepted ours. So 128 KiB is libnx's habit rather than
+the display block's requirement — at least at 1280x720, RGBA8, block height 16.
+Recorded because the prediction was written down, and a prediction that is
+never marked either way is not a prediction.
 
 ### 3.2 Fallback
 

@@ -1,7 +1,7 @@
 From 9bcddf85d226a776f9882447cfb1714119e610ae Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 4 Aug 2026 14:32:43 +0000
-Subject: [PATCH 43/57] nouveau/vk: nvkmd_horizon, keep the binding when unbind
+Subject: [PATCH 43/59] nouveau/vk: nvkmd_horizon, keep the binding when unbind
  fails
 
 nvkmd_horizon_va_unbind removed the binding from va->bindings, called

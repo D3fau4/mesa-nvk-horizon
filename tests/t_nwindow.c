@@ -303,14 +303,39 @@ static Result nw_try_dequeue(nw_producer *p, nw_slot *out)
  * start of a session every buffer is free and nothing has been
  * released, so an event wait ahead of the first try would block for a
  * release that has no reason to happen. */
+/* Which dequeue failures mean "come back when a buffer is free".
+ *
+ * MEASURED, AND THE FIRST VERSION OF THIS TEST WAS WRONG ABOUT IT. Only
+ * WouldBlock was treated as retryable, because that is what libnx's own
+ * loop in nwindowDequeueBuffer expects. On hardware, two registered
+ * buffers with both of them queued gives 0x115d — LibnxBinderError_NoInit,
+ * which is Android's NO_INIT (-ENODEV) through binderConvertErrorCode —
+ * and every two-buffer session failed at frame 2
+ * (docs/hw-logs/t_nwindow-run1-*.log). Three buffers never reached the
+ * condition and never saw it.
+ *
+ * InvalidOperation is included for the same reason without having been
+ * observed: Android's producer returns it when a dequeue would exceed
+ * the allowance, which is the same condition under a different name.
+ */
+static bool nw_dequeue_would_block(Result rc)
+{
+    return R_VALUE(rc) ==
+               MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock) ||
+           R_VALUE(rc) ==
+               MAKERESULT(Module_LibnxBinder, LibnxBinderError_NoInit) ||
+           R_VALUE(rc) ==
+               MAKERESULT(Module_LibnxBinder,
+                          LibnxBinderError_InvalidOperation);
+}
+
 static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
     const u64 start = armGetSystemTick();
 
     for (;;) {
         Result rc = nw_try_dequeue(p, out);
-        if (R_VALUE(rc) !=
-            MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock))
+        if (!nw_dequeue_would_block(rc))
             return rc;
 
         if (!eventActive(&p->win->event))
@@ -507,8 +532,16 @@ static uint32_t nw_measure_concurrent_dequeues(nw_session *s)
     while (n < NW_MAX_BUFFERS) {
         nw_slot got;
         Result rc = nw_try_dequeue(&s->prod, &got);
-        if (R_FAILED(rc))
+        if (R_FAILED(rc)) {
+            /* Report anything that is not simply "no buffer free": a
+             * measurement that stops for an unrelated failure would
+             * report a smaller number as though it were the limit. */
+            t_check(s->t, nw_dequeue_would_block(rc),
+                    "%" PRIu32 " buffers: the dequeue that ended the count "
+                    "said no buffer was free rather than failing "
+                    "(0x%08x)", s->num_buffers, rc);
             break;
+        }
         if (seen_mask & (1u << (uint32_t)got.slot))
             distinct = false;
         seen_mask |= 1u << (uint32_t)got.slot;

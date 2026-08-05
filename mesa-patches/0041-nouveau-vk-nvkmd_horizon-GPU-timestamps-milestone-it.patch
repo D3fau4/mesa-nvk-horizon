@@ -1,7 +1,7 @@
 From a74f8b23447a804340096af44e2cede066881838 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:38:36 +0000
-Subject: [PATCH 41/57] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
+Subject: [PATCH 41/59] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
  item 8, extension 1)
 
 nvkmd_horizon_dev_get_gpu_timestamp was UNREACHABLE, on the grounds that

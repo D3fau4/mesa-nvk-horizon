@@ -1,0 +1,86 @@
+== t_vk_image ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x5d79134720: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x5d79134720: up, syncpt=26 initial=65959 zcull=off
+[horizon_gpu:I] channel 0x5d79185010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x5d79185010: up, syncpt=27 initial=1868 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   vkCreateBuffer(0x8000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x8000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  note no shader, pipeline or descriptor set layout has been created on this device: the first render pass below reaches the 3D engine with a program region the driver had to make valid on its own (patch 0048)
+  ok   optimal 64x64: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 64x64x1, 1 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x4000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  note optimal 64x64: 64x64 x1 layer(s), memory 0x4000 bytes, align 0x20000
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (8192/8192 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(optimal 64x64) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(optimal 64x64) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   optimal 64x64: 4096/4096 words are 0x78563412 (all of them)
+  ok   the readback buffer past the image is untouched: 4096/4096 words are 0xdeadbeef (all of them)
+  ok   optimal 67x53: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 67x53x1, 1 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x5000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  note optimal 67x53: 67x53 x1 layer(s), memory 0x5000 bytes, align 0x20000
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (8192/8192 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(optimal 67x53) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(optimal 67x53) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   optimal 67x53: 3551/3551 words are 0x78563412 (all of them)
+  ok   the readback buffer past the image is untouched: 4641/4641 words are 0xdeadbeef (all of them)
+  ok   optimal 64x64, two layers: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 64x64x1, 1 mip, 2 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x8000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  note optimal 64x64, two layers: 64x64 x2 layer(s), memory 0x8000 bytes, align 0x20000
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (8192/8192 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(optimal 64x64, two layers) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(optimal 64x64, two layers) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   optimal 64x64, two layers: 4096/4096 words are 0x78563412 (all of them)
+  ok   layer 1 holds the second colour: 4096/4096 words are 0xf0debc9a (all of them)
+  ok   linear 64x64: image format query -> FORMAT_NOT_SUPPORTED
+  note linear 64x64: the driver does not support this image configuration; skipped, not failed
+RESULT: PASS (72/72)

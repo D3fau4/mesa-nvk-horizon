@@ -1,7 +1,7 @@
 From 7f0a22ac37f6416de27fb1ba852928030107be41 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 4 Aug 2026 14:58:02 +0000
-Subject: [PATCH 44/57] nouveau/vk: nvkmd_horizon, a wait may arrive before
+Subject: [PATCH 44/59] nouveau/vk: nvkmd_horizon, a wait may arrive before
  there is a fence
 
 nvk_horizon_sync_wait sampled the sync's state once and returned

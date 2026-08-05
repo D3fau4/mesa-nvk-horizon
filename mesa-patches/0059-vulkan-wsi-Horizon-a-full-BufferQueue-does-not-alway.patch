@@ -1,0 +1,93 @@
+From 66188b000110d5f9d901fc25691c6456c5f8ee71 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 13:04:44 +0000
+Subject: [PATCH 59/59] vulkan/wsi: Horizon, a full BufferQueue does not always
+ say WOULD_BLOCK
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 7 (nwindowDequeueBuffer /
+ nwindowQueueBuffer)
+Why: the acquire retried only on LibnxBinderError_WouldBlock, on the
+ strength of libnx's own loop in nwindowDequeueBuffer doing the same.
+ On hardware a two-image swapchain with both buffers queued gets 0x115d
+ instead — Module_LibnxBinder, LibnxBinderError_NoInit, which is
+ Android's NO_INIT (-ENODEV) through binderConvertErrorCode — and the
+ acquire turned it into VK_ERROR_OUT_OF_DATE_KHR at the third frame.
+ A three-image swapchain never reaches the condition, so every run that
+ mattered until now passed.
+ INVALID_OPERATION is added for the same reason without having been
+ observed: Android's BufferQueueProducer returns it from
+ waitForFreeSlotThenRelock when a dequeue would exceed the producer's
+ allowance, which is the same "no buffer for you right now" under
+ another name. DEAD_OBJECT and BAD_VALUE still end the acquire.
+Evidence: HARDWARE. t_vk_swapchain on the owner's console, 2026-08-05:
+ "wsi_horizon: bqDequeueBuffer failed: 0x0000115d" and "2 images, FIFO:
+ 2 of 90 frames presented", twice — once unloaded and once under the
+ pacing load, which is why the phase's second exit criterion has no
+ comparison in that run. t_nwindow, which drives the same producer API
+ with no Vulkan in it, failed identically at frame 2
+ (docs/hw-logs/t_nwindow-run1-*.log), which is what says the fault is in
+ the retry set and not in the swapchain.
+Upstream: no.
+---
+ src/vulkan/wsi/wsi_horizon.c | 35 +++++++++++++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 856c16f..2438738 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -891,6 +891,38 @@ wsi_horizon_release_window(struct wsi_horizon_swapchain *chain)
+ 
+ /* ---- the producer, one level below NWindow ----------------------- */
+ 
++/* Which dequeue failures mean "come back when a buffer is free", as
++ * opposed to something being wrong.
++ *
++ * MEASURED, NOT ASSUMED, AND THE FIRST VERSION WAS WRONG. Only
++ * LibnxBinderError_WouldBlock was treated as retryable, on the strength
++ * of libnx's own loop in nwindowDequeueBuffer doing the same. On
++ * hardware, a two-image swapchain whose two buffers are both queued
++ * gets 0x115d — Module_LibnxBinder, LibnxBinderError_NoInit, which is
++ * Android's NO_INIT (-ENODEV) coming back through
++ * binderConvertErrorCode — and every two-image run failed at the third
++ * frame with VK_ERROR_OUT_OF_DATE_KHR. A three-image swapchain never
++ * reaches the condition and never saw it.
++ *
++ * INVALID_OPERATION is here for the same reason without having been
++ * observed: Android's BufferQueueProducer returns it from
++ * waitForFreeSlotThenRelock when the producer would exceed its
++ * dequeued-buffer allowance, which is the same "no buffer for you right
++ * now" in a different word. Anything else — DEAD_OBJECT, BAD_VALUE — is
++ * still a failure and still ends the acquire.
++ */
++static bool
++wsi_horizon_dequeue_would_block(Result rc)
++{
++   return R_VALUE(rc) ==
++             MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock) ||
++          R_VALUE(rc) ==
++             MAKERESULT(Module_LibnxBinder, LibnxBinderError_NoInit) ||
++          R_VALUE(rc) ==
++             MAKERESULT(Module_LibnxBinder,
++                        LibnxBinderError_InvalidOperation);
++}
++
+ static Result
+ wsi_horizon_try_dequeue(struct wsi_horizon_swapchain *chain,
+                         s32 *slot_out, NvMultiFence *fence_out)
+@@ -1064,8 +1096,7 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+          return VK_SUCCESS;
+       }
+ 
+-      if (R_VALUE(rc) !=
+-          MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock)) {
++      if (!wsi_horizon_dequeue_would_block(rc)) {
+          mesa_loge("wsi_horizon: bqDequeueBuffer failed: 0x%08x", rc);
+          return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+-- 
+2.43.0
+

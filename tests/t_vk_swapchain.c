@@ -1197,5 +1197,24 @@ out_surface:
 
 out:
    vkfw_finish(&fw);
+
+   /* THE CHECK THAT WOULD HAVE CAUGHT THE LEAK, and it runs after the
+    * device is gone because that is when the driver says so.
+    *
+    * Some of what a driver reports has no Vulkan representation at all.
+    * horizon_gpu refuses to destroy a memory object while a GPU mapping
+    * of it is alive, and refuses to destroy the device while any memory
+    * survives; both are mesa_loge lines on stderr, which main() has
+    * dup2'd into this log. On the first hardware run every swapchain
+    * image leaked — fourteen of them — and vkDestroyDevice then refused
+    * outright, with every check in this file still passing. Reading the
+    * log back is how that becomes a failure instead of a paragraph
+    * somebody has to notice.
+    *
+    * The message deliberately does not contain the string it looks for,
+    * so a failure cannot make a later scan match itself. */
+   t_check(t, !t_log_contains(t, "destroy refused"),
+           "the driver tore down every object it created: nothing in this "
+           "log says it could not");
    return rv;
 }

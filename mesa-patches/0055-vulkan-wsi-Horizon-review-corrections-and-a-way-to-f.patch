@@ -1,7 +1,7 @@
 From 5c2714b730f87ef44a2b1e32886b093f7d871bf2 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:42:04 +0000
-Subject: [PATCH 55/57] vulkan/wsi: Horizon, review corrections and a way to
+Subject: [PATCH 55/59] vulkan/wsi: Horizon, review corrections and a way to
  force the copy path
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

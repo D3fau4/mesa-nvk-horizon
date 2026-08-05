@@ -12,15 +12,136 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 is written and cross-builds; none of it has run on a console.** The Horizon WSI is patches 0049-0056 in `mesa-patches/` — the `vi` platform, two nvkmd operations, the `wsi_horizon` backend, NVK's side of it, a review round and one change to the submit path. Two new tests: `t_nwindow`, which asks the compositor the questions Vulkan cannot, and `t_vk_swapchain`, which is the phase's four exit criteria one section each. **The batch is built and waiting for the owner's console; until it runs, Phase 6 has no evidence at all** |
-| **What runs on a Switch** | *Unchanged since 2026-08-05: no new hardware run has happened.* Transfers (**203/203**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), sampled textures with mip levels and bilinear filtering (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), a linear-modifier image rendered through a tiled shadow (**52/52**), the mandatory sequence (**62/62**), and from `horizon/` itself `t_submit` (**32/32**), `t_pbsize` (**77/77**) and `t_display` (**3/3**) |
-| **Next concrete task** | **Run the Phase 6 batch on the console.** Order and what to expect: § "The Phase 6 batch" below. `t_nwindow` first, because its one measurement — how many slots the BufferQueue hands out at once — is what the whole swapchain design rests on |
-| **The one thing to watch in that batch** | **Patch 0056 changes the submit path every test goes through.** It skips the CPU wait for a dependency already submitted to the same channel, which a GPFIFO executes in order. Without it, handing the compositor a fence saves nothing — the CPU has already waited for the render before the buffer is queued. With it, every Phase 5 result is from a build whose submit path moved, so **the Phase 5 suite is part of this batch and not a formality** |
-| **Known failures** | **`t_fault` crashes the console on exit**, unchanged and uninvestigated since 2026-08-05: every check passes, the log is written and closed, and pressing + takes the system down. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 56 subsequent attempts have not reproduced it |
-| **What Phase 6's suite does NOT measure** | Named here rather than left to be discovered. **(1)** Nothing in it has run on hardware, so every number in `docs/wsi.md` and in the patch messages is a cross-build or a fact read out of libnx or Mesa. **(2)** The memory layout has exactly one witness and it is the operator's eyes: every frame but one is a solid colour, and a solid colour is the same image under any block-linear swizzle, so `t_vk_swapchain` section F presents a pattern and writes down what it should look like. A GPU readback would prove nothing — it would write and read with the same layout and agree with itself. **(3)** Nothing measures a swapchain across a display mode change; the resize path is written and the test that would exercise it is docking the console mid-run, which no automated check does. **(4)** Nothing is multi-threaded: two threads presenting to one surface is legal Vulkan and untested here. **(5)** `VK_PRESENT_MODE_IMMEDIATE_KHR` is offered and never measured by `t_vk_swapchain`; `t_nwindow` measures the swap interval underneath it instead |
-| **Open, not blocking** | **Two** unconditional L2 operations per submit, unchanged. And now: **the acquire's CPU wait**, which `docs/wsi.md` § 4 originally designed away and which is back, because `nvkmd_horizon_ctx_wait` does a submit's waits on the CPU — so expressing the compositor's release fence as a submit dependency would move the same stall later rather than remove it. CLAUDE.md's rule 6 lists swapchain acquire among the places a stall is allowed, so this is within the rules; it is recorded because it is a design that lost an argument to the code |
-| **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it |
-| **Never verified on hardware** | **Every line of Phase 6**, plus `t_fault` as it now stands. And, because of patch 0056, **the whole Phase 5 suite as it now stands**: their last console run was against a build whose submit path has since changed |
+| **Phase** | **Phase 6 ran on a console on 2026-08-05 and three of its four exit criteria are met.** Fifteen tests, thirteen PASS and **two FAIL**, 2986 checks. A Vulkan swapchain presents on the Switch at 60 Hz through the zero-copy path — the rendered images *are* the scanout buffers — and the run found three defects, two of them fixed here (patches 0058, 0059) and one open. **The fixed binaries have not been re-run** |
+| **What runs on a Switch** | *2026-08-05, this tree.* **A VK_KHR_swapchain**: `vkCreateViSurfaceNN` over the default window, zero-copy chosen by the driver, 90 frames at **mean 16662 us with 89 of 89 intervals inside 10% of a 60 Hz refresh**, two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, and the same application taking either present path on request. Plus everything Phase 5 had, re-run against the changed submit path: transfers (**203/203**), a NAK-compiled compute shader (**37/37**), off-screen images (**72/72**), a triangle (**84/84**), textures with mips and filtering (**1685/1685**), depth (**66/66**), twelve formats (**282/282**), eight submits in flight (**287/287**), `t_vk_caps` (**52/52**), `t_vulkan` (**62/62**), `t_submit` (**32/32**), `t_pbsize` (**77/77**), `t_display` (**3/3**) |
+| **THE NUMBER Phase 6 rested on** | **3 slots out of 3 registered buffers can be dequeued at once, and 2 out of 2** (`t_nwindow`). The BufferQueue hands the producer everything it registered, so `minImageCount = 2` is sound and the WSI's own slot ownership over libnx's `bq*` API is the right design. libnx's own `NWindow` allows one; that restriction is libnx's, not the platform's |
+| **Next concrete task** | **Re-run `t_nwindow` and `t_vk_swapchain` with patches 0058 and 0059 in.** They fix the two failures below. The open question the re-run answers: whether the exit crash goes with the leak |
+| **Known failures** | **1. `t_vk_swapchain` crashes the console on exit** (owner, on +, after `RESULT` is written). **Cause not established.** The leading hypothesis is defect 2: the device was never destroyed, so `nvExit`/`nvMapExit`/`nvFenceExit` never ran and fourteen NvMaps were still alive when the process ended. Patch 0058 removes that condition, so the re-run tests the hypothesis. `t_nwindow`, which registers and releases the same kind of scanout buffers and tears everything down cleanly, exits fine. **2. FIXED, not yet re-run:** every swapchain image leaked — `wsi_destroy_image` frees the memory before destroying the image, which is legal Vulkan, and `horizon_gpu_mem_destroy` refused while the image's VA binding was alive. Fourteen objects, then `device destroy refused: live mem=14`. Patch 0058 makes the binding hold a reference. **3. FIXED, not yet re-run:** every two-image swapchain failed at frame 2 with `0x115d` — `LibnxBinderError_NoInit`, Android's `NO_INIT`, from a `bqDequeueBuffer` with no free buffer. Only `WOULD_BLOCK` was being retried. Patch 0059. **4.** `t_fault` still takes the console down on exit, unchanged. **5.** `t_vk_texture`'s one unexplained occurrence stays on the record; this run adds 24 more clean attempts to the 56 |
+| **Exit criteria** | **1. Met.** A rotating colour presents at the display's refresh rate: 89/89 intervals within 10% of 16666 us. **2. Half met.** Three images against two is structurally measured — 3 concurrent slots against 2 — but the *pacing* comparison has no data, because every two-image run died at frame 2 on defect 3. **3. Met.** Two swapchains coexist, the superseded one reports `VK_ERROR_OUT_OF_DATE_KHR`, and destroying it leaves the survivor presenting 20/20. **4. Met.** The decision is reported through the debug-utils messenger and the test asserts on it; the same application got zero-copy by default and the copy fallback with `MESA_VK_WSI_HORIZON_FORCE_COPY`, both named in the log |
+| **What is still unverified** | **The memory layout.** Zero-copy was chosen, 120 pattern frames were presented and nothing errored — but nothing in the suite can tell a correct block-linear layout from a scrambled one, which is why the pattern is there and why the operator's description of it is the whole of the evidence. **It has not been reported back yet.** Also unverified: any display mode change, anything multi-threaded, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan (`t_nwindow` measured the swap interval underneath it: mean 8162 us against 16380 us at interval 1) |
+| **Open, not blocking** | Two unconditional L2 operations per submit, unchanged. The acquire's CPU wait, which `docs/wsi.md` § 4 designed away and which is back for a reason recorded there — and which the numbers now quantify: **acquire mean 15729 us of a 16666 us frame** on the zero-copy path, against **4 us** on the copy path, where the wait is in the present instead |
+| **Open decisions** | **D7 only**, written up and waiting for a person to file it |
+| **Never verified on hardware** | Patches **0058** and **0059** and the tests rebuilt with them; `t_fault` as it stands |
+
+
+---
+
+## Phase 6 on the console — three criteria met, three defects found (2026-08-05)
+
+**Class: hardware (HW).** Fifteen `.nro` in the order given, on the
+owner's Switch. **Thirteen PASS, two FAIL, 2986 checks.** Logs in
+`docs/hw-logs/*phase6*`.
+
+### A Vulkan swapchain presents on a Switch
+
+```
+note vk info [wsi_horizon.c:1750]: wsi_horizon: zero-copy: the swapchain
+     images are the scanout buffers (3 images, 1280x720, swap interval 1)
+ok   3 images, FIFO: 90 of 90 frames presented
+note 3 images, FIFO: 89 intervals, mean 16662 us, min 16150 us,
+     max 17238 us; 89 within 10% of 16666 us; 0 longer than 1.5 refreshes
+ok   90 frames were presented through 3 images, so the compositor
+     released at least 87 of them
+```
+
+**Zero-copy on the first attempt.** The alignment failure predicted in
+the previous section did not happen: `nwindowConfigureBuffer` accepted
+memory aligned to whatever NIL asked for, so libnx's 128 KiB is a habit
+and not a requirement — at least for a buffer of this size and shape.
+The page-table kind and the GOB ordering both passed, which means NIL
+classified GM20B as an SoC and produced `TegraColor`, as
+`nvk_wsi_get_image_info` requires.
+
+**89 of 89 intervals inside 10% of a 60 Hz refresh** is exit criterion 1,
+and there is no weaker reading of it: the swapchain has three images, 90
+frames went through them, and this process releases none — the
+compositor released at least 87.
+
+### THE NUMBER, and it is larger than the design needed
+
+```
+note THE NUMBER: with 3 registered buffers, 3 slot(s) could be dequeued at once
+note with 2 registered buffers, 2 slot(s) could be dequeued at once
+```
+
+The BufferQueue hands the producer **every** buffer it registered. So
+the single-`cur_slot` restriction is libnx's `NWindow` wrapper and not
+the platform's, and driving `bq*` directly — which the whole slot-
+ownership design rests on — is sound. `minImageCount = 2` is safe.
+
+### Three defects, and where each came from
+
+**1. Every swapchain image leaked.** Fourteen of them, and then the
+device itself:
+
+```
+[horizon_gpu:E] mem 0x...: destroy refused, 1 live mapping(s) at va=0x400000000
+MESA: error: horizon_gpu_mem_destroy failed: status 7
+[horizon_gpu:E] device destroy refused: live mem=14 va_ranges=0 mappings=0 channels=0
+```
+
+`wsi_destroy_image` frees the memory **before** destroying the image
+(`wsi_common.c`), which Vulkan permits and Mesa has always done;
+`horizon_gpu_mem_destroy` refuses while a mapping is alive
+(memory-model § 7), and `nvkmd_mem_unref` returns void, so nothing
+retried. The final counters are what fix the order: `va_ranges=0
+mappings=0` means the unbind *did* happen — later, when the image was
+destroyed — so what was left was memory whose free had already been
+refused. Patch 0058 makes the binding hold a reference; whichever of the
+two comes last destroys the object, and the order stops mattering.
+
+**No Phase 5 test showed this**, because they destroy the image first.
+It is a defect any application that frees memory before its images would
+hit, and the swapchain is simply what did it.
+
+**2. Every two-image swapchain died at frame 2.**
+
+```
+MESA: error: wsi_horizon: bqDequeueBuffer failed: 0x0000115d
+FAIL 2 images, FIFO: 2 of 90 frames presented
+```
+
+`0x115d` is `Module_LibnxBinder`, `LibnxBinderError_NoInit` — Android's
+`NO_INIT` (`-ENODEV`) through `binderConvertErrorCode`. The acquire
+retried only on `WOULD_BLOCK`, which is what libnx's own loop expects.
+Three images never reach the condition, so nothing before this run had
+seen it. `t_nwindow` failed identically at frame 2, which is what says
+the fault is in the retry set and not in the swapchain. Patch 0059.
+
+**The cost of this one is exit criterion 2**: the pacing comparison
+between two and three images has no data in this run. Its structural
+half — 3 concurrent slots against 2 — did measure.
+
+**3. `t_vk_swapchain` takes the console down on exit**, reported by the
+owner, after `RESULT` is written and on pressing +. The cause is not
+established. The hypothesis is defect 1: with the device destroy
+refused, `nvExit`, `nvMapExit` and `nvFenceExit` never ran and fourteen
+NvMaps were alive when the process ended. `t_nwindow` registers and
+releases the same kind of scanout buffers, tears everything down
+cleanly, and exits fine — which is what makes the hypothesis worth
+testing rather than assuming. Patch 0058 removes the condition; the
+re-run is the test.
+
+### And a check that would have caught the first one
+
+`t_log_contains` in `testfw`: the test reads back its own log — which
+`main()` has dup2'd stderr into — and fails if the driver said it could
+not destroy something. Some of what a driver reports has no Vulkan
+representation at all, and until now a test could only pass beside it.
+This run is the reason it exists.
+
+### The numbers worth keeping
+
+| | |
+|---|---|
+| swapchain, 3 images, FIFO | mean **16662 us**, 89/89 within 10% of a refresh |
+| acquire, zero-copy | mean **15729 us** — the frame's wait is here |
+| acquire, copy fallback | mean **4 us** — the wait is in the present instead |
+| record + submit | **584 us** zero-copy, **470 us** copy |
+| `t_nwindow`, 3 buffers, interval 1 | mean **16380 us**, 86/89 within 10% |
+| `t_nwindow`, 3 buffers, interval 0 | mean **8162 us** — the swap interval is the knob |
+| `t_nwindow`, fill + flush of one 3.75 MB buffer by CPU | **2173 us** |
+| release fences seen | **87 of 90** dequeues, first on syncpoint 103 |
 
 
 ---

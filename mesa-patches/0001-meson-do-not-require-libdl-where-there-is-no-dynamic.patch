@@ -1,7 +1,7 @@
 From e8f53b8f0fb7faaaf71508027d1d91df1c2ce74c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:35 +0000
-Subject: [PATCH 01/57] meson: do not require libdl where there is no dynamic
+Subject: [PATCH 01/59] meson: do not require libdl where there is no dynamic
  loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

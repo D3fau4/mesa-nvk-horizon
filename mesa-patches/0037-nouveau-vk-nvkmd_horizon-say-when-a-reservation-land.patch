@@ -1,7 +1,7 @@
 From 8f95aaac70d2f309f7136d0aa361160e5172eb0d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:03:26 +0000
-Subject: [PATCH 37/57] nouveau/vk: nvkmd_horizon, say when a reservation lands
+Subject: [PATCH 37/59] nouveau/vk: nvkmd_horizon, say when a reservation lands
  on the shader memory window
 
 nvk_push_dispatch_state_init programs the shader local and shared memory

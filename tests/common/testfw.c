@@ -61,6 +61,7 @@ int main(void)
     mkdir("sdmc:/horizon_gpu_tests", 0777);
     char path[128];
     snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", test_name);
+    snprintf(t.log_path, sizeof(t.log_path), "%s", path);
     t.log = fopen(path, "w");
 
     /* Everything Mesa says goes into the same file, in order.
@@ -147,4 +148,56 @@ int main(void)
     if (!test_uses_display)
         consoleExit(NULL);
     return (t.fail == 0 && !aborted) ? 0 : 1;
+}
+
+/* Overlap between chunks: the longest needle this can find spans two
+ * reads by at most this much, so a needle up to that length is never
+ * split across a boundary and missed. */
+#define T_LOG_SCAN_OVERLAP 128
+#define T_LOG_SCAN_CHUNK   4096
+
+bool t_log_contains(test_ctx *t, const char *needle)
+{
+    if (t->log == NULL || t->log_path[0] == '\0' || needle == NULL)
+        return false;
+
+    const size_t needle_len = strlen(needle);
+    if (needle_len == 0 || needle_len > T_LOG_SCAN_OVERLAP)
+        return false;
+
+    /* Both writers, because stderr was dup2'd onto this file and the
+     * lines that matter most are usually the driver's. */
+    fflush(t->log);
+    fflush(stderr);
+
+    FILE *f = fopen(t->log_path, "r");
+    if (f == NULL)
+        return false;
+
+    char buf[T_LOG_SCAN_OVERLAP + T_LOG_SCAN_CHUNK + 1];
+    size_t carry = 0;
+    bool found = false;
+
+    for (;;) {
+        const size_t n = fread(buf + carry, 1, T_LOG_SCAN_CHUNK, f);
+        if (n == 0)
+            break;
+
+        const size_t total = carry + n;
+        buf[total] = '\0';
+        if (strstr(buf, needle) != NULL) {
+            found = true;
+            break;
+        }
+
+        /* Keep the tail, so a needle straddling this boundary is seen
+         * with the next chunk. */
+        const size_t keep = total < T_LOG_SCAN_OVERLAP ? total
+                                                       : T_LOG_SCAN_OVERLAP;
+        memmove(buf, buf + total - keep, keep);
+        carry = keep;
+    }
+
+    fclose(f);
+    return found;
 }

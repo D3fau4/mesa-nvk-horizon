@@ -25,6 +25,7 @@ typedef struct test_ctx {
     int pass;
     int fail;
     FILE *log; /* sdmc log file; may be NULL */
+    char log_path[128];
 } test_ctx;
 
 /* Record one check. Returns `cond` so callers can bail out on failure. */
@@ -34,6 +35,23 @@ bool t_check(test_ctx *t, bool cond, const char *fmt, ...);
 /* Free-form annotation (measurements, decoded errors). */
 __attribute__((format(printf, 2, 3)))
 void t_note(test_ctx *t, const char *fmt, ...);
+
+/* True when the log written so far contains `needle`.
+ *
+ * WHY A TEST WOULD READ ITS OWN LOG. main() dup2s stderr onto this
+ * file, so everything the driver says with mesa_loge, mesa_logw or
+ * vk_errorf is in it, interleaved with the test's own lines. Some of
+ * what a driver reports has no Vulkan representation at all — a memory
+ * object it could not destroy, a teardown it refused — and a test that
+ * cannot see those can only report success beside them. This is how a
+ * check is made out of one.
+ *
+ * Flushes both writers first, so the scan sees everything up to the
+ * call. Returns false when there is no log file. Chunked with an
+ * overlap, so a needle that straddles a read boundary is still found;
+ * `needle` must be shorter than 128 bytes.
+ */
+bool t_log_contains(test_ctx *t, const char *needle);
 
 extern const char *const test_name;
 int run_test(test_ctx *t);

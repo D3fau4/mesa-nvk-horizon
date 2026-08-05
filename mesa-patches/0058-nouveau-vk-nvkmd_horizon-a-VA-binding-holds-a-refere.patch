@@ -1,0 +1,107 @@
+From f47c09ebddffc54e552e1af7b77972083ef75c99 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 13:04:44 +0000
+Subject: [PATCH 58/59] nouveau/vk: nvkmd_horizon, a VA binding holds a
+ reference to its memory
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 4 (Safe recreation and destruction)
+Why: nvkmd lets a caller free a memory object while a VA still binds it.
+ That is ordinary Vulkan — vkFreeMemory does not require every image
+ bound to the memory to have been destroyed first — and Mesa's own WSI
+ does exactly it: wsi_destroy_image calls FreeMemory before DestroyImage
+ (wsi_common.c). horizon_gpu's contract is stricter and deliberately so:
+ horizon_gpu_mem_destroy refuses with ERR_BUSY while any mapping of the
+ object is alive (memory-model § 7).
+ With no reference from the binding the two rules collide and the memory
+ leaks. The free is refused, nothing retries it — nvkmd_mem_unref
+ returns void and there is nowhere to report to — and the object keeps
+ its storage and its NvMap for the rest of the process.
+ With the reference, the free drops the caller's and returns, the unbind
+ drops this one, and whichever comes last destroys the object. Order
+ stops mattering, which is what the caller was entitled to assume.
+Evidence: HARDWARE. t_vk_swapchain on the owner's console, 2026-08-05:
+ every swapchain image leaked — five swapchains, fourteen images — each
+ one "destroy refused, 1 live mapping(s)", and vkDestroyDevice then
+ refused outright with "device destroy refused: live mem=14
+ va_ranges=0 mappings=0 channels=0". The counters are the proof of the
+ order: the VAs and the mappings were gone by the end, so the unbind
+ worked; what was left was memory whose free had been refused earlier
+ and never retried (docs/hw-logs/t_vk_swapchain-run1-*.log).
+ No Phase 5 test showed it: they destroy the image before freeing the
+ memory, which is the other order.
+Upstream: no — it is this backend's ownership rules meeting nvkmd's.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 33 +++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index c543c25..c5dbdb9 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -30,6 +30,33 @@ struct nvkmd_horizon_binding {
+    uint64_t va_offset_B;
+    uint64_t range_B;
+    horizon_gpu_mapping *mapping;
++
++   /* A REFERENCE, and it is what makes the two layers' ownership rules
++    * agree.
++    *
++    * nvkmd lets a caller free a memory object while a VA still binds
++    * it — that is ordinary Vulkan, since vkFreeMemory does not require
++    * every image bound to the memory to have been destroyed first, and
++    * Mesa's own WSI does exactly that (wsi_destroy_image calls
++    * FreeMemory before DestroyImage). horizon_gpu's contract is
++    * stricter and deliberately so: horizon_gpu_mem_destroy refuses with
++    * ERR_BUSY while any mapping of the object is alive
++    * (memory-model § 7).
++    *
++    * Without a reference here the two rules collide and the memory
++    * leaks: the free is refused, nothing retries it, and the object
++    * stays alive with its storage and its NvMap for the rest of the
++    * process. Measured on hardware — fourteen swapchain images leaked
++    * in one run of t_vk_swapchain, and vkDestroyDevice then refused to
++    * tear the device down at all ("device destroy refused: live
++    * mem=14").
++    *
++    * With it, the free drops the caller's reference and returns, the
++    * unbind drops this one, and whichever comes last destroys the
++    * object. Order stops mattering, which is what the caller was
++    * entitled to assume.
++    */
++   struct nvkmd_mem *mem;
+ };
+ 
+ void
+@@ -152,6 +179,10 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+                             &va->bindings, link) {
+       horizon_gpu_vm_unmap(b->mapping);
+       list_del(&b->link);
++      /* Last, and after the unmap: this may be the reference that
++       * destroys the object, and horizon_gpu_mem_destroy refuses while
++       * the mapping is still alive. */
++      nvkmd_mem_unref(b->mem);
+       FREE(b);
+     }
+ 
+@@ -213,6 +244,7 @@ nvkmd_horizon_va_bind_mem(struct nvkmd_va *_va,
+ 
+    b->va_offset_B = va_offset_B;
+    b->range_B = range_B;
++   b->mem = nvkmd_mem_ref(_mem);
+ 
+    simple_mtx_lock(&va->mutex);
+    list_addtail(&b->link, &va->bindings);
+@@ -276,6 +308,7 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+                        va_offset_B, (int)res.status, res.nv);
+    }
+ 
++   nvkmd_mem_unref(found->mem);
+    FREE(found);
+    return VK_SUCCESS;
+ }
+-- 
+2.43.0
+

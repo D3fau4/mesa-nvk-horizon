@@ -1,7 +1,7 @@
 From 1008cf71cdfb948270f2fc93ed2d1cf78f7d3b0f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 16:09:02 +0000
-Subject: [PATCH 33/57] nouveau/vk: nvkmd_horizon, nonCoherentAtomSize is a CPU
+Subject: [PATCH 33/59] nouveau/vk: nvkmd_horizon, nonCoherentAtomSize is a CPU
  cache property
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
