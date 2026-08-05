@@ -27,6 +27,48 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## A probe that reported success next to the failure it was built to explain
+
+### `t_nwindow-run5-probe-did-not-reproduce-FAIL.log`
+
+`nw_probe_starvation` was written to answer why a two-buffer window stops at
+the third frame. It built a session that looked like the failing one, handed
+the compositor every buffer, and asked for one back for up to five seconds.
+It reports, at 2 buffers:
+
+```
+  note starvation probe, 2 buffers: 1 dequeue(s) in libnx's mode over 0 ms,
+       release event fired 0 time(s), last result 0x00000000
+  ok   starvation probe, 2 buffers: the compositor handed a buffer back
+       within 5000 ms
+  note starvation probe, 2 buffers: it came back after 104 us
+```
+
+Sixty lines above it in the same file:
+
+```
+  FAIL 2 buffers, interval 1: 2 of 90 frames presented
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+**The reconstruction never reached the state it was built to examine**, so its
+four `ok` lines are not evidence about the failure. That is the same shape as
+the checks listed under "Superseded runs" below — a green line that measured
+something other than what its text implies — and it is the fourth in this
+project.
+
+The log is still worth reading for two things it did measure. A buffer came
+back to a fully-queued two-buffer window in 104 us **with the release event
+never firing**, which says the compositor can free a slot without signalling —
+so a producer that waits on the event alone will stall where one that probes
+first will not. And the failing result itself, `0x00006359` =
+`MAKERESULT(Module_Libnx, LibnxError_Timeout)`, is the test's own budget
+expiring; the only branch that returns it is the deadline check at the top of
+an iteration, which is reachable only after an `eventWait` **succeeded**. That
+is what located the defect: the loop spent its whole second inside one wait and
+then gave up after a single retry in a dequeue mode nothing on this platform
+uses. Fixed in `t_nwindow` and, as patch 0062, in the WSI.
+
 ## Runs that measured the wrong build
 
 ### `t_nwindow-run3-STALE-BINARIES.log`, `t_vk_swapchain-run3-STALE-BINARIES.log`

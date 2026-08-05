@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-f6ef3d8874a694110a154403f884c0b665aeade3f6a40867b5803cc4d1a226dc  README.md
+b108547fa63e4f25f56d4046873c84828a1fc1a7fb5ad45bab204906f30da6dd  README.md
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
 718f0d37974da73d04a552c64d5d8024b9de3fdac638307779b35d1e615a3fa1  t_channel.log
@@ -29,6 +29,7 @@ cc7b2713b85fb9a7a267daa4c8498938a4b5ff253389f7853870aee46c2be615  t_nwindow-run1
 967e5c9873d58947672de16c27740feed760d765ad0c06d302803ef43c47d522  t_nwindow-run2-blocking-dequeue-FAIL.log
 0f3e9dc02285d1480b093cd523546e2fe702c0c2b41bdc6188ce5c76cbc20553  t_nwindow-run3-STALE-BINARIES.log
 fca60c8cd90a5ae2fd1974ec1a2cd4f33dff71995111ab53b799f08f4257f2f1  t_nwindow-run4-starves-at-two-FAIL.log
+77aa700a955c4a99508c16fbb937eb442e63c4a22cc0516e8f06a39ebf4df777  t_nwindow-run5-probe-did-not-reproduce-FAIL.log
 170eaabced3c1df4205ce98043c38813753887aa7f0e3a814893a711014fe66b  t_ostime-run1-debt-batch-PASS.log
 98fca531ebb9a5a7557ba559fc335fde6dc93807d82ada38b4e2018c1d27e52f  t_ostime.log
 f9cddacf5bb763f26dd7e0662b085b6c5289a5f67c0361aad91ad2f30a300642  t_pbsize-run-phase6-samechannel-PASS.log

@@ -12,18 +12,94 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console four times. Three of four exit criteria are met and one defect is open.** Run 4 (2026-08-05) fixed the leak (0060) and **confirmed the exit crash was the leak** — the console now returns to the homebrew menu. What remains is one failure with two faces: **a two-buffer window starves**, identically through raw `bq*` and through Vulkan. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator**, which is the layout evidence this phase could get no other way |
+| **Phase** | **Phase 6 has been to the console five times. Three of four exit criteria are met and one defect is open — and run 5 found that the defect was mine.** The two-buffer failure is not the compositor starving the producer: the acquire spent its whole deadline inside one `eventWait` and then gave up after a single retry in a dequeue mode nothing on this platform uses. Fixed in `t_nwindow` and as patch **0062**, unrun. Run 4 closed the leak (0060) and **confirmed the exit crash was the leak**. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator** |
 | **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 5: `t_nwindow` only, with `nw_probe_starvation`.** One question, asked directly: with every registered buffer handed to the compositor, does it give one back — and how many times does the release event fire in five seconds? Three buffers first, then two. It replaces two patches written against guesses (0059, 0061), neither of which touched the failure. Its last act tries `async=false` and may not return; that outcome is a distinct answer and the log says so before making the call |
-| **Known failures** | **1. A two-buffer window starves at the third frame**, in raw `bq*` and in Vulkan alike, all four runs. The result is `0x00006359` = `LibnxError_Timeout` — the test's own wait, not a queue error: **the release event never fires**. Both previous fixes chose between dequeue modes, and no dequeue mode is ever reached. `nw_probe_starvation` measures it; nothing in the driver changes until it reports. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Next concrete task** | **Run 6: `t_nwindow` and `t_vk_swapchain` with the single-mode, sliced-wait acquire.** It answers either way: if the fix is right the two-buffer sessions present 90/90 and the pacing comparison — the half of exit criterion 2 that has never run — finally runs; if it is wrong, the diagnostic now attached to the *real* failure reports from it with numbers instead of from a reconstruction |
+| **Known failures** | **1. A two-buffer window stops at the third frame**, in raw `bq*` and in Vulkan alike, five runs. **Cause found in run 5 and it is ours**: the loop waited out its entire budget in one `eventWait`, then asked once in async=false — the mode libnx uses only on a window with no release event — and ran out of time without ever asking in async=true again. The reported `0x00006359` is `LibnxError_Timeout`, our own deadline. Fixed in `t_nwindow` and as patch 0062; **unrun**. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether `minImageCount = 2` is a promise this compositor can keep — the surface advertises it and `t_vk_swapchain` asserts it, and no two-buffer session has ever completed. Any display mode change. Anything multi-threaded. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8152 us against 16352 us**, and run 3 at **8177 us against 16353 us** |
+| **What is still unverified** | Whether patch 0062 and its `t_nwindow` twin fix the two-buffer sessions. Whether `minImageCount = 2` is a promise this compositor can keep — no two-buffer session has ever completed, though run 5 showed a fully-queued two-buffer window handing a buffer back in 104 us. Any display mode change. Anything multi-threaded |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only** |
-| **Never verified on hardware** | `nw_probe_starvation`; `t_fault` as it stands. Patch **0061** ran and did not change the failure it was written for |
+| **Never verified on hardware** | Patch **0062** and the `t_nwindow` change beside it; the diagnostic attached to the real failure; `t_fault` as it stands |
+
+
+---
+
+## Run 5 — the probe answered, and it was the wrong question (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 79/81, build
+`2026-08-05T17:57:42Z 0c22d69`. Log in
+`docs/hw-logs/t_nwindow-run5-probe-did-not-reproduce-FAIL.log`.
+
+### The probe did not reproduce the failure
+
+`nw_probe_starvation` built a session that looked like the failing one
+and asked it the question. At two buffers:
+
+```
+  note starvation probe, 2 buffers: 1 dequeue(s) in libnx's mode over
+       0 ms, release event fired 0 time(s), last result 0x00000000
+  ok   starvation probe, 2 buffers: the compositor handed a buffer back
+  note starvation probe, 2 buffers: it came back after 104 us
+```
+
+Sixty lines above, in the same log, the real two-buffer sessions still
+die at frame 2. **A reconstruction that never reaches the state it was
+built to examine reports success about nothing**, and four `ok` lines
+say so in a way that reads like an answer. Fourth time this project has
+produced a check like that; second one I wrote myself.
+
+The instrument is now attached to the failure instead: when a dequeue in
+`nw_session_present` fails, *that* window — in exactly the state that
+made it fail — is the one asked for five seconds. There is nothing left
+to reconstruct.
+
+### What the log did measure, and it located the defect
+
+Two things.
+
+**A buffer came back with the release event never firing.** 104 us, zero
+event fires. The compositor can free a slot without signalling, so a
+producer that waits on the event alone stalls where one that probes
+first does not.
+
+**And the failing result names the culprit.** `0x00006359` is
+`MAKERESULT(Module_Libnx, LibnxError_Timeout)` — the test's own budget,
+not anything the BufferQueue said. The only branch that returns it is
+the deadline check at the top of an iteration, which is reachable *only
+after an `eventWait` succeeded*. So the sequence was:
+
+1. ask in async=true → no buffer yet
+2. wait on the release event, **with the whole remaining second as the
+   timeout** → the event fires
+3. ask once in async=false → fails
+4. round the loop → the budget is gone → `LibnxError_Timeout`
+
+**async=true was never asked again.** The compositor was not starving
+the producer; the loop spent its entire deadline in one wait and then
+gave up on one attempt in a mode nothing on this platform uses. Patch
+0061 introduced step 3, and patch 0059 before it aimed at the same
+non-problem.
+
+### The fix, in both implementations
+
+One mode — libnx's async=true, which `nwindowDequeueBuffer` uses on any
+window that has a release event — and the wait sliced to two refreshes,
+so a release that does not arrive costs one slice and another attempt
+instead of the whole acquire. A timeout from `eventWait` is not a
+failure; it is the reason to ask again, and the caller's deadline is
+checked at the top of the loop where it belongs.
+
+`t_nwindow` in commit `4a9a5f1`-adjacent; the WSI as **patch 0062**,
+which also corrects the comment that stated 0061's reading as measured
+fact. Cross build green, not verified on hardware.
+
+Run 6 answers either way: if the fix is right the two-buffer sessions
+present 90/90 and the pacing comparison finally runs; if it is wrong the
+attached diagnostic reports from the real failure with numbers.
 
 
 ---

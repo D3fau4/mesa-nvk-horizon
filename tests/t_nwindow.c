@@ -358,14 +358,40 @@ static bool nw_dequeue_would_block(Result rc)
                           LibnxBinderError_InvalidOperation);
 }
 
+/* ONE MODE, AND THE BUDGET SPENT IN SLICES. Run 5's log contains the
+ * defect this replaces, and it was introduced by the previous "fix".
+ *
+ * The old loop asked in async=true, waited on the release event with
+ * **the whole remaining second** as the timeout, and then retried in
+ * async=false. Read the failing result back: 0x00006359 is
+ * LibnxError_Timeout, and the only branch that returns it is the
+ * budget check at the top of an iteration. Reaching it means the
+ * eventWait *succeeded* — the compositor did signal a release — and
+ * that the one dequeue attempted afterwards was the async=false one,
+ * which failed, and that the budget was then gone before async=true
+ * was ever tried again.
+ *
+ * So the two-buffer sessions were not starved by the compositor. They
+ * spent their whole second inside one blocking wait and then gave up
+ * on the strength of a single attempt in a mode nothing on this
+ * platform uses. Run 5 also measured the other half of it: on a
+ * fully-queued two-buffer window, an async=true dequeue succeeded in
+ * 104 us.
+ *
+ * Now: libnx's mode every time (native_window.c passes async=true on
+ * any window that has a release event, which the default window does),
+ * and the wait sliced to two refreshes so a signal that does not come
+ * costs one slice instead of the whole budget. A timeout from
+ * eventWait is not an error here — it is the reason to ask again. The
+ * deadline is the loop's, and only the loop's.
+ */
 static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
     const u64 start = armGetSystemTick();
-    bool blocking = false;
 
     for (;;) {
-        Result rc = nw_try_dequeue(p, blocking, out);
-        blocking = false;
+        Result rc = nw_try_dequeue(p, false /* libnx's mode: async=true */,
+                                   out);
         if (!nw_dequeue_would_block(rc))
             return rc;
 
@@ -376,13 +402,10 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
         if (spent_ns >= timeout_ns)
             return MAKERESULT(Module_Libnx, LibnxError_Timeout);
 
-        Result erc = eventWait(&p->win->event, timeout_ns - spent_ns);
-        if (R_FAILED(erc))
-            return erc;
-
-        /* A buffer came back. Ask for it in the mode a two-buffer queue
-         * will answer. */
-        blocking = true;
+        uint64_t slice = timeout_ns - spent_ns;
+        if (slice > NW_REFRESH_NS * 2)
+            slice = NW_REFRESH_NS * 2;
+        eventWait(&p->win->event, slice);
     }
 }
 
@@ -602,6 +625,65 @@ static uint32_t nw_measure_concurrent_dequeues(nw_session *s)
     return n;
 }
 
+/* Ask a fully-queued window for a buffer, for five seconds, and report
+ * what happened as numbers: how many dequeues, how many times the
+ * release event fired, the last result, and how long the first success
+ * took.
+ *
+ * Called from two places, and the difference between them is the whole
+ * lesson of run 5. As a standalone probe — a session built to look like
+ * the failing one — it got a buffer back in 104 us with the release
+ * event never firing, while the real two-buffer sessions in the same
+ * log were still dying at frame 2 sixty lines above. **The
+ * reconstruction did not reproduce the failure**, so its four `ok` lines
+ * measured a state the failure never reaches.
+ *
+ * So it is now also called from the failure itself, inside
+ * nw_session_present, where there is nothing to reconstruct.
+ */
+static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
+{
+    test_ctx *t = s->t;
+    const u64 start = armGetSystemTick();
+    uint32_t events = 0, tries = 0;
+    Result last = 0;
+    bool got_one = false;
+
+    memset(out, 0, sizeof(*out));
+
+    for (;;) {
+        last = nw_try_dequeue(&s->prod, false /* libnx's mode: async=true */,
+                              out);
+        tries++;
+        if (R_SUCCEEDED(last)) {
+            got_one = true;
+            break;
+        }
+
+        const uint64_t spent = armTicksToNs(armGetSystemTick() - start);
+        if (spent >= NW_STARVE_PATIENCE_NS)
+            break;
+
+        uint64_t slice = NW_STARVE_PATIENCE_NS - spent;
+        if (slice > NW_STARVE_SLICE_NS)
+            slice = NW_STARVE_SLICE_NS;
+        if (eventActive(&s->prod.win->event) &&
+            R_SUCCEEDED(eventWait(&s->prod.win->event, slice)))
+            events++;
+    }
+
+    const uint64_t elapsed = armTicksToNs(armGetSystemTick() - start);
+    t_note(t, "%s: asked for %" PRIu64 " ms — %" PRIu32 " dequeue(s) in "
+              "libnx's mode, release event fired %" PRIu32 " time(s), last "
+              "result 0x%08x", tag, elapsed / 1000000, tries, events, last);
+
+    if (got_one)
+        t_note(t, "%s: a buffer came back after %" PRIu64 " us (%" PRIu64
+                  " refresh(es))", tag, elapsed / 1000, elapsed / NW_REFRESH_NS);
+
+    return got_one;
+}
+
 /* THE QUESTION FOUR RUNS HAVE FAILED TO ANSWER, ASKED DIRECTLY.
  *
  * With two registered buffers, every run so far presents two frames and
@@ -673,7 +755,8 @@ static void nw_probe_starvation(nw_session *s)
         rc = nw_queue(&s->prod, got.slot, s->swap_interval, NULL, &out);
         if (!t_check(t, R_SUCCEEDED(rc),
                      "starvation probe, %" PRIu32 " buffers: buffer %" PRIu32
-                     " queued -> 0x%08x", n, i + 1, rc))
+                     " queued -> 0x%08x (the queue then reported %" PRIu32
+                     " pending)", n, i + 1, rc, out.numPendingBuffers))
             break;
         queued++;
     }
@@ -684,57 +767,29 @@ static void nw_probe_starvation(nw_session *s)
                  n, n, queued))
         return;
 
-    /* Nothing but asking, for five seconds. */
-    const u64 start = armGetSystemTick();
-    uint32_t events = 0, tries = 0;
-    Result last = 0;
-    uint64_t got_after_ns = 0;
-    bool got_one = false;
+    char tag[64];
+    snprintf(tag, sizeof(tag),
+             "reconstructed probe, %" PRIu32 " buffers", (uint32_t)n);
+
     nw_slot got;
-    memset(&got, 0, sizeof(got));
+    const bool got_one = nw_ask_for_a_buffer(s, tag, &got);
 
-    for (;;) {
-        last = nw_try_dequeue(&s->prod, false /* libnx's mode: async=true */,
-                              &got);
-        tries++;
-        if (R_SUCCEEDED(last)) {
-            got_after_ns = armTicksToNs(armGetSystemTick() - start);
-            got_one = true;
-            break;
-        }
-
-        const uint64_t spent = armTicksToNs(armGetSystemTick() - start);
-        if (spent >= NW_STARVE_PATIENCE_NS)
-            break;
-
-        uint64_t slice = NW_STARVE_PATIENCE_NS - spent;
-        if (slice > NW_STARVE_SLICE_NS)
-            slice = NW_STARVE_SLICE_NS;
-        if (eventActive(&s->prod.win->event) &&
-            R_SUCCEEDED(eventWait(&s->prod.win->event, slice)))
-            events++;
-    }
-
-    t_note(t, "starvation probe, %" PRIu32 " buffers: %" PRIu32 " dequeue(s) "
-              "in libnx's mode over %" PRIu64 " ms, release event fired "
-              "%" PRIu32 " time(s), last result 0x%08x",
-           n, tries, armTicksToNs(armGetSystemTick() - start) / 1000000,
-           events, last);
-
+    /* NOT "two buffers work". Run 5 got a buffer back here in 104 us
+     * while the real two-buffer sessions in the same log died at frame
+     * 2, so what this arm reports is what THIS sequence does — and the
+     * sequence is a reconstruction, which is exactly what turned out to
+     * be the problem with it. The check that decides the two-buffer
+     * question is now attached to the failure itself, in
+     * nw_session_present. */
     t_check(t, got_one,
-            "starvation probe, %" PRIu32 " buffers: the compositor handed a "
-            "buffer back within %" PRIu64 " ms%s",
-            n, NW_STARVE_PATIENCE_NS / 1000000,
-            got_one ? "" : " — it did NOT");
+            "%s: this sequence got a buffer back within %" PRIu64 " ms — "
+            "which says what this sequence does, not what the paced "
+            "sessions above do", tag, NW_STARVE_PATIENCE_NS / 1000000);
 
     if (got_one) {
-        t_note(t, "starvation probe, %" PRIu32 " buffers: it came back after "
-                  "%" PRIu64 " us, which is %" PRIu64 " refresh(es)",
-               n, got_after_ns / 1000, got_after_ns / NW_REFRESH_NS);
         Result rc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
         t_check(t, R_SUCCEEDED(rc),
-                "starvation probe, %" PRIu32 " buffers: the buffer went back "
-                "-> 0x%08x", n, rc);
+                "%s: the buffer went back -> 0x%08x", tag, rc);
         return;
     }
 
@@ -751,10 +806,9 @@ static void nw_probe_starvation(nw_session *s)
      * SD card (t_vemit flushes each one), so a hang here costs the rest
      * of the run and none of the evidence.
      */
-    t_note(t, "starvation probe, %" PRIu32 " buffers: ABOUT TO TRY async=false, "
-              "which can block inside the compositor. If the next line of this "
-              "log is missing, that call never returned — and that is the "
-              "finding, not a crash", n);
+    t_note(t, "%s: ABOUT TO TRY async=false, which can block inside the "
+              "compositor. If the next line of this log is missing, that call "
+              "never returned — and that is the finding, not a crash", tag);
 
     Result rc = nw_try_dequeue(&s->prod, true /* async=false */, &got);
 
@@ -764,13 +818,13 @@ static void nw_probe_starvation(nw_session *s)
      * assertion is the thing actually in question: whether the other
      * mode can get a buffer where libnx's could not. */
     t_check(t, R_SUCCEEDED(rc),
-            "starvation probe, %" PRIu32 " buffers: async=false produced a "
-            "buffer where libnx's async=true could not (0x%08x)", n, rc);
+            "%s: async=false produced a buffer where libnx's async=true could "
+            "not (0x%08x)", tag, rc);
     if (R_SUCCEEDED(rc)) {
         Result crc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
         t_check(t, R_SUCCEEDED(crc),
-                "starvation probe, %" PRIu32 " buffers: the buffer async=false "
-                "produced went back -> 0x%08x", n, crc);
+                "%s: the buffer async=false produced went back -> 0x%08x",
+                tag, crc);
     }
 }
 
@@ -786,6 +840,27 @@ static void nw_session_present(nw_session *s, nw_stats *st)
         Result rc = nw_dequeue(&s->prod, NW_DEQUEUE_TIMEOUT_NS, &got);
         if (R_FAILED(rc)) {
             nw_fail(st, frame, rc, "dequeue");
+
+            /* THE DIAGNOSTIC, ATTACHED TO THE FAILURE ITSELF.
+             *
+             * Run 5 built a separate session that looked like this one
+             * and asked it the same question. It answered in 104 us
+             * while the real sessions in the same log were dying at
+             * frame 2 — the reconstruction never reached the state it
+             * was built to examine, and its `ok` lines said nothing
+             * about the failure sixty lines above them.
+             *
+             * Here there is nothing to reconstruct: the dequeue this
+             * session actually depends on has just failed, the window
+             * is in exactly the state that made it fail, and the next
+             * five seconds are spent asking that state. */
+            nw_slot late;
+            if (nw_ask_for_a_buffer(s, st->what, &late)) {
+                Result crc = bqCancelBuffer(&s->prod.win->bq, late.slot,
+                                            &late.fence);
+                t_note(s->t, "%s: the late buffer went back -> 0x%08x",
+                       st->what, crc);
+            }
             return;
         }
 

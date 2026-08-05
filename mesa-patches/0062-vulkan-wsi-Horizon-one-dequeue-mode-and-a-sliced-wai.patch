@@ -1,0 +1,176 @@
+From 55ff0127d1aa6306e054a67b98a2a245a7b0aee6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 18:09:07 +0000
+Subject: [PATCH] vulkan/wsi: Horizon, one dequeue mode and a sliced wait
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 7 (nwindowDequeueBuffer / nwindowQueueBuffer)
+Why: every two-image swapchain has failed on hardware at the third
+ acquire, four runs running, with VK_TIMEOUT. Patches 0059 and 0061 both
+ aimed at which dequeue mode to ask in. The mode was never the problem.
+
+ t_nwindow's own copy of this loop reports the failure as
+ MAKERESULT(Module_Libnx, LibnxError_Timeout) — its own budget expiring,
+ not anything the BufferQueue said. The only branch that returns it is
+ the deadline check at the top of an iteration, so reaching it means the
+ eventWait *succeeded*: the compositor did signal a release. What
+ followed was one attempt in async=false, which failed, and by then the
+ whole timeout had been spent inside that single blocking wait.
+
+ So the acquire waited out its entire deadline in one call and then gave
+ up on the strength of one attempt in a mode nothing on this platform
+ uses. Measured the other half too, on 2026-08-05 with two buffers
+ queued and the producer holding none: an async=true dequeue succeeded
+ in 104 us.
+
+What: two changes to wsi_horizon_acquire_zero_copy.
+
+ - Always libnx's mode. nwindowDequeueBuffer passes async=true on any
+   window that has a release event and async=false only on one that does
+   not; the default window has one. The `blocking` parameter stays on
+   wsi_horizon_try_dequeue so a caller can still ask deliberately, and
+   the acquire no longer does.
+
+ - The wait is sliced to two refreshes. A release that does not arrive
+   now costs one slice and another attempt instead of the entire
+   acquire, and a timeout from eventWait is no longer an error — it is
+   the reason to ask again. The caller's deadline is checked at the top
+   of the loop, which is the only place that should own it, so a zero
+   timeout still answers VK_NOT_READY and a finite one still answers
+   VK_TIMEOUT.
+
+Also corrects the comment on wsi_horizon_try_dequeue, which stated patch
+ 0061's reading as measured fact.
+
+Cross build: green. Not verified on hardware.
+---
+ src/vulkan/wsi/wsi_horizon.c | 74 +++++++++++++++++++++++-------------
+ 1 file changed, 47 insertions(+), 27 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 84c45ab..47213b0 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -102,6 +102,12 @@
+ /* libnx's Framebuffer — the copy fallback — takes 1 to 3 buffers. */
+ #define WSI_HORIZON_MAX_FB_IMAGES 3
+ 
++/* The display's nominal refresh, used only to size the slices the
++ * acquire's wait is broken into. Nothing is asserted against it and no
++ * timing decision depends on its being exact: it is the unit in which
++ * "ask again soon" is expressed. */
++#define WSI_HORIZON_REFRESH_NS 16666666u
++
+ /* How long the present path may wait for a submit to *reach* a channel
+  * before giving up on handing the compositor a fence and waiting for
+  * the render on the CPU instead. Not a wait for rendering: see
+@@ -923,21 +929,23 @@ wsi_horizon_dequeue_would_block(Result rc)
+                         LibnxBinderError_InvalidOperation);
+ }
+ 
+-/* `blocking` chooses between the BufferQueue's two dequeue modes, and
+- * the choice is not a preference.
++/* One dequeue mode: libnx's.
+  *
+- * libnx passes the producer's `async` flag as true when it has a
+- * release event to wait on and false when it does not, and the two are
+- * not interchangeable: async mode asks the queue to keep a buffer in
+- * reserve so the producer never blocks, which a two-buffer queue cannot
+- * do. MEASURED — a two-image swapchain with both buffers queued answers
+- * an async dequeue with NO_INIT for as long as you keep asking, and no
+- * release ever arrives to it. Three buffers never reach the condition.
++ * libnx passes the producer's `async` flag as true on any window that
++ * has a release event and false only on one that does not
++ * (nx/source/display/native_window.c, nwindowDequeueBuffer). The
++ * default window has one, so async=true is the platform's path and
++ * async=false is a mode nothing here is known to use. `blocking` is
++ * kept as a parameter so a caller can still ask in the other mode
++ * deliberately; the acquire does not.
+  *
+- * So the non-blocking mode is used to *probe* — it is what makes a zero
+- * timeout answer VK_NOT_READY truthfully — and the blocking mode is
+- * used once the release event says a buffer has come back, which is
+- * what libnx's own loop does and what works with two.
++ * WHAT THIS COMMENT CLAIMED BEFORE, AND WHAT REFUTED IT. It said async
++ * mode asks the queue to keep a buffer in reserve, which a two-buffer
++ * queue cannot do, and that switching to async=false after a release
++ * was what made two images work. Measured on 2026-08-05 with two
++ * buffers queued and the producer holding none: an async=true dequeue
++ * succeeded in 104 us. The mode was never the problem — see the
++ * acquire loop below for what was.
+  */
+ static Result
+ wsi_horizon_try_dequeue(struct wsi_horizon_swapchain *chain, bool blocking,
+@@ -1036,13 +1044,11 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+ {
+    const uint64_t start_ns = os_time_get_nano();
+ 
+-   bool blocking = false;
+-
+    for (;;) {
+       s32 slot = -1;
+       NvMultiFence fence;
+-      Result rc = wsi_horizon_try_dequeue(chain, blocking, &slot, &fence);
+-      blocking = false;
++      Result rc = wsi_horizon_try_dequeue(chain, false /* libnx's mode */,
++                                          &slot, &fence);
+ 
+       if (R_SUCCEEDED(rc)) {
+          struct wsi_horizon_image *image = &chain->images[slot];
+@@ -1131,27 +1137,41 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+          return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+ 
+-      uint64_t left_ns = UINT64_MAX;
++      /* THE WAIT IS SLICED, AND THAT IS THE FIX.
++       *
++       * This used to spend the whole remaining timeout inside one
++       * eventWait and then retry in async=false. On hardware every
++       * two-image swapchain died there: the acquire waited, the event
++       * fired, the single async=false attempt that followed failed,
++       * and the deadline was gone before async=true was ever asked
++       * again. t_nwindow's own copy of the loop reported the same
++       * failure as LibnxError_Timeout — its own budget expiring, not
++       * anything the BufferQueue said.
++       *
++       * Two refreshes per slice: a release that does not come costs
++       * one slice and another attempt, not the entire acquire. A
++       * timeout from eventWait is therefore not a failure here; it is
++       * the reason to ask again, and the caller's deadline is checked
++       * at the top of the loop where it belongs.
++       */
++      const uint64_t slice_ns = 2 * WSI_HORIZON_REFRESH_NS;
++      uint64_t left_ns = slice_ns;
+       if (timeout_ns != UINT64_MAX) {
+          const uint64_t spent_ns = os_time_get_nano() - start_ns;
+          if (spent_ns >= timeout_ns)
+             return VK_TIMEOUT;
+-         left_ns = timeout_ns - spent_ns;
++         const uint64_t budget_ns = timeout_ns - spent_ns;
++         if (budget_ns < left_ns)
++            left_ns = budget_ns;
+       }
+ 
+       Result erc = eventWait(&chain->window->event, left_ns);
+-      if (R_FAILED(erc)) {
+-         if (R_VALUE(erc) == MAKERESULT(Module_Kernel, KernelError_TimedOut))
+-            return VK_TIMEOUT;
++      if (R_FAILED(erc) &&
++          R_VALUE(erc) != MAKERESULT(Module_Kernel, KernelError_TimedOut)) {
+          mesa_loge("wsi_horizon: waiting for a buffer release failed: "
+                    "0x%08x", erc);
+          return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+-
+-      /* A buffer has come back. Ask for it in the mode a two-buffer
+-       * queue will actually answer — see wsi_horizon_try_dequeue. The
+-       * event fired, so this does not sit in the binder call. */
+-      blocking = true;
+    }
+ }
+ 
+-- 
+2.43.0
+
