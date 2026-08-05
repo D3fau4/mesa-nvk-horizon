@@ -150,5 +150,73 @@ else
     manifest_state="written"
 fi
 
+# STALENESS GATE: an artefact older than what it links is not this
+# build's artefact.
+#
+# This manifest exists to attribute a .nro to one exact build, and a
+# copy step that only looks at content cannot tell a current binary from
+# one linked against the previous driver. The failure it is here to stop
+# was real: scripts/build-mesa-nvk.sh built the tests BEFORE it built
+# the archives they link, so every packaged Vulkan test was one driver
+# build behind and the manifest said nothing about it.
+#
+# Compared by modification time against the NVK archives, and only for
+# the tests that link them — meson.build's own nvk_tests list, read
+# here rather than guessed from a name prefix, so a test added there is
+# covered without anyone remembering this file. The horizon_gpu tests
+# link none of it and are legitimately older.
+#
+# A tree with no NVK build has nothing to compare against and this says
+# so rather than passing quietly.
+_nvk_dir="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
+_nvk_tests=$(sed -n '/^nvk_tests = \[/,/^]/p' meson.build |
+             grep -o "'t_[a-z_0-9]*'" | tr -d "'")
+if [ -z "$_nvk_tests" ]; then
+    echo "error: no nvk_tests list found in meson.build; the staleness" \
+         "gate cannot tell which artefacts link the driver, and a gate" \
+         "that checks nothing must not report success" >&2
+    exit 1
+fi
+_newest_lib=""
+for _lib in "$_nvk_dir/src/nouveau/vulkan/libnvk.a" \
+            "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"; do
+    [ -f "$_lib" ] || continue
+    if [ -z "$_newest_lib" ] || [ "$_lib" -nt "$_newest_lib" ]; then
+        _newest_lib="$_lib"
+    fi
+done
+
+if [ -z "$_newest_lib" ]; then
+    echo "package-horizon: no NVK archives in $_nvk_dir, so nothing here" \
+         "links them and there is no staleness to check" >&2
+else
+    _stale=0
+    _checked=0
+    for _t in $_nvk_tests; do
+        # The artefact in the BUILD directory, not the packaged copy.
+        # Copying here is idempotent — a file whose content already
+        # matches is left alone, mtime included — so comparing the
+        # packaged copy would report a build that was correctly rebuilt
+        # and produced identical bytes as permanently stale. The
+        # question this gate asks is about what is being packaged.
+        _nro="$SRC/$_t.nro"
+        [ -f "$_nro" ] || continue
+        _checked=$((_checked + 1))
+        if [ "$_newest_lib" -nt "$_nro" ]; then
+            echo "error: $_t.nro is older than $_newest_lib" >&2
+            _stale=$((_stale + 1))
+        fi
+    done
+    echo "package-horizon: $_checked driver-linked artefact(s) checked" \
+         "against $_newest_lib"
+    if [ "$_stale" -gt 0 ]; then
+        echo "package-horizon: $_stale artefact(s) predate the driver they" \
+             "link. Run scripts/build-horizon.sh and package again; a" \
+             "manifest over stale binaries attributes a hardware result to" \
+             "the wrong build." >&2
+        exit 1
+    fi
+fi
+
 echo "package-horizon: $OUT — $copied copied, $kept already current," \
      "$dropped dropped, manifest $manifest_state"

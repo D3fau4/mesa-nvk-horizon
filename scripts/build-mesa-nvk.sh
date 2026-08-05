@@ -119,4 +119,19 @@ for _lib in "src/nouveau/vulkan/libnvk.a" \
     echo "build-mesa-nvk: $_lib — $_n TLS relocation(s)"
 done
 
+# RE-LINK THE TESTS, and this is a correction rather than a tidy-up.
+#
+# scripts/build-horizon.sh runs near the top of this file, to re-stage
+# horizon_gpu before the NVK build compiles against it — and it builds
+# the whole Meson directory, including the test .nro files, which link
+# NVK's archives. Running it only there meant every test binary was
+# linked against the archives as they were BEFORE this run built them:
+# one driver build behind, silently, on every single run. Measured:
+# after a change to src/vulkan/wsi/wsi_horizon.c, `ninja -C build/meson`
+# still had 22 targets to do once this script had "finished".
+#
+# So the tests are built again here, after the archives they link exist
+# in their new form. The second run is a no-op when nothing changed.
+scripts/build-horizon.sh
+
 echo "build-mesa-nvk: $MESA_NVK_BUILD_DIR"
