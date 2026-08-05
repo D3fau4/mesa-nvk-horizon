@@ -1,0 +1,71 @@
+== t_nwindow ==
+  note this test owns the display: no console was started, and this file is the whole record
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   horizon_gpu_device_create (status 0, nv 0x00000000)
+  ok   nwindowGetDefault() returned a valid window
+  ok   nwindowGetDimensions -> 0x00000000 (1280 x 720)
+  ok   the scanout geometry for 1280x720 is representable
+  note geometry: pitch 5120 B (stride 1280 px), height aligned to 768 rows, 3932160 B per buffer
+  ok   one NvMap of 15360 KiB for 4 buffers (status 0, nv 0x00000000)
+  ok   the NvMap has an id the compositor can look up (37092)
+  ok   the NvMap is mapped for the CPU
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers: the dequeue that ended the count said no buffer was free rather than failing (0x00001d5d)
+  ok   3 buffers: the 3 concurrently dequeued slot(s) are all different (mask 0x7)
+  ok   3 buffers: slot 0 cancelled back to the compositor -> 0x00000000
+  ok   3 buffers: slot 1 cancelled back to the compositor -> 0x00000000
+  ok   3 buffers: slot 2 cancelled back to the compositor -> 0x00000000
+  note THE NUMBER: with 3 registered buffers, 3 slot(s) could be dequeued at once
+  ok   at least two slots can be held at once, which is what minImageCount = 2 on a 3-image swapchain requires
+  ok   3 buffers, interval 1: 90 of 90 frames presented
+  note 3 buffers, interval 1: 89 intervals, mean 16353 us, min 2358 us, max 17401 us; 87 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 3 buffers, interval 1: dequeue mean 84 us / max 109 us; fill+flush mean 2173 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers: released back to the compositor -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   2 buffers: the dequeue that ended the count said no buffer was free rather than failing (0x0000115d)
+  ok   2 buffers: the 2 concurrently dequeued slot(s) are all different (mask 0x3)
+  ok   2 buffers: slot 0 cancelled back to the compositor -> 0x00000000
+  ok   2 buffers: slot 1 cancelled back to the compositor -> 0x00000000
+  note with 2 registered buffers, 2 slot(s) could be dequeued at once
+  FAIL 2 buffers, interval 1: 2 of 90 frames presented (see the note below)
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+  note 2 buffers, interval 1: 1 intervals, mean 2354 us, min 2354 us, max 2354 us; 0 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 2 buffers, interval 1: dequeue mean 90 us / max 100 us; fill+flush mean 2169 us; largest pending-buffer count 1; 0 dequeue(s) carried a release fence
+  ok   2 buffers: released back to the compositor -> 0x00000000
+  note a frame's unavoidable cost (fill + flush) measured 2173 us; the bursty load puts 20653 us more on every odd frame, for a mean of 12499 us against a 16666 us refresh
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers, interval 1, bursty load: 90 of 90 frames presented
+  note 3 buffers, interval 1, bursty load: 89 intervals, mean 16658 us, min 2365 us, max 31003 us; 0 within 10% of 16666 us; 43 longer than 1.5 refreshes
+  note 3 buffers, interval 1, bursty load: dequeue mean 89 us / max 169 us; fill+flush mean 2170 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers (loaded): released -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  FAIL 2 buffers, interval 1, bursty load: 2 of 90 frames presented (see the note below)
+  note 2 buffers, interval 1, bursty load: dequeue failed at frame 2 -> 0x00006359
+  note 2 buffers, interval 1, bursty load: 1 intervals, mean 23089 us, min 23089 us, max 23089 us; 0 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 2 buffers, interval 1, bursty load: dequeue mean 155 us / max 164 us; fill+flush mean 2169 us; largest pending-buffer count 1; 0 dequeue(s) carried a release fence
+  ok   2 buffers (loaded): released -> 0x00000000
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers, interval 0: 90 of 90 frames presented
+  note 3 buffers, interval 0: 89 intervals, mean 8177 us, min 2361 us, max 14348 us; 0 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 3 buffers, interval 0: dequeue mean 87 us / max 169 us; fill+flush mean 2169 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers (interval 0): released back to the compositor -> 0x00000000
+  ok   the compositor handed back a release fence: 87 of 90 dequeues carried one, the first on syncpoint 103
+  ok   3 buffers, interval 1: 87 of 89 intervals are within 10% of 16666 us (>= 90% needed)
+  ok   three buffers let the producer hold more slots than two (3 vs 2)
+  note 3 buffers at interval 0: mean 8177 us against 16353 us at interval 1 — the swap interval is the knob, and this is what it moved
+  ok   the scanout NvMap is destroyed (status 0)
+  ok   the device tears down after presenting (status 0)
+RESULT: FAIL (48/50)

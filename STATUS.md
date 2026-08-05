@@ -12,16 +12,93 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has run twice. Three of four exit criteria are met and three defects are open**, two of them fixed here and unrun (patches 0060, 0061). Run 2 (2026-08-05) confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator**, which is the layout evidence this phase could get no other way. It also showed my run-1 leak fix making the leak worse, and a check of mine passing while 33 objects leaked |
-| **What runs on a Switch** | *Run 2, 2026-08-05.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 3: `t_nwindow` and `t_vk_swapchain` with patches 0060 and 0061.** They answer, in order: does the two-image swapchain present at all (0061), does anything still leak (0060), and — only once nothing leaks — **is the exit crash caused by the leak or not**. Run 2 could not answer the last one because the leak was still there, worse |
-| **Known failures** | **1. `t_vk_swapchain` crashes the console on exit**, both runs, after `RESULT` is written and on pressing +. **Still untested as a hypothesis**: run 2 was meant to test whether the leak causes it, and the leak was still present, so nothing was learned. **2. FIXED, unrun:** the run-1 leak fix (0058) created a reference cycle — every `nvkmd_mem` carries its own VA, and referencing the memory from that binding makes the two hold each other. 14 leaked objects became 33, with 33 VAs and 33 mappings. Patch 0060 excludes the self-binding. **3. FIXED, unrun:** every two-image swapchain still failed, now with `VK_TIMEOUT` instead of an error: an async dequeue on a two-buffer queue never succeeds, so retrying it just burns the deadline. Patch 0061 dequeues blocking once the release event has fired, which is what libnx does. **4.** `t_fault` still takes the console down on exit. **5.** `t_vk_texture`'s one unexplained occurrence stays on the record |
-| **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. This is the third time in this project a check has reported success without verifying anything, and the first one I wrote knowing that history |
+| **Phase** | **Phase 6 has been to the console three times and measured two builds.** Run 3 (2026-08-05) ran the *previous* batch's binaries, so patches 0060 and 0061 are still unrun and everything run 2 found is still open. Three of four exit criteria are met. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator**, which is the layout evidence this phase could get no other way |
+| **What runs on a Switch** | *Run 2, 2026-08-05, reproduced by run 3 on the same binaries.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
+| **Next concrete task** | **Run 4: `t_nwindow` and `t_vk_swapchain`, build `2026-08-05T…Z 72a6333` or later.** The same three questions run 3 was supposed to answer and did not: does the two-image swapchain present at all (0061), does anything still leak (0060), and — only once nothing leaks — **is the exit crash caused by the leak or not**. Every log now prints its build stamp as its second line and the run instructions name the expected one, so a repeat of run 3 is visible in the first two lines instead of after an afternoon |
+| **Known failures** | **1. `t_vk_swapchain` crashes the console on exit**, all three runs, after `RESULT` is written and on pressing +. **Still untested as a hypothesis**: the run that was to test whether the leak causes it measured the build that still has the leak. **2. FIXED, unrun:** the run-1 leak fix (0058) created a reference cycle — every `nvkmd_mem` carries its own VA, and referencing the memory from that binding makes the two hold each other. 14 leaked objects became 33, with 33 VAs and 33 mappings; run 3 measured 33 again on the same build. Patch 0060 excludes the self-binding. **3. FIXED, unrun:** every two-image swapchain still failed, now with `VK_TIMEOUT` instead of an error: an async dequeue on a two-buffer queue never succeeds, so retrying it just burns the deadline. Patch 0061 dequeues blocking once the release event has fired, which is what libnx does. **4.** `t_fault` still takes the console down on exit. **5.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. This is the third time in this project a check has reported success without verifying anything, and the first one I wrote knowing that history. **It has still never executed on hardware** — run 3 carried its predecessor |
+| **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, twice.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because both two-image runs died. Patch 0061 is what unblocks it. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether the exit crash is the leak. Any display mode change. Anything multi-threaded. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8152 us against 16352 us** |
+| **What is still unverified** | Whether the exit crash is the leak. Patches 0060 and 0061, still. Any display mode change. Anything multi-threaded. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8152 us against 16352 us**, and run 3 at **8177 us against 16353 us** |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only** |
 | **Never verified on hardware** | Patches **0060** and **0061** and the binaries built with them; `t_fault` as it stands |
+
+
+---
+
+## Run 3 — it measured the previous build, and the fault is mine (2026-08-05)
+
+**Class: hardware (HW), and it tested nothing that was asked of it.**
+`t_nwindow` 48/50 and `t_vk_swapchain` 113/115, the same counts and the
+same failures as run 2. Logs in `docs/hw-logs/*run3-STALE-BINARIES*`.
+
+The `.nro` that ran were run 2's. Patches 0060 and 0061 were not in
+them, so what these two logs record is the behaviour those patches were
+written to change, measured a second time.
+
+### Why it was read wrong first
+
+They are not copies of run 2's logs. Every timing differs, every heap
+address differs, the syncpoint initial values differ:
+
+```
+run 2:  the NvMap has an id the compositor can look up (36412)
+run 3:  the NvMap has an id the compositor can look up (37092)
+run 2:  3 buffers at interval 0: mean 8152 us against 16352 us
+run 3:  3 buffers at interval 0: mean 8177 us against 16353 us
+```
+
+A genuine second execution of unchanged code and a fix that changed
+nothing produce the same artefact. Nothing else in either log
+distinguishes one build from the other.
+
+What separated them was luck. Mesa's `vk_logi` prints `__FILE__` and
+`__LINE__`:
+
+```
+../src/vulkan/wsi/wsi_horizon.c:1781: the swapchain presents zero-copy
+```
+
+and the source that was supposed to be running has that call at 1805.
+The shipped zip was then checked and did contain the intended build —
+it holds `"the log could not be read back"`, a string that exists only
+in the run-3 binaries, and its sha256 matches the manifest. So the
+batch was right and what reached the SD card was not.
+
+### The defect is not the SD card
+
+It is that **the logs carried no build identity**, and the only reason
+this was caught is that a line number happened to move. Fixed in
+`d75f7b8`:
+
+- `scripts/gen-build-id.sh` emits a UTC stamp plus the repository HEAD
+  (`-dirty` when the tree has edits).
+- Both build paths regenerate it on every build — `FORCE` in the
+  Makefile, `build_always_stale` in Meson. Verified in both: a rebuild
+  with no source change advances the stamp inside the `.nro`.
+- `testfw`'s `main()` prints it as the second line of every log, as one
+  string literal with its marker included, so the bytes in the binary
+  and the bytes in the log are the same bytes.
+- `scripts/package-horizon.sh` reads that marker back out of each
+  `.nro`, records it in the manifest, and **refuses** to write a
+  manifest over a directory holding more than one build, or one
+  artefact carrying no stamp.
+
+Both refusals were provoked before being believed — an unstamped `.nro`
+gives `error: no build id in: t_display.nro`, two stamps give `error: 2
+different build ids`, and restoring the one-build source passes again.
+
+### What run 3 is still worth
+
+One thing: run 2's failures are reproducible rather than one-off.
+`live mem=33 va_ranges=33 mappings=33` appeared again, and both
+two-buffer sessions died at frame 2 again. That is a second sample of a
+build that is about to be replaced, which is worth little, but it is not
+nothing.
+
+The three questions run 3 was to answer — 0061, 0060, and then the exit
+crash — are all still open, in that order, for run 4.
 
 
 ---

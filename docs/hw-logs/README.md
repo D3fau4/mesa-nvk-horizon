@@ -5,6 +5,48 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## Runs that measured the wrong build
+
+### `t_nwindow-run3-STALE-BINARIES.log`, `t_vk_swapchain-run3-STALE-BINARIES.log`
+
+Real console runs, and they measured **nothing that was asked of them**. They
+were run to test patches 0060 and 0061; the `.nro` on the SD card were the
+previous batch's, so what these logs record is the behaviour patches 0060 and
+0061 were written to change, measured again.
+
+They are not copies of the run-2 logs — every timing differs, every heap
+address differs, the syncpoint initial values differ. They are a genuine second
+execution of the same binaries, which is exactly why the first reading of them
+was wrong: a re-run of unchanged code looks like a fix that did nothing.
+
+What gave it away was luck. Mesa's `vk_logi` prints `__FILE__` and `__LINE__`,
+and
+
+```
+../src/vulkan/wsi/wsi_horizon.c:1781: the swapchain presents zero-copy
+```
+
+names line 1781 while the source that was meant to be running has that call at
+1805. Nothing else in either log distinguishes one build from another.
+
+Fixed in `d75f7b8`: every test now prints its build stamp as the second line of
+its log —
+
+```
+  note horizon-build-id 2026-08-05T14:27:32Z 72a6333
+```
+
+— the stamp is regenerated on every build in both build paths, the packaging
+manifest reads it back out of the `.nro` and refuses a directory holding more
+than one, and the run instructions say which stamp to expect. From run 4
+onwards a log whose stamp is not the expected one says so in its own first
+lines.
+
+Nothing in these two files should be quoted as a measurement of the current
+driver. What they do still show, being a second sample of the run-2 build, is
+that run 2's failures are reproducible rather than one-off: `live mem=33` on
+teardown, and the two-buffer sessions dying at frame 2.
+
 ## Superseded runs
 
 A `-PASS` in a filename means the run reported PASS. It does **not** mean every
