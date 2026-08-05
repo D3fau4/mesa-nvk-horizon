@@ -104,6 +104,30 @@ first check asserted a constant defined two lines above it: it could
 not fail, and it did not test the thing its own message claimed. It now
 asks the console whether it was initialised.
 
+### Whether the depth finding could have affected item 7's result — checked
+
+The review said `t_vk_depth`'s barrier named only `LATE_FRAGMENT_TESTS`
+while the hardware may write depth in the early stage. Confirmed in the
+driver rather than assumed: `nvk_shader.c:787` sets
+`SET_API_MANDATED_EARLY_Z` from the shader's `EarlyFragmentTests`
+execution mode, which `depth_frag_pc` does not declare. That disables
+only *mandated* early-Z; opportunistic early-Z stays available, and a
+fragment shader that writes no depth and never discards is exactly the
+case a Maxwell does it for.
+
+So the risk was real and not theoretical. **The values were right —
+4096/4096 depth texels — but the barrier did not guarantee they would
+be.** Item 7's evidence is a correct answer that was not synchronised
+to be correct, which is the same class as a test that passes for the
+wrong reason, and only a re-run makes it unconditional.
+
+**The other four of the five are not in that position.** Items 5, 6, 8
+and 9 changed only through `vkfw` and `testfw`, and every change there
+is on a failure or teardown path — the fence that must not be destroyed
+after a timeout, the drain before teardown, the result string. None of
+those runs timed out or took a failure path; every wait in their logs
+is `VK_SUCCESS`. Their measurements stand as made.
+
 ### Gates that did not exist, for defects already found by eye
 
 Nothing compared the Makefile's `TESTS` against meson's
