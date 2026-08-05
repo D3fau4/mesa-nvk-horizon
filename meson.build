@@ -194,6 +194,12 @@ horizon_tests = [
   # with no console, so the reporting path a swapchain test will depend
   # on is measured before anything depends on it.
   't_display',
+  # Phase 6, and it comes before the WSI rather than after it: our own
+  # scanout buffers on the default nwindow, driven one level below
+  # NWindow, so the number of slots that can be held at once is measured
+  # instead of assumed. Uses no Mesa — the question is about the
+  # compositor, not about Vulkan.
+  't_nwindow',
 ]
 
 testfw = static_library(
