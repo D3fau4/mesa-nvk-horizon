@@ -78,6 +78,55 @@ for nro in "$SRC"/*.nro; do
     fi
 done
 
+# BUILD IDENTITY, read out of the binaries rather than out of the tree.
+#
+# Every .nro carries the stamp scripts/gen-build-id.sh generated for the
+# build that produced it (testfw.c prints it as the second line of every
+# log). Reading it back here answers two different questions that the
+# sha256 list cannot:
+#
+#   - which build these artefacts are, in a form the operator can match
+#     against the first lines of the log they send back;
+#   - whether they are all the SAME build. A directory holding two
+#     stamps is a mix — some tests rebuilt, some left over — and a
+#     manifest that attributes the whole set to one toolchain would be
+#     lying about part of it.
+#
+# The marker is grepped, not the date pattern alone: "horizon-build-id "
+# is the same token the log line starts with, so what this reads and
+# what the operator reads are the same bytes.
+_pkg_ids=""
+_pkg_unstamped=""
+for nro in "$OUT"/*.nro; do
+    [ -e "$nro" ] || continue
+    _id=$(strings -a "$nro" | sed -n 's/^horizon-build-id //p' | head -1)
+    if [ -z "$_id" ]; then
+        _pkg_unstamped="$_pkg_unstamped $(basename "$nro")"
+    else
+        _pkg_ids="$_pkg_ids$_id
+"
+    fi
+done
+_pkg_id_count=$(printf '%s' "$_pkg_ids" | sort -u | grep -c . || true)
+_pkg_id=$(printf '%s' "$_pkg_ids" | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
+# Before the manifest is written, not after: a manifest naming one build
+# over a directory holding two is exactly the claim this refuses to make.
+if [ -n "$_pkg_unstamped" ]; then
+    echo "error: no build id in:$_pkg_unstamped" >&2
+    echo "       Every .nro links testfw, which embeds one. An artefact" \
+         "without it cannot be told apart from the copy it replaced on" \
+         "an SD card, which is the failure this field exists to stop." >&2
+    exit 1
+fi
+if [ "$_pkg_id_count" -gt 1 ]; then
+    echo "error: $_pkg_id_count different build ids in $OUT: $_pkg_id" >&2
+    echo "       These artefacts are not one build. Rebuild (both paths:" \
+         "scripts/build-mesa-nvk.sh covers the driver-linked tests) and" \
+         "package again." >&2
+    exit 1
+fi
+
 manifest="$OUT/MANIFEST.txt"
 tmp="$manifest.tmp.$$"
 
@@ -93,6 +142,16 @@ _pkg_img=$(horizon_image_digest)
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
     echo "image      : $_pkg_img"
+    echo "build id   : ${_pkg_id:-(none of these artefacts carries one)}"
+    echo
+    echo "# The build id is printed by every test as the second line of"
+    echo "# its log:"
+    echo "#"
+    echo "#   note horizon-build-id ${_pkg_id:-<stamp>}"
+    echo "#"
+    echo "# A log whose stamp is not that one came from other binaries."
+    echo "# It is read here out of the .nro themselves, not out of the"
+    echo "# source tree, so it describes what is in this directory."
     echo
     echo "# Switch toolchain, as READ from the environment at packaging"
     echo "# time. This project neither pins nor updates it — libnx and"

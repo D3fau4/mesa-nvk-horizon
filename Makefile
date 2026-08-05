@@ -146,8 +146,18 @@ $(COMPAT_LIB): $(COMPAT_OBJS) | $(COMPAT_LIBDIR)/
 $(COMPAT_LIBDIR)/%.o: compat/%.c | $(COMPAT_LIBDIR)/
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/testfw.o: tests/common/testfw.c | $(BUILD)/
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+# The build stamp every test prints in its first lines. Regenerated on
+# every build — FORCE, not a timestamp comparison — because that is the
+# whole point: a .nro on an SD card looks exactly like the one it
+# replaced. See scripts/gen-build-id.sh.
+.PHONY: FORCE
+FORCE:
+
+$(BUILD)/horizon_build_id.h: FORCE | $(BUILD)/
+	scripts/gen-build-id.sh $@
+
+$(BUILD)/testfw.o: tests/common/testfw.c $(BUILD)/horizon_build_id.h | $(BUILD)/
+	$(CC) $(CFLAGS) -I$(BUILD) -MMD -MP -c $< -o $@
 
 $(BUILD)/%.t.o: tests/%.c | $(BUILD)/
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -MMD -MP -c $< -o $@

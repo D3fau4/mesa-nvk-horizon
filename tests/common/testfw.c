@@ -6,6 +6,9 @@
  */
 #include "testfw.h"
 
+/* Generated on every build by scripts/gen-build-id.sh. */
+#include "horizon_build_id.h"
+
 #include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -103,6 +106,26 @@ int main(void)
         fprintf(t.log, "== %s ==\n", test_name);
     else
         printf("  note (sdmc log unavailable: %s)\n", path);
+
+    /* WHICH BUILD THIS IS, in the second line of every log.
+     *
+     * A .nro on an SD card looks exactly like the .nro it replaced, and
+     * a run that reports the previous build's behaviour is
+     * indistinguishable from a fix that did not work — which cost this
+     * project a hardware run on 2026-08-05. The stamp is regenerated on
+     * every build; the run instructions say which one to expect.
+     *
+     * One string literal, marker included, and printed with "%s" rather
+     * than composed by the format: the same bytes then appear in the
+     * .nro and in the log, so scripts/package-horizon.sh can read a
+     * binary's identity out of the binary and the operator can match it
+     * against the log by eye. Composing it ("build %s") would leave the
+     * marker and the stamp as two unrelated literals in the image, and
+     * whatever the manifest then grepped for would not be the thing the
+     * log prints.
+     */
+    static const char build_id_line[] = "horizon-build-id " HORIZON_BUILD_ID;
+    t_note(&t, "%s", build_id_line);
 
     /* Stated in the artefact, because a log with no console output in
      * it and a log from a run whose console never started look the

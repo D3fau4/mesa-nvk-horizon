@@ -202,10 +202,26 @@ horizon_tests = [
   't_nwindow',
 ]
 
+# The build stamp every test prints in its first lines. Regenerated on
+# every build (build_always_stale), which is the whole point: a .nro on
+# an SD card looks exactly like the one it replaced, and on 2026-08-05
+# a hardware run was spent on the previous build's binaries without
+# anything in the log saying so. See scripts/gen-build-id.sh.
+build_id_h = custom_target(
+  'horizon_build_id.h',
+  output : 'horizon_build_id.h',
+  command : [find_program('scripts/gen-build-id.sh')],
+  capture : true,
+  build_always_stale : true,
+)
+
 testfw = static_library(
   'testfw',
-  files('tests/common/testfw.c'),
-  include_directories : [horizon_gpu_inc, tests_inc],
+  [files('tests/common/testfw.c'), build_id_h],
+  # include_directories('.') covers this build directory as well as the
+  # source one, which is where the generated header lands.
+  include_directories : [horizon_gpu_inc, tests_inc,
+                         include_directories('.')],
   install : false,
 )
 
