@@ -1,0 +1,66 @@
+; comp_write_id -- Phase 5 item 2, the first shader this project runs.
+;
+; One storage buffer, one invocation per word, and a value the CPU can
+; recompute exactly:
+;
+;     out[id] = (id * 2654435769) ^ 0xa5c3f00d      (mod 2^32)
+;
+; The multiply is what makes it a measurement rather than a formality: a
+; dispatch that ran but computed nothing would still fill the buffer if
+; the value were a constant, and a dispatch that never ran leaves the
+; poison behind. Every word is a different value, so a shader that wrote
+; the same thing everywhere, or wrote at the wrong index, fails on the
+; index rather than on the value.
+;
+; It touches no local and no shared memory on purpose. That keeps the
+; shader local/shared window out of the first shader ever executed here,
+; so a failure has one fewer possible cause.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1): StorageBuffer is a core storage
+; class from 1.3 on, and before 1.4 OpEntryPoint's interface lists only
+; Input and Output variables, which is why the SSBO is not in it.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 64 1 1
+
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %Buf 0 Offset 0
+               OpDecorate %Buf Block
+               OpDecorate %ssbo DescriptorSet 0
+               OpDecorate %ssbo Binding 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+   %ptr_in_v = OpTypePointer Input %v3uint
+   %ptr_in_u = OpTypePointer Input %uint
+        %gid = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+        %Buf = OpTypeStruct %rta
+    %ptr_ssb = OpTypePointer StorageBuffer %Buf
+       %ssbo = OpVariable %ptr_ssb StorageBuffer
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+
+     %uint_0 = OpConstant %uint 0
+      %int32 = OpTypeInt 32 1
+      %int_0 = OpConstant %int32 0
+       %mult = OpConstant %uint 2654435769
+       %xorv = OpConstant %uint 2781138957
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+      %gidxp = OpAccessChain %ptr_in_u %gid %uint_0
+       %gidx = OpLoad %uint %gidxp
+       %prod = OpIMul %uint %gidx %mult
+        %val = OpBitwiseXor %uint %prod %xorv
+        %dst = OpAccessChain %ptr_ssb_u %ssbo %int_0 %gidx
+               OpStore %dst %val
+               OpReturn
+               OpFunctionEnd

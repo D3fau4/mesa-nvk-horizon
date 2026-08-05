@@ -1,0 +1,38 @@
+== t_submit ==
+  ok   device_create (status=ok nv=0x00000000)
+  ok   channel_create (status=ok nv=0x00000000)
+  ok   fence-only submit (status=ok nv=0x00000000)
+  ok   fence-only submit completed (status=ok)
+  ok   NOP list built and mapped (status=ok nv=0x00000000)
+  ok   NOP submit accepted
+  ok   NOP submit completed (status=ok)
+  ok   two back-to-back submits accepted without waiting
+  ok   fences ordered by submission (20231 then 20232)
+  ok   both submits issued in 136 us, well under a drain-per-submit regression threshold (no intervening CPU wait)
+  ok   second fence reached
+  ok   first fence implied by the second (single-channel ordering)
+  ok   bind_engines submit (status=ok nv=0x00000000)
+  ok   SET_OBJECT list completed without fault (status=ok)
+  ok   no error notification after engine binds (status=ok type=0 'none')
+  ok   R3 experiment channel created
+  note R3: entry flags 0 -> submit accepted, wait=ok
+  note R3 channel destroy: ok
+  ok   R10 producer channel created
+  ok   R10 consumer channel created
+  ok   R10 wait cmdlist built and mapped
+  ok   R10 producer syncpt read and wait cmdlist flush (read status=ok, flush status=ok)
+  ok   R10 cross-channel wait submit accepted
+  ok   R10: consumer stays blocked on producer syncpt 27 threshold 116 not yet reached (status=timeout)
+  ok   R10: producer submit reaches the awaited threshold (producer now 116, awaited 116)
+  ok   R10: GPU-side cross-channel wait unblocks once the producer reaches the threshold (status=ok)
+  note R10 consumer wait_idle: ok
+  note R10 consumer channel destroy: ok
+  note R10 producer wait_idle: ok
+  note R10 producer channel destroy: ok
+  ok   wait_idle before teardown
+  ok   unmap NOP list
+  ok   release NOP range
+  ok   destroy NOP mem
+  ok   destroy main channel
+  ok   device_destroy (status=ok)
+RESULT: PASS (30/30)

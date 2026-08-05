@@ -52,7 +52,35 @@ cd "$(dirname "$0")/.."
 # shellcheck source=toolchain-env.sh
 . scripts/toolchain-env.sh
 
-ELF="${1:-$HORIZON_BUILD_DIR/t_vulkan.elf}"
+# With no argument: every ELF in the build directory that links the
+# driver, not just t_vulkan.
+#
+# The hole this gate exists to catch is per-binary — it depends on which
+# archives that link line pulled — so checking one binary says nothing
+# about the others. While t_vulkan was the only such test that
+# distinction did not exist; Phase 5 adds six more, and a default that
+# still named one of them would report OK for a set it never looked at.
+#
+# `set --` rather than a loop here: the body below checks exactly one
+# ELF, so the whole script re-executes itself once per file. That keeps
+# the single-file path — which is what a caller passing an argument
+# gets, and what the loop needs — as the only code path there is.
+if [ "$#" -eq 0 ]; then
+    set -- "$HORIZON_BUILD_DIR"/t_vulkan.elf "$HORIZON_BUILD_DIR"/t_vk_*.elf
+    found=0
+    for e in "$@"; do
+        [ -f "$e" ] || continue
+        found=$((found + 1))
+        "$0" "$e" || exit 1
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "check-dispatch-complete: no driver-linking ELF in" \
+             "$HORIZON_BUILD_DIR; nothing to check"
+    fi
+    exit 0
+fi
+
+ELF="$1"
 TABLE="$NVK_BUILD_DIR_DEFAULT/src/vulkan/runtime/vk_common_entrypoints.c"
 
 if [ ! -f "$ELF" ]; then

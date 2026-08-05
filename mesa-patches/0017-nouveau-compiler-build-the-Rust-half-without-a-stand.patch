@@ -110,7 +110,6 @@ Upstream: partly. The core::/alloc:: spelling, the dead-code gate, the
   The one-staticlib arrangement is conditional on a platform property
   and changes nothing where std exists.
 ---
- .gitkeep                                      |  0
  meson.build                                   | 21 +++++
  src/compiler/rust/as_slice.rs                 |  7 +-
  src/compiler/rust/bitset.rs                   |  7 +-
@@ -188,15 +187,11 @@ Upstream: partly. The core::/alloc:: spelling, the dead-code gate, the
  src/nouveau/vulkan/meson.build                |  4 +
  .../hashbrown-0.14-rs/meson.build             | 17 ++++
  .../packagefiles/rustc-hash-2-rs/meson.build  |  9 +-
- 78 files changed, 872 insertions(+), 307 deletions(-)
- create mode 100644 .gitkeep
+ 77 files changed, 872 insertions(+), 307 deletions(-)
  create mode 100644 src/compiler/rust/io.rs
  create mode 100644 src/nouveau/rust_runtime/lib.rs
  create mode 100644 src/nouveau/rust_runtime/meson.build
 
-diff --git a/.gitkeep b/.gitkeep
-new file mode 100644
-index 0000000..e69de29
 diff --git a/meson.build b/meson.build
 index 3347046..0817173 100644
 --- a/meson.build

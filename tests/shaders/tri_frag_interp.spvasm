@@ -1,0 +1,38 @@
+; tri_frag_interp -- Phase 5 item 5, case B's fragment shader.
+;
+; Writes the interpolated vertex colour straight out. With the three
+; vertices coloured pure red, green and blue and w=1 everywhere, the
+; colour at a pixel is its barycentric coordinates in screen space, so
+; the host can compute what each probe pixel must hold from the geometry
+; alone. A shader that passed through a constant, or the wrong varying,
+; fails on the value at a pixel whose barycentrics are all different.
+;
+; No interpolation decoration: the default is smooth perspective-correct
+; interpolation, which is the one being measured.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %in_colour %out_colour
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %in_colour Location 0
+               OpDecorate %out_colour Location 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+  %ptr_in_v4 = OpTypePointer Input %v4float
+ %ptr_out_v4 = OpTypePointer Output %v4float
+
+  %in_colour = OpVariable %ptr_in_v4 Input
+ %out_colour = OpVariable %ptr_out_v4 Output
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+        %col = OpLoad %v4float %in_colour
+               OpStore %out_colour %col
+               OpReturn
+               OpFunctionEnd

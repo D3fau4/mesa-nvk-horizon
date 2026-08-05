@@ -1,0 +1,107 @@
+== t_vk_texture ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x6b57f2f6e0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x6b57f2f6e0: up, syncpt=26 initial=24316 zcull=off
+[horizon_gpu:I] channel 0x6b57f80010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x6b57f80010: up, syncpt=27 initial=148 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   every source texel of a level is unique (0 collisions)
+  ok   no texel of level 1 equals one of level 0 (0 do)
+  ok   source: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkCreateBuffer(0x140) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x140, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   the staging buffer is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source texture) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source texture) -> VK_SUCCESS
+  ok   vkCreateImageView(source, 2 levels) -> VK_SUCCESS
+  ok   vkCreateImage(37, 64x64x1, 1 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x4000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkCreateImageView(target) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4400) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4400, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkCreateSampler(nearest) -> VK_SUCCESS
+  ok   vkCreateSampler(linear) -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   implicit LOD: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   implicit LOD: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   implicit LOD: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   implicit LOD: vkCreateGraphicsPipelines -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateGraphicsPipelines -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  FAIL A: nearest, implicit LOD: 3072/4096 pixels hold the texel they sampled
+  note A: nearest, implicit LOD: first wrong pixel (0,32): got 0x00000000, want 0xff148008 (texel 0,4 of level 0)
+  ok   A: nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   B: nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  FAIL C: linear, implicit LOD: 2560/4096 pixels are within 2 of the computed filter result
+  note C: linear, implicit LOD: largest deviation 255 of 255
+  note C: linear, implicit LOD: first outside tolerance at (0,28): got 7 92 16 239, want 8 100 17 255
+  ok   C: nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+RESULT: FAIL (93/95)

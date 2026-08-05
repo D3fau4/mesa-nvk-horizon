@@ -1,0 +1,146 @@
+From 6057ada4ea8b6c4d17b34f4b4cb08ca02cb95472 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 4 Aug 2026 20:00:00 +0000
+Subject: [PATCH 48/48] nouveau/vk: the shader heap binds its first chunk at
+ device creation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pre-Volta, the shader heap's base address is programmed into the 3D and
+compute engines as SET_PROGRAM_REGION by the queue's init push buffer,
+once, at device creation. That heap is contiguous on those chips: it
+reserves its whole range up front and binds nothing until the first
+upload. Between vkCreateDevice and the first compiled shader, the
+address in SET_PROGRAM_REGION is therefore a valid VA that maps nothing.
+
+The instruction cache pre-fetches — which is why shader BOs are already
+overallocated by 2K — and a pre-fetch from the program region base is a
+read of that address. On a KMD that faults on unmapped reads instead of
+absorbing them, the first render pass of a device that has not compiled
+anything yet takes an MMU fault.
+
+Measured on Horizon/Tegra (GM20B): a command buffer that only clears an
+image faults on a fresh device, writes nothing, and stops faulting if a
+throwaway shader is compiled first — the only difference between the two
+runs being that upload.
+
+Fix it where the address is promised rather than where it is used: grow
+the heap by one chunk in vkCreateDevice, under the same
+cls_eng3d < VOLTA_A that decides the heap is contiguous in the first
+place. It costs one 64K allocation on a device that was going to make it
+as soon as anything was compiled.
+
+mesa-nvk-horizon: Phase 5 items 3 and 4 (off-screen images, clears)
+Why: the first render pass on a device that has compiled nothing MMU-
+ faults, because SET_PROGRAM_REGION is programmed once at device
+ creation from a contiguous heap that binds nothing until the first
+ upload. The engines are handed a valid VA that maps nothing, and the
+ instruction cache pre-fetches from it.
+Evidence: measured on hardware (GM20B), 2026-08-04. t_vk_image run 1
+ faulted with nothing written; run 3, identical except for a throwaway
+ shader compiled first, passed 76/76. With this patch the workaround is
+ gone from the test and it passes 72/72 -- the four missing checks are
+ the workaround's own (docs/hw-logs/t_vk_image-run5-batch5-PASS.log).
+Upstream: candidate. The defect is not Horizon-specific -- any KMD that
+ faults on an unmapped read rather than absorbing it will see it -- but
+ nobody else has reported it, so it would need a reproducer on a
+ desktop nouveau before it is worth sending.
+
+Cross build: libnvk.a builds, 0 TLS relocations. Run on a console
+2026-08-04, as above.
+
+Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+---
+ src/nouveau/vulkan/nvk_device.c | 27 +++++++++++++++++++++++++++
+ src/nouveau/vulkan/nvk_heap.c   | 13 +++++++++++++
+ src/nouveau/vulkan/nvk_heap.h   | 11 +++++++++++
+ 3 files changed, 51 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvk_device.c b/src/nouveau/vulkan/nvk_device.c
+index 6dc93fd..1457092 100644
+--- a/src/nouveau/vulkan/nvk_device.c
++++ b/src/nouveau/vulkan/nvk_device.c
+@@ -347,6 +347,33 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
+       if (result != VK_SUCCESS)
+          goto fail_edb_bview_cache;
+ 
++      /* Pre-Volta, the shader heap's base address is programmed into the
++       * engines as SET_PROGRAM_REGION, once, by the queue's init push
++       * buffer -- long before any shader is compiled.  A contiguous heap
++       * has its whole range reserved from the start but nothing bound
++       * until the first upload, so between device creation and the first
++       * shader that address is mapped by nothing at all.
++       *
++       * The instruction cache pre-fetches (which is why shader BOs are
++       * overallocated by 2K just above), and a pre-fetch from the program
++       * region base is a read of that address.  On a KMD that faults on
++       * unmapped reads rather than absorbing them, the first render pass
++       * of a device that has not yet compiled a shader takes an MMU fault
++       * -- measured on Horizon/Tegra, where a clear-only command buffer
++       * faults on a fresh device and stops faulting if a throwaway shader
++       * is compiled first.
++       *
++       * So bind the first chunk here.  It costs one 64K allocation on a
++       * device that was going to make it as soon as anything was
++       * compiled, and it makes the address in SET_PROGRAM_REGION mean
++       * something for the whole life of the device.
++       */
++      if (pdev->info.cls_eng3d < VOLTA_A) {
++         result = nvk_heap_ensure_first_chunk(dev, &dev->shader_heap);
++         if (result != VK_SUCCESS)
++            goto fail_shader_heap;
++      }
++
+       result = nvk_heap_init(dev, &dev->event_heap,
+                              NVKMD_MEM_LOCAL | NVKMD_MEM_COHERENT,
+                              NVKMD_MEM_MAP_WR,
+diff --git a/src/nouveau/vulkan/nvk_heap.c b/src/nouveau/vulkan/nvk_heap.c
+index da31183..cfb1588 100644
+--- a/src/nouveau/vulkan/nvk_heap.c
++++ b/src/nouveau/vulkan/nvk_heap.c
+@@ -98,6 +98,19 @@ nvk_heap_free_locked(struct nvk_device *dev, struct nvk_heap *heap,
+    util_vma_heap_free(&heap->heap, addr, size);
+ }
+ 
++VkResult
++nvk_heap_ensure_first_chunk(struct nvk_device *dev, struct nvk_heap *heap)
++{
++   VkResult result = VK_SUCCESS;
++
++   simple_mtx_lock(&heap->arena.mutex);
++   if (nvk_mem_arena_size_B(&heap->arena) == 0)
++      result = nvk_heap_grow_locked(dev, heap);
++   simple_mtx_unlock(&heap->arena.mutex);
++
++   return result;
++}
++
+ VkResult
+ nvk_heap_alloc(struct nvk_device *dev, struct nvk_heap *heap,
+                uint64_t size, uint32_t alignment,
+diff --git a/src/nouveau/vulkan/nvk_heap.h b/src/nouveau/vulkan/nvk_heap.h
+index 1107a00..4c36839 100644
+--- a/src/nouveau/vulkan/nvk_heap.h
++++ b/src/nouveau/vulkan/nvk_heap.h
+@@ -24,6 +24,17 @@ VkResult nvk_heap_init(struct nvk_device *dev, struct nvk_heap *heap,
+ 
+ void nvk_heap_finish(struct nvk_device *dev, struct nvk_heap *heap);
+ 
++/* Binds the heap's first chunk if the heap is still empty.
++ *
++ * A contiguous heap reserves its whole address range up front but binds
++ * nothing until the first allocation, so its base address is a valid VA
++ * pointing at no memory.  That is fine for a heap nobody reads before
++ * allocating from it, and not fine for the shader heap, whose base is
++ * handed to the engines as SET_PROGRAM_REGION.
++ */
++VkResult nvk_heap_ensure_first_chunk(struct nvk_device *dev,
++                                     struct nvk_heap *heap);
++
+ VkResult nvk_heap_alloc(struct nvk_device *dev, struct nvk_heap *heap,
+                         uint64_t size, uint32_t alignment,
+                         uint64_t *addr_out, void **map_out);
+-- 
+2.43.0
+

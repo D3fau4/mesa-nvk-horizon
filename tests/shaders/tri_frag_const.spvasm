@@ -1,0 +1,50 @@
+; tri_frag_const -- Phase 5 item 5, case A's fragment shader.
+;
+; One constant colour, so what the readback measures is coverage: which
+; pixels the rasteriser produced fragments for, and whether the ROP
+; wrote them. Case B's shader interpolates instead.
+;
+; WHY 0.2 / 0.4 / 0.6 / 1.0 AND NOT SOMETHING ROUNDER. The target is
+; R8G8B8A8_UNORM, so each component comes back as round(f * 255), and
+; the test compares exact bytes. These four land far from a tie:
+;
+;     float32(0.2) * 255 = 51.0000008    -> 0x33
+;     float32(0.4) * 255 = 102.0000015   -> 0x66
+;     float32(0.6) * 255 = 152.9999985   -> 0x99
+;     float32(1.0) * 255 = 255           -> 0xff
+;
+; each about a millionth away from the integer it rounds to, which no
+; conversion that meets the spec can move. 0.5 would have been the
+; wrong choice: 127.5 is a tie and the spec does not say which way it
+; goes.
+;
+; Every component differs from every other and from the clear colour, so
+; a driver that swapped channels, or wrote only one, fails on the value.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+ %ptr_out_v4 = OpTypePointer Output %v4float
+ %out_colour = OpVariable %ptr_out_v4 Output
+
+        %c_r = OpConstant %float 0.2
+        %c_g = OpConstant %float 0.4
+        %c_b = OpConstant %float 0.6
+        %c_a = OpConstant %float 1
+     %colour = OpConstantComposite %v4float %c_r %c_g %c_b %c_a
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+               OpStore %out_colour %colour
+               OpReturn
+               OpFunctionEnd

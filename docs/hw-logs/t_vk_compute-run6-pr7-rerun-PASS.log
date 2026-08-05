@@ -1,0 +1,46 @@
+== t_vk_compute ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x25d6b2d6e0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x25d6b2d6e0: up, syncpt=26 initial=44039 zcull=off
+[horizon_gpu:I] channel 0x25d6b7e010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x25d6b7e010: up, syncpt=27 initial=391 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4100) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4100, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkCreateShaderModule(584 bytes) -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreatePipelineLayout -> VK_SUCCESS
+  ok   vkCreateComputePipelines -> VK_SUCCESS  (NAK compiled a shader)
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4160/4160 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(dispatch) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(dispatch) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   host scratch for the expected words
+  ok   the dispatch computed every word: 4096/4096 words match
+  ok   nothing was written past the last invocation: 64/64 words are 0xdeadbeef (all of them)
+RESULT: PASS (37/37)

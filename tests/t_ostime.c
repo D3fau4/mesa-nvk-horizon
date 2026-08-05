@@ -56,6 +56,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_ostime";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* Samples for the monotonicity and resolution measurements. Enough that
  * a clock ticking at a coarse rate still shows several distinct values,

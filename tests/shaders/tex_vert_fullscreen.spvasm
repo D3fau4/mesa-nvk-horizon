@@ -1,0 +1,84 @@
+; tex_vert_fullscreen -- Phase 5 item 6, the vertex shader for every
+; texture case.
+;
+; The oversized single triangle that covers a whole render target:
+;
+;     position   (-1,-1)   (3,-1)   (-1,3)      in NDC
+;     uv         ( 0, 0)   (2, 0)   ( 0,2)
+;
+; Interpolating those together makes uv = (fx/64, fy/64) at framebuffer
+; position (fx, fy), so the pixel centre (px+0.5, py+0.5) samples at
+;
+;     u * 8 = (px + 0.5) / 8
+;
+; on an 8x8 texture -- never within 1/16 of a texel boundary, at any
+; pixel. That is what lets the nearest-filtered cases be compared byte
+; for byte instead of with a tolerance: the texel a pixel lands in is
+; px/8 by integer division, and no rounding rule can move it.
+;
+; Two triangles would have done the same job with a seam down the
+; diagonal; one triangle with vertices outside the clip volume has no
+; seam and no shared edge to get wrong.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %position %vertex_index %out_uv
+
+               OpDecorate %position BuiltIn Position
+               OpDecorate %vertex_index BuiltIn VertexIndex
+               OpDecorate %out_uv Location 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+    %v2float = OpTypeVector %float 2
+    %v4float = OpTypeVector %float 4
+
+ %ptr_out_v4 = OpTypePointer Output %v4float
+ %ptr_out_v2 = OpTypePointer Output %v2float
+   %position = OpVariable %ptr_out_v4 Output
+     %out_uv = OpVariable %ptr_out_v2 Output
+ %ptr_in_int = OpTypePointer Input %int32
+%vertex_index = OpVariable %ptr_in_int Input
+
+     %uint_3 = OpConstant %uint 3
+     %arr3v4 = OpTypeArray %v4float %uint_3
+     %arr3v2 = OpTypeArray %v2float %uint_3
+%ptr_pv_arr4 = OpTypePointer Private %arr3v4
+%ptr_pv_arr2 = OpTypePointer Private %arr3v2
+  %ptr_pv_v4 = OpTypePointer Private %v4float
+  %ptr_pv_v2 = OpTypePointer Private %v2float
+
+       %f_n1 = OpConstant %float -1
+        %f_0 = OpConstant %float 0
+        %f_1 = OpConstant %float 1
+        %f_2 = OpConstant %float 2
+        %f_3 = OpConstant %float 3
+
+         %p0 = OpConstantComposite %v4float %f_n1 %f_n1 %f_0 %f_1
+         %p1 = OpConstantComposite %v4float %f_3 %f_n1 %f_0 %f_1
+         %p2 = OpConstantComposite %v4float %f_n1 %f_3 %f_0 %f_1
+      %pinit = OpConstantComposite %arr3v4 %p0 %p1 %p2
+      %verts = OpVariable %ptr_pv_arr4 Private %pinit
+
+        %t0 = OpConstantComposite %v2float %f_0 %f_0
+        %t1 = OpConstantComposite %v2float %f_2 %f_0
+        %t2 = OpConstantComposite %v2float %f_0 %f_2
+      %tinit = OpConstantComposite %arr3v2 %t0 %t1 %t2
+      %coords = OpVariable %ptr_pv_arr2 Private %tinit
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+        %idx = OpLoad %int32 %vertex_index
+         %pp = OpAccessChain %ptr_pv_v4 %verts %idx
+          %p = OpLoad %v4float %pp
+               OpStore %position %p
+         %tp = OpAccessChain %ptr_pv_v2 %coords %idx
+         %uv = OpLoad %v2float %tp
+               OpStore %out_uv %uv
+               OpReturn
+               OpFunctionEnd

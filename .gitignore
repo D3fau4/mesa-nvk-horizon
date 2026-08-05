@@ -19,3 +19,8 @@
 
 # Logs
 *.log
+# ...except the hardware runs, which are evidence rather than output.
+# They were being force-added one at a time; a log that silently fails to
+# be committed is the one kind of file this project cannot afford to lose,
+# since a result nobody can re-run is only as good as its record.
+!/docs/hw-logs/*.log

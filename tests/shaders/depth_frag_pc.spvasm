@@ -1,0 +1,46 @@
+; depth_frag_pc -- Phase 5 item 7, the fragment shader for every depth
+; draw.
+;
+; Writes the colour from the push constant block and nothing else, so
+; the only thing that decides what a pixel holds is which fragments
+; survived the depth test. The block is the same twenty bytes
+; depth_vert_z declares -- member 0 the colour at offset 0, member 1 the
+; depth at offset 16 -- because a push constant range must describe one
+; layout for both stages, and declaring only the member a stage uses
+; would leave the two shaders disagreeing about the block.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+               OpMemberDecorate %PC 0 Offset 0
+               OpMemberDecorate %PC 1 Offset 16
+               OpDecorate %PC Block
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+    %v4float = OpTypeVector %float 4
+
+         %PC = OpTypeStruct %v4float %float
+     %ptr_pc = OpTypePointer PushConstant %PC
+  %ptr_pc_v4 = OpTypePointer PushConstant %v4float
+         %pc = OpVariable %ptr_pc PushConstant
+
+ %ptr_out_v4 = OpTypePointer Output %v4float
+ %out_colour = OpVariable %ptr_out_v4 Output
+
+      %int_0 = OpConstant %int32 0
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+         %cp = OpAccessChain %ptr_pc_v4 %pc %int_0
+          %c = OpLoad %v4float %cp
+               OpStore %out_colour %c
+               OpReturn
+               OpFunctionEnd

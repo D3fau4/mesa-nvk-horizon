@@ -12,6 +12,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_alloc";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 int run_test(test_ctx *t)
 {

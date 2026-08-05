@@ -22,6 +22,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_submit";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 #define WAIT_NS UINT64_C(2000000000) /* 2 s bound for every wait here */
 #define NOP_PAIRS 64u
@@ -84,6 +86,36 @@ int run_test(test_ctx *t)
     t_check(t, horizon_gpu_succeeded(res),
             "fence-only submit completed (status=%s)",
             horizon_gpu_status_str(res.status));
+
+    /* 1b. A span count that used to wrap the guard meant to stop it.
+     *
+     * The bound was `num_spans + 2 > GPFIFO_QUEUE_SIZE` on a uint32_t:
+     * UINT32_MAX + 2 is 1, the guard let it through, and the validation
+     * loop then walked four billion entries of an array with one in it.
+     * The check written to stop an overflow overflowed. Found in review
+     * of PR #7 and now subtraction-form.
+     *
+     * A real address is passed on purpose. Rejecting NULL would be a
+     * different guard doing the work, and the whole question is whether
+     * the *count* is refused before anything indexes with it — on the
+     * old code this call did not return. */
+    {
+        const horizon_gpu_cmd_span dummy = { .gpu_va = 0x1000, .num_dwords = 1 };
+        res = horizon_gpu_submit(chan, &dummy, UINT32_MAX,
+                                 HORIZON_GPU_SUBMIT_DEFAULT, NULL);
+        t_check(t, res.status == HORIZON_GPU_ERR_INVALID_ARG,
+                "a span count of UINT32_MAX is refused, not wrapped "
+                "(status=%s)", horizon_gpu_status_str(res.status));
+
+        /* And the boundary either side of it, so the bound is the right
+         * one and not merely some bound. */
+        res = horizon_gpu_submit(chan, &dummy, GPFIFO_QUEUE_SIZE - 1,
+                                 HORIZON_GPU_SUBMIT_DEFAULT, NULL);
+        t_check(t, res.status == HORIZON_GPU_ERR_INVALID_ARG,
+                "one span more than the queue can hold with its own two "
+                "entries is refused (status=%s)",
+                horizon_gpu_status_str(res.status));
+    }
 
     /* 2. NOP command list from caller memory. */
     horizon_gpu_mem *mem = NULL;

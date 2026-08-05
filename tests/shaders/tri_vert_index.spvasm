@@ -1,0 +1,80 @@
+; tri_vert_index -- Phase 5 item 5, the vertex shader of the first draw.
+;
+; No vertex buffer: the three positions are a constant array indexed by
+; gl_VertexIndex, so case A of t_vk_triangle measures rasterisation with
+; the vertex-fetch hardware kept out of it. Case B draws the same
+; triangle from a real vertex buffer, and a failure there but not here
+; is a failure of attribute fetch and nothing else.
+;
+; WHY THESE THREE NUMBERS. The triangle is specified in *pixels* first,
+; on a 64x64 target, and converted here:
+;
+;     P0 = (4.0,  4.0)     P1 = (59.5, 4.0)     P2 = (4.0, 59.5)
+;
+; with x_ndc = 2*x_px/64 - 1, so 4.0 -> -0.875 and 59.5 -> 0.859375.
+; Both are exact in binary (-7/8 and 55/64), so the decimal literals
+; below are the values the hardware sees, not approximations of them.
+;
+; The half-pixel on the hypotenuse is the point. Single-sample
+; rasterisation tests the pixel centre (px+0.5, py+0.5); the edges here
+; are x=4, y=4 and x+y=63.5, and no centre lands on any of them -- the
+; nearest miss is half a pixel, hundreds of times the rasteriser's
+; subpixel step. So the covered set is decidable rather than a matter of
+; the fill rule: px>=4, py>=4, px+py<=62, which is exactly 1540 pixels.
+; A triangle whose edges fell on pixel centres would make that count a
+; guess about tie-breaking.
+;
+; Depth is 0.0 and w is 1.0 at every vertex: there is no depth
+; attachment in this item (that is item 7), and w=1 keeps interpolation
+; affine so case B's expected colours can be computed in screen space.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1). The positions live in a Private
+; array rather than a constant one because OpCompositeExtract needs
+; literal indices and gl_VertexIndex is not one; Private is not part of
+; the entry point's interface, which before SPIR-V 1.4 lists only Input
+; and Output.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %position %vertex_index
+
+               OpDecorate %position BuiltIn Position
+               OpDecorate %vertex_index BuiltIn VertexIndex
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+    %v4float = OpTypeVector %float 4
+
+ %ptr_out_v4 = OpTypePointer Output %v4float
+   %position = OpVariable %ptr_out_v4 Output
+ %ptr_in_int = OpTypePointer Input %int32
+%vertex_index = OpVariable %ptr_in_int Input
+
+     %uint_3 = OpConstant %uint 3
+     %arr3v4 = OpTypeArray %v4float %uint_3
+ %ptr_pv_arr = OpTypePointer Private %arr3v4
+  %ptr_pv_v4 = OpTypePointer Private %v4float
+
+       %f_lo = OpConstant %float -0.875
+       %f_hi = OpConstant %float 0.859375
+        %f_0 = OpConstant %float 0
+        %f_1 = OpConstant %float 1
+         %p0 = OpConstantComposite %v4float %f_lo %f_lo %f_0 %f_1
+         %p1 = OpConstantComposite %v4float %f_hi %f_lo %f_0 %f_1
+         %p2 = OpConstantComposite %v4float %f_lo %f_hi %f_0 %f_1
+       %init = OpConstantComposite %arr3v4 %p0 %p1 %p2
+      %verts = OpVariable %ptr_pv_arr Private %init
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+        %idx = OpLoad %int32 %vertex_index
+         %pp = OpAccessChain %ptr_pv_v4 %verts %idx
+          %p = OpLoad %v4float %pp
+               OpStore %position %p
+               OpReturn
+               OpFunctionEnd

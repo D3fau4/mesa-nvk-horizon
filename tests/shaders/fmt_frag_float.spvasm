@@ -1,0 +1,46 @@
+; fmt_frag_float -- Phase 5 item 8, the floating-point (UNORM, SFLOAT and SRGB attachments)
+; fragment shader.
+;
+; Writes the sixteen bytes of the push constant block straight out. The
+; three fmt_frag_* shaders exist because a fragment output's numeric
+; type must match the attachment's: a float shader bound to a UINT
+; attachment is invalid usage, and with no validation layers here it
+; would be a wrong answer rather than an error.
+;
+; One push constant range, offset 0, sixteen bytes, fragment stage only
+; -- the vertex shader has no use for it.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+               OpMemberDecorate %PC 0 Offset 0
+               OpDecorate %PC Block
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %int32 = OpTypeInt 32 1
+     %float = OpTypeFloat 32
+     %v4float = OpTypeVector %float 4
+
+         %PC = OpTypeStruct %v4float
+     %ptr_pc = OpTypePointer PushConstant %PC
+   %ptr_pc_v = OpTypePointer PushConstant %v4float
+         %pc = OpVariable %ptr_pc PushConstant
+
+  %ptr_out_v = OpTypePointer Output %v4float
+ %out_colour = OpVariable %ptr_out_v Output
+
+      %int_0 = OpConstant %int32 0
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+         %cp = OpAccessChain %ptr_pc_v %pc %int_0
+          %c = OpLoad %v4float %cp
+               OpStore %out_colour %c
+               OpReturn
+               OpFunctionEnd

@@ -172,6 +172,28 @@ horizon_tests = [
   # and packaged with the others because it is a hardware measurement,
   # and hardware measurements travel together.
   't_sysinfo',
+  # Phase 5: what the allocator does around the shader local/shared
+  # memory window. NVK reaches that aperture the moment a shader runs,
+  # and blocking it off broke vkCreateDevice once (patches 0039/0040)
+  # for a reason nobody measured. Uses no Mesa, on purpose: the question
+  # is about the address space, not about the driver.
+  't_va_window',
+  # A deliberate MMU fault, and the wait that must not report success
+  # for it. The fence/notifier fix was written because of a real fault
+  # and has never had one since — a check that has never fired is not a
+  # check. Destroys its own channel on purpose, which is also the only
+  # place teardown-after-a-fault is exercised.
+  't_fault',
+  # Decision D15: how large a single GPFIFO entry this hardware will
+  # actually execute. nxvk ramps the size at every channel creation to
+  # pin a ring-size fault; this measures the number once instead, so
+  # horizon_gpu_submit can bound the span rather than let a channel find
+  # the limit.
+  't_pbsize',
+  # Phase 6 groundwork: the first test that owns the display and runs
+  # with no console, so the reporting path a swapchain test will depend
+  # on is measured before anything depends on it.
+  't_display',
 ]
 
 testfw = static_library(
@@ -297,7 +319,81 @@ nvk_test_libs = [
   'src/util/blake3/libblake3.a',
   'src/c11/impl/libmesa_util_c11.a',
 ]
-nvk_tests = ['t_vulkan']
+nvk_tests = [
+  't_vulkan',
+  # Phase 5 item 1. Everything later in the phase reads its result back
+  # through a copy, so this is the one that has nothing behind it.
+  't_vk_transfer',
+  # Phase 5 items 3 and 4. One test because an off-screen image is only
+  # observable once something renders to it, and the smallest thing that
+  # does is a clear — which NVK implements as a render pass, not a blit.
+  't_vk_image',
+  # Phase 5 item 2 — the first shader this project runs. NAK and NIL
+  # have been linked since Phase 4 and have never produced machine code
+  # that executed.
+  't_vk_compute',
+  # Phase 5 item 5 — the first draw call. Vertex processing,
+  # rasterisation and the ROP, none of which any earlier item reaches.
+  't_vk_triangle',
+  # Phase 5 item 6 — sampling: descriptors, samplers and mip levels.
+  't_vk_texture',
+  # Phase 5 item 7 — the depth test, and the depth buffer read back as
+  # a value rather than trusted because the colours came out right.
+  't_vk_depth',
+  # Phase 5 item 8 — twelve colour formats, each checked against the
+  # bytes its encoding says it must hold.
+  't_vk_format',
+  # Phase 5 item 9 — several submits in flight at once, demonstrated by
+  # an unsignalled fence and by wall clock, not by absence of errors.
+  't_vk_submits',
+  # Not an item: the two things this project's own patches changed and
+  # nothing had ever measured — patch 0046's extension gating, checked
+  # in both directions, and patch 0045's alloc_tiled_mem, reached
+  # through the one path that can reach it.
+  't_vk_caps',
+]
+
+# Shaders each NVK test needs, by test name. An entry is the stem of
+# tests/shaders/<stem>.spvasm; scripts/spv-embed.py assembles it with
+# spirv-as, validates it with spirv-val and writes <stem>.spv.h into the
+# build directory, which the test includes.
+#
+# Assembly rather than GLSL because the container has no network and the
+# base image has no glslang, while SPIRV-Tools is already in the derived
+# image for mesa_clc. See scripts/spv-embed.py for the trade.
+nvk_test_shaders = {
+  't_vulkan' : [],
+  't_vk_transfer' : [],
+  # None on purpose: t_vk_image must reach its first render pass without
+  # anything having been uploaded to the shader heap, or it stops being
+  # able to catch the regression patch 0048 fixed.
+  't_vk_image' : [],
+  't_vk_compute' : ['comp_write_id'],
+  # Two pipelines: A builds its positions from gl_VertexIndex and writes
+  # a constant colour, B fetches position and colour from a vertex
+  # buffer and interpolates. Four shaders so that a failure in B alone
+  # names attribute fetch or interpolation.
+  't_vk_triangle' : ['tri_vert_index', 'tri_frag_const',
+                     'tri_vert_attrib', 'tri_frag_interp'],
+  # One vertex shader for all three cases; two fragment shaders because
+  # implicit and explicit LOD are different instructions.
+  't_vk_texture' : ['tex_vert_fullscreen', 'tex_frag_sample',
+                    'tex_frag_lod1'],
+  # One pair for all four draws: what differs between them is twenty
+  # bytes of push constant and a scissor rectangle.
+  't_vk_depth' : ['depth_vert_z', 'depth_frag_pc'],
+  # Three fragment shaders because a fragment output's numeric type has
+  # to match its attachment's.
+  't_vk_format' : ['fmt_vert_fullscreen', 'fmt_frag_float',
+                   'fmt_frag_uint', 'fmt_frag_sint'],
+  # A compute job whose duration the test controls, so it can still be
+  # running when the next submit is issued.
+  't_vk_submits' : ['comp_spin'],
+  # Shared with t_vk_format: the same full-target triangle and the same
+  # push-constant colour, because what t_vk_caps measures is where the
+  # pixels land, not what draws them.
+  't_vk_caps' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
+}
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
 # so both an absolute and a source-root-relative option value resolve
@@ -387,6 +483,52 @@ else
           nvk_build_dir + '; run scripts/build-mesa-nvk.sh first')
 endif
 
+# Shader assembly. Gated on the same condition as the tests that use the
+# headers: spirv-as and spirv-val live in the derived toolchain image,
+# which is also the only thing that can have produced the NVK archives,
+# so a tree with the archives has the tools and a tree without them
+# needs neither.
+nvk_shader_headers = {}
+if nvk_libs_present
+  spirv_as = find_program('spirv-as')
+  spirv_val = find_program('spirv-val')
+  spv_embed = find_program('scripts/spv-embed.py')
+
+  # Each shader is assembled ONCE, however many tests include it: two
+  # custom_targets writing the same output is a configure error, and
+  # t_vk_image and t_vk_compute already share one.
+  shader_header_by_name = {}
+  foreach t : nvk_tests
+    foreach s : nvk_test_shaders.get(t, [])
+      if not shader_header_by_name.has_key(s)
+        shader_header_by_name += { s : custom_target(
+          s + '.spv.h',
+          input : files('tests/shaders' / (s + '.spvasm')),
+          output : s + '.spv.h',
+          # --target-env vulkan1.1 is SPIR-V 1.3, which is where
+          # StorageBuffer becomes a core storage class. Higher would work
+          # on this device and buy nothing the tests need.
+          command : [
+            spv_embed,
+            '--spirv-as', spirv_as.full_path(),
+            '--spirv-val', spirv_val.full_path(),
+            '--target-env', 'vulkan1.1',
+            '-o', '@OUTPUT@', '@INPUT@',
+          ],
+        ) }
+      endif
+    endforeach
+  endforeach
+
+  foreach t : nvk_tests
+    t_headers = []
+    foreach s : nvk_test_shaders.get(t, [])
+      t_headers += shader_header_by_name[s]
+    endforeach
+    nvk_shader_headers += { t : t_headers }
+  endforeach
+endif
+
 foreach t : horizon_tests
   # Tests 12 and 13 additionally see Mesa's headers and archives; the
   # other eleven are built with no Mesa in sight, as before.
@@ -403,6 +545,7 @@ foreach t : horizon_tests
   # when this directory was configured, which is what the guess requires
   # and scripts/build-horizon.sh now detects separately.
   t_link_depends = []
+  t_sources = [files('tests' / (t + '.c'))]
   if mesa_libs_present and mesa_tests.contains(t)
     t_deps += idep_mesa_core
     t_link_depends = mesa_test_lib_paths
@@ -410,13 +553,22 @@ foreach t : horizon_tests
   if nvk_libs_present and nvk_tests.contains(t)
     t_deps += idep_nvk_driver
     t_link_depends = nvk_test_lib_paths
+    # The Vulkan fixture, compiled into each test that has a driver to
+    # talk to rather than built as a library: it needs Mesa's Vulkan
+    # headers, which only these tests have on their include path, and a
+    # per-test object keeps the tests that predate it unchanged.
+    #
+    # Its generated shader headers are listed as sources so ninja
+    # produces them before the test compiles; nothing links from them.
+    t_sources += files('tests/common/vkfw.c')
+    t_sources += nvk_shader_headers.get(t, [])
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the
   # intermediate distinguishable from the .nro in the build directory.
   t_elf = executable(
     t,
-    files('tests' / (t + '.c')),
+    t_sources,
     include_directories : [horizon_gpu_inc, tests_inc],
     link_with : testfw,
     dependencies : t_deps,

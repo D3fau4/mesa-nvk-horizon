@@ -45,7 +45,36 @@ mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
 cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
 cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
 
-horizon_meson compile -C "$MESA_NVK_BUILD_DIR" "$@"
+# With no targets: the default set, and then the archives the tests
+# link.
+#
+# THEY ARE NOT THE SAME SET, which is the whole reason this is here.
+# Mesa marks an internal static library build_by_default only when
+# something in the configuration links it, and this configuration links
+# nothing — there is no shared object and no executable, just archives
+# for a test in another build directory to pull from. So `meson compile`
+# with no arguments produces libnvk.a and the Rust runtime and stops,
+# and libnir.a, libvtn.a, libcompiler.a, libvulkan_util.a,
+# libvulkan_wsi.a and libxmlconfig.a are never built at all.
+#
+# Measured on a clean tree, following the documented bring-up exactly:
+# after this script reported success, six of the eighteen archives
+# meson.build looks for were absent, so its fs.exists() answered "no"
+# and t_vulkan — the Phase 4 exit-criterion test — was silently left out
+# of build.ninja. It had only ever worked because someone once asked for
+# those targets by hand.
+#
+# ninja rather than `meson compile <target>`: meson resolves a target by
+# its declared *name*, and `meson compile src/compiler/nir/libnir.a`
+# answers "target not found" (measured). The ninja path is the exact
+# string meson.build already lists, so the two cannot drift in spelling.
+if [ "$#" -gt 0 ]; then
+    horizon_meson compile -C "$MESA_NVK_BUILD_DIR" "$@"
+else
+    horizon_meson compile -C "$MESA_NVK_BUILD_DIR"
+    # shellcheck disable=SC2086 # the list is a space-separated set
+    horizon_ninja -C "$MESA_NVK_BUILD_DIR" $HORIZON_NVK_TEST_LIBS
+fi
 
 # The same property scripts/build-mesa.sh checks on the C objects, on
 # the artefacts this build produces. -mtp=soft -fPIC miscompiles

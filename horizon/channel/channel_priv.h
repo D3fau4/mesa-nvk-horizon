@@ -27,6 +27,22 @@ struct horizon_gpu_channel {
     bool lost;
     bool engines_bound;
 
+    /* The last error-notification type this channel reported, kept
+     * because reading one consumes it.
+     *
+     * MEASURED ON HARDWARE, 2026-08-04 (t_fault). libnx's
+     * nvGpuChannelGetErrorNotification does a non-blocking eventWait on
+     * the channel's error *event* before the ioctl, so the first reader
+     * takes the notification and every reader after it is told there is
+     * none. The first reader is channel_check_fault, on the wait path.
+     * A caller that then received HORIZON_GPU_ERR_CHANNEL_LOST and
+     * asked why was told "no error recorded" — for a channel that was
+     * lost because of one. The type was in a log line and nowhere a
+     * program could reach.
+     *
+     * Zero means none has ever been seen. */
+    uint32_t last_error_type;
+
     /* Internal GPU-visible buffer: the per-submit fence-increment list at
      * offset 0, the SET_OBJECT list right after (written by
      * bind_engines). One page, mapped read-only-for-the-GPU concerns
@@ -37,6 +53,11 @@ struct horizon_gpu_channel {
     uint64_t fence_cmds_va;
     uint32_t fence_cmds_dwords;
     uint64_t setobj_cmds_va;
+    /* Runs before every submit's work: one L2_SYSMEM_INVALIDATE, so the
+     * GPU cannot merge into an L2 line the CPU has since overwritten.
+     * See horizon_gpu_channel_create for the hardware measurement. */
+    uint64_t prologue_cmds_va;
+    uint32_t prologue_cmds_dwords;
 
     /* Zcull context (optional). */
     horizon_gpu_mem *zcull_mem;

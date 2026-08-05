@@ -24,6 +24,7 @@
 #define CHANNEL_CMDBUF_SIZE        UINT64_C(0x1000)
 #define CHANNEL_FENCE_CMDS_OFFSET  UINT64_C(0x000)
 #define CHANNEL_SETOBJ_CMDS_OFFSET UINT64_C(0x100)
+#define CHANNEL_PROLOGUE_CMDS_OFFSET UINT64_C(0x200)
 
 /* Zcull context buffer VA alignment. Source: the reference's
  * hardware-tested channel bring-up (reference-analysis § 4: Zcull BO
@@ -37,8 +38,12 @@ _Static_assert(HORIZON_CMDS_FENCE_INCR_DWORDS * 4 <=
                CHANNEL_SETOBJ_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET,
                "fence-increment list would overrun the SET_OBJECT list");
 _Static_assert(CHANNEL_SETOBJ_CMDS_OFFSET +
-               HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
-               "SET_OBJECT list would overrun the cmdbuf page");
+               HORIZON_CMDS_SET_OBJECTS_DWORDS * 4 <=
+               CHANNEL_PROLOGUE_CMDS_OFFSET,
+               "SET_OBJECT list would overrun the prologue list");
+_Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
+               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
+               "prologue list would overrun the cmdbuf page");
 
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
  * re-checked at a useful rate without busy-polling
@@ -93,9 +98,15 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
          * "none" — anything else (a real ioctl/service failure) must be
          * reported, not swallowed as a false-healthy channel. */
         if (rc == KERNELRESULT(TimedOut)) {
-            *out_type = 0;
+            /* Nothing pending *now*. That is not the same as nothing
+             * ever, because reading a notification consumes it: the
+             * wait path's own check is usually the reader, and it
+             * leaves nothing for the caller who then asks why the
+             * channel is lost. Answer from the latch when there is one
+             * (see last_error_type in channel_priv.h, and t_fault). */
+            *out_type = chan->last_error_type;
             if (out_desc)
-                *out_desc = channel_error_desc(0);
+                *out_desc = channel_error_desc(*out_type);
             return horizon_gpu_ok();
         }
         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
@@ -103,8 +114,15 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
         return horizon_gpu_err_nv(rc);
     }
 
-    /* A notification with a zero timestamp has never fired. */
-    *out_type = (notif.timestamp != 0) ? notif.info32 : 0;
+    /* A notification with a zero timestamp has never fired — and that
+     * is the same "nothing pending now" the TimedOut branch above
+     * reports, so it gets the same answer. The first version latched
+     * only in the other branch, which left this one telling a lost
+     * channel it had no error; found in review of PR #7. */
+    const uint32_t live = (notif.timestamp != 0) ? notif.info32 : 0;
+    if (live != 0)
+        chan->last_error_type = live;
+    *out_type = (live != 0) ? live : chan->last_error_type;
     if (out_desc)
         *out_desc = channel_error_desc(*out_type);
     return horizon_gpu_ok();
@@ -125,6 +143,36 @@ static bool channel_check_fault(horizon_gpu_channel *chan)
         chan->lost = true;
     }
     return chan->lost;
+}
+
+/* "The fence says reached" is the answer a waiter wants, and on this
+ * platform it is not sufficient on its own.
+ *
+ * MEASURED ON HARDWARE, 2026-08-04 (t_vk_image run 1). A render pass
+ * MMU-faulted, nothing it was supposed to write was written, and
+ * vkWaitForFences returned VK_SUCCESS. The syncpoint had reached the
+ * threshold — because nvgpu's channel recovery force-increments a
+ * faulted channel's syncpoints to their maximum submitted value, so
+ * that waiters do not hang forever. The counter therefore says
+ * "finished" for work that never ran, and the CPU then read a buffer
+ * still holding its poison and had no way to know why. The fault only
+ * surfaced at the *next* kickoff, one test case later, by which time
+ * the case that caused it had already been reported as passing.
+ *
+ * So the notifier is consulted on the success path too, and it decides.
+ * A reached threshold plus a fault notification is CHANNEL_LOST, not OK.
+ *
+ * This is deliberately stricter than "the fence completed before the
+ * fault": the notifier is sticky and per-channel, so work that genuinely
+ * finished before a later fault will also be reported lost. That is the
+ * safe direction. The unsafe one is what was measured — reporting
+ * success for work that did not happen — and no caller of this function
+ * can tell the two apart from the outside. */
+static horizon_gpu_result channel_reached_or_lost(horizon_gpu_channel *chan)
+{
+    if (channel_check_fault(chan))
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+    return horizon_gpu_ok();
 }
 
 /* Logs a teardown step's failure during horizon_gpu_channel_create's error
@@ -293,8 +341,74 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
         goto fail_cmdbuf_map;
     }
+    /* And the per-submit PROLOGUE, which runs before the caller's work:
+     * one MEM_OP, L2_SYSMEM_INVALIDATE.
+     *
+     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04
+     * (docs/hw-logs/t_vk_transfer-run3-FAIL.log). The fence block above
+     * writes dirty L2 back after the work, so a GPU write reaches memory.
+     * Nothing did the other direction: a line the GPU has touched stays
+     * resident in L2 after that writeback, *clean*, and a later CPU write
+     * to the same address updates memory and leaves that line alone. The
+     * GPU then reads its own stale copy.
+     *
+     * It bites hardest where a GPU write covers only part of an L2 line.
+     * The engine merges into the resident stale line instead of fetching
+     * memory, the writeback then sends the whole line back, and the bytes
+     * the caller never asked to be written are silently reverted to what
+     * the GPU last saw there. That is what t_vk_transfer measured, and
+     * the numbers are exact:
+     *
+     *   copy [0, 4)  after a copy that had touched [0, 32):
+     *                bytes [4, 32) came back holding the *previous*
+     *                copy's data — 28 bytes, one line minus the four
+     *                that were written
+     *   copy [0, 12) likewise: 20 bytes, again to the 32-byte boundary
+     *   copy [4, 260), [8, 264), [16, 272): 4, 8 and 16 bytes before the
+     *                region, each exactly the distance back to a
+     *                32-byte boundary
+     *   copy [32, 288), [64, 324), [1028, 3480): exact, because either
+     *                both ends are 32-byte aligned or the partial line
+     *                was not resident from an earlier submit
+     *
+     * Eleven data points, one model, and it puts this GPU's L2 line at 32
+     * bytes. The same measurement is what withdrew the earlier reading of
+     * this data as a "copy engine transfer granularity": the copy engine
+     * is exact, and the staleness is ours.
+     *
+     * Cost: one MEM_OP per submit, which is the same shape and order of
+     * cost as the writeback that has always been there. It is
+     * unconditional for the same reason the writeback is — this layer
+     * does not know what the caller's memory has been used for, and a
+     * conditional invalidate would be a guess with silent corruption as
+     * its failure mode.
+     */
+    chan->prologue_cmds_dwords =
+        horizon_cmds_mem_op(cmds + CHANNEL_PROLOGUE_CMDS_OFFSET / 4,
+                            HORIZON_MEM_OP_L2_SYSMEM_INVALIDATE);
+    if (chan->prologue_cmds_dwords == 0) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "the L2 invalidate prologue could not be encoded");
+        res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+        goto fail_cmdbuf_map;
+    }
+
+    /* One flush covering both blocks: they share the page, and the
+     * cmdbuf is CPU-cached like everything else here.
+     *
+     * The third argument is a LENGTH. It was written as
+     * CHANNEL_PROLOGUE_CMDS_OFFSET + n*4, which is a length only
+     * because the fence block starts at zero — correct by coincidence,
+     * and silently short if the fence block ever moved. Every other
+     * layout relationship in this file is pinned by a _Static_assert;
+     * this one was not. Found in review of PR #7. */
+    _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET > CHANNEL_FENCE_CMDS_OFFSET,
+                   "the prologue block must follow the fence block");
+    const uint64_t flush_len =
+        (CHANNEL_PROLOGUE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
+        (uint64_t)chan->prologue_cmds_dwords * 4;
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
-                                chan->fence_cmds_dwords * 4);
+                                flush_len);
     if (horizon_gpu_failed(res))
         goto fail_cmdbuf_map;
 
@@ -302,6 +416,8 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                           CHANNEL_FENCE_CMDS_OFFSET;
     chan->setobj_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                            CHANNEL_SETOBJ_CMDS_OFFSET;
+    chan->prologue_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
+                             CHANNEL_PROLOGUE_CMDS_OFFSET;
 
     /* Optional Zcull context. */
     if (create_info->bind_zcull) {
@@ -455,6 +571,30 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
     if (!chan)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
 
+    /* THE FAULT CHECK BELONGS HERE TOO, and for the same reason it
+     * belongs in the wait: nvgpu's recovery force-increments a faulted
+     * channel's syncpoints, so the counter this function is about to
+     * read says "finished" for work that never ran. Without this,
+     * every retirement whose threshold that counter passed fired and
+     * reap returned ok — buffers recycled for work the GPU abandoned,
+     * with no caller told. horizon_gpu_submit reaps before it queues
+     * and wait_idle returns this function's result, so two more paths
+     * were answering "fine" about a dead channel.
+     *
+     * Fixed in the wait only, first time round; found in review of
+     * PR #7. The callbacks are not run here — horizon_gpu_channel_
+     * destroy still runs them, which is the documented path
+     * (add_retirement's comment) and the one that lets a callback ask
+     * horizon_gpu_channel_is_lost() and behave differently.
+     *
+     * COST, stated because it is a hot path: one non-blocking event
+     * wait and one ioctl per reap, therefore per submit. Measured
+     * against the 85 us of CPU a vkQueueSubmit already costs on this
+     * platform (t_vk_submits), it is not the expensive part — and a
+     * cheap wrong answer here is what this whole fix is about. */
+    if (channel_check_fault(chan))
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+
     uint32_t hw;
     horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
     if (horizon_gpu_failed(res)) {
@@ -569,7 +709,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
-                return horizon_gpu_ok();
+                return channel_reached_or_lost(chan);
             if (rc != KERNELRESULT(TimedOut))
                 return horizon_gpu_err_nv(rc);
 
@@ -588,7 +728,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             continue;
         }
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
-            return horizon_gpu_ok();
+            return channel_reached_or_lost(chan);
 
         if (channel_check_fault(chan))
             return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);

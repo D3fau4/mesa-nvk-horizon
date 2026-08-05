@@ -1,0 +1,59 @@
+; tri_vert_attrib -- Phase 5 item 5, case B's vertex shader.
+;
+; The same triangle as tri_vert_index, fetched from a vertex buffer
+; instead of built from gl_VertexIndex, plus a per-vertex colour passed
+; through to the fragment stage. Two things that case A cannot measure:
+; the vertex-attribute fetch, and interpolation.
+;
+;     location 0  vec2  position, already in NDC
+;     location 1  vec4  colour
+;
+; The positions are the host's, not this shader's, so the geometry is
+; stated in exactly one place per case and the two cases can be compared
+; pixel for pixel: both must cover the same 1540.
+;
+; w is 1 at every vertex, so the perspective divide is the identity and
+; the interpolated colour at a pixel is its screen-space barycentric
+; combination -- which is what lets the test compute the expected bytes
+; rather than eyeball them.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %position %in_pos %in_colour %out_colour
+
+               OpDecorate %position BuiltIn Position
+               OpDecorate %in_pos Location 0
+               OpDecorate %in_colour Location 1
+               OpDecorate %out_colour Location 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+    %v4float = OpTypeVector %float 4
+
+ %ptr_in_v2  = OpTypePointer Input %v2float
+ %ptr_in_v4  = OpTypePointer Input %v4float
+ %ptr_out_v4 = OpTypePointer Output %v4float
+
+   %position = OpVariable %ptr_out_v4 Output
+     %in_pos = OpVariable %ptr_in_v2 Input
+  %in_colour = OpVariable %ptr_in_v4 Input
+ %out_colour = OpVariable %ptr_out_v4 Output
+
+        %f_0 = OpConstant %float 0
+        %f_1 = OpConstant %float 1
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+         %xy = OpLoad %v2float %in_pos
+          %x = OpCompositeExtract %float %xy 0
+          %y = OpCompositeExtract %float %xy 1
+        %pos = OpCompositeConstruct %v4float %x %y %f_0 %f_1
+               OpStore %position %pos
+        %col = OpLoad %v4float %in_colour
+               OpStore %out_colour %col
+               OpReturn
+               OpFunctionEnd

@@ -37,6 +37,8 @@
 #include "common/testfw.h"
 
 const char *const test_name = "t_sysinfo";
+/* No display: main() starts a console and reports through it. */
+const bool test_uses_display = false;
 
 /* The InfoType values whose address/size pairs describe a memory region.
  * Every one of them must be page-granular. */

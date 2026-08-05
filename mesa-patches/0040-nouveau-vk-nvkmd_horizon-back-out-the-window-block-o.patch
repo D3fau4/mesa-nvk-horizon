@@ -26,6 +26,20 @@ block-off does not.
 horizon_gpu_vm_reserve_fixed and NVKMD_VA_ALLOC_FIXED are kept. They
 were the half that was right, and extension 5 stays closed.
 
+CORRECTED LATER, AND THE CORRECTION BELONGS HERE. The reasoning above
+-- that blocking the aperture splits the small-page region so NVK's
+4 GiB heap no longer fits -- was inferred from an emulator failure and
+is wrong about the hardware. t_va_window measured the real allocator on
+a console (2026-08-04): a non-fixed 4 GiB reservation lands at
+0x100000000, above the window and clear of it, and reserving the window
+first then the heap works. Patch 0047 re-lands the block-off on that
+evidence and vkCreateDevice still succeeds.
+
+This paragraph is added rather than the patch being dropped, because
+the series is the record of what was believed and when; a rebase or an
+upstream submission must carry the correction with the claim rather
+than the claim alone.
+
 Also corrects the recorded reason for D12. It said "NVGPU_AS has no
 sparse reservation"; NvAllocSpaceFlags_Sparse sits in libnx's ioctl.h
 beside the FixedOffset flag the same paragraph missed. A sparse

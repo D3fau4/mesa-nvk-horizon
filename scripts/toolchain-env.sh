@@ -140,13 +140,38 @@ MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
 # source of truth.
 NVK_BUILD_DIR_DEFAULT="$MESA_NVK_BUILD_DIR"
 
-# The NVK equivalent of $HORIZON_MESA_TEST_LIBS, and a sentinel for the
-# same reason: meson.build decides whether to build t_vulkan by asking
-# fs.exists() over the full archive list, and this is the pair whose
-# absence means that answer will be "no". build-mesa-nvk.sh calls them
-# "the two that matter" for the same reason — libnvk.a is the driver and
-# libnouveau_rust_runtime.a is the half that has to link with it.
-HORIZON_NVK_TEST_LIBS="src/nouveau/vulkan/libnvk.a src/nouveau/rust_runtime/libnouveau_rust_runtime.a"
+# The NVK equivalent of $HORIZON_MESA_TEST_LIBS: every archive the NVK
+# tests link, in the same order meson.build lists them
+# (nvk_whole_libs then nvk_test_libs), relative to $MESA_NVK_BUILD_DIR.
+# scripts/check-mesa-test-parity.sh fails if the two ever disagree.
+#
+# THIS USED TO BE A SENTINEL — libnvk.a and the Rust runtime only, with
+# a comment saying they were "the pair whose absence means that answer
+# will be no". That is true and it is the wrong direction. The callers
+# use horizon_nvk_libs_present() to decide whether meson.build will
+# build t_vulkan, and meson.build asks fs.exists() over ALL of them, so
+# the pair being present proved nothing about the answer. Measured on a
+# clean tree: the two sentinels were there, six others were not,
+# horizon_nvk_libs_present said yes and meson.build said no. A check
+# that reports success without having verified what its caller asks it
+# about is worse than no check.
+HORIZON_NVK_TEST_LIBS="src/nouveau/vulkan/libnvk.a
+src/nouveau/rust_runtime/libnouveau_rust_runtime.a
+src/nouveau/compiler/libnak.a
+src/nouveau/nil/liblibnil_format_table.a
+src/nouveau/mme/libnouveau_mme.a
+src/nouveau/headers/libnvidia_headers_c.a
+src/vulkan/util/libvulkan_util.a
+src/vulkan/wsi/libvulkan_wsi.a
+src/compiler/spirv/libvtn.a
+src/compiler/nir/libnir.a
+src/compiler/libcompiler.a
+src/compiler/rust/libcompiler_c_helpers.a
+src/util/libxmlconfig.a
+src/util/libmesa_util.a
+src/util/libmesa_util_simd.a
+src/util/blake3/libblake3.a
+src/c11/impl/libmesa_util_c11.a"
 
 if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
@@ -304,6 +329,22 @@ horizon_meson() {
     horizon_run env \
         "PYTHONPATH=$PWD/$HORIZON_MESON_DIR:$PWD/$HORIZON_PYTHON_DIR" \
         python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" "$@"
+}
+
+# ninja on a build directory Meson generated, for the one thing `meson
+# compile` cannot express: a target named by its output path rather than
+# by its declared name. Meson resolves `src/compiler/nir/libnir.a` to
+# "target not found" (measured); ninja takes it verbatim, and the path is
+# the same string meson.build and $HORIZON_NVK_TEST_LIBS already carry.
+#
+# PYTHONPATH is not optional even though ninja is not Python: ninja
+# re-runs `meson --internal regenerate` whenever build.ninja is out of
+# date, and without it that subprocess cannot import meson and the build
+# fails with "rebuilding 'build.ninja': subcommand failed".
+horizon_ninja() {
+    horizon_run env \
+        "PYTHONPATH=$PWD/$HORIZON_MESON_DIR:$PWD/$HORIZON_PYTHON_DIR" \
+        ninja "$@"
 }
 
 # Meson reads the machine files only when a build directory is FIRST

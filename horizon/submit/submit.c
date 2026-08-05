@@ -33,11 +33,30 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
         flags != HORIZON_GPU_SUBMIT_ENTRY_FLAGS_ZERO)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     /* Bound num_spans against the queue capacity before it is used for
-     * anything: unbounded, it would let the validation loop below read
-     * spans[] out of the caller's array, and would let the back-pressure
-     * arithmetic further down wrap silently (CLAUDE.md: overflow-check
-     * every size computation) instead of refusing the submit. */
-    if (num_spans >= GPFIFO_QUEUE_SIZE)
+     * anything, so the back-pressure arithmetic further down cannot
+     * wrap silently (CLAUDE.md: overflow-check every size computation)
+     * instead of refusing the submit.
+     *
+     * This used to also claim an unbounded count "would let the
+     * validation loop below read spans[] out of the caller's array".
+     * It would not: the loop reads exactly the num_spans entries the
+     * caller declared, and a caller who lies about that has already
+     * lost. The wrap is the real reason and it is sufficient. A guard
+     * with a wrong stated rationale invites the next person to weaken
+     * it — found in review of PR #7.
+     *
+     * SUBTRACTION, NOT ADDITION, and that is the whole point. This
+     * check was written as `num_spans + 2 > GPFIFO_QUEUE_SIZE`, which
+     * wraps: num_spans is uint32_t, so UINT32_MAX + 2 is 1, the guard
+     * lets it through, and the loop below walks four billion entries of
+     * the caller's array. The check written to stop an overflow
+     * overflowed. Found in review of PR #7.
+     *
+     * GPFIFO_QUEUE_SIZE is libnx's (0x800), so the subtraction cannot
+     * underflow; the assertion says so rather than trusting it. */
+    _Static_assert(GPFIFO_QUEUE_SIZE >= 2,
+                   "the two entries every submit adds must fit the queue");
+    if (num_spans > GPFIFO_QUEUE_SIZE - 2)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     for (uint32_t i = 0; i < num_spans; i++) {
         if (spans[i].gpu_va == 0 || spans[i].num_dwords == 0)
@@ -57,12 +76,23 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     /* Known-quantity back-pressure instead of retry loops: refuse when
      * the entry queue cannot take this submit; the caller may wait on an
-     * older fence and retry (docs/synchronization.md § 2.1). */
-    if (chan->gc.num_entries + num_spans + 1 > GPFIFO_QUEUE_SIZE) {
+     * older fence and retry (docs/synchronization.md § 2.1).
+     *
+     * TWO entries beyond the caller's spans, not one: the L2-invalidate
+     * prologue before the work and the fence block after it. Counting
+     * only the fence would let a submit be accepted that then fails to
+     * append, and the partial-append unwind below would have to undo an
+     * entry the arithmetic said would fit. */
+    const uint32_t own_entries = 2;
+    /* Safe to add here, and only because of the bound above: num_spans
+     * is at most GPFIFO_QUEUE_SIZE - 2 and num_entries at most
+     * GPFIFO_QUEUE_SIZE, so the sum is at most 2*0x800 + 2. Written
+     * down because the same sum without that bound is what wrapped. */
+    if (chan->gc.num_entries + num_spans + own_entries > GPFIFO_QUEUE_SIZE) {
         horizon_logf(&dev->log, HORIZON_LOG_WARN,
                      "channel %p: GPFIFO entry queue full (%u queued, %u "
                      "requested)", (void *)chan, chan->gc.num_entries,
-                     num_spans + 1);
+                     num_spans + own_entries);
         return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
     }
 
@@ -76,6 +106,26 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     u32 entries_before = chan->gc.num_entries;
     Result rc;
+
+    /* The prologue goes first, before any of the caller's work: one
+     * L2_SYSMEM_INVALIDATE, so the GPU cannot read an L2 line that the
+     * CPU has overwritten since the GPU last touched it. The fence block
+     * appended after the work is the other direction — dirty lines back
+     * to memory — and until this existed only that half was done.
+     * horizon_gpu_channel_create carries the hardware measurement.
+     *
+     * Appended even when num_spans is zero: a submit with no work still
+     * signals a fence, and a caller may be using that fence to conclude
+     * that everything it wrote before is visible to the GPU.
+     */
+    rc = nvGpuChannelAppendEntry(&chan->gc, chan->prologue_cmds_va,
+                                 chan->prologue_cmds_dwords, entry_flags, 0);
+    if (R_FAILED(rc)) {
+        chan->gc.num_entries = entries_before;
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "AppendEntry(L2 invalidate prologue) failed: 0x%08x", rc);
+        return horizon_gpu_err_nv(rc);
+    }
 
     for (uint32_t i = 0; i < num_spans; i++) {
         rc = nvGpuChannelAppendEntry(&chan->gc, spans[i].gpu_va,
