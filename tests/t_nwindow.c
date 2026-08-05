@@ -358,32 +358,47 @@ static bool nw_dequeue_would_block(Result rc)
                           LibnxBinderError_InvalidOperation);
 }
 
-/* ONE MODE, AND THE BUDGET SPENT IN SLICES. Run 5's log contains the
- * defect this replaces, and it was introduced by the previous "fix".
+/* BOTH MODES, EVERY ITERATION, AND THE BUDGET SPENT IN SLICES.
  *
- * The old loop asked in async=true, waited on the release event with
- * **the whole remaining second** as the timeout, and then retried in
- * async=false. Read the failing result back: 0x00006359 is
- * LibnxError_Timeout, and the only branch that returns it is the
- * budget check at the top of an iteration. Reaching it means the
- * eventWait *succeeded* — the compositor did signal a release — and
- * that the one dequeue attempted afterwards was the async=false one,
- * which failed, and that the budget was then gone before async=true
- * was ever tried again.
+ * THE MEASUREMENT THIS RESTS ON (run 7, 2026-08-05, on the window that
+ * had just failed, twice in one run):
  *
- * So the two-buffer sessions were not starved by the compositor. They
- * spent their whole second inside one blocking wait and then gave up
- * on the strength of a single attempt in a mode nothing on this
- * platform uses. Run 5 also measured the other half of it: on a
- * fully-queued two-buffer window, an async=true dequeue succeeded in
- * 104 us.
+ *   2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in
+ *   libnx's mode, release event fired 78165 time(s), last result
+ *   0x0000115d
+ *   2 buffers, interval 1: async=false returned 0x00000000 after 145 us
  *
- * Now: libnx's mode every time (native_window.c passes async=true on
- * any window that has a release event, which the default window does),
- * and the wait sliced to two refreshes so a signal that does not come
- * costs one slice instead of the whole budget. A timeout from
- * eventWait is not an error here — it is the reason to ask again. The
- * deadline is the loop's, and only the loop's.
+ * async=true answers NO_INIT for as long as you care to ask; async=false
+ * hands over a buffer immediately, and does **not** block inside the
+ * compositor — the one behaviour that could not be ruled out before it
+ * was tried.
+ *
+ * THE READING. Android's producer takes `async` to mean "this producer
+ * is in asynchronous mode": queueBuffer never blocks and older frames
+ * are dropped, which costs the queue one buffer held in reserve. A
+ * two-buffer queue with both buffers out cannot spare it, so async=true
+ * has nothing to give. FIFO presentation is synchronous by definition,
+ * so async=false is the mode that actually describes it. Every
+ * observation fits: three buffers usually have a free slot and answer
+ * async=true fine; the reconstructed probe drops a frame, freeing a
+ * slot, and answers async=true fine; and the concurrency count reports
+ * WOULD_BLOCK when three slots are exhausted but NO_INIT when two are —
+ * two different conditions, which is what "the count ran out" versus
+ * "the reserve cannot be met" looks like.
+ *
+ * WHY THIS IS NOT PATCH 0061 AGAIN. 0061 had the right mode and used it
+ * wrongly: async=false was tried *only* after an eventWait that had
+ * already consumed the entire budget, and async=true was never asked
+ * again. Here both modes are asked on every iteration, async=true first
+ * because it is libnx's and the common case, and the wait between
+ * rounds is sliced so no single call can eat the deadline.
+ *
+ * The release event is still waited on, and it is worth being precise
+ * about why it is nearly useless: run 6 measured 84327 returns in five
+ * seconds, 59 us apiece. It is permanently signalled — a level, not an
+ * edge — so the wait is really a yield. It stays because a yield
+ * between rounds is the right thing to do and because a window without
+ * one still has to work.
  */
 static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
@@ -395,8 +410,12 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
         if (!nw_dequeue_would_block(rc))
             return rc;
 
+        rc = nw_try_dequeue(p, true /* async=false: FIFO's own mode */, out);
+        if (!nw_dequeue_would_block(rc))
+            return rc;
+
         if (!eventActive(&p->win->event))
-            return rc;  /* nothing to wait on; report WouldBlock */
+            return rc;  /* nothing to wait on; report what was said */
 
         const u64 spent_ns = armTicksToNs(armGetSystemTick() - start);
         if (spent_ns >= timeout_ns)

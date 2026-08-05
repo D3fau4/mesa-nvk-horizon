@@ -27,6 +27,46 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## The mode that works
+
+### `t_nwindow-run7-async-false-works-FAIL.log`
+
+Two results, and between them they end a question that cost five hardware runs.
+
+**`async=false` works, immediately, on the window that had just failed:**
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in libnx's
+       mode, release event fired 78165 time(s), last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 145 us
+  ok   2 buffers, interval 1: async=false produced a buffer where libnx's
+       async=true could not, 78166 times running
+```
+
+Twice in the run, 145 us and 158 us, and it did **not** block inside the
+compositor — the one behaviour that could not be ruled out until it was tried.
+
+**And position is ruled out.** The same probe ran before any paced session and
+after all of them; `probe BEFORE, 2 buffers` and `probe AFTER, 2 buffers` both
+get a buffer in ~100 us. Where a session happens in the run is not the
+variable.
+
+The reading is that Android's producer takes `async` to mean "this producer is
+in asynchronous mode" — `queueBuffer` never blocks, older frames are dropped —
+which costs the queue one buffer held in reserve. A two-buffer queue with both
+buffers out cannot spare it. FIFO presentation is synchronous by definition, so
+`async=false` is the mode that describes what a swapchain is doing. Every other
+observation in this file fits: three buffers usually have a free slot, and the
+reconstructed probe drops a frame and frees one, so both answer `async=true`
+without trouble. And the concurrency count says `WOULD_BLOCK` when three slots
+are exhausted but `NO_INIT` when two are — two different conditions, which is
+what "the count ran out" versus "the reserve cannot be met" looks like.
+
+Patch 0061 had this mode and used it wrongly: it asked for it only after an
+`eventWait` that had already spent the entire budget, and never asked
+`async=true` again. Both modes are now asked on every iteration, with 0062's
+slicing keeping any one call from eating the deadline. Patch 0063.
+
 ## The release event is not an edge
 
 ### `t_nwindow-run6-event-is-not-an-edge-FAIL.log`

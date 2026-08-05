@@ -1,0 +1,91 @@
+From d5dca4289ae1ef2dc16444f53954884cae0a65d0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 18:29:20 +0000
+Subject: [PATCH] vulkan/wsi: Horizon, fall back to the synchronous dequeue
+ mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 7 (nwindowDequeueBuffer / nwindowQueueBuffer)
+Why: measured on hardware, on the window that had just failed, twice in
+ one run:
+
+   2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in
+   libnx's mode, release event fired 78165 time(s), last result
+   0x0000115d
+   2 buffers, interval 1: async=false returned 0x00000000 after 145 us
+
+ async=true answers NO_INIT for as long as you care to ask; async=false
+ hands over a buffer immediately, and does not block inside the
+ compositor — the one behaviour that could not be ruled out until it was
+ tried.
+
+ The reading: Android's producer takes `async` to mean "this producer is
+ in asynchronous mode", where queueBuffer never blocks and older frames
+ are dropped, which costs the queue one buffer held in reserve. A
+ two-buffer queue with both buffers out cannot spare it. FIFO
+ presentation is synchronous by definition, so async=false is the mode
+ that describes what a swapchain is doing. Every other observation fits:
+ three buffers usually have a free slot and answer async=true fine, and
+ a producer that outruns the display drops a frame, frees a slot, and
+ also answers async=true fine — which is why this only ever showed up at
+ two.
+
+What: the acquire asks async=true first, because that is libnx's path
+ and the common case, and falls back to async=false in the same
+ iteration when the queue says it would block.
+
+ Not asked when the caller passed a zero timeout. async=false is the
+ mode Android permits to block inside the server; it did not on the
+ window measured, but vkAcquireNextImageKHR(timeout = 0) must answer
+ VK_NOT_READY promptly and that promise is not worth risking on one
+ measurement.
+
+ This is not patch 0061 again. 0061 had the right mode and used it
+ wrongly: async=false was tried only after an eventWait that had already
+ consumed the whole timeout, and async=true was never asked again. Both
+ modes are now asked every iteration, and 0062's slicing keeps any one
+ call from eating the deadline.
+
+Cross build: green. Not verified on hardware.
+---
+ src/vulkan/wsi/wsi_horizon.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 47213b0..7f68685 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -1050,6 +1050,28 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+       Result rc = wsi_horizon_try_dequeue(chain, false /* libnx's mode */,
+                                           &slot, &fence);
+ 
++      /* THE SECOND MODE, AND IT IS WHAT MAKES TWO IMAGES WORK.
++       *
++       * Measured on hardware (2026-08-05) on a two-buffer window with
++       * both buffers queued: async=true answered NO_INIT 78166 times
++       * running, and async=false handed over a buffer in 145 us without
++       * blocking. Android's producer reads `async` as "this producer is
++       * in asynchronous mode" — queueBuffer never blocks and older
++       * frames are dropped — which costs the queue one buffer held in
++       * reserve. A two-buffer queue with both buffers out cannot spare
++       * it. FIFO is synchronous by definition, so async=false is the
++       * mode that describes what a swapchain is doing.
++       *
++       * Not asked when the caller passed a zero timeout. async=false is
++       * the mode Android allows to block inside the server; it did not
++       * on the window measured, but vkAcquireNextImageKHR(timeout = 0)
++       * must answer VK_NOT_READY promptly and that promise is not worth
++       * risking on one measurement.
++       */
++      if (wsi_horizon_dequeue_would_block(rc) && timeout_ns != 0)
++         rc = wsi_horizon_try_dequeue(chain, true /* FIFO's own mode */,
++                                      &slot, &fence);
++
+       if (R_SUCCEEDED(rc)) {
+          struct wsi_horizon_image *image = &chain->images[slot];
+ 
+-- 
+2.43.0
+
