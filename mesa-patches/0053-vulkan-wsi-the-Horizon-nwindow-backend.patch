@@ -1,7 +1,7 @@
 From bd49ae06fedd318dc11e6e903baa8d1bff92ade3 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:26:06 +0000
-Subject: [PATCH 53/54] vulkan/wsi: the Horizon (nwindow) backend
+Subject: [PATCH 53/56] vulkan/wsi: the Horizon (nwindow) backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

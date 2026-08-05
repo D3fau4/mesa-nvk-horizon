@@ -1,7 +1,7 @@
 From 7e53fab53537a2a5327dcdcd955918c49171af97 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:59:20 +0000
-Subject: [PATCH 24/54] nouveau/vk: refuse a push that is not a whole number of
+Subject: [PATCH 24/56] nouveau/vk: refuse a push that is not a whole number of
  dwords
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -96,9 +96,20 @@ compare "archive paths" "Makefile:$mk_libs" "meson.build:$ms_libs" \
 # 3. The defines Mesa's own configure decided here and both paths copy.
 #    A missing one changes which types the headers declare, and the
 #    result still links.
+#
+#    The meson side is read from idep_mesa_core's compile_args and NOT
+#    from every -D in the file. It used to be the latter, which was
+#    right while tests 12 and 13 were the only ones with defines of
+#    their own: Phase 6 gave the NVK tests -DVK_USE_PLATFORM_VI_NN
+#    through idep_nvk_driver, and a file-wide grep then reported a
+#    disagreement between the Makefile and meson.build about a define
+#    that has nothing to do with either of the two tests this gate is
+#    about. The extraction is narrowed to the dependency those tests
+#    actually carry.
 mk_defs=$(sed -n 's/^MESA_CFLAGS  *:*= *//p' Makefile |
           grep -o -- '-D[A-Za-z_][A-Za-z0-9_]*' | tokens)
-ms_defs=$(grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" meson.build | tokens)
+ms_defs=$(sed -n '/idep_mesa_core = declare_dependency(/,/^  )/p' meson.build |
+          grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" | tokens)
 compare "defines" "Makefile:$mk_defs" "meson.build:$ms_defs"
 
 # 4. Mesa's include paths.

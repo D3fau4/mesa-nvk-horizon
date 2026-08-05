@@ -357,6 +357,10 @@ nvk_tests = [
   # in both directions, and patch 0045's alloc_tiled_mem, reached
   # through the one path that can reach it.
   't_vk_caps',
+  # Phase 6: the swapchain itself. It owns the display, so it runs with
+  # no console and reports through its log alone — and every one of the
+  # phase's four exit criteria is a section of it.
+  't_vk_swapchain',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -399,6 +403,9 @@ nvk_test_shaders = {
   # push-constant colour, because what t_vk_caps measures is where the
   # pixels land, not what draws them.
   't_vk_caps' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
+  # None: a presented frame here is a vkCmdClearColorImage, so nothing
+  # about the swapchain depends on a shader compiling.
+  't_vk_swapchain' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
@@ -482,6 +489,12 @@ if nvk_libs_present
     link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
                 ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
                 ['-lstdc++'],
+    # The same platform define the driver was built with. Without it
+    # <vulkan/vulkan.h> hides VK_NN_vi_surface — VkViSurfaceCreateInfoNN,
+    # PFN_vkCreateViSurfaceNN, the extension's name macro — so a test
+    # could not name the surface type the driver advertises. It costs the
+    # tests that do not present nothing but a few declarations.
+    compile_args : ['-DVK_USE_PLATFORM_VI_NN'],
   )
   horizon_tests += nvk_tests
 else

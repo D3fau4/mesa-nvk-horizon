@@ -137,15 +137,62 @@
    X(vkCmdSetViewport)                                                   \
    X(vkCmdSetScissor)
 
+/* The window-system entry points, kept apart from the list above and
+ * loaded on request.
+ *
+ * They cannot live in VKFW_PROCS. vk_icdGetInstanceProcAddr answers
+ * NULL for an entry point whose extension the instance did not enable,
+ * so a test that wants no swapchain would fail "every entry point
+ * resolved" for entry points it never asked for. vkfw_wsi_load() is the
+ * opt-in, and it is the swapchain tests that call it.
+ */
+#define VKFW_WSI_PROCS(X)                                                \
+   X(vkCreateViSurfaceNN)                                                \
+   X(vkDestroySurfaceKHR)                                                \
+   X(vkGetPhysicalDeviceSurfaceSupportKHR)                               \
+   X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)                          \
+   X(vkGetPhysicalDeviceSurfaceFormatsKHR)                               \
+   X(vkGetPhysicalDeviceSurfacePresentModesKHR)                          \
+   X(vkCreateSwapchainKHR)                                               \
+   X(vkDestroySwapchainKHR)                                              \
+   X(vkGetSwapchainImagesKHR)                                            \
+   X(vkAcquireNextImageKHR)                                              \
+   X(vkQueuePresentKHR)                                                  \
+   X(vkCreateSemaphore)                                                  \
+   X(vkDestroySemaphore)
+
 struct vkfw_dispatch {
 #define VKFW_DECL(name) PFN_##name name;
    VKFW_PROCS(VKFW_DECL)
 #undef VKFW_DECL
 };
 
+struct vkfw_wsi_dispatch {
+#define VKFW_DECL(name) PFN_##name name;
+   VKFW_WSI_PROCS(VKFW_DECL)
+#undef VKFW_DECL
+};
+
+/* How many debug-utils messages vkfw remembers, and how much of each.
+ * Enough for a test to ask whether the driver said a particular thing
+ * without keeping a transcript. */
+#define VKFW_MESSAGE_SLOTS 16
+#define VKFW_MESSAGE_CHARS 192
+
 typedef struct vkfw {
    test_ctx *t;
    struct vkfw_dispatch vk;
+   struct vkfw_wsi_dispatch wsi;
+   bool wsi_loaded;
+
+   /* The last VKFW_MESSAGE_SLOTS debug-utils messages, oldest first
+    * once it wraps. WHY A TEST WOULD WANT THEM: a driver decision that
+    * is only written to a log is not observable by the application that
+    * it was made for. The Horizon WSI reports its zero-copy decision as
+    * an INFO message precisely so a test can assert on it, and this is
+    * where the test finds it. */
+   char messages[VKFW_MESSAGE_SLOTS][VKFW_MESSAGE_CHARS];
+   uint32_t message_count;
 
    VkInstance instance;
    VkDebugUtilsMessengerEXT messenger;
@@ -202,6 +249,34 @@ bool vkfw_init(vkfw *fw, test_ctx *t, const void *features2);
 bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
                    const char *const *device_exts,
                    uint32_t device_ext_count);
+
+/* The same again, with instance extensions too.
+ *
+ * VK_EXT_debug_utils is always enabled and must not be repeated here.
+ * Every name passed must be one the *instance* advertises; a swapchain
+ * test checks that itself, because "this build has no VI surface" and
+ * "it has one and it does not work" are different findings. */
+bool vkfw_init_full(vkfw *fw, test_ctx *t, const void *features2,
+                    const char *const *instance_exts,
+                    uint32_t instance_ext_count,
+                    const char *const *device_exts,
+                    uint32_t device_ext_count);
+
+/* Resolves VKFW_WSI_PROCS into fw->wsi, passing one check for the lot
+ * and naming any entry point that is missing. Returns false without
+ * touching anything else, so a caller can report and stop. */
+bool vkfw_wsi_load(vkfw *fw);
+
+/* True when some debug-utils message since init contained `needle`.
+ * The match is a plain substring search over the remembered messages
+ * (VKFW_MESSAGE_SLOTS of them), and `out` — when non-NULL — receives
+ * the first matching message. */
+bool vkfw_saw_message(const vkfw *fw, const char *needle, const char **out);
+
+/* Forgets every remembered message. A test that measures two
+ * configurations in a row calls this between them so the second
+ * measurement cannot be satisfied by the first one's evidence. */
+void vkfw_forget_messages(vkfw *fw);
 
 /* Reverse order of vkfw_init. Safe on a partially-initialised fixture. */
 void vkfw_finish(vkfw *fw);

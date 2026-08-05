@@ -1,7 +1,7 @@
 From 1d8a619bb7e1032189ace09c9eb79f3ca2379a0f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:32:01 +0000
-Subject: [PATCH 40/54] nouveau/vk: nvkmd_horizon, back out the window
+Subject: [PATCH 40/56] nouveau/vk: nvkmd_horizon, back out the window
  block-off, keep fixed VA
 
 Patch 0039 reserved the shader local/shared memory window aperture at

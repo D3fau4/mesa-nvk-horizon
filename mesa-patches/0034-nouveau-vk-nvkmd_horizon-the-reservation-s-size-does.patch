@@ -1,7 +1,7 @@
 From ac22694e74e5b5f177b962ff1a433cf867fb0150 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 17:48:56 +0000
-Subject: [PATCH 34/54] nouveau/vk: nvkmd_horizon, the reservation's size does
+Subject: [PATCH 34/56] nouveau/vk: nvkmd_horizon, the reservation's size does
  not pick its page half
 
 horizon_gpu_vm_map uses the reservation's page size for every mapping

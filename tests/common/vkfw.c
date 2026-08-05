@@ -72,12 +72,25 @@ vkfw_debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
    else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
       sev = "warning";
 
+   vkfw *fw = (vkfw *)user_data;
+
    /* Both fields are optional in the spec, and a null here would be a
     * crash inside the driver's error path — the worst possible place to
     * lose the message that says what went wrong. */
-   t_note((test_ctx *)user_data, "vk %s [%s]: %s", sev,
-          data->pMessageIdName ? data->pMessageIdName : "-",
-          data->pMessage ? data->pMessage : "(no message)");
+   const char *text = data->pMessage ? data->pMessage : "(no message)";
+
+   t_note(fw->t, "vk %s [%s]: %s", sev,
+          data->pMessageIdName ? data->pMessageIdName : "-", text);
+
+   /* Remembered as well as logged, so a test can assert on what the
+    * driver said rather than on a log a human has to read. Oldest
+    * messages are kept and later ones dropped: the decisions worth
+    * asserting on are made at creation. */
+   if (fw->message_count < VKFW_MESSAGE_SLOTS) {
+      snprintf(fw->messages[fw->message_count], VKFW_MESSAGE_CHARS,
+               "%s", text);
+   }
+   fw->message_count++;
 
    return VK_FALSE;
 }
@@ -89,6 +102,53 @@ bool vkfw_init(vkfw *fw, test_ctx *t, const void *features2)
 
 bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
                    const char *const *device_exts, uint32_t device_ext_count)
+{
+   return vkfw_init_full(fw, t, features2, NULL, 0,
+                         device_exts, device_ext_count);
+}
+
+void vkfw_forget_messages(vkfw *fw)
+{
+   fw->message_count = 0;
+   memset(fw->messages, 0, sizeof(fw->messages));
+}
+
+bool vkfw_saw_message(const vkfw *fw, const char *needle, const char **out)
+{
+   const uint32_t n = fw->message_count < VKFW_MESSAGE_SLOTS ?
+      fw->message_count : VKFW_MESSAGE_SLOTS;
+
+   for (uint32_t i = 0; i < n; i++) {
+      if (strstr(fw->messages[i], needle) != NULL) {
+         if (out != NULL)
+            *out = fw->messages[i];
+         return true;
+      }
+   }
+   return false;
+}
+
+bool vkfw_wsi_load(vkfw *fw)
+{
+   bool all = true;
+#define VKFW_WSI_LOAD(name)                                              \
+   fw->wsi.name = (PFN_##name)                                           \
+      vk_icdGetInstanceProcAddr(fw->instance, #name);                    \
+   if (fw->wsi.name == NULL) {                                           \
+      t_check(fw->t, false, "GetInstanceProcAddr(%s)", #name);           \
+      all = false;                                                       \
+   }
+   VKFW_WSI_PROCS(VKFW_WSI_LOAD)
+#undef VKFW_WSI_LOAD
+
+   fw->wsi_loaded = all;
+   return t_check(fw->t, all, "every window-system entry point resolved");
+}
+
+bool vkfw_init_full(vkfw *fw, test_ctx *t, const void *features2,
+                    const char *const *instance_exts,
+                    uint32_t instance_ext_count,
+                    const char *const *device_exts, uint32_t device_ext_count)
 {
    memset(fw, 0, sizeof(*fw));
    fw->t = t;
@@ -136,21 +196,44 @@ bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
     */
    const VkDebugUtilsMessengerCreateInfoEXT dumci = {
       .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+      /* INFO as well, since Phase 6: the Horizon WSI reports which
+       * present path a swapchain got as an INFO message, and a
+       * decision an application cannot hear about is not observable at
+       * run time whatever the log says. */
       .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
       .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
       .pfnUserCallback = vkfw_debug_cb,
-      .pUserData = t,
+      /* The fixture, not the test context: the callback records what it
+       * is told as well as logging it, and fw->t is already set. */
+      .pUserData = fw,
    };
-   const char *const instance_exts[] = { VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
+
+   /* VK_EXT_debug_utils plus whatever the caller asked for. Bounded by
+    * the array rather than by a promise: a caller asking for more than
+    * this many is a mistake that stops here instead of writing past it.
+    */
+   const char *all_instance_exts[8] = { VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
+   uint32_t all_instance_ext_count = 1;
+   for (uint32_t i = 0; i < instance_ext_count; i++) {
+      if (!t_check(t, all_instance_ext_count <
+                      (uint32_t)(sizeof(all_instance_exts) /
+                                 sizeof(all_instance_exts[0])),
+                   "instance extension list fits (%u asked for)",
+                   instance_ext_count + 1))
+         return false;
+      all_instance_exts[all_instance_ext_count++] = instance_exts[i];
+   }
+
    const VkInstanceCreateInfo ici = {
       .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
       .pNext = &dumci,
       .pApplicationInfo = &app,
-      .enabledExtensionCount = 1,
-      .ppEnabledExtensionNames = instance_exts,
+      .enabledExtensionCount = all_instance_ext_count,
+      .ppEnabledExtensionNames = all_instance_exts,
    };
 
    VkResult r = create_instance(&ici, NULL, &fw->instance);
