@@ -12,17 +12,120 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console three times and measured two builds.** Run 3 (2026-08-05) ran the *previous* batch's binaries, so patches 0060 and 0061 are still unrun and everything run 2 found is still open. Three of four exit criteria are met. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator**, which is the layout evidence this phase could get no other way |
-| **What runs on a Switch** | *Run 2, 2026-08-05, reproduced by run 3 on the same binaries.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 4: `t_nwindow` and `t_vk_swapchain`, build `2026-08-05T14:31:36Z e0bb31f` (batch 4).** The same three questions run 3 was supposed to answer and did not: does the two-image swapchain present at all (0061), does anything still leak (0060), and — only once nothing leaks — **is the exit crash caused by the leak or not**. Every log now prints its build stamp as its second line and the run instructions name the expected one, so a repeat of run 3 is visible in the first two lines instead of after an afternoon |
-| **Known failures** | **1. `t_vk_swapchain` crashes the console on exit**, all three runs, after `RESULT` is written and on pressing +. **Still untested as a hypothesis**: the run that was to test whether the leak causes it measured the build that still has the leak. **2. FIXED, unrun:** the run-1 leak fix (0058) created a reference cycle — every `nvkmd_mem` carries its own VA, and referencing the memory from that binding makes the two hold each other. 14 leaked objects became 33, with 33 VAs and 33 mappings; run 3 measured 33 again on the same build. Patch 0060 excludes the self-binding. **3. FIXED, unrun:** every two-image swapchain still failed, now with `VK_TIMEOUT` instead of an error: an async dequeue on a two-buffer queue never succeeds, so retrying it just burns the deadline. Patch 0061 dequeues blocking once the release event has fired, which is what libnx does. **4.** `t_fault` still takes the console down on exit. **5.** `t_vk_texture`'s one unexplained occurrence stays on the record |
-| **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. This is the third time in this project a check has reported success without verifying anything, and the first one I wrote knowing that history. **It has still never executed on hardware** — run 3 carried its predecessor |
+| **Phase** | **Phase 6 has been to the console four times. Three of four exit criteria are met and one defect is open.** Run 4 (2026-08-05) fixed the leak (0060) and **confirmed the exit crash was the leak** — the console now returns to the homebrew menu. What remains is one failure with two faces: **a two-buffer window starves**, identically through raw `bq*` and through Vulkan. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator**, which is the layout evidence this phase could get no other way |
+| **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
+| **Next concrete task** | **Run 5: `t_nwindow` only, with `nw_probe_starvation`.** One question, asked directly: with every registered buffer handed to the compositor, does it give one back — and how many times does the release event fire in five seconds? Three buffers first, then two. It replaces two patches written against guesses (0059, 0061), neither of which touched the failure. Its last act tries `async=false` and may not return; that outcome is a distinct answer and the log says so before making the call |
+| **Known failures** | **1. A two-buffer window starves at the third frame**, in raw `bq*` and in Vulkan alike, all four runs. The result is `0x00006359` = `LibnxError_Timeout` — the test's own wait, not a queue error: **the release event never fires**. Both previous fixes chose between dequeue modes, and no dequeue mode is ever reached. `nw_probe_starvation` measures it; nothing in the driver changes until it reports. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
+| **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
-| **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, twice.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because both two-image runs died. Patch 0061 is what unblocks it. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether the exit crash is the leak. Patches 0060 and 0061, still. Any display mode change. Anything multi-threaded. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8152 us against 16352 us**, and run 3 at **8177 us against 16353 us** |
+| **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
+| **What is still unverified** | Whether `minImageCount = 2` is a promise this compositor can keep — the surface advertises it and `t_vk_swapchain` asserts it, and no two-buffer session has ever completed. Any display mode change. Anything multi-threaded. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8152 us against 16352 us**, and run 3 at **8177 us against 16353 us** |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only** |
-| **Never verified on hardware** | Patches **0060** and **0061** and the binaries built with them; `t_fault` as it stands |
+| **Never verified on hardware** | `nw_probe_starvation`; `t_fault` as it stands. Patch **0061** ran and did not change the failure it was written for |
+
+
+---
+
+## Run 4 — the leak is gone, the crash was the leak, and two still starves (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 48/50 and `t_vk_swapchain` 114/116,
+both stamped `2026-08-05T14:31:36Z e0bb31f` in their second line. Logs in
+`docs/hw-logs/*run4*`.
+
+### Two answers, and the second one took four runs to ask
+
+**Patch 0060 fixed the leak.** `device destroy refused` does not appear
+anywhere in the swapchain log. Runs 2 and 3 both ended with `live mem=33
+va_ranges=33 mappings=33`. The check that says so is the `t_log_scan`
+version, which fails when it cannot read the log rather than reporting
+"not found" — so unlike run 2, its `ok` is evidence.
+
+**The exit crash was the leak.** The operator reports the console
+returning to the homebrew menu on `+`. The hypothesis was written after
+run 1 and this is the first run in which it could be tested at all,
+because runs 2 and 3 both still leaked.
+
+That closes the reference cycle 0058 created: a VA binding held a
+reference to the memory it binds, and every `nvkmd_mem` carries its own
+VA, so each object held the other. 0060 excludes the self-binding.
+
+### And the diagnosis behind 0061 was wrong
+
+Two registered buffers still present two frames and then stop. The
+failing result is the one worth reading:
+
+```
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`0x6359` is `MAKERESULT(Module_Libnx, LibnxError_Timeout)` — **this
+test's own one-second wait expiring**, not an error from the
+BufferQueue. The release event never fires. Patches 0059 and 0061 both
+chose between dequeue modes; no dequeue mode is ever reached.
+
+The same failure appears through Vulkan, in an independent
+implementation: `vkAcquireNextImageKHR at frame 2 -> VK_TIMEOUT`.
+
+What the log does distinguish, and it is new:
+
+```
+3 registered, all 3 held: 0x00001d5d = LibnxBinderError_WouldBlock
+2 registered, both held:  0x0000115d = LibnxBinderError_NoInit
+```
+
+Different conditions, not one limit. And with three buffers the release
+path plainly works — `largest pending-buffer count 2`, a dequeue that
+waited 11869 us, 87 of 90 dequeues carrying a release fence.
+
+### What libnx actually does, read rather than assumed
+
+`nx/source/display/native_window.c`, `nwindowDequeueBuffer`:
+
+```c
+if (eventActive(&nw->event)) {
+    do {
+        eventWait(&nw->event, UINT64_MAX);
+        rc = bqDequeueBuffer(&nw->bq, true /* async */, ...);
+    } while (R_VALUE(rc) == MAKERESULT(Module_LibnxBinder,
+                                       LibnxBinderError_WouldBlock));
+} else
+    rc = bqDequeueBuffer(&nw->bq, false /* async */, ...);
+```
+
+So `async=true` is libnx's path on any window that has a release event —
+which the default window does — and `async=false` is a mode nothing on
+this platform is known to use. Patch 0061 switched to `async=false`
+after the event fired, which is neither libnx's path nor reachable when
+the event does not fire.
+
+### The experiment that replaces the guessing
+
+`nw_probe_starvation` (commit `ba1f549`) hands the compositor every
+registered buffer and then does nothing but ask, for five seconds — 300
+refreshes — reporting how many dequeues it made, **how many times the
+release event fired**, the last result, and how long the first success
+took. Run at three buffers and then at two, so the two-buffer answer has
+a working one beside it.
+
+Its last act tries `async=false`, the mode Android's BufferQueue allows
+to block inside the server. It may not return, and that would itself be
+a distinct answer from "the compositor never releases". It is last on
+purpose: every line above it is already on the SD card, and the log says
+in advance what a missing next line means.
+
+**Nothing in the driver changes until this reports.** Two patches have
+now been written against a reading of this failure and neither touched
+it.
+
+### The thing this makes suspicious
+
+The surface advertises `minImageCount = 2` and `t_vk_swapchain` asserts
+it. If two images cannot sustain FIFO on this compositor, that number is
+a promise the driver cannot keep, and both the value and the check that
+blesses it are wrong. Not changed yet: the probe decides whether the
+limit is the platform's or ours.
 
 
 ---

@@ -5,6 +5,28 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The two logs Phase 6 currently rests on
+
+`t_nwindow-run4-starves-at-two-FAIL.log` and
+`t_vk_swapchain-run4-leak-fixed-FAIL.log`, both stamped
+`2026-08-05T14:31:36Z e0bb31f` in their second line — the first runs whose
+build is stated in the artefact itself.
+
+Both report `FAIL`, and both are the evidence for three separate results:
+
+- **The leak is gone.** `device destroy refused` does not appear anywhere in
+  the swapchain log, where run 2 and run 3 both had `live mem=33 va_ranges=33
+  mappings=33`. The teardown check that reports it is the `t_log_scan` version
+  that fails when it cannot read, so its `ok` is worth something now.
+- **The exit crash was the leak.** Reported by the operator: the console
+  returns to the homebrew menu on `+`. Three runs tried to ask this question
+  and this is the one that got to ask it.
+- **Two buffers still starve, and the earlier diagnosis was wrong.** The
+  failing result is `0x00006359` = `MAKERESULT(Module_Libnx,
+  LibnxError_Timeout)` — the test's own wait expiring, not an error from the
+  BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
+  at which dequeue mode to use, and no dequeue mode is ever reached.
+
 ## Runs that measured the wrong build
 
 ### `t_nwindow-run3-STALE-BINARIES.log`, `t_vk_swapchain-run3-STALE-BINARIES.log`
