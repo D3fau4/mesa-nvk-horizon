@@ -4,8 +4,16 @@ Target: a `VK_KHR_swapchain` implementation over Horizon's VI compositor via lib
 `nwindow`, with no global state, real double/triple buffering, and a genuine zero-copy
 path whose fallback is explicit and logged.
 
-This is **Phase 6**. Nothing here is implemented yet. The design below is derived from the
-audit in `docs/reference-analysis.md`.
+This is **Phase 6**. It is implemented, as patches 0049-0056 in `mesa-patches/`.
+The design below was written from the audit in `docs/reference-analysis.md`
+before any of it existed; where building it disproved something, the paragraph
+says so and names what disproved it. Those corrections are § 2.2, § 2.3, § 2.5,
+§ 3.1, § 4 and § 5 — the whole of what the design got wrong is in this file
+rather than in a changelog.
+
+**Nothing in this file has run on a console yet.** Every claim below is either a
+fact about libnx or Mesa (readable, and cited), or a cross-build result. The
+hardware evidence lives in `STATUS.md` and `docs/hw-logs/` when it exists.
 
 ---
 
@@ -101,13 +109,33 @@ only a bounds check. We keep the identity mapping (it is what
 `nwindowConfigureBuffer(slot, gb)` establishes) but track state explicitly:
 
 ```c
-enum horizon_wsi_slot_state {
-   HORIZON_WSI_SLOT_FREE,      /* owned by the compositor, not dequeued       */
-   HORIZON_WSI_SLOT_ACQUIRED,  /* dequeued, handed to the app                 */
-   HORIZON_WSI_SLOT_RENDERING, /* app submitted work writing it               */
-   HORIZON_WSI_SLOT_QUEUED,    /* handed back to the compositor               */
+enum wsi_horizon_slot_state {
+   WSI_HORIZON_SLOT_FREE,      /* owned by the compositor, not dequeued       */
+   WSI_HORIZON_SLOT_ACQUIRED,  /* dequeued, handed to the app                 */
+   WSI_HORIZON_SLOT_QUEUED,    /* handed back to the compositor               */
 };
 ```
+
+**Corrected: there is no RENDERING state, and there cannot be.** The design
+listed four; the implementation has three. Nothing at this layer can observe the
+application starting to render — the WSI hands an image over at
+`vkAcquireNextImageKHR` and hears nothing again until `vkQueuePresentKHR`, so
+ACQUIRED covers both and a fourth state would be a name for a transition that
+never fires. Disproved by writing the vtable: there is no entry point between
+`acquire_next_image` and `queue_present` (`wsi_common_private.h`, `struct
+wsi_swapchain`).
+
+**And the producer API is not `nwindowDequeueBuffer`.** libnx's `NWindow` keeps
+a single `cur_slot` and refuses a second dequeue before the first is queued or
+cancelled (`native_window.c`: `if (!nw->slots_configured || nw->cur_slot >= 0)`).
+Vulkan does not permit that restriction: with `minImageCount = 2` and a
+three-image swapchain an application may hold two images acquired, and blocking
+indefinitely for them is *valid usage*. So dequeue, queue and cancel go through
+libnx's `bq*` wrappers on `nw->bq` — public API, public field — and this backend
+keeps the ownership itself. Registration and teardown stay on
+`nwindowConfigureBuffer` and `nwindowReleaseBuffers`. `t_nwindow` measures how
+many slots the BufferQueue will actually hand out at once, because the design
+above rests on the answer being at least two.
 
 Illegal transitions are programming errors and are reported. `release_images` — used on
 `VK_ERROR_OUT_OF_DATE_KHR` recovery — must return `ACQUIRED` slots to the compositor with
@@ -132,6 +160,16 @@ struct horizon_wsi_surface {
   not us, release its buffers, mark it non-presentable, and take ownership.
 - `destroy_swapchain` releases only if `surface->registered == self`.
 
+**Corrected: releasing its buffers is a disconnect, not a per-slot cancel.**
+`nwindowReleaseBuffers` disconnects the producer, and the BufferQueue frees
+every slot it believes the producer holds. Cancelling slot by slot first would
+*additionally* hand back buffers the application is still rendering into —
+which is a worse race than the one it would prevent, since the old swapchain's
+`VkImage`s stay valid until `vkDestroySwapchainKHR` and its presents are already
+being refused. So: mark non-presentable, disconnect, and bring the bookkeeping
+into line. Teardown cancels outstanding slots only while this swapchain is still
+the owner.
+
 This is the same algorithm as the reference's `g_zc_owner`, with the state on the object
 that actually owns it. It is also what makes "two independent swapchains" a meaningful
 Phase 6 test rather than a formality.
@@ -141,7 +179,19 @@ Phase 6 test rather than a formality.
 - `minImageCount = 2`, `maxImageCount = 4`.
 - The requested count is **clamped into `[minImageCount, maxImageCount]`**, not silently
   truncated downward only. A request of 1 must not produce a one-image swapchain.
-- `nwindowSetBufferCount` is called to match. The reference never calls it.
+- ~~`nwindowSetBufferCount` is called to match. The reference never calls it.~~
+  **Corrected: there is no such function.** libnx has no `nwindowSetBufferCount`
+  and no `bqSetBufferCount`; the buffer count is however many slots
+  `nwindowConfigureBuffer` registered, and nothing else says it. Disproved by
+  reading `libnx/include/switch/display/native_window.h` and
+  `buffer_producer.h`, neither of which declares one. The criticism of the
+  reference was therefore also wrong, and it is withdrawn here rather than left
+  standing.
+- The knob that does exist is the **swap interval**, per queued buffer
+  (`BqBufferInput::swapInterval`). `VK_PRESENT_MODE_FIFO_KHR` is interval 1 and
+  `VK_PRESENT_MODE_IMMEDIATE_KHR` is 0 — which libnx documents as honoured only
+  with three or more buffers registered, so a two-image swapchain gets FIFO
+  behaviour whatever it asks for, and the backend says so at creation.
 - Double (2) and triple (3) buffering must be observably different in frame pacing; Phase 6
   records measurements for both.
 
@@ -176,6 +226,28 @@ Horizon WSI backend to present renderable images directly rather than going thro
 `wsi_cpu_image_params`. This is tracked as a Phase 6 work item, not an optimisation:
 without it, "zero-copy" still costs a full-resolution GPU copy per frame.
 
+**Done, and here is how.** A new `WSI_IMAGE_TYPE_HORIZON` yields
+`WSI_SWAPCHAIN_NO_BLIT` from `get_blit_type`, and its images are ordinary
+`VK_IMAGE_TILING_OPTIMAL` ones with dedicated device-local memory — no modifier,
+no dma-buf, no CPU mapping. `wsi_cpu_image_params` is what the *fallback* uses,
+and only the fallback.
+
+**The one thing the design did not say: how the WSI learns the layout.**
+`vkGetImageSubresourceLayout` is invalid usage on an OPTIMAL image, so the row
+stride, the block height, the page-table kind and the memory's name all come
+from the driver, through two callbacks on `wsi_device::horizon` — the same shape
+as the `win32` and `metal` callback structs Mesa already has. Underneath them,
+nvkmd gains two operations no DRM platform needs: `export_scanout_id` (an NvMap
+id, where DRM exports a dma-buf) and `get_syncpt_fence` (where DRM exports a
+sync file).
+
+**And the check that would have been silently wrong.** NIL picks the sector
+ordering inside a GOB from the device type: an SoC gets `TegraColor`, a desktop
+Fermi gets `FermiColor` (`nil/tiling.rs:144-151`). Both are 512-byte 64x8 GOBs,
+so accepting the wrong one passes every size and stride check and puts a
+scrambled image on screen. `TegraColor` is what Horizon's display block reads as
+"generic 16Bx2", and it is the only one accepted.
+
 ### 3.2 Fallback
 
 CPU copy into a libnx `Framebuffer` (`framebufferCreate` + `framebufferMakeLinear`), with
@@ -198,10 +270,31 @@ nwindowDequeueBuffer(window, &slot, &multi_fence)   ── check the Result
   └── return slot
 ```
 
-The producer fence becomes a **wait dependency of the application's first submit** writing
-that image. It is not waited on by the CPU. The reference CPU-waits it with a 1 s timeout
+~~The producer fence becomes a **wait dependency of the application's first submit** writing
+that image. It is not waited on by the CPU.~~ The reference CPU-waits it with a 1 s timeout
 and discards the result (`wsi_common_switch.c:328`), so a timeout is treated as "the
 compositor is finished" and the app may render over a buffer still being scanned out.
+
+**Corrected: the fence is waited on by the CPU, inside acquire, and that is the
+right answer today.** Two things disproved the design:
+
+1. `nvkmd_horizon_ctx_wait` performs a submit's waits **on the CPU** — this
+   backend has no GPU-side syncpoint acquire (`nvkmd_horizon_ctx.c`, and the
+   comment there says so). Expressing the release fence as a dependency of the
+   application's submit would therefore have moved the same stall later without
+   removing it, while costing a `vk_sync` that has to be created from a fence no
+   channel of ours produced.
+2. CLAUDE.md's rule 6 lists **swapchain acquire** among the places a CPU stall is
+   allowed, alongside `vkWaitForFences`. This is that place.
+
+What is kept from the design is everything the reference got wrong about it: the
+caller's `timeout` is honoured rather than replaced by a fixed second, the
+`Result` is checked rather than discarded, and a failed wait cancels the slot
+back to the compositor instead of rendering into it.
+
+When cross-channel GPU waits exist (`docs/synchronization.md` § 4), this becomes
+a `vk_sync` and the stall goes. The one line that has to change is in
+`wsi_horizon_acquire_zero_copy`.
 
 ### Present
 
@@ -216,6 +309,22 @@ Passing the fence lets the display block wait GPU-side. The reference passes `NU
 discards the return value, so a failed queue is reported to the application as
 `VK_SUCCESS`.
 
+**And a fence handed over is only worth anything if nobody has already waited for
+it.** Mesa's WSI submits a pre-present job that waits on the application's
+present semaphores; `nvkmd_horizon_ctx_wait` was doing that wait on the CPU, so
+by the time `bqQueueBuffer` ran the render had already finished and the fence
+was decoration. Patch 0056 skips the CPU wait for a dependency already submitted
+to the **same channel**, which a GPFIFO executes in order — the hardware
+enforces the ordering whether or not anyone waits for it. Waits on any other
+channel still happen on the CPU, as before.
+
+**When there is no fence to hand over.** `get_fence` bounds its wait for the
+submit to *reach* a channel, not for the work to finish. If that times out, or
+the driver has no such callback at all, the present waits for the render on the
+CPU and says so once — because queueing with neither a fence nor a wait puts a
+half-drawn frame on screen, which is the class of silent success this backend
+exists to avoid.
+
 ### The silent-no-op hazard
 
 In the reference, if `zero_copy` is set but a slot was never configured, and no fallback
@@ -229,6 +338,18 @@ no fall-through: every path either queues, copies, or returns an error.
 
 - `nwindowSetDimensions` on creation.
 - A dimension change detected at acquire returns `VK_ERROR_OUT_OF_DATE_KHR`.
+  **Corrected: the change has to be read from the consumer, not from the
+  window.** `nwindowGetDimensions` returns `NWindow::width` when it is set, and
+  this backend is what sets it — at creation, through `nwindowSetDimensions`. A
+  check written that way compares the swapchain's extent with itself and can
+  never fire. The consumer's own answer is `NWindow::default_*`, which libnx
+  fills from the BufferQueue's output at connect and at every queue
+  (`native_window.c`, `_nwindowUpdate`); the zero-copy path records
+  `BqBufferOutput::width/height` from each queue for itself, and the copy path
+  picks up what libnx recorded. Docking the console, which takes the display to
+  1920x1080, is what exercises it.
+- Surface capabilities read the same field for the same reason, so a swapchain
+  created after a mode change is not handed the previous one's extent.
 - Recreation with an `oldSwapchain` must return every slot to the compositor before
   releasing buffers, in a defined order, and must be safe when the old swapchain has
   outstanding acquired images.

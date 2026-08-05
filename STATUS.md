@@ -1,7 +1,7 @@
 # STATUS
 
 **Last updated:** 2026-08-05
-**Branch:** `claude/phase-5-offscreen-rendering-vnl6q9`
+**Branch:** `claude/phase-6-horizon-wsi-5hu1jt`
 
 ---
 
@@ -12,14 +12,114 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 5 is complete.** Its nine items were each met on hardware on 2026-08-04, by CPU readback of the result, item 9 with eight submits outstanding. The PR #7 review then found two of the tests behind that evidence measuring less than they claimed, so the corrected binaries were re-run: **thirteen tests on a console on 2026-08-05, thirteen PASS, 2942 checks, zero failures.** The evidence and the tree describe the same binaries again — with one exception, named in the last row |
-| **What runs on a Switch** | *Counts from the binaries in this tree, run 2026-08-05.* Transfers (**203/203**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), a linear-modifier image rendered through a tiled shadow (**52/52**), the mandatory sequence (**62/62**), and from `horizon/` itself `t_submit` (**32/32**), `t_pbsize` (**77/77**) and `t_display` (**3/3**) |
-| **Next concrete task** | **Phase 6, the Horizon WSI.** Nothing in Phase 5 is outstanding. The `t_fault` exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
-| **The debt batch** | Seven of seven back. Six PASS, and `t_fault`, whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69** — superseded, because that build's rungs were one dword short of the size they named, so D15's boundary was never reached at the boundary; the number that stands is the **77/77** above · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
-| **Known failures** | **`t_fault` crashes the console on exit.** Its checks pass — 14/15 on run 1, 15/15 with the latch that failure earned, 20/20 once the two diagnostic sections were added; three numbers for three builds, which this table used to give as though they described one. The log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and **56** subsequent attempts under the same configuration have not reproduced it — 32 up to run 8, plus the 24 the 2026-08-05 re-run adds. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
-| **Open, not blocking** | **Two** unconditional L2 operations per submit, not one: the dirty writeback in the fence epilogue and the sysmem invalidate in the prologue this phase added — which also took a second GPFIFO entry per submit, permanently reducing usable queue depth from 0x800 to 0x7fe. Neither cost is measured on its own; the nearest number is **115 us** per serialised round trip with both of them in it (`t_vk_submits`, 2026-08-05; 126 us on the previous build, and nothing between the two runs was aimed at that number) |
-| **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | **`t_fault` as it now stands**, and it alone. It was kept out of the 2026-08-05 batch on purpose — it takes the console down on exit, so running it ends the session and everything after it in the order — and it has changed since its last run: the `atexit` marker built to say whether the crash is before or after `exit()`. Its 20/20 is from run 3. Of the rest, the **fifteen** non-Vulkan tests not in that batch (`t_init`, `t_alloc`, `t_nvmap`, `t_va_reserve`, `t_map`, `t_channel`, `t_syncpt`, `t_fence_wait`, `t_gpuwrite`, `t_teardown`, `t_uncached`, `t_sysinfo`, `t_va_window`, `t_threads`, `t_ostime`) carry exactly one change since their last console run — `testfw`'s exit loop, which runs after every check has been made and written |
+| **Phase** | **Phase 6 is written and cross-builds; none of it has run on a console.** The Horizon WSI is patches 0049-0056 in `mesa-patches/` — the `vi` platform, two nvkmd operations, the `wsi_horizon` backend, NVK's side of it, a review round and one change to the submit path. Two new tests: `t_nwindow`, which asks the compositor the questions Vulkan cannot, and `t_vk_swapchain`, which is the phase's four exit criteria one section each. **The batch is built and waiting for the owner's console; until it runs, Phase 6 has no evidence at all** |
+| **What runs on a Switch** | *Unchanged since 2026-08-05: no new hardware run has happened.* Transfers (**203/203**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), sampled textures with mip levels and bilinear filtering (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), a linear-modifier image rendered through a tiled shadow (**52/52**), the mandatory sequence (**62/62**), and from `horizon/` itself `t_submit` (**32/32**), `t_pbsize` (**77/77**) and `t_display` (**3/3**) |
+| **Next concrete task** | **Run the Phase 6 batch on the console.** Order and what to expect: § "The Phase 6 batch" below. `t_nwindow` first, because its one measurement — how many slots the BufferQueue hands out at once — is what the whole swapchain design rests on |
+| **The one thing to watch in that batch** | **Patch 0056 changes the submit path every test goes through.** It skips the CPU wait for a dependency already submitted to the same channel, which a GPFIFO executes in order. Without it, handing the compositor a fence saves nothing — the CPU has already waited for the render before the buffer is queued. With it, every Phase 5 result is from a build whose submit path moved, so **the Phase 5 suite is part of this batch and not a formality** |
+| **Known failures** | **`t_fault` crashes the console on exit**, unchanged and uninvestigated since 2026-08-05: every check passes, the log is written and closed, and pressing + takes the system down. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 56 subsequent attempts have not reproduced it |
+| **What Phase 6's suite does NOT measure** | Named here rather than left to be discovered. **(1)** Nothing in it has run on hardware, so every number in `docs/wsi.md` and in the patch messages is a cross-build or a fact read out of libnx or Mesa. **(2)** The memory layout has exactly one witness and it is the operator's eyes: every frame but one is a solid colour, and a solid colour is the same image under any block-linear swizzle, so `t_vk_swapchain` section F presents a pattern and writes down what it should look like. A GPU readback would prove nothing — it would write and read with the same layout and agree with itself. **(3)** Nothing measures a swapchain across a display mode change; the resize path is written and the test that would exercise it is docking the console mid-run, which no automated check does. **(4)** Nothing is multi-threaded: two threads presenting to one surface is legal Vulkan and untested here. **(5)** `VK_PRESENT_MODE_IMMEDIATE_KHR` is offered and never measured by `t_vk_swapchain`; `t_nwindow` measures the swap interval underneath it instead |
+| **Open, not blocking** | **Two** unconditional L2 operations per submit, unchanged. And now: **the acquire's CPU wait**, which `docs/wsi.md` § 4 originally designed away and which is back, because `nvkmd_horizon_ctx_wait` does a submit's waits on the CPU — so expressing the compositor's release fence as a submit dependency would move the same stall later rather than remove it. CLAUDE.md's rule 6 lists swapchain acquire among the places a stall is allowed, so this is within the rules; it is recorded because it is a design that lost an argument to the code |
+| **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it |
+| **Never verified on hardware** | **Every line of Phase 6**, plus `t_fault` as it now stands. And, because of patch 0056, **the whole Phase 5 suite as it now stands**: their last console run was against a build whose submit path has since changed |
+
+
+---
+
+## Phase 6 — the Horizon WSI, written and unrun (2026-08-05)
+
+**Class: cross build (CB).** Everything below builds and nothing below
+has executed. The distinction matters more in this phase than in any
+previous one, because a swapchain's output cannot be read back: a test
+that passes here proves less per check than a Phase 5 test did, and the
+gap is made up by evidence of other kinds, listed in the state block
+above under what the suite does not measure.
+
+### The question that had to be answered before anything was designed
+
+libnx's `nwindowDequeueBuffer` keeps a single `cur_slot` and refuses a
+second dequeue before the first is queued or cancelled. Vulkan does not
+permit that: with `VkSurfaceCapabilitiesKHR::minImageCount` = 2 and a
+three-image swapchain, an application may hold **two** images acquired,
+and blocking indefinitely for them is valid usage. Offering
+`minImageCount = 2` — which is what makes double buffering expressible
+at all, and therefore what exit criterion 2 rests on — makes that case
+legal.
+
+So either the BufferQueue underneath libnx hands out two slots at once,
+or `docs/wsi.md` § 2.3 cannot stand as written. `t_nwindow` measures the
+number, with no Vulkan anywhere near it, and the WSI backend drives
+libnx's `bq*` producer API directly on that basis — public API, on
+`nw->bq`, a public field — keeping the slot ownership itself.
+Registration and teardown still go through `nwindowConfigureBuffer` and
+`nwindowReleaseBuffers`, and `nw->cur_slot` is neither read nor written.
+
+**If the answer comes back 1, the design changes and this paragraph is
+what says so.**
+
+### Six things the design got wrong, corrected in `docs/wsi.md`
+
+Each one is marked in the document with what disproved it:
+
+| § | The design said | What it is |
+|---|---|---|
+| 2.2 | four slot states, including RENDERING | three: nothing at this layer can see an application start to render |
+| 2.3 | `nwindowSetBufferCount` is called | there is no such function in libnx, and the criticism of the reference for not calling it is withdrawn |
+| 2.5 | eviction releases the old swapchain's buffers slot by slot | a disconnect, which frees them all; a per-slot cancel would hand back buffers the application is still rendering into |
+| 3.1 | zero-copy needs `WSI_SWAPCHAIN_NO_BLIT` | done, and the part the design did not say is how the WSI learns an OPTIMAL image's layout: two driver callbacks and two new nvkmd operations |
+| 4 | the release fence becomes a wait dependency of the application's submit | a CPU wait inside acquire, because `nvkmd_horizon_ctx_wait` does waits on the CPU and the dependency would move the stall rather than remove it |
+| 5 | a dimension change is detected at acquire | it is, but not through `nwindowGetDimensions` — that returns what this backend itself set, so the check compared the extent with itself |
+
+### The GOB check that would have passed for the wrong reason
+
+NIL picks the sector ordering inside a GOB from the **device type**: an
+SoC gets `TegraColor`, a desktop Fermi gets `FermiColor`
+(`nil/tiling.rs:144-151`). Both are 512-byte, 64x8 GOBs, so accepting
+the wrong one passes every size, stride and block-height check in the
+backend and puts a scrambled image on screen. `TegraColor` is what
+Horizon's display block reads as "generic 16Bx2", and it is the only
+one `nvk_wsi_get_image_info` accepts.
+
+This is the finding this phase would most like to have caught with a
+test and cannot: see the pattern in `t_vk_swapchain` section F, and the
+reason a GPU readback proves nothing about it.
+
+### The one change to the submit path, and why it is not an optimisation
+
+`nvkmd_horizon_ctx_wait` performs a submit's waits on the CPU. For a
+wait on work **already submitted to the same channel** that is not a
+limitation but a wait that has already happened: a GPFIFO executes its
+entries in order, so the submit that waits cannot begin before the work
+it waits on has finished, whether or not anyone waits for it.
+
+It is the ordinary case and not a corner. A swapchain present waits on
+the semaphore the application's render submit signalled, on the same
+queue, every frame — so with the CPU wait in place, handing the
+compositor a syncpoint fence to wait on saved nothing, and patch 0052
+would have been decoration.
+
+The bound is exact: only a sync that is PENDING and whose fence came
+from this same channel. What it costs is stated rather than discovered —
+a wait on a faulted channel no longer reports `CHANNEL_LOST` from the
+wait; the error moves to the submit that follows, which `t_fault`
+measured on hardware as refused.
+
+**This is why the Phase 5 suite is in the batch.**
+
+### The Phase 6 batch, in order
+
+Every test writes `sdmc:/horizon_gpu_tests/<name>.log`. The two new ones
+own the display, so **they start no console and the screen shows what
+they present**; everything they report is in the log file.
+
+| # | Test | What to expect on screen | What its log is for |
+|---|---|---|---|
+| 1 | `t_nwindow` | about nine seconds of solid colours sweeping through hues, five times over | **THE NUMBER**: "with 3 registered buffers, N slot(s) could be dequeued at once". Also the frame cadence at 2 and 3 buffers, with and without a bursty load, and at swap interval 0 |
+| 2 | `t_vk_swapchain` | a **still pattern for two seconds** — four vertical bars red/green/blue/white, a white border, a black diagonal, a yellow top-left square — then about twelve seconds of colour sweeps | the four exit criteria. **Report what the pattern looked like**: it is the only evidence that the driver and the compositor agree about the memory layout |
+| 3-15 | the Phase 5 suite, in its usual order | the console, as before | patch 0056 moved the submit path under all of them |
+| last | `t_fault` | it takes the console down on exit; run it last or not at all | unchanged debt |
+
+If `t_nwindow` reports fewer than two concurrent slots, stop: everything
+after it is measuring a design that has to change.
 
 
 ---

@@ -30,6 +30,21 @@
  *      one keeps working, and that destroying them in either order
  *      leaves the survivor presenting.
  *
+ *   F. A PATTERN THE OPERATOR CAN DESCRIBE, and it is the only check
+ *      here that can catch a wrong memory layout. Everything else this
+ *      test presents is a solid colour — which is the same image under
+ *      any block-linear swizzle, so a wrong GOB sector ordering, a
+ *      wrong block height or a wrong stride would pass every one of
+ *      them. Nothing can read a presented frame back, and a readback
+ *      through the GPU would cancel the error out: it would write and
+ *      read with the same layout and agree with itself. The compositor
+ *      is the other party to the agreement and the eye is the only
+ *      instrument that sees its side, so the test presents a pattern
+ *      whose correct appearance is written down in the log, and the
+ *      operator says whether that is what appeared. A layout error is
+ *      not subtle when it happens: the sector ordering scrambles the
+ *      image at 16-byte granularity.
+ *
  *   E. The zero-copy decision is observable at run time and says why.
  *      Observable means the application can hear it, not that a log
  *      contains it: the backend reports the decision through the
@@ -161,6 +176,55 @@ static void sc_frame_colour(uint32_t frame, VkClearColorValue *out)
    out->float32[1] = (float)((frame * 5u + 85u) & 0xffu) / 255.0f;
    out->float32[2] = (float)((frame * 7u + 170u) & 0xffu) / 255.0f;
    out->float32[3] = 1.0f;
+}
+
+/* The pattern of section F, written into a host-visible buffer in plain
+ * row order. What reaches the screen is the GPU's block-linear
+ * encoding of it, so this describes what the operator should see and
+ * nothing about how it is stored.
+ *
+ * Every element is here to fail visibly in a different way: the bars
+ * catch a wrong stride, the border catches a wrong height or a wrong
+ * block height, the diagonal catches a wrong sector ordering (it breaks
+ * into steps), and the corner square says which way up the image is. */
+static void sc_fill_pattern(uint32_t *px, uint32_t width, uint32_t height)
+{
+   const uint32_t RED    = 0xff0000ffu;   /* ABGR in memory order */
+   const uint32_t GREEN  = 0xff00ff00u;
+   const uint32_t BLUE   = 0xffff0000u;
+   const uint32_t WHITE  = 0xffffffffu;
+   const uint32_t BLACK  = 0xff000000u;
+   const uint32_t YELLOW = 0xff00ffffu;
+
+   const uint32_t border = 16;
+   const uint32_t corner = 64;
+   const uint32_t bar = width / 4u;
+
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = 0; x < width; x++) {
+         uint32_t c;
+         if (x < bar)            c = RED;
+         else if (x < 2u * bar)  c = GREEN;
+         else if (x < 3u * bar)  c = BLUE;
+         else                    c = WHITE;
+
+         /* A thick diagonal, in image coordinates rather than in
+          * pixels, so it stays a diagonal at any size. */
+         const uint32_t dx = (x * height) / width;
+         if (dx + 4u >= y && y + 4u >= dx)
+            c = BLACK;
+
+         if (x < border || y < border ||
+             x + border >= width || y + border >= height)
+            c = WHITE;
+
+         if (x >= border && y >= border &&
+             x < border + corner && y < border + corner)
+            c = YELLOW;
+
+         px[(size_t)y * width + x] = c;
+      }
+   }
 }
 
 /* Burns `ns` of CPU, read from the tick counter rather than counted in
@@ -376,6 +440,150 @@ static VkResult sc_record_and_submit(vkfw *fw, sc_swapchain *sc,
    return r;
 }
 
+/* Records and submits one frame that copies `src` into the acquired
+ * image and leaves it in PRESENT_SRC. The buffer holds the pattern in
+ * plain row order; the copy is what puts it into whatever layout the
+ * image has, so this test needs no swizzle of its own and the layout
+ * under test is the driver's rather than a second implementation of
+ * it. */
+static VkResult sc_record_pattern(vkfw *fw, sc_swapchain *sc, uint32_t index,
+                                  VkBuffer src)
+{
+   sc_frame_res *res = &sc->res[index];
+   VkResult r;
+
+   if (res->in_flight_valid) {
+      r = fw->vk.vkWaitForFences(fw->dev, 1, &res->in_flight, VK_TRUE,
+                                 SC_WAIT_NS);
+      if (r != VK_SUCCESS)
+         return r;
+   }
+   r = fw->vk.vkResetFences(fw->dev, 1, &res->in_flight);
+   if (r != VK_SUCCESS)
+      return r;
+
+   const VkCommandBufferBeginInfo bi = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+   };
+   r = fw->vk.vkBeginCommandBuffer(res->cb, &bi);
+   if (r != VK_SUCCESS)
+      return r;
+
+   const VkImageSubresourceRange range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .levelCount = 1,
+      .layerCount = 1,
+   };
+   VkImageMemoryBarrier bar = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = sc->images[index],
+      .subresourceRange = range,
+   };
+   fw->vk.vkCmdPipelineBarrier(res->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                               0, NULL, 0, NULL, 1, &bar);
+
+   const VkBufferImageCopy copy = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,     /* tightly packed */
+      .bufferImageHeight = 0,
+      .imageSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+         .layerCount = 1,
+      },
+      .imageExtent = { sc->extent.width, sc->extent.height, 1 },
+   };
+   fw->vk.vkCmdCopyBufferToImage(res->cb, src, sc->images[index],
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 1, &copy);
+
+   bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   bar.dstAccessMask = 0;
+   bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   bar.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+   fw->vk.vkCmdPipelineBarrier(res->cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                               0, NULL, 0, NULL, 1, &bar);
+
+   r = fw->vk.vkEndCommandBuffer(res->cb);
+   if (r != VK_SUCCESS)
+      return r;
+
+   const VkSubmitInfo si = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &res->cb,
+      .signalSemaphoreCount = 1,
+      .pSignalSemaphores = &res->render_done,
+   };
+   r = fw->vk.vkQueueSubmit(fw->queue, 1, &si, res->in_flight);
+   if (r == VK_SUCCESS)
+      res->in_flight_valid = true;
+   return r;
+}
+
+/* Holds the pattern on screen for `frames` presents. Returns the number
+ * that were presented. */
+static uint32_t sc_show_pattern(vkfw *fw, sc_swapchain *sc, VkBuffer src,
+                                uint32_t frames, VkResult *fail_out)
+{
+   uint32_t done = 0;
+   *fail_out = VK_SUCCESS;
+
+   for (uint32_t frame = 0; frame < frames; frame++) {
+      uint32_t index = 0;
+      VkResult r = fw->wsi.vkAcquireNextImageKHR(fw->dev, sc->handle,
+                                                 SC_WAIT_NS, VK_NULL_HANDLE,
+                                                 sc->acquire_fence, &index);
+      if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+         *fail_out = r;
+         return done;
+      }
+      r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->acquire_fence, VK_TRUE,
+                                 SC_WAIT_NS);
+      if (r == VK_SUCCESS)
+         r = fw->vk.vkResetFences(fw->dev, 1, &sc->acquire_fence);
+      if (r != VK_SUCCESS) {
+         *fail_out = r;
+         return done;
+      }
+      if (index >= sc->image_count) {
+         *fail_out = VK_ERROR_UNKNOWN;
+         return done;
+      }
+
+      r = sc_record_pattern(fw, sc, index, src);
+      if (r != VK_SUCCESS) {
+         *fail_out = r;
+         return done;
+      }
+
+      const VkPresentInfoKHR pi = {
+         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+         .waitSemaphoreCount = 1,
+         .pWaitSemaphores = &sc->res[index].render_done,
+         .swapchainCount = 1,
+         .pSwapchains = &sc->handle,
+         .pImageIndices = &index,
+      };
+      r = fw->wsi.vkQueuePresentKHR(fw->queue, &pi);
+      if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+         *fail_out = r;
+         return done;
+      }
+      done++;
+   }
+
+   return done;
+}
+
 /* One measured run of `frames` presents. Records its failure rather
  * than aborting the test, so the counts afterwards are falsifiable. */
 static void sc_run(vkfw *fw, sc_swapchain *sc, uint32_t frames,
@@ -526,6 +734,12 @@ int run_test(test_ctx *t)
 {
    vkfw fw;
    int rv = 0;
+   /* At function scope and zeroed here, not where it is filled: every
+    * early `goto out_surface` above section F passes through the
+    * teardown that destroys it. */
+   vkfw_buffer pattern;
+   memset(&pattern, 0, sizeof(pattern));
+   VkSurfaceKHR surface = VK_NULL_HANDLE;
 
    t_note(t, "this test owns the display: no console was started, and "
              "this file is the whole record");
@@ -560,7 +774,6 @@ int run_test(test_ctx *t)
       goto out;
    }
 
-   VkSurfaceKHR surface = VK_NULL_HANDLE;
    const VkViSurfaceCreateInfoNN sci = {
       .sType = VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN,
       .window = win,
@@ -702,6 +915,49 @@ int run_test(test_ctx *t)
            "the swapchain reported which present path it got");
    if (decision != NULL)
       t_note(t, "the driver said: %s", decision);
+
+   /* --- F: the pattern, which is what says the layout is right ----- */
+
+   /* Held for two seconds so the operator has time to look at it. This
+    * is the only check in the file that can catch a wrong memory
+    * layout: every other frame here is a solid colour, and a solid
+    * colour is the same image under any swizzle. */
+   {
+      const VkDeviceSize pattern_B =
+         (VkDeviceSize)extent.width * extent.height * 4u;
+      if (vkfw_buffer_create(&fw, pattern_B, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &pattern) &&
+          pattern.map != NULL) {
+         sc_fill_pattern((uint32_t *)pattern.map, extent.width, extent.height);
+         if (vkfw_buffer_flush(&fw, &pattern)) {
+            t_note(t, "SHOWING THE PATTERN FOR TWO SECONDS. What should be "
+                      "on screen, and what a wrong memory layout would "
+                      "destroy: four full-height vertical bars, red then "
+                      "green then blue then white, left to right; a white "
+                      "border 16 pixels wide all the way round; a black "
+                      "diagonal from the top-left corner to the "
+                      "bottom-right; and a yellow square just inside the "
+                      "top-left corner. Anything scrambled, striped or "
+                      "blocky means the compositor and the driver disagree "
+                      "about the block-linear layout");
+
+            VkResult pattern_fail = VK_SUCCESS;
+            const uint32_t shown = sc_show_pattern(&fw, &sc3, pattern.buf,
+                                                   2u * SC_REFRESH_HZ,
+                                                   &pattern_fail);
+            t_check(t, shown == 2u * SC_REFRESH_HZ,
+                    "the pattern was presented %" PRIu32 " times -> %s",
+                    shown, vkfw_result_str(pattern_fail));
+            t_note(t, "OPERATOR: say in the report whether the four bars, "
+                      "the border, the diagonal and the yellow corner were "
+                      "all there and in that order. That answer is the "
+                      "whole of the layout evidence for this phase");
+         }
+      } else {
+         t_note(t, "the pattern buffer could not be created or mapped; "
+                   "the layout has no evidence in this run");
+      }
+   }
 
    sc_run(&fw, &sc3, SC_FRAMES, 0, &st3);
    ran3 = sc_report(t, &st3, SC_FRAMES);
@@ -935,6 +1191,7 @@ out_sc2:
 
 out_surface:
    fw.vk.vkDeviceWaitIdle(fw.dev);
+   vkfw_buffer_destroy(&fw, &pattern);
    if (surface != VK_NULL_HANDLE)
       fw.wsi.vkDestroySurfaceKHR(fw.instance, surface, NULL);
 
