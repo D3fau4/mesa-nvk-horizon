@@ -761,8 +761,8 @@ int run_test(test_ctx *t)
     horizon_gpu_mem *mem = NULL;
     int rv = 0;
 
-    t_note(t, "this test owns the display: no console was started, and "
-              "this file is the whole record");
+    /* (testfw's main() writes the "this test owns the display" note; it
+     * used to be repeated here, and the artefact said it twice.) */
 
     /* The device is what brings up nv, nvfence and nvmap (device.c);
      * nvMultiFenceWait and nvMapCreate both need them. */

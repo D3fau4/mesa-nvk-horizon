@@ -741,8 +741,8 @@ int run_test(test_ctx *t)
    memset(&pattern, 0, sizeof(pattern));
    VkSurfaceKHR surface = VK_NULL_HANDLE;
 
-   t_note(t, "this test owns the display: no console was started, and "
-             "this file is the whole record");
+   /* (testfw's main() writes the "this test owns the display" note; it
+    * used to be repeated here, and the artefact said it twice.) */
 
    const char *const instance_exts[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
