@@ -27,6 +27,46 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## One buffer per second, not one per refresh
+
+### `t_nwindow-run9-one-buffer-per-second-FAIL.log`
+
+The diagnostic asked both dequeue modes every round and printed a time, and the
+failure path used the late buffer instead of returning it. Both two-buffer
+sessions say the same thing:
+
+```
+  note 2 buffers, interval 1: asked for 9 ms in BOTH modes — 1 round(s),
+       release event fired 0 time(s); last async=true 0x0000115d,
+       last async=false 0x00000000
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 9996 us
+       (0 refresh(es)), in async=false
+  note 2 buffers, interval 1: after the late buffer, 1 of 10 further frames
+       presented
+```
+
+Read with the paced dequeue that had just given up one second earlier, that is
+a rate, not a transient. One frame goes through, the next dequeue burns its
+whole second, the probe that follows gets a buffer from `async=false` in ~10
+ms, one more frame goes through, and it repeats. **A two-buffer window on this
+compositor delivers roughly one buffer per second, where a three-buffer window
+delivers one every 16 ms** — the same log has `3 buffers, interval 1: 90 of 90
+frames presented`, mean 16344 us, with 87 of 90 dequeues carrying a release
+fence. Two-buffer sessions carry **zero**.
+
+Two readings still fit the 9996 us, and run 10 separates them: either
+`async=false` blocks and delivers in ~10 ms and the paced loop is not reaching
+it, or a buffer becomes free at about one second and the 10 ms is only how long
+the ask took once it nearly was. So run 10 records what the failing second was
+actually spent on — rounds, cumulative time in each mode, the last result of
+each, from the loop itself rather than from a probe that runs afterwards on a
+window in a different state — and runs ten frames with a **three-second**
+budget, printing every dequeue's duration.
+
+If those come back at ~1 s each, two-buffer FIFO here runs at about 1 Hz and
+`minImageCount = 2` is a promise the driver cannot keep. If they come back at
+~10 ms, the one-second budget was the whole defect.
+
 ## async=false does not work at t=0 and does work by t=6 s
 
 ### `t_nwindow-run8-both-modes-fail-early-FAIL.log`, `t_vk_swapchain-run8-FAIL.log`

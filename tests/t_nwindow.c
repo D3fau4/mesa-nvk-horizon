@@ -259,6 +259,20 @@ static void nw_graphic_buffer_init(NvGraphicBuffer *gb, const nw_geometry *g,
 typedef struct nw_producer {
     NWindow *win;
     uint32_t slots_requested;   /* bitmask: bqRequestBuffer already done */
+
+    /* WHAT THE LAST nw_dequeue ACTUALLY DID.
+     *
+     * Eight runs inferred this and run 9 showed the inference was
+     * unfalsifiable: nw_dequeue returns one Result, and everything
+     * about the second it spent — which modes it asked, how long each
+     * blocked, what each answered — had to be guessed from the
+     * diagnostic that ran afterwards on a window in a different state.
+     * Recorded here so the failure can print it instead. */
+    uint32_t last_rounds;
+    uint64_t last_async_ns;     /* cumulative time inside async=true    */
+    uint64_t last_sync_ns;      /* cumulative time inside async=false   */
+    Result   last_async_rc;
+    Result   last_sync_rc;
 } nw_producer;
 
 /* One dequeued slot and the fence the compositor released it with. */
@@ -404,13 +418,27 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
     const u64 start = armGetSystemTick();
 
+    p->last_rounds = 0;
+    p->last_async_ns = 0;
+    p->last_sync_ns = 0;
+    p->last_async_rc = 0;
+    p->last_sync_rc = 0;
+
     for (;;) {
+        p->last_rounds++;
+
+        u64 t0 = armGetSystemTick();
         Result rc = nw_try_dequeue(p, false /* libnx's mode: async=true */,
                                    out);
+        p->last_async_ns += armTicksToNs(armGetSystemTick() - t0);
+        p->last_async_rc = rc;
         if (!nw_dequeue_would_block(rc))
             return rc;
 
+        t0 = armGetSystemTick();
         rc = nw_try_dequeue(p, true /* async=false: FIFO's own mode */, out);
+        p->last_sync_ns += armTicksToNs(armGetSystemTick() - t0);
+        p->last_sync_rc = rc;
         if (!nw_dequeue_would_block(rc))
             return rc;
 
@@ -877,6 +905,97 @@ static void nw_probe_starvation(nw_session *s, const char *where)
  * behave the same, position is ruled out and the difference is in the
  * paced code path, which is the next thing to bisect.
  */
+/* HOW LONG A TWO-BUFFER WINDOW ACTUALLY TAKES PER FRAME.
+ *
+ * Run 9 put a boundary right where nobody could see past it. The paced
+ * dequeue gives up after one second and reports LibnxError_Timeout; the
+ * diagnostic that runs next gets a buffer from async=false in **9996
+ * us**, on its first round. Two readings fit that and they are very
+ * different: either async=false blocks and delivers in ~10 ms and the
+ * paced loop is somehow not reaching it, or a buffer becomes free at
+ * about one second and the 10 ms is only how long the ask took once it
+ * nearly was.
+ *
+ * The recovery arm decides between them in the same log — `after the
+ * late buffer, 1 of 10 further frames presented`. One frame went
+ * through and the next dequeue burned its second again. So it is not a
+ * startup transient: it repeats, once per buffer.
+ *
+ * What nothing measures is the number itself, because every dequeue in
+ * this file is cut off at one second. This runs ten frames with a
+ * budget of three, and prints every dequeue's duration. If they come
+ * back at ~1 s each, two-buffer FIFO on this compositor runs at about
+ * 1 Hz and `minImageCount = 2` is a promise the driver cannot keep
+ * (decision D18). If they come back at ~10 ms, the one-second budget
+ * was the whole defect.
+ */
+#define NW_SLOW_LANE_FRAMES  10u
+#define NW_SLOW_LANE_TIMEOUT_NS UINT64_C(3000000000)
+
+static void nw_measure_slow_lane(nw_session *s)
+{
+    test_ctx *t = s->t;
+    const uint32_t n = s->num_buffers;
+    uint32_t presented = 0;
+    uint64_t total_ns = 0, max_ns = 0, min_ns = UINT64_MAX;
+
+    for (uint32_t f = 0; f < NW_SLOW_LANE_FRAMES; f++) {
+        const u64 t0 = armGetSystemTick();
+        nw_slot got;
+        Result rc = nw_dequeue(&s->prod, NW_SLOW_LANE_TIMEOUT_NS, &got);
+        const uint64_t deq_ns = armTicksToNs(armGetSystemTick() - t0);
+
+        if (R_FAILED(rc)) {
+            t_note(t, "slow lane, %" PRIu32 " buffers: frame %" PRIu32
+                      " gave up after %" PRIu64 " us -> 0x%08x (%" PRIu32
+                      " round(s); async=true last 0x%08x, async=false last "
+                      "0x%08x)", n, f, deq_ns / 1000, rc,
+                   s->prod.last_rounds, s->prod.last_async_rc,
+                   s->prod.last_sync_rc);
+            break;
+        }
+
+        total_ns += deq_ns;
+        if (deq_ns > max_ns)
+            max_ns = deq_ns;
+        if (deq_ns < min_ns)
+            min_ns = deq_ns;
+        t_note(t, "slow lane, %" PRIu32 " buffers: frame %" PRIu32
+                  " dequeued in %" PRIu64 " us (%" PRIu32 " round(s))",
+               n, f, deq_ns / 1000, s->prod.last_rounds);
+
+        if (got.fence.num_fences > 0 &&
+            R_FAILED(nvMultiFenceWait(&got.fence, 1000000)))
+            break;
+
+        const uint32_t off = (uint32_t)got.slot * s->geom.buffer_size_B;
+        nw_fill(s->cpu, off, s->geom.buffer_size_B, nw_frame_colour(f));
+        if (horizon_gpu_mem_flush(s->mem, off,
+                                  s->geom.buffer_size_B).status
+            != HORIZON_GPU_OK)
+            break;
+
+        BqBufferOutput bo;
+        memset(&bo, 0, sizeof(bo));
+        if (R_FAILED(nw_queue(&s->prod, got.slot, s->swap_interval, NULL,
+                              &bo)))
+            break;
+        presented++;
+    }
+
+    if (presented > 0)
+        t_note(t, "slow lane, %" PRIu32 " buffers: %" PRIu32 " of %u frames, "
+                  "dequeue mean %" PRIu64 " us, min %" PRIu64 " us, max "
+                  "%" PRIu64 " us — against a %" PRIu64 " us refresh",
+               n, presented, NW_SLOW_LANE_FRAMES, (total_ns / presented) / 1000,
+               min_ns / 1000, max_ns / 1000, NW_REFRESH_NS / 1000);
+
+    t_check(t, presented == NW_SLOW_LANE_FRAMES,
+            "slow lane, %" PRIu32 " buffers: %u frames presented with a "
+            "three-second budget per dequeue (%" PRIu32 ")",
+            n, NW_SLOW_LANE_FRAMES, presented);
+}
+
 static bool nw_run_probes(nw_session *s, const char *where)
 {
     const uint32_t saved_buffers = s->num_buffers;
@@ -922,6 +1041,15 @@ static void nw_session_present(nw_session *s, nw_stats *st)
         Result rc = nw_dequeue(&s->prod, NW_DEQUEUE_TIMEOUT_NS, &got);
         if (R_FAILED(rc)) {
             nw_fail(st, frame, rc, "dequeue");
+
+            /* What that second was spent on, from the loop itself
+             * rather than inferred from a later probe. */
+            t_note(s->t, "%s: the failing dequeue made %" PRIu32 " round(s); "
+                         "async=true %" PRIu64 " us total, last 0x%08x; "
+                         "async=false %" PRIu64 " us total, last 0x%08x",
+                   st->what, s->prod.last_rounds,
+                   s->prod.last_async_ns / 1000, s->prod.last_async_rc,
+                   s->prod.last_sync_ns / 1000, s->prod.last_sync_rc);
 
             /* THE DIAGNOSTIC, ATTACHED TO THE FAILURE ITSELF.
              *
@@ -1417,6 +1545,20 @@ int run_test(test_ctx *t)
      * counted before it runs. Three buffers first, so the two-buffer
      * answer is read next to a working one rather than alone.
      */
+    /* --- the slow lane: 2 buffers, 10 frames, a three-second budget -- */
+    s.num_buffers = 2;
+    s.swap_interval = 1;
+    s.busy_ns_odd = 0;
+    if (!nw_session_register(&s)) {
+        rv = 1;
+        goto out_mem;
+    }
+    nw_measure_slow_lane(&s);
+    rc = nwindowReleaseBuffers(win);
+    if (!t_check(t, R_SUCCEEDED(rc),
+                 "slow lane: released back to the compositor -> 0x%08x", rc))
+        rv = 1;
+
     if (!nw_run_probes(&s, "AFTER"))
         rv = 1;
 
