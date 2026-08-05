@@ -123,6 +123,16 @@ const bool test_uses_display = true;
  * refreshes, so this is a hang detector and not a deadline. */
 #define NW_DEQUEUE_TIMEOUT_NS  UINT64_C(1000000000)
 
+/* How long the starvation probe waits for the compositor to hand a
+ * buffer back once every registered buffer has been queued. Five
+ * seconds is 300 refreshes — far past any plausible latency, so "it
+ * never came back" is a measurement and not a short deadline. */
+#define NW_STARVE_PATIENCE_NS  UINT64_C(5000000000)
+
+/* The patience is spent in slices this long so the probe can count how
+ * many times the release event fired, not only whether it fired. */
+#define NW_STARVE_SLICE_NS     UINT64_C(100000000)
+
 /* Frames per measured session. 90 at 60 Hz is a second and a half —
  * long enough that a mean is not noise, short enough that five sessions
  * plus teardown stay inside ten seconds of the operator's time. */
@@ -260,19 +270,24 @@ typedef struct nw_slot {
 /* Non-blocking dequeue. Returns the raw Result so a caller can tell "no
  * buffer available yet" from a genuine failure — the distinction the
  * reference discards. */
-/* `blocking` chooses between the BufferQueue's two dequeue modes.
+/* `blocking` chooses between the BufferQueue's two dequeue modes: it
+ * passes `!blocking` as the producer's `async` flag.
  *
- * libnx passes the producer's `async` flag as true when it has a
- * release event to wait on and false when it does not. They are not
- * interchangeable: async mode asks the queue to keep a buffer in
- * reserve so the producer never blocks, which a two-buffer queue cannot
- * do. MEASURED — with two registered buffers, both queued, an async
- * dequeue answers NO_INIT for as long as you keep asking and no release
- * ever arrives to it, so retrying it just burns the deadline. Three
- * buffers never reach the condition.
+ * libnx (nx/source/display/native_window.c) passes async=true on any
+ * window that has a release event and async=false only on one that does
+ * not. The default window has one, so async=true is libnx's path and
+ * async=false is a mode nothing on this platform is known to use.
  *
- * The non-blocking mode probes; the blocking mode is used once the
- * release event says a buffer has come back.
+ * WHAT THIS COMMENT SAID BEFORE, AND WHY IT WAS WRONG. It claimed
+ * async mode asks the queue to keep a buffer in reserve, which a
+ * two-buffer queue cannot do, and that switching modes after the
+ * release event would fix the two-buffer sessions. Patch 0061 was
+ * written on that reading. Run 4 refuted it: the two-buffer sessions
+ * still die at the third frame, and the result is 0x00006359 —
+ * MAKERESULT(Module_Libnx, LibnxError_Timeout), this test's own wait
+ * expiring. The release event never fires, so no dequeue mode is ever
+ * reached. nw_probe_starvation measures that directly; nothing here
+ * should be changed again before it has reported.
  */
 static Result nw_try_dequeue(nw_producer *p, bool blocking, nw_slot *out)
 {
@@ -585,6 +600,178 @@ static uint32_t nw_measure_concurrent_dequeues(nw_session *s)
     }
 
     return n;
+}
+
+/* THE QUESTION FOUR RUNS HAVE FAILED TO ANSWER, ASKED DIRECTLY.
+ *
+ * With two registered buffers, every run so far presents two frames and
+ * then never gets a third buffer. Two patches aimed at the dequeue call
+ * (0059, then 0061) changed the failure's spelling and not the failure,
+ * which is what happens when a fix is aimed at a guess.
+ *
+ * The guess was about the dequeue's mode. What run 4 actually recorded
+ * is `0x00006359` — MAKERESULT(Module_Libnx, LibnxError_Timeout), our
+ * own one-second wait expiring. Not an error from the queue at all: the
+ * release event never fired. So the question is not which mode to ask
+ * in. It is whether the compositor gives a buffer back at all while it
+ * holds every one of them.
+ *
+ * This hands the compositor every registered buffer, then does nothing
+ * but ask, for five seconds, and reports what happened as numbers: how
+ * many times the release event fired, what each dequeue mode answered,
+ * and how long the first success took. Run against both buffer counts,
+ * so the two-buffer answer has the three-buffer answer beside it.
+ *
+ * libnx's own nwindowDequeueBuffer (nx/source/display/native_window.c)
+ * loops `eventWait(UINT64_MAX)` then `bqDequeueBuffer(async=true)` while
+ * the result is WouldBlock, and only ever passes async=false on a window
+ * with no release event. So the async=true arm here is libnx's path
+ * exactly, and if that arm starves then libnx starves too.
+ */
+static void nw_probe_starvation(nw_session *s)
+{
+    test_ctx *t = s->t;
+    const uint32_t n = s->num_buffers;
+
+    /* Every buffer to the compositor. Filled with a real colour rather
+     * than left as it was: the probe is about to hold the display for
+     * five seconds and an operator should see something deliberate. */
+    uint32_t queued = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        nw_slot got;
+        Result rc = nw_dequeue(&s->prod, NW_DEQUEUE_TIMEOUT_NS, &got);
+        if (!t_check(t, R_SUCCEEDED(rc),
+                     "starvation probe, %" PRIu32 " buffers: buffer %" PRIu32
+                     " of %" PRIu32 " dequeued -> 0x%08x", n, i + 1, n, rc))
+            break;
+
+        if (got.fence.num_fences > 0) {
+            Result frc = nvMultiFenceWait(&got.fence, 1000000 /* us */);
+            if (!t_check(t, R_SUCCEEDED(frc),
+                         "starvation probe, %" PRIu32 " buffers: the release "
+                         "fence on buffer %" PRIu32 " -> 0x%08x",
+                         n, i + 1, frc)) {
+                bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
+                break;
+            }
+        }
+
+        const uint32_t off = (uint32_t)got.slot * s->geom.buffer_size_B;
+        nw_fill(s->cpu, off, s->geom.buffer_size_B, nw_frame_colour(i));
+        horizon_gpu_result mres =
+            horizon_gpu_mem_flush(s->mem, off, s->geom.buffer_size_B);
+        if (!t_check(t, mres.status == HORIZON_GPU_OK,
+                     "starvation probe, %" PRIu32 " buffers: cache flush on "
+                     "buffer %" PRIu32 " (status %d)",
+                     n, i + 1, (int)mres.status)) {
+            bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
+            break;
+        }
+
+        BqBufferOutput out;
+        memset(&out, 0, sizeof(out));
+        rc = nw_queue(&s->prod, got.slot, s->swap_interval, NULL, &out);
+        if (!t_check(t, R_SUCCEEDED(rc),
+                     "starvation probe, %" PRIu32 " buffers: buffer %" PRIu32
+                     " queued -> 0x%08x", n, i + 1, rc))
+            break;
+        queued++;
+    }
+
+    if (!t_check(t, queued == n,
+                 "starvation probe, %" PRIu32 " buffers: the compositor holds "
+                 "all %" PRIu32 " of them (%" PRIu32 " queued)",
+                 n, n, queued))
+        return;
+
+    /* Nothing but asking, for five seconds. */
+    const u64 start = armGetSystemTick();
+    uint32_t events = 0, tries = 0;
+    Result last = 0;
+    uint64_t got_after_ns = 0;
+    bool got_one = false;
+    nw_slot got;
+    memset(&got, 0, sizeof(got));
+
+    for (;;) {
+        last = nw_try_dequeue(&s->prod, false /* libnx's mode: async=true */,
+                              &got);
+        tries++;
+        if (R_SUCCEEDED(last)) {
+            got_after_ns = armTicksToNs(armGetSystemTick() - start);
+            got_one = true;
+            break;
+        }
+
+        const uint64_t spent = armTicksToNs(armGetSystemTick() - start);
+        if (spent >= NW_STARVE_PATIENCE_NS)
+            break;
+
+        uint64_t slice = NW_STARVE_PATIENCE_NS - spent;
+        if (slice > NW_STARVE_SLICE_NS)
+            slice = NW_STARVE_SLICE_NS;
+        if (eventActive(&s->prod.win->event) &&
+            R_SUCCEEDED(eventWait(&s->prod.win->event, slice)))
+            events++;
+    }
+
+    t_note(t, "starvation probe, %" PRIu32 " buffers: %" PRIu32 " dequeue(s) "
+              "in libnx's mode over %" PRIu64 " ms, release event fired "
+              "%" PRIu32 " time(s), last result 0x%08x",
+           n, tries, armTicksToNs(armGetSystemTick() - start) / 1000000,
+           events, last);
+
+    t_check(t, got_one,
+            "starvation probe, %" PRIu32 " buffers: the compositor handed a "
+            "buffer back within %" PRIu64 " ms%s",
+            n, NW_STARVE_PATIENCE_NS / 1000000,
+            got_one ? "" : " — it did NOT");
+
+    if (got_one) {
+        t_note(t, "starvation probe, %" PRIu32 " buffers: it came back after "
+                  "%" PRIu64 " us, which is %" PRIu64 " refresh(es)",
+               n, got_after_ns / 1000, got_after_ns / NW_REFRESH_NS);
+        Result rc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
+        t_check(t, R_SUCCEEDED(rc),
+                "starvation probe, %" PRIu32 " buffers: the buffer went back "
+                "-> 0x%08x", n, rc);
+        return;
+    }
+
+    /* THE LAST THING THIS PROBE DOES, AND IT MAY NOT RETURN.
+     *
+     * async=false is the mode libnx uses only on a window that has no
+     * release event, and in Android's BufferQueue it is the mode whose
+     * dequeue is allowed to block inside the server until a buffer
+     * frees. If that is what happens here, this call does not come
+     * back and the console has to be power-cycled — which is itself the
+     * answer, and a different one from "the compositor never releases".
+     *
+     * It is last on purpose. Every line above is already flushed to the
+     * SD card (t_vemit flushes each one), so a hang here costs the rest
+     * of the run and none of the evidence.
+     */
+    t_note(t, "starvation probe, %" PRIu32 " buffers: ABOUT TO TRY async=false, "
+              "which can block inside the compositor. If the next line of this "
+              "log is missing, that call never returned — and that is the "
+              "finding, not a crash", n);
+
+    Result rc = nw_try_dequeue(&s->prod, true /* async=false */, &got);
+
+    /* That this line exists at all is the "it returned" evidence — the
+     * note above says so, and a tautological condition here (R_FAILED
+     * || R_SUCCEEDED) would be a check that verifies nothing. The
+     * assertion is the thing actually in question: whether the other
+     * mode can get a buffer where libnx's could not. */
+    t_check(t, R_SUCCEEDED(rc),
+            "starvation probe, %" PRIu32 " buffers: async=false produced a "
+            "buffer where libnx's async=true could not (0x%08x)", n, rc);
+    if (R_SUCCEEDED(rc)) {
+        Result crc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
+        t_check(t, R_SUCCEEDED(crc),
+                "starvation probe, %" PRIu32 " buffers: the buffer async=false "
+                "produced went back -> 0x%08x", n, crc);
+    }
 }
 
 static void nw_session_present(nw_session *s, nw_stats *st)
@@ -1019,6 +1206,34 @@ int run_test(test_ctx *t)
                   "%" PRIu64 " us at interval 1 — the swap interval is the "
                   "knob, and this is what it moved",
                nw_mean_ns(&st3_free) / 1000, nw_mean_ns(&st3) / 1000);
+
+    /* --- sessions F and G: why two starves, asked directly ---------
+     *
+     * LAST, and that placement is the point. The probe's final act may
+     * not return (see nw_probe_starvation), so everything measured
+     * above is already written and every check above has already been
+     * counted before it runs. Three buffers first, so the two-buffer
+     * answer is read next to a working one rather than alone.
+     */
+    for (uint32_t n = 3; n >= 2; n--) {
+        s.num_buffers = n;
+        s.swap_interval = 1;
+        s.busy_ns_odd = 0;
+        if (!nw_session_register(&s)) {
+            rv = 1;
+            goto out_mem;
+        }
+
+        nw_probe_starvation(&s);
+
+        rc = nwindowReleaseBuffers(win);
+        if (!t_check(t, R_SUCCEEDED(rc),
+                     "starvation probe, %" PRIu32 " buffers: released back to "
+                     "the compositor -> 0x%08x", n, rc)) {
+            rv = 1;
+            goto out_mem;
+        }
+    }
 
 out_mem:
     if (mem != NULL) {
