@@ -121,6 +121,29 @@ they present**; everything they report is in the log file.
 If `t_nwindow` reports fewer than two concurrent slots, stop: everything
 after it is measuring a design that has to change.
 
+### The most likely way zero-copy gets declined on first contact
+
+Written down before the run so the log can be read against it rather
+than explained afterwards. libnx creates its framebuffers' NvMap with
+`nvMapCreate(..., align = 0x20000, ...)` — 128 KiB — while a swapchain
+image's memory is allocated with whatever alignment NVK's memory
+requirements ask for, which is NIL's and much smaller. Whether the
+display block needs the larger one is not known here; nothing in
+switchbrew says, and libnx's choice may be a requirement or a habit.
+
+If it is a requirement, `nwindowConfigureBuffer` fails and the backend
+falls back to the copy path with "the compositor refused one of the
+scanout buffers" in the log. That is the designed outcome and not a
+crash, which is the point of validating and falling back rather than
+predicting. The fix, if it is needed, is a larger allocation alignment
+for scanout images, and it is one patch.
+
+The other candidates, in the order they would show: a page-table kind
+that is not generic 16Bx2 (would mean compression is on, which
+`nvkmd_info::has_compression` says it is not), and a GOB sector ordering
+that is not TegraColor (would mean NIL classified this chip as something
+other than an SoC).
+
 
 ---
 

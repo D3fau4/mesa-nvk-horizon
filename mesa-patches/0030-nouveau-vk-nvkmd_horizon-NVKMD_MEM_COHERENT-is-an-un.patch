@@ -1,7 +1,7 @@
-From db9950884b4bbcf60774c94abfd840e230241f77 Mon Sep 17 00:00:00 2001
+From 1cecfc59558f11dfea2023691c23e1331053426d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 15:13:13 +0000
-Subject: [PATCH 30/56] nouveau/vk: nvkmd_horizon, NVKMD_MEM_COHERENT is an
+Subject: [PATCH 30/57] nouveau/vk: nvkmd_horizon, NVKMD_MEM_COHERENT is an
  uncached allocation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
