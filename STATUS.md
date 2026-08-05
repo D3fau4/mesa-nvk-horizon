@@ -12,18 +12,66 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console seven times, and run 7 found the mode that works.** On the two-buffer window that had just failed, `async=false` handed over a buffer in **145 us** where `async=true` had answered `NO_INIT` **78166 times running** — and it did not block. Fixed in `t_nwindow` and as patch **0063**, unrun. Three of four exit criteria are met; the fourth half needs one green run. Runs 2 and 4 stand: 89 of 89 intervals inside 10% of a 60 Hz refresh, zero-copy chosen by the driver, the pattern confirmed by the operator, no leak and no exit crash |
+| **Phase** | **Phase 6 has been to the console eight times.** Run 8 carried run 7's fix — both dequeue modes asked every round — and the two-buffer failure did not move, which sharpened it: `nw_dequeue` asked both modes for a whole second and both failed, then `async=false` succeeded at ~6 s. **So the question is not the mode; it is when a buffer becomes free at all.** Three of four exit criteria are met. Runs 2 and 4 stand: 89 of 89 intervals inside 10% of a 60 Hz refresh, zero-copy chosen by the driver, the pattern confirmed by the operator, no leak and no exit crash |
 | **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 8: `t_nwindow` and `t_vk_swapchain` with both dequeue modes asked every iteration.** If the reading is right, the two-buffer sessions present 90 of 90 and the 2-vs-3 pacing comparison — the half of exit criterion 2 that has never run, five attempts in — runs at last |
-| **Known failures** | **1. A two-buffer window stops at the third frame** — seven runs, and run 7 has the cause: `async=true` cannot satisfy the queue's reserve when both buffers are out, while `async=false` answers in 145 us. Fixed in `t_nwindow` and as patch 0063; **unrun**. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Next concrete task** | **Run 9: `t_nwindow`, two numbers nobody has.** The diagnostic asks both modes every round and prints when a buffer first came back and in which mode, turning "between 1 s and 6 s" into a time. Then it takes that buffer and attempts ten more frames and counts them, because a startup transient and a permanent stall look identical in all eight logs so far |
+| **Known failures** | **1. A two-buffer window stops at the third frame**, eight runs. **Ruled out:** the dequeue mode alone (0059, 0061, 0063), the release event (0062), session position (run 7's BEFORE/AFTER A/B). **Known:** nothing frees a buffer for at least a second, and something has by six. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether patch 0063 and its `t_nwindow` twin make a two-buffer session present. Whether `async=false` can block in the server on some other window state — it did not on the one measured, which is why the WSI skips it at a zero timeout. Any display mode change. Anything multi-threaded |
+| **What is still unverified** | When a buffer first becomes free on a two-buffer window, and whether the window keeps going once one does. Whether `minImageCount = 2` is a promise this compositor can keep. Any display mode change. Anything multi-threaded |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Not being taken — run 7 showed two buffers are not impossible here. It stays open until run 8 either presents 90 of 90 on two or does not |
-| **Never verified on hardware** | Patch **0063** and the `t_nwindow` change beside it; `t_fault` as it stands |
+| **Never verified on hardware** | The both-modes-every-round diagnostic and the ten-frame recovery arm; `t_fault` as it stands |
+
+
+---
+
+## Run 8 — the fix did not move it, and that sharpened the question (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 111/113 and `t_vk_swapchain`
+114/116, build `2026-08-05T18:30:39Z dec5a7a`. Logs in
+`docs/hw-logs/*run8*`.
+
+`nw_dequeue` and the WSI acquire both asked `async=true` and then
+`async=false` on every iteration. The two-buffer sessions still stop at
+the third frame.
+
+### What the same log says next to that
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 77900 dequeue(s) in
+       libnx's mode, ... last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 134 us
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`nw_dequeue` had been asking **both** modes for the entire second before
+the diagnostic ran, and both failed for that whole second. Then five
+seconds of `async=true` passed and one `async=false` succeeded in 134 us.
+
+**So `async=false` does not work at t = 0 and does work by t = 6 s.**
+Run 7's measurement was real; its reading was too narrow. The mode
+matters, but only once something has freed a buffer — and nothing on a
+two-buffer window frees one for at least a second.
+
+### The question, restated
+
+Not which mode. **When does a buffer become free on a two-buffer window,
+and does the window keep going once one does?** Every log so far is
+blind to both: the ask asked one mode for five seconds and the other
+once, and no session has ever continued past the stall.
+
+Run 9 measures both. The diagnostic asks both modes every round and
+prints the elapsed time and which mode won, turning "somewhere between
+1 s and 6 s" into a number. Then it takes the late buffer and attempts
+**ten more frames**, counting them: a startup transient and a permanent
+stall are different defects and look identical in every log to date.
+
+Patch 0063 stays. Its cost is one extra dequeue per acquire round when
+the queue says it would block, and run 7's measurement — `async=false`
+answering where `async=true` will not — is untouched by run 8.
 
 
 ---

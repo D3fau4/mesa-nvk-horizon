@@ -671,20 +671,43 @@ static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
 {
     test_ctx *t = s->t;
     const u64 start = armGetSystemTick();
-    uint32_t events = 0, tries = 0;
-    Result last = 0;
-    bool got_one = false;
+    uint32_t events = 0, rounds = 0;
+    Result last_async = 0, last_sync = 0;
+    const char *winner = NULL;
 
     memset(out, 0, sizeof(*out));
 
     for (;;) {
-        last = nw_try_dequeue(&s->prod, false /* libnx's mode: async=true */,
-                              out);
-        tries++;
-        if (R_SUCCEEDED(last)) {
-            got_one = true;
+        /* libnx's mode first: the common case and the cheap one. */
+        last_async = nw_try_dequeue(&s->prod, false /* async=true */, out);
+        rounds++;
+        if (R_SUCCEEDED(last_async)) {
+            winner = "async=true";
             break;
         }
+        if (!nw_dequeue_would_block(last_async))
+            break;   /* a real failure, not "come back later" */
+
+        /* THE OTHER MODE, EVERY ROUND, AND IT MAY NOT RETURN.
+         *
+         * Android permits async=false to block inside the server until
+         * a buffer frees. Runs 7 and 8 measured it returning in 145 us
+         * and 134 us on this exact window, so it is not blocking here —
+         * but the warning is printed once, before the first attempt, so
+         * a log that stops mid-probe still says what happened. */
+        if (rounds == 1)
+            t_note(t, "%s: from here BOTH dequeue modes are asked every "
+                      "round. async=false is the one Android may let block "
+                      "inside the compositor; if this log stops before the "
+                      "summary line, that call never returned", tag);
+
+        last_sync = nw_try_dequeue(&s->prod, true /* async=false */, out);
+        if (R_SUCCEEDED(last_sync)) {
+            winner = "async=false";
+            break;
+        }
+        if (!nw_dequeue_would_block(last_sync))
+            break;
 
         const uint64_t spent = armTicksToNs(armGetSystemTick() - start);
         if (spent >= NW_STARVE_PATIENCE_NS)
@@ -699,49 +722,30 @@ static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
     }
 
     const uint64_t elapsed = armTicksToNs(armGetSystemTick() - start);
-    t_note(t, "%s: asked for %" PRIu64 " ms — %" PRIu32 " dequeue(s) in "
-              "libnx's mode, release event fired %" PRIu32 " time(s), last "
-              "result 0x%08x", tag, elapsed / 1000000, tries, events, last);
 
-    if (got_one) {
-        t_note(t, "%s: a buffer came back after %" PRIu64 " us (%" PRIu64
-                  " refresh(es))", tag, elapsed / 1000, elapsed / NW_REFRESH_NS);
-        return true;
-    }
-
-    /* THE OTHER MODE, ONCE, AND IT MAY NOT RETURN.
+    /* THE NUMBER THIS EXISTS FOR, and run 8 is why it is a time now.
      *
-     * async=false is what libnx passes only on a window with no release
-     * event, and in Android's BufferQueue it is the mode whose dequeue
-     * is allowed to block inside the server until a buffer frees. On
-     * this window async=true has just failed 84328 times, so blocking
-     * is the one behaviour that has not been observed and cannot be
-     * ruled out.
-     *
-     * If the call does not come back, that is an answer — a different
-     * one from "the queue never frees a buffer" — and it costs the rest
-     * of the run and none of the evidence: t_vemit flushes every line,
-     * so everything above is already on the SD card, and the note below
-     * says in advance what a missing next line means.
+     * Run 8 asked async=true for five seconds and then async=false
+     * once, which succeeded in 134 us — while nw_dequeue, which had
+     * been asking BOTH modes for the whole second before it, had
+     * failed. So async=false does not work at t = 0 and does work by
+     * t = 6 s, and one late attempt cannot say which second it started
+     * working in. Asking both every round turns that into a time.
      */
-    t_note(t, "%s: ABOUT TO TRY async=false, which can block inside the "
-              "compositor. If the next line of this log is missing, that call "
-              "never returned — and that is the finding, not a crash", tag);
+    t_note(t, "%s: asked for %" PRIu64 " ms in BOTH modes — %" PRIu32
+              " round(s), release event fired %" PRIu32 " time(s); last "
+              "async=true 0x%08x, last async=false 0x%08x",
+           tag, elapsed / 1000000, rounds, events, last_async, last_sync);
 
-    const u64 other_start = armGetSystemTick();
-    Result orc = nw_try_dequeue(&s->prod, true /* async=false */, out);
-    const uint64_t other_ns = armTicksToNs(armGetSystemTick() - other_start);
-
-    t_note(t, "%s: async=false returned 0x%08x after %" PRIu64 " us", tag, orc,
-           other_ns / 1000);
-
-    if (R_SUCCEEDED(orc)) {
-        t_check(t, true,
-                "%s: async=false produced a buffer where libnx's async=true "
-                "could not, %" PRIu32 " times running", tag, tries);
+    if (winner != NULL) {
+        t_note(t, "%s: THE TIME — a buffer came back after %" PRIu64 " us "
+                  "(%" PRIu64 " refresh(es)), in %s",
+               tag, elapsed / 1000, elapsed / NW_REFRESH_NS, winner);
         return true;
     }
 
+    t_note(t, "%s: neither mode produced a buffer in %" PRIu64 " ms",
+           tag, NW_STARVE_PATIENCE_NS / 1000000);
     return false;
 }
 
@@ -934,10 +938,49 @@ static void nw_session_present(nw_session *s, nw_stats *st)
              * five seconds are spent asking that state. */
             nw_slot late;
             if (nw_ask_for_a_buffer(s, st->what, &late)) {
-                Result crc = bqCancelBuffer(&s->prod.win->bq, late.slot,
-                                            &late.fence);
-                t_note(s->t, "%s: the late buffer went back -> 0x%08x",
-                       st->what, crc);
+                /* AND THEN DOES IT KEEP GOING?
+                 *
+                 * A buffer that arrives after seconds is either the end
+                 * of a startup transient — in which case the session
+                 * runs from here — or one buffer that will be followed
+                 * by the same wait. Those are different defects and the
+                 * counts above cannot tell them apart, so ten more
+                 * frames are attempted and counted. Short on purpose:
+                 * ten frames is a sixth of a second when it works and
+                 * ten seconds when it does not. */
+                uint32_t recovered = 0;
+                nw_slot cur = late;
+                for (uint32_t k = 0; k < 10; k++) {
+                    if (cur.fence.num_fences > 0 &&
+                        R_FAILED(nvMultiFenceWait(&cur.fence, 1000000)))
+                        break;
+
+                    const uint32_t off =
+                        (uint32_t)cur.slot * s->geom.buffer_size_B;
+                    nw_fill(s->cpu, off, s->geom.buffer_size_B,
+                            nw_frame_colour(frame + k));
+                    if (horizon_gpu_mem_flush(s->mem, off,
+                                              s->geom.buffer_size_B).status
+                        != HORIZON_GPU_OK)
+                        break;
+
+                    BqBufferOutput bo;
+                    memset(&bo, 0, sizeof(bo));
+                    if (R_FAILED(nw_queue(&s->prod, cur.slot,
+                                          s->swap_interval, NULL, &bo)))
+                        break;
+                    recovered++;
+
+                    if (R_FAILED(nw_dequeue(&s->prod, NW_DEQUEUE_TIMEOUT_NS,
+                                            &cur)))
+                        break;
+                }
+                t_note(s->t, "%s: after the late buffer, %" PRIu32
+                             " of 10 further frames presented",
+                       st->what, recovered);
+                t_check(s->t, recovered == 10,
+                        "%s: the window kept going once a buffer finally came "
+                        "back (%" PRIu32 " of 10)", st->what, recovered);
             }
             return;
         }

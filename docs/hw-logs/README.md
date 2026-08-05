@@ -27,6 +27,38 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## async=false does not work at t=0 and does work by t=6 s
+
+### `t_nwindow-run8-both-modes-fail-early-FAIL.log`, `t_vk_swapchain-run8-FAIL.log`
+
+Run 8 carried the fix run 7's evidence pointed at — `nw_dequeue` asks both
+dequeue modes on every iteration — and **the failure did not move**. Two
+buffers still stop at the third frame, in raw `bq*` and through Vulkan alike.
+
+That is not a refutation of `async=false`; it is a much sharper statement of
+the problem, because both logs put the two facts side by side:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 77900 dequeue(s) in libnx's
+       mode, ... last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 134 us
+  FAIL 2 buffers, interval 1: 2 of 90 frames presented
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`nw_dequeue` had been asking **both** modes for the whole second before that
+diagnostic ran, and both failed for the whole second. Then five seconds of
+`async=true` went by, and one `async=false` succeeded in 134 us. So
+`async=false` does not work at t = 0 and does work by t = 6 s, and a single
+late attempt cannot say which second in between it started working in.
+
+The question is therefore no longer which mode to ask in. It is **when a buffer
+becomes free at all on a two-buffer window**, and whether the window keeps
+going once one does. Both are measured from run 9: the diagnostic asks both
+modes every round and prints the elapsed time and the winning mode, and then
+attempts ten more frames and counts them — a startup transient and a permanent
+stall look identical in every log so far.
+
 ## The mode that works
 
 ### `t_nwindow-run7-async-false-works-FAIL.log`
