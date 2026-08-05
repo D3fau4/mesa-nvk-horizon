@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-04
+**Last updated:** 2026-08-05
 **Branch:** `claude/phase-5-offscreen-rendering-vnl6q9`
 
 ---
@@ -12,15 +12,104 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **5's nine items were each met on hardware, 2026-08-04**, by CPU readback of the result, item 9 with eight submits in flight. **Not "complete" as of the PR #7 review:** two of the tests that produced that evidence — `t_vk_transfer` for item 1, `t_vk_depth` for item 7 — were found to be measuring less than they claimed and have changed since. The items stand on the binaries that ran; the current ones have not |
-| **What runs on a Switch** | *Counts from the binaries that ran; several have changed since — see the last row.* Transfers (**202/202**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), the mandatory sequence (**62/62**). All 16 `horizon/` tests pass on console |
-| **Next concrete task** | Re-run the five tests the PR #7 review changed, then Phase 6. The exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
-| **The debt batch** | Seven of seven back. Six PASS, and `t_fault`, whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69**, D15's number · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
-| **Known failures** | **`t_fault` crashes the console on exit.** Its checks pass — 14/15 on run 1, 15/15 with the latch that failure earned, 20/20 once the two diagnostic sections were added; three numbers for three builds, which this table used to give as though they described one. The log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and 32 subsequent attempts under the same configuration have not reproduced it. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
-| **Open, not blocking** | **Two** unconditional L2 operations per submit, not one: the dirty writeback in the fence epilogue and the sysmem invalidate in the prologue this phase added — which also took a second GPFIFO entry per submit, permanently reducing usable queue depth from 0x800 to 0x7fe. Neither cost is measured on its own; the nearest number is 126 us per serialised round trip with both of them in it (`t_vk_submits`) |
+| **Phase** | **Phase 5 is complete.** Its nine items were each met on hardware on 2026-08-04, by CPU readback of the result, item 9 with eight submits outstanding. The PR #7 review then found two of the tests behind that evidence measuring less than they claimed, so the corrected binaries were re-run: **thirteen tests on a console on 2026-08-05, thirteen PASS, 2942 checks, zero failures.** The evidence and the tree describe the same binaries again — with one exception, named in the last row |
+| **What runs on a Switch** | *Counts from the binaries in this tree, run 2026-08-05.* Transfers (**203/203**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), a linear-modifier image rendered through a tiled shadow (**52/52**), the mandatory sequence (**62/62**), and from `horizon/` itself `t_submit` (**32/32**), `t_pbsize` (**77/77**) and `t_display` (**3/3**) |
+| **Next concrete task** | **Phase 6, the Horizon WSI.** Nothing in Phase 5 is outstanding. The `t_fault` exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
+| **The debt batch** | Seven of seven back. Six PASS, and `t_fault`, whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69** — superseded, because that build's rungs were one dword short of the size they named, so D15's boundary was never reached at the boundary; the number that stands is the **77/77** above · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
+| **Known failures** | **`t_fault` crashes the console on exit.** Its checks pass — 14/15 on run 1, 15/15 with the latch that failure earned, 20/20 once the two diagnostic sections were added; three numbers for three builds, which this table used to give as though they described one. The log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and **56** subsequent attempts under the same configuration have not reproduced it — 32 up to run 8, plus the 24 the 2026-08-05 re-run adds. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
+| **Open, not blocking** | **Two** unconditional L2 operations per submit, not one: the dirty writeback in the fence epilogue and the sysmem invalidate in the prologue this phase added — which also took a second GPFIFO entry per submit, permanently reducing usable queue depth from 0x800 to 0x7fe. Neither cost is measured on its own; the nearest number is **115 us** per serialised round trip with both of them in it (`t_vk_submits`, 2026-08-05; 126 us on the previous build, and nothing between the two runs was aimed at that number) |
 | **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | **Every test changed since the last console run**, which after the PR #7 review is `t_submit`, `t_pbsize`, `t_vk_caps`, `t_vk_depth`, `t_vk_transfer`, `t_display`, and the whole suite through `vkfw` and `testfw`. The binaries that produced the pass counts in the row above no longer exist in this tree |
+| **Never verified on hardware** | **`t_fault` as it now stands**, and it alone. It was kept out of the 2026-08-05 batch on purpose — it takes the console down on exit, so running it ends the session and everything after it in the order — and it has changed since its last run: the `atexit` marker built to say whether the crash is before or after `exit()`. Its 20/20 is from run 3. Of the rest, the **fifteen** non-Vulkan tests not in that batch (`t_init`, `t_alloc`, `t_nvmap`, `t_va_reserve`, `t_map`, `t_channel`, `t_syncpt`, `t_fence_wait`, `t_gpuwrite`, `t_teardown`, `t_uncached`, `t_sysinfo`, `t_va_window`, `t_threads`, `t_ostime`) carry exactly one change since their last console run — `testfw`'s exit loop, which runs after every check has been made and written |
 
+
+---
+
+## The re-run: the corrected binaries on a console (2026-08-05)
+
+**Class: verified on real hardware.** Thirteen `.nro`, in the order they
+were given, on the owner's Switch. **Thirteen PASS, 2942 checks, no
+failure and no crash.** Logs in `docs/hw-logs/*-pr7-rerun-PASS.log`.
+
+| test | this run | previous | what moved |
+|---|---|---|---|
+| `t_vulkan` | **62/62** | 62/62 | — |
+| `t_submit` | **32/32** | 30/30 | +2, the two overflow refusals below |
+| `t_pbsize` | **77/77** | 69/69 | +8, the odd rungs and the payload assertion |
+| `t_display` | **3/3** | 3/3 | — |
+| `t_vk_compute` | **37/37** | 37/37 | — |
+| `t_vk_transfer` | **203/203** | 202/202 | +1, the spill check |
+| `t_vk_image` | **72/72** | 72/72 | — |
+| `t_vk_triangle` | **84/84** | 84/84 | — |
+| `t_vk_texture` | **1685/1685** | 1685/1685 | — |
+| `t_vk_depth` | **66/66** | 66/66 | the barrier under it, not the count |
+| `t_vk_format` | **282/282** | 282/282 | — |
+| `t_vk_caps` | **52/52** | 52/52 | — |
+| `t_vk_submits` | **287/287** | 287/287 | — |
+
+The three counts that changed changed by exactly what the review said
+they would, which is the point of predicting them:
+
+- **`t_submit` +2.** `a span count of UINT32_MAX is refused, not
+  wrapped` and `one span more than the queue can hold with its own two
+  entries is refused`. The guard that was written to stop an overflow
+  overflowed; both directions now execute on hardware and both refuse.
+- **`t_pbsize` +8.** The rungs were one dword short of the size they
+  named — `filler = dwords - 5` is odd, `pairs = filler / 2` truncates —
+  so D15's 524288-dword boundary was never actually tested at 524288.
+  The rungs are odd now and the test asserts the total it encoded. The
+  log's last rung reads `524289 dwords: the release at the END of the
+  entry ran (0x5a5a0800)`: **no entry-size limit exists in this range**,
+  which is the answer D15 wanted and did not previously have.
+- **`t_vk_transfer` +1.** `F: 0 of 9 probes wrote outside their region`.
+
+### Item 7's asterisk is gone
+
+`t_vk_depth` was the one item whose evidence carried a caveat: its
+`srcStageMask` gave `LATE_FRAGMENT_TESTS` alone and omitted
+`EARLY_FRAGMENT_TESTS`, leaving any depth write done in the early stage
+outside the dependency — and `nvk_shader.c:787` shows
+`SET_API_MANDATED_EARLY_Z` is a real code path here, so the risk was not
+theoretical. With both stages in the mask all seven content checks land:
+
+```
+  ok   colour: 4096/4096 pixels hold what the depth test left there
+  ok   depth: 4096/4096 pixels hold the value the surviving fragment wrote
+  ok   the draw behind everything was rejected at every pixel (0 blue)
+  ok   nothing is left of the far draw (0 red)
+  ok   every pixel was drawn to (0 still the clear colour)
+  ok   the draw with depth writes off left the depth buffer alone (0 pixels hold 0.5)
+  ok   every pixel's depth was written by some draw (0 still 1.0)
+```
+
+A two-submit variant — render, fence, then read back, so the ordering
+would rest on a fence rather than on a stage mask — was designed while
+these logs were outstanding and **was never written**: the barrier is
+now correct and measured correct, and swapping a working mechanism for
+a different one after the fact would replace evidence with a change.
+The option is recorded here rather than in code, which is where it
+belongs until something needs it.
+
+### What this run does not say
+
+- **`t_fault` did not run.** It was left out on purpose — it takes the
+  console down on exit, so it would have ended the session and
+  everything ordered after it. It is the one binary in this tree whose
+  current build has never run on a console, and the `atexit` marker
+  built to localise the crash is still unexecuted.
+- **The texture anomaly is still unreproduced, not explained.** This run
+  adds 24 more independent builds of the exact 8x8 optimal configuration
+  that once returned zeros (16 `run 1 shape` + 8 `checked after`), all
+  correct, largest deviation 1 of 255. That is 56 attempts against one
+  occurrence. The diagnostic machinery stays in the test.
+- **115 us per serialised round trip**, against 126 us on the previous
+  build. Nothing between the two runs was aimed at that number and no
+  experiment isolates it, so it is a datum, not a result.
+
+The logs were checked to be a fresh run rather than a re-zip of the
+previous one: `t_vk_texture.log` is the same length as run 8's to the
+byte — the test is deterministic — but its channel addresses and
+syncpoint baselines differ (`0x25d6b306e0`/`48366` against
+`0x6b57f306e0`/`28324`), which only a different boot produces.
 
 ---
 

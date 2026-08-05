@@ -50,6 +50,42 @@ submit, so no no-flush arm exists any more. The four arms now differ only by a
 redundant `MEM_OP`. Their all passing is consistent with the L2 finding and is
 not a test of it.
 
+### `t_pbsize-run1-debt-batch-PASS.log`, `t_pbsize-run2-payload-PASS.log`
+
+Both end on a line that names a size they did not reach:
+
+```
+  note D15: every rung up to 524288 dwords (2048 KiB) executed to its last dword
+```
+
+The rung builder computed `filler = dwords - 5` and then `pairs =
+filler / 2`, and `dwords - 5` is odd for every even rung, so the
+division truncated and each entry was submitted **one dword short of
+the size in its own label**. D15's question is whether a 524288-dword
+entry executes; these two runs asked it about 524287.
+
+The PASSes are real — every rung they *did* submit ran to its last
+dword, and no limit appeared — but the boundary itself was never
+tested at the boundary. `t_pbsize-run3-pr7-rerun-PASS.log` uses odd
+rungs and asserts the total it encoded, and answers the question at
+**524289**.
+
+### `t_vk_depth-run5-batch5-PASS.log`
+
+66/66, and the count is not the problem. The barrier between the render
+and the read-back gave `VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT`
+alone as the source stage, omitting
+`VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT`. A depth write performed
+in the early stage is therefore outside the dependency, and
+`nvk_shader.c:787` shows `SET_API_MANDATED_EARLY_Z` is a real code path
+on this hardware rather than a theoretical one — so some of the depth
+values this log reports were read back without an ordering guarantee.
+
+They were, as it happens, correct. That is a fact about how the copy
+happened to schedule, not evidence that the test measured what it says.
+`t_vk_depth-run6-pr7-rerun-PASS.log` is the same 66/66 with the correct
+stage masks, and it is the log item 7 rests on.
+
 ### Logs carrying the wrong-cause memory-type note
 
 `t_vulkan.log`, `t_vulkan-run3-l2fix.log`, `t_vulkan-PASS-20260804.log`, and
