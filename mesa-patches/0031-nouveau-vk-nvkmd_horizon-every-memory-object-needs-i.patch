@@ -1,8 +1,8 @@
-From bfc3fe0790b9b6ffb36fc20834ac9b5c613d3847 Mon Sep 17 00:00:00 2001
+From d168a66189e2ed7cd6382f8a2b77f905816d91be Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 15:51:42 +0000
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, every memory object needs its own
- VA
+Subject: [PATCH 31/54] nouveau/vk: nvkmd_horizon, every memory object needs
+ its own VA
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

@@ -1,7 +1,7 @@
-From 67fd0a802b67c6acfdcbdf7e5eb859045b2b7734 Mon Sep 17 00:00:00 2001
+From 8f5caac4ab73fa416a1f2b5042e030b54a8ce39c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 18:20:00 +0000
-Subject: [PATCH 47/47] nouveau/vk: nvkmd_horizon, block off the shader memory
+Subject: [PATCH 47/54] nouveau/vk: nvkmd_horizon, block off the shader memory
  window (again)
 
 mesa-nvk-horizon: Phase 5 item 2 (compute dispatch)

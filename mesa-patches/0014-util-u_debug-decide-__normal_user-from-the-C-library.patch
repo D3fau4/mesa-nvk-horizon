@@ -1,7 +1,7 @@
-From 4bbc5837466a64c64b87a50e4d1493e79db5773d Mon Sep 17 00:00:00 2001
+From 2901b11d3d8ba74835834a0f763ebf65341d4a31 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:52:29 +0000
-Subject: [PATCH 14/30] util/u_debug: decide __normal_user from the C library,
+Subject: [PATCH 14/54] util/u_debug: decide __normal_user from the C library,
  not from the OS
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

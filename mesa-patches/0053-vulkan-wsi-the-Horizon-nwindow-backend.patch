@@ -1,0 +1,1992 @@
+From bd49ae06fedd318dc11e6e903baa8d1bff92ade3 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:26:06 +0000
+Subject: [PATCH 53/54] vulkan/wsi: the Horizon (nwindow) backend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 items 1-10 (the Horizon WSI)
+Why: nothing in Mesa presents through Horizon's VI compositor. This adds
+ the backend for VK_ICD_WSI_PLATFORM_VI: surface, capabilities, formats,
+ present modes, and a swapchain with explicit slot ownership, two
+ present paths and a decision between them that is reported rather than
+ assumed.
+ Four things in it are answers to defects
+ docs/reference-analysis.md § 7 and § 8.1 record in the reference ports,
+ and each is written where the defect was:
+  - the surface owns the window's scanout registration, so two
+    swapchains over one window hand it over rather than colliding. The
+    reference solved the same problem with a file-scope pointer;
+  - release_images cancels dequeued slots back to the compositor instead
+    of clearing a busy flag, which leaks them from the BufferQueue's
+    point of view;
+  - the queue result is checked, so a failed present is not reported as
+    VK_SUCCESS;
+  - there is no fall-through: every present either queues, copies, or
+    returns an error.
+ It drives libnx's IGraphicBufferProducer wrappers rather than NWindow's
+ dequeue/queue, because NWindow keeps one `cur_slot` and Vulkan makes
+ two acquired images valid usage on a three-image swapchain with
+ minImageCount = 2. Registration and teardown still go through
+ nwindowConfigureBuffer and nwindowReleaseBuffers.
+ wsi_device gains a `horizon` sub-struct of driver callbacks, in the
+ same shape as the existing win32 and metal ones, and
+ WSI_IMAGE_TYPE_HORIZON — a renderable image the window system scans out
+ as it stands, with no modifier, no dma-buf and no CPU mapping.
+Evidence: cross build of build/mesa-nvk with -Dplatforms=vi
+ (aarch64-none-elf-gcc 15.2.0 from ghcr.io/d3fau4/nx-dev, meson 1.9.1);
+ wsi_horizon.c.o is in libvulkan_wsi.a and wsi_CreateViSurfaceNN is
+ defined in it. The geometry constants are libnx's framebufferCreate,
+ which is the known-working producer on this platform, and the
+ num_ints field is the one the reference confirmed on hardware: left at
+ zero, bqSetPreallocatedBuffer succeeds and the first dequeue never
+ returns. NOT RUN ON A CONSOLE.
+Upstream: no — it is a window system that exists on one platform.
+---
+ src/vulkan/wsi/meson.build          |    4 +
+ src/vulkan/wsi/wsi_common.c         |   29 +
+ src/vulkan/wsi/wsi_common.h         |   70 ++
+ src/vulkan/wsi/wsi_common_private.h |   30 +
+ src/vulkan/wsi/wsi_horizon.c        | 1689 +++++++++++++++++++++++++++
+ 5 files changed, 1822 insertions(+)
+ create mode 100644 src/vulkan/wsi/wsi_horizon.c
+
+diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
+index 38a83d0..e7c9e3f 100644
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -37,6 +37,10 @@ if with_platform_macos
+   files_vulkan_wsi += files('wsi_common_metal.c', 'wsi_common_metal_layer.m')
+ endif
+ 
++if with_platform_vi
++  files_vulkan_wsi += files('wsi_horizon.c')
++endif
++
+ if system_has_kms_drm and not with_platform_android
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+index 4d5517d..98bc213 100644
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -265,6 +265,12 @@ wsi_device_init(struct wsi_device *wsi,
+       goto fail;
+ #endif
+ 
++#ifdef VK_USE_PLATFORM_VI_NN
++   result = wsi_horizon_init_wsi(wsi, alloc, pdevice);
++   if (result != VK_SUCCESS)
++      goto fail;
++#endif
++
+ #ifndef VK_USE_PLATFORM_WIN32_KHR
+    result = wsi_headless_init_wsi(wsi, alloc, pdevice);
+    if (result != VK_SUCCESS)
+@@ -354,6 +360,9 @@ wsi_device_finish(struct wsi_device *wsi,
+ #if defined(VK_USE_PLATFORM_METAL_EXT)
+    wsi_metal_finish_wsi(wsi, alloc);
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++   wsi_horizon_finish_wsi(wsi, alloc);
++#endif
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -379,6 +388,12 @@ wsi_DestroySurfaceKHR(VkInstance _instance,
+       return;
+    }
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++   if (surface->platform == VK_ICD_WSI_PLATFORM_VI) {
++      wsi_horizon_surface_destroy(surface, _instance, pAllocator);
++      return;
++   }
++#endif
+ 
+    vk_free2(&instance->alloc, pAllocator, surface);
+ }
+@@ -419,6 +434,12 @@ get_blit_type(const struct wsi_device *wsi,
+       return wsi_dxgi_image_needs_blit(wsi, dxgi_params, device);
+    }
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++   case WSI_IMAGE_TYPE_HORIZON:
++      /* The image IS the scanout buffer, or the backend does not use
++       * this image type at all. There is nothing between the two. */
++      return WSI_SWAPCHAIN_NO_BLIT;
++#endif
+ #if defined(VK_USE_PLATFORM_METAL_EXT)
+    case WSI_IMAGE_TYPE_METAL: {
+       /* Due to mismatches between WSI and Metal, we require rendering into an
+@@ -468,6 +489,14 @@ configure_image(const struct wsi_swapchain *chain,
+       return wsi_dxgi_configure_image(chain, pCreateInfo, dxgi_params, info);
+    }
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++   case WSI_IMAGE_TYPE_HORIZON: {
++      const struct wsi_horizon_image_params *horizon_params =
++         container_of(params, const struct wsi_horizon_image_params, base);
++      return wsi_horizon_configure_image(chain, pCreateInfo, horizon_params,
++                                         info);
++   }
++#endif
+ #if defined(VK_USE_PLATFORM_METAL_EXT)
+    case WSI_IMAGE_TYPE_METAL: {
+       const struct wsi_metal_image_params *metal_params =
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index 196d17d..60bcea1 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -50,6 +50,46 @@ struct wsi_interface;
+ struct vk_instance;
+ struct vk_queue;
+ 
++/** What Horizon's display block needs to know about an image's memory.
++ *
++ * Filled in by the driver through wsi_device::horizon::get_image_info.
++ * Everything here is a fact about the allocation, not a request: the
++ * WSI backend validates it and declines to scan the image out if it
++ * does not fit what an NvGraphicBuffer can express.
++ */
++struct wsi_horizon_image_info {
++   /** The window system's name for the memory — Horizon's NvMap id. */
++   uint32_t scanout_id;
++   /** Where the image starts inside that object, and how big it is. */
++   uint64_t offset_B;
++   uint64_t size_B;
++   /** Distance between rows of GOBs, in bytes. */
++   uint32_t row_stride_B;
++   /** log2 of the block height, in GOBs. */
++   uint32_t block_height_log2;
++   /** The page-table entry kind the image is mapped with. */
++   uint8_t pte_kind;
++   /** False for a pitch-linear image. */
++   bool block_linear;
++   /** True when the GOB's internal sector ordering is the one this
++    * platform's display block reads.
++    *
++    * A boolean and not the layout itself, because naming the layout
++    * would mean naming the driver's own enumeration in an interface the
++    * driver implements. The driver knows which of its layouts the
++    * display can read; the WSI knows what to do when the answer is no.
++    */
++   bool gob_layout_is_display;
++};
++
++/** A syncpoint fence, as Horizon's compositor consumes them. */
++struct wsi_horizon_fence {
++   uint32_t syncpt_id;
++   uint32_t threshold;
++   /** False when there is nothing to wait for. */
++   bool valid;
++};
++
+ struct driOptionCache;
+ 
+ /* Sized from the LAST enumerator of VkIcdWsiPlatform, not from the last
+@@ -172,6 +212,36 @@ struct wsi_device {
+       void (*encode_drawable_present)(VkCommandBuffer cmd, void *drawable);
+    } metal;
+ 
++   struct {
++      /** How this image's memory looks to Horizon's display block.
++       *
++       * The WSI backend needs the image's layout to decide whether the
++       * compositor can scan it out as it stands, and the layout is the
++       * driver's to describe: vkGetImageSubresourceLayout is invalid
++       * usage on a VK_IMAGE_TILING_OPTIMAL image, which every
++       * renderable image here is.
++       *
++       * VK_ERROR_FEATURE_NOT_PRESENT means "this image cannot be
++       * presented directly". That is an ordinary answer — the backend
++       * turns it into a copy and logs the reason — and not a failure.
++       */
++      VkResult (*get_image_info)(VkDevice device, VkImage image,
++                                 VkDeviceMemory memory,
++                                 struct wsi_horizon_image_info *info_out);
++
++      /** The syncpoint fence `fence` will be signalled by.
++       *
++       * `abs_timeout_ns` bounds a wait for the fence's *submission*, not
++       * for its completion; handing the compositor a fence it can wait
++       * on itself is the whole reason this exists.
++       * wsi_horizon_fence::valid is false when there is nothing to wait
++       * for.
++       */
++      VkResult (*get_fence)(VkDevice device, VkFence fence,
++                            uint64_t abs_timeout_ns,
++                            struct wsi_horizon_fence *fence_out);
++   } horizon;
++
+ 
+    bool sw;
+ 
+diff --git a/src/vulkan/wsi/wsi_common_private.h b/src/vulkan/wsi/wsi_common_private.h
+index 0b90eac..107bea3 100644
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -49,6 +49,14 @@ enum wsi_image_type {
+    WSI_IMAGE_TYPE_DRM,
+    WSI_IMAGE_TYPE_DXGI,
+    WSI_IMAGE_TYPE_METAL,
++   /** A renderable image the window system can scan out as it stands.
++    *
++    * Unlike WSI_IMAGE_TYPE_CPU it is never linear and never mapped, and
++    * unlike WSI_IMAGE_TYPE_DRM it carries no modifier and no dma-buf:
++    * the image's memory is named to the display server by whatever token
++    * that platform uses, and the layout is described to it separately.
++    */
++   WSI_IMAGE_TYPE_HORIZON,
+ };
+ 
+ struct wsi_base_image_params {
+@@ -78,6 +86,10 @@ struct wsi_dxgi_image_params {
+    bool storage_image;
+ };
+ 
++struct wsi_horizon_image_params {
++   struct wsi_base_image_params base;
++};
++
+ typedef uint32_t (*wsi_memory_type_select_cb)(const struct wsi_device *wsi,
+                                               uint32_t type_bits);
+ 
+@@ -347,6 +359,11 @@ void
+ wsi_win32_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
+                           const VkAllocationCallbacks *pAllocator);
+ 
++void
++wsi_horizon_surface_destroy(VkIcdSurfaceBase *icd_surface,
++                            VkInstance _instance,
++                            const VkAllocationCallbacks *pAllocator);
++
+ VkResult
+ wsi_swapchain_init(const struct wsi_device *wsi,
+                    struct wsi_swapchain *chain,
+@@ -401,6 +418,12 @@ wsi_configure_cpu_image(const struct wsi_swapchain *chain,
+                         const struct wsi_cpu_image_params *params,
+                         struct wsi_image_info *info);
+ 
++VkResult
++wsi_horizon_configure_image(const struct wsi_swapchain *chain,
++                            const VkSwapchainCreateInfoKHR *pCreateInfo,
++                            const struct wsi_horizon_image_params *params,
++                            struct wsi_image_info *info);
++
+ VkResult
+ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
+                                const struct wsi_image_info *info,
+@@ -573,6 +596,13 @@ VkResult wsi_headless_init_wsi(struct wsi_device *wsi_device,
+ void wsi_headless_finish_wsi(struct wsi_device *wsi_device,
+                              const VkAllocationCallbacks *alloc);
+ 
++VkResult wsi_horizon_init_wsi(struct wsi_device *wsi_device,
++                              const VkAllocationCallbacks *alloc,
++                              VkPhysicalDevice physical_device);
++
++void wsi_horizon_finish_wsi(struct wsi_device *wsi_device,
++                            const VkAllocationCallbacks *alloc);
++
+ VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_swapchain, base, VkSwapchainKHR,
+                                VK_OBJECT_TYPE_SWAPCHAIN_KHR)
+ 
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+new file mode 100644
+index 0000000..1fe9268
+--- /dev/null
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -0,0 +1,1689 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/** VK_NN_vi_surface — presenting through Horizon's VI compositor.
++ *
++ * The window is a libnx NWindow, supplied by the application through
++ * VkViSurfaceCreateInfoNN. This file never reaches for a default one:
++ * nwindowGetDefault() belongs to the application, and a WSI that called
++ * it would own a window nobody handed it.
++ *
++ * NO GLOBAL STATE. Everything a swapchain needs lives in
++ * wsi_horizon_swapchain, and the one piece of state that genuinely
++ * outlives a swapchain — which swapchain currently owns the window's
++ * registered buffers — lives on the *surface*, because the surface is
++ * what owns the window. Both reference ports solved that with a
++ * file-scope pointer (`g_zc_owner`), which is the same algorithm with
++ * the state in a place that cannot express two windows.
++ *
++ * WHY THE PRODUCER API AND NOT NWindow. libnx's nwindowDequeueBuffer
++ * keeps a single `cur_slot` and refuses a second dequeue before the
++ * first is queued or cancelled. Vulkan does not permit that: with
++ * VkSurfaceCapabilitiesKHR::minImageCount = 2 and a three-image
++ * swapchain, an application may hold two images acquired and block
++ * indefinitely for them, and that is valid usage. So dequeue, queue and
++ * cancel go through libnx's IGraphicBufferProducer wrappers — bq*,
++ * public API, on nw->bq, a public field — and this file keeps the slot
++ * ownership itself. Registration and teardown still go through
++ * nwindowConfigureBuffer and nwindowReleaseBuffers, which own the
++ * window's connection and its `slots_configured`; nw->cur_slot is
++ * neither read nor written, so libnx's invariant is not violated, it is
++ * unused.
++ *
++ * TWO PRESENT PATHS, AND THE CHOICE IS LOGGED. Zero-copy registers the
++ * rendered images themselves as scanout buffers and hands the
++ * compositor the render fence, so no copy happens anywhere and the CPU
++ * does not wait for the GPU. It is only possible when the image's
++ * layout is one an NvGraphicBuffer can describe, which is checked
++ * against the image the driver actually allocated rather than predicted.
++ * When it is not, the fallback copies through a libnx Framebuffer, and
++ * the reason is reported — at INFO through the debug-utils messenger,
++ * so an application can *observe* the decision rather than read about
++ * it in a log.
++ */
++
++#include "wsi_common_entrypoints.h"
++#include "wsi_common_private.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_time.h"
++#include "vk_instance.h"
++#include "vk_log.h"
++#include "vk_physical_device.h"
++#include "vk_util.h"
++
++#include <switch.h>
++
++#include <stdlib.h>
++#include <string.h>
++
++/* ------------------------------------------------------------------ */
++/* Geometry and format constants.                                      */
++/*                                                                     */
++/* Every one of these comes from libnx's framebufferCreate, which is    */
++/* the known-working producer on this platform, or from the Tegra X1    */
++/* TRM chapter 20.1 it in turn follows.                                 */
++/* ------------------------------------------------------------------ */
++
++/* A GOB is 64 bytes wide and 8 rows tall; a block is 2^n GOBs tall. */
++#define WSI_HORIZON_GOB_WIDTH_B     64
++#define WSI_HORIZON_GOB_HEIGHT_ROWS 8
++
++/* The largest block height the NvSurface field and the hardware agree
++ * on: 32 GOBs, i.e. log2 == 5. */
++#define WSI_HORIZON_MAX_BLOCK_HEIGHT_LOG2 5
++
++/* NvGraphicBuffer marshalling constants. `magic` and `pid` are what the
++ * compositor expects to find, not ours to choose. */
++#define WSI_HORIZON_GB_MAGIC 0xDAFFCAFFu
++#define WSI_HORIZON_GB_PID   42u
++#define WSI_HORIZON_GB_USAGE (GRALLOC_USAGE_HW_COMPOSER | \
++                              GRALLOC_USAGE_HW_RENDER |   \
++                              GRALLOC_USAGE_HW_TEXTURE)
++
++/* The page-table entry kind an uncompressed colour surface gets on this
++ * chip, and the only one the display block's "generic 16Bx2" sector
++ * ordering describes. NIL picks it in nvc0_choose_pte_kind() for every
++ * uncompressed colour format; anything else — a compressed kind, a
++ * depth kind — is a layout the compositor cannot read. */
++#define WSI_HORIZON_PTE_KIND_GENERIC_16BX2 0xfe
++
++/* Buffer counts. The lower bound is what makes double buffering
++ * expressible at all; the upper bound is what docs/wsi.md § 2.3 fixes,
++ * and it is well under the 64 slots nwindowConfigureBuffer allows. */
++#define WSI_HORIZON_MIN_IMAGES 2
++#define WSI_HORIZON_MAX_IMAGES 4
++
++/* libnx's Framebuffer — the copy fallback — takes 1 to 3 buffers. */
++#define WSI_HORIZON_MAX_FB_IMAGES 3
++
++/* How long the present path may wait for a submit to *reach* a channel
++ * before giving up on handing the compositor a fence and waiting for
++ * the render on the CPU instead. Not a wait for rendering: see
++ * wsi_device::horizon::get_fence. */
++#define WSI_HORIZON_FENCE_SUBMIT_TIMEOUT_NS UINT64_C(1000000000)
++
++struct wsi_horizon_format {
++   VkFormat vk_format;
++   uint32_t pixel_format;   /* PIXEL_FORMAT_*, what the BufferQueue takes  */
++   uint64_t color_format;   /* NvColorFormat, what the display block takes */
++   uint32_t bytes_per_pixel;
++};
++
++/* The formats an NvGraphicBuffer can describe AND this backend has a
++ * correct byte layout for.
++ *
++ * The sRGB entries map to the same NvColorFormat as their UNORM
++ * counterparts on purpose: the display block reads bytes, and both
++ * formats put the same sRGB-encoded bytes in memory. What differs is
++ * only whether the GPU does the encoding on write, which is the
++ * application's choice and not the compositor's business.
++ *
++ * PIXEL_FORMAT_RGBA_8888 pairs with NvColorFormat_A8B8G8R8 because the
++ * two naming conventions run in opposite directions — Android names the
++ * lowest-addressed component first, NVIDIA the highest. libnx's
++ * g_nvColorFmtTable is the same pairing.
++ */
++static const struct wsi_horizon_format wsi_horizon_formats[] = {
++   { VK_FORMAT_R8G8B8A8_UNORM, PIXEL_FORMAT_RGBA_8888,
++     NvColorFormat_A8B8G8R8, 4 },
++   { VK_FORMAT_B8G8R8A8_UNORM, PIXEL_FORMAT_BGRA_8888,
++     NvColorFormat_A8R8G8B8, 4 },
++   { VK_FORMAT_R8G8B8A8_SRGB,  PIXEL_FORMAT_RGBA_8888,
++     NvColorFormat_A8B8G8R8, 4 },
++   { VK_FORMAT_B8G8R8A8_SRGB,  PIXEL_FORMAT_BGRA_8888,
++     NvColorFormat_A8R8G8B8, 4 },
++};
++
++static const struct wsi_horizon_format *
++wsi_horizon_find_format(VkFormat format)
++{
++   for (uint32_t i = 0; i < ARRAY_SIZE(wsi_horizon_formats); i++) {
++      if (wsi_horizon_formats[i].vk_format == format)
++         return &wsi_horizon_formats[i];
++   }
++   return NULL;
++}
++
++static const VkPresentModeKHR wsi_horizon_present_modes[] = {
++   /* swapInterval 1: the compositor shows every frame for at least one
++    * refresh. */
++   VK_PRESENT_MODE_FIFO_KHR,
++   /* swapInterval 0, which libnx documents as honoured only with three
++    * or more buffers configured. A two-image swapchain therefore gets
++    * FIFO behaviour whatever it asks for, and says so. */
++   VK_PRESENT_MODE_IMMEDIATE_KHR,
++};
++
++/* ------------------------------------------------------------------ */
++/* Surface                                                             */
++/* ------------------------------------------------------------------ */
++
++struct wsi_horizon {
++   struct wsi_interface base;
++};
++
++struct wsi_horizon_swapchain;
++
++struct wsi_horizon_surface {
++   /* Must be first: Mesa casts VkSurfaceKHR to VkIcdSurfaceBase. */
++   VkIcdSurfaceVi icd;
++
++   /* WHICH SWAPCHAIN OWNS THE WINDOW'S REGISTERED BUFFERS.
++    *
++    * nwindowConfigureBuffer registers on the NWindow, which belongs to
++    * this surface and not to any one swapchain — and Vulkan's
++    * recreation contract creates the new swapchain before destroying
++    * the old, so two of them legitimately exist over one window at
++    * once. The second registration would collide with the first.
++    *
++    * The reference ports fixed the same collision with a file-scope
++    * pointer. This is that algorithm with the state on the object that
++    * actually owns it, which is what makes "two independent swapchains"
++    * a meaningful thing to test rather than a formality.
++    */
++   simple_mtx_t lock;
++   struct wsi_horizon_swapchain *owner;
++};
++
++static struct wsi_horizon_surface *
++wsi_horizon_surface(VkIcdSurfaceBase *base)
++{
++   assert(base->platform == VK_ICD_WSI_PLATFORM_VI);
++   return (struct wsi_horizon_surface *)base;
++}
++
++static NWindow *
++wsi_horizon_window(VkIcdSurfaceBase *base)
++{
++   return (NWindow *)wsi_horizon_surface(base)->icd.window;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++wsi_CreateViSurfaceNN(VkInstance _instance,
++                      const VkViSurfaceCreateInfoNN *pCreateInfo,
++                      const VkAllocationCallbacks *pAllocator,
++                      VkSurfaceKHR *pSurface)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN);
++
++   /* The application's window, checked rather than trusted: everything
++    * below dereferences it, and libnx gives us a cheap way to know it
++    * is an NWindow at all. */
++   if (!nwindowIsValid((NWindow *)pCreateInfo->window))
++      return VK_ERROR_INITIALIZATION_FAILED;
++
++   struct wsi_horizon_surface *surface =
++      vk_zalloc2(&instance->alloc, pAllocator, sizeof(*surface), 8,
++                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (surface == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   surface->icd.base.platform = VK_ICD_WSI_PLATFORM_VI;
++   surface->icd.window = pCreateInfo->window;
++   simple_mtx_init(&surface->lock, mtx_plain);
++   surface->owner = NULL;
++
++   *pSurface = VkIcdSurfaceBase_to_handle(&surface->icd.base);
++   return VK_SUCCESS;
++}
++
++void
++wsi_horizon_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
++                            const VkAllocationCallbacks *pAllocator)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++   struct wsi_horizon_surface *surface = wsi_horizon_surface(icd_surface);
++
++   /* A swapchain holds a pointer to this surface, so destroying the
++    * surface first is an application error Vulkan already forbids
++    * (VUID-vkDestroySurfaceKHR-surface-01266). The assert says which
++    * rule was broken rather than leaving a use-after-free to be found
++    * later; in a release build the free below is what happens either
++    * way. */
++   assert(surface->owner == NULL);
++
++   simple_mtx_destroy(&surface->lock);
++   vk_free2(&instance->alloc, pAllocator, surface);
++}
++
++/* ------------------------------------------------------------------ */
++/* Surface queries                                                     */
++/* ------------------------------------------------------------------ */
++
++static VkResult
++wsi_horizon_surface_get_support(VkIcdSurfaceBase *surface,
++                                struct wsi_device *wsi_device,
++                                uint32_t queueFamilyIndex,
++                                VkBool32 *pSupported)
++{
++   /* The queue families that can actually present, not an unconditional
++    * true (which is what wsi_common_switch.c:142-150 answers). A present
++    * on this backend may have to run a blit on the given queue, so a
++    * family that cannot blit cannot present.
++    */
++   *pSupported = (wsi_device->queue_supports_blit &
++                  BITFIELD64_BIT(queueFamilyIndex)) != 0;
++   return VK_SUCCESS;
++}
++
++/* The window's current size, which is also the only size a swapchain
++ * over it may have: nwindowSetDimensions refuses to change it while
++ * buffers are registered, and every registered buffer must match. */
++static VkResult
++wsi_horizon_get_extent(VkIcdSurfaceBase *surface, VkExtent2D *extent)
++{
++   NWindow *win = wsi_horizon_window(surface);
++   u32 width = 0, height = 0;
++
++   Result rc = nwindowGetDimensions(win, &width, &height);
++   if (R_FAILED(rc)) {
++      mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
++      return VK_ERROR_SURFACE_LOST_KHR;
++   }
++   if (width == 0 || height == 0)
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   extent->width = width;
++   extent->height = height;
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
++                                     struct wsi_device *wsi_device,
++                                     VkSurfaceCapabilitiesKHR *caps)
++{
++   VkExtent2D extent;
++   VkResult result = wsi_horizon_get_extent(surface, &extent);
++   if (result != VK_SUCCESS)
++      return result;
++
++   /* Two, so double buffering is expressible. Everything about how many
++    * images may be acquired at once follows from this number: Vulkan
++    * lets an application hold (imageCount - minImageCount + 1) of them,
++    * which is why this backend drives the producer API directly instead
++    * of libnx's one-slot-at-a-time NWindow wrapper. */
++   caps->minImageCount = WSI_HORIZON_MIN_IMAGES;
++   caps->maxImageCount = WSI_HORIZON_MAX_IMAGES;
++
++   /* A fixed extent, and it is not a simplification: every buffer
++    * registered on an NWindow must have the window's dimensions, and
++    * nwindowSetDimensions refuses to change them while any buffer is
++    * registered. An application that wants a different size has to
++    * change the window, which this backend then reports as
++    * VK_ERROR_OUT_OF_DATE_KHR at the next acquire. */
++   caps->currentExtent = extent;
++   caps->minImageExtent = extent;
++   caps->maxImageExtent = extent;
++
++   caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->maxImageArrayLayers = 1;
++
++   /* The compositor composes this layer over what is behind it and the
++    * buffer's alpha is not premultiplied by us, so OPAQUE is the one
++    * honest answer. */
++   caps->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++
++   caps->supportedUsageFlags = wsi_caps_get_image_usage();
++
++   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
++   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
++      caps->supportedUsageFlags |=
++         VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_surface_get_capabilities2(VkIcdSurfaceBase *surface,
++                                      struct wsi_device *wsi_device,
++                                      const void *info_next,
++                                      VkSurfaceCapabilities2KHR *caps)
++{
++   assert(caps->sType == VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR);
++
++   const VkSurfacePresentModeKHR *present_mode =
++      vk_find_struct_const(info_next, SURFACE_PRESENT_MODE_EXT);
++
++   VkResult result =
++      wsi_horizon_surface_get_capabilities(surface, wsi_device,
++                                           &caps->surfaceCapabilities);
++   if (result != VK_SUCCESS)
++      return result;
++
++   vk_foreach_struct(ext, caps->pNext) {
++      switch (ext->sType) {
++      case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
++         VkSurfaceProtectedCapabilitiesKHR *protected = (void *)ext;
++         protected->supportsProtected = VK_FALSE;
++         break;
++      }
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: {
++         /* The extent is fixed, so there is nothing to scale. */
++         VkSurfacePresentScalingCapabilitiesKHR *scaling = (void *)ext;
++         scaling->supportedPresentScaling = 0;
++         scaling->supportedPresentGravityX = 0;
++         scaling->supportedPresentGravityY = 0;
++         scaling->minScaledImageExtent =
++            caps->surfaceCapabilities.minImageExtent;
++         scaling->maxScaledImageExtent =
++            caps->surfaceCapabilities.maxImageExtent;
++         break;
++      }
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: {
++         /* Changing present mode on a live swapchain is not supported:
++          * the swap interval is chosen when the buffers are registered.
++          */
++         VkSurfacePresentModeCompatibilityKHR *compat = (void *)ext;
++         if (compat->pPresentModes == NULL) {
++            if (!present_mode) {
++               wsi_common_vk_warn_once(
++                  "Use of VkSurfacePresentModeCompatibilityKHR without a "
++                  "VkSurfacePresentModeKHR set. This is an application "
++                  "bug.\n");
++            }
++            compat->presentModeCount = 1;
++         } else if (compat->presentModeCount) {
++            assert(present_mode);
++            compat->presentModeCount = 1;
++            compat->pPresentModes[0] = present_mode->presentMode;
++         }
++         break;
++      }
++      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
++         VkPresentTimingSurfaceCapabilitiesEXT *timing = (void *)ext;
++         timing->presentStageQueries = 0;
++         timing->presentTimingSupported = VK_FALSE;
++         timing->presentAtAbsoluteTimeSupported = VK_FALSE;
++         timing->presentAtRelativeTimeSupported = VK_FALSE;
++         break;
++      }
++      default:
++         /* Ignored */
++         break;
++      }
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_surface_get_formats(VkIcdSurfaceBase *icd_surface,
++                                struct wsi_device *wsi_device,
++                                uint32_t *pSurfaceFormatCount,
++                                VkSurfaceFormatKHR *pSurfaceFormats)
++{
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out, pSurfaceFormats,
++                          pSurfaceFormatCount);
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(wsi_horizon_formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
++         f->format = wsi_horizon_formats[i].vk_format;
++         f->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_horizon_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
++                                 struct wsi_device *wsi_device,
++                                 const void *info_next,
++                                 uint32_t *pSurfaceFormatCount,
++                                 VkSurfaceFormat2KHR *pSurfaceFormats)
++{
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out, pSurfaceFormats,
++                          pSurfaceFormatCount);
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(wsi_horizon_formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
++         f->surfaceFormat.format = wsi_horizon_formats[i].vk_format;
++         f->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_horizon_surface_get_present_modes(VkIcdSurfaceBase *surface,
++                                      struct wsi_device *wsi_device,
++                                      uint32_t *pPresentModeCount,
++                                      VkPresentModeKHR *pPresentModes)
++{
++   if (pPresentModes == NULL) {
++      *pPresentModeCount = ARRAY_SIZE(wsi_horizon_present_modes);
++      return VK_SUCCESS;
++   }
++
++   *pPresentModeCount = MIN2(*pPresentModeCount,
++                             ARRAY_SIZE(wsi_horizon_present_modes));
++   typed_memcpy(pPresentModes, wsi_horizon_present_modes, *pPresentModeCount);
++
++   if (*pPresentModeCount < ARRAY_SIZE(wsi_horizon_present_modes))
++      return VK_INCOMPLETE;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_surface_get_present_rectangles(VkIcdSurfaceBase *surface,
++                                           struct wsi_device *wsi_device,
++                                           uint32_t *pRectCount,
++                                           VkRect2D *pRects)
++{
++   VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
++
++   VkExtent2D extent;
++   VkResult result = wsi_horizon_get_extent(surface, &extent);
++   if (result != VK_SUCCESS)
++      return result;
++
++   vk_outarray_append_typed(VkRect2D, &out, rect) {
++      *rect = (VkRect2D) { .offset = { 0, 0 }, .extent = extent };
++   }
++
++   return vk_outarray_status(&out);
++}
++
++/* ------------------------------------------------------------------ */
++/* Swapchain                                                           */
++/* ------------------------------------------------------------------ */
++
++/* Slot ownership as an explicit state, with every transition named.
++ *
++ * There is no RENDERING state, although docs/wsi.md § 2.2 planned one:
++ * nothing at this layer can observe the application starting to render.
++ * The WSI hands an image over at acquire and hears nothing again until
++ * queue_present, so ACQUIRED covers both, and a fourth state would be a
++ * name for a transition that never fires.
++ */
++enum wsi_horizon_slot_state {
++   /* Registered with the compositor and not dequeued by us. */
++   WSI_HORIZON_SLOT_FREE,
++   /* Dequeued and handed to the application. */
++   WSI_HORIZON_SLOT_ACQUIRED,
++   /* Handed back to the compositor. */
++   WSI_HORIZON_SLOT_QUEUED,
++};
++
++struct wsi_horizon_image {
++   struct wsi_image base;
++
++   enum wsi_horizon_slot_state state;
++
++   /* What the driver said about this image's memory. Only meaningful on
++    * the zero-copy path. */
++   struct wsi_horizon_image_info info;
++
++   /* The fence the compositor released this slot with, from the dequeue
++    * that acquired it. */
++   NvMultiFence release_fence;
++   bool have_release_fence;
++};
++
++struct wsi_horizon_swapchain {
++   struct wsi_swapchain base;
++
++   struct wsi_horizon_surface *surface;
++   NWindow *window;
++
++   VkExtent2D extent;
++   const struct wsi_horizon_format *format;
++   uint32_t swap_interval;
++
++   /* True when this swapchain still owns the window's registration.
++    * Cleared when a later swapchain takes it, which is exactly the
++    * moment every present on this one must start reporting
++    * VK_ERROR_OUT_OF_DATE_KHR. */
++   bool presentable;
++
++   bool zero_copy;
++   /* Why, in words, whether the answer was yes or no. Reported once at
++    * creation through the debug-utils messenger and kept so a later
++    * failure can name the path it happened on. */
++   const char *decision;
++
++   /* bqRequestBuffer bookkeeping: a slot is "requested" the first time
++    * it is dequeued. Zero-copy path only. */
++   uint32_t slots_requested;
++
++   /* True once the present path has had to fall back to waiting for the
++    * render on the CPU because a submit had not reached a channel.
++    * Reported once rather than every frame. */
++   bool warned_about_cpu_wait;
++
++   /* The copy fallback. Only valid when !zero_copy. */
++   Framebuffer fb;
++   bool fb_created;
++   /* Round-robin starting point for the fallback's acquire. */
++   uint32_t next_image;
++
++   /* nvFenceInit is reference counted by libnx; this records that we
++    * hold one of those references so destroy can drop exactly one. */
++   bool holds_nv_fence;
++
++   uint32_t image_count;
++   struct wsi_horizon_image images[];
++};
++VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_horizon_swapchain, base.base, VkSwapchainKHR,
++                               VK_OBJECT_TYPE_SWAPCHAIN_KHR)
++
++static struct wsi_image *
++wsi_horizon_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
++                                    uint32_t image_index)
++{
++   struct wsi_horizon_swapchain *chain =
++      (struct wsi_horizon_swapchain *)wsi_chain;
++   assert(image_index < chain->image_count);
++   return &chain->images[image_index].base;
++}
++
++/* ---- geometry ---------------------------------------------------- */
++
++/* Rounds `v` up to a multiple of `to` (a power of two), refusing to
++ * wrap. */
++static bool
++wsi_horizon_align_up(uint32_t v, uint32_t to, uint32_t *out)
++{
++   assert(to != 0 && (to & (to - 1)) == 0);
++   if (v > UINT32_MAX - (to - 1))
++      return false;
++   *out = (v + (to - 1)) & ~(to - 1);
++   return true;
++}
++
++/* ---- image memory: the zero-copy path ---------------------------- */
++
++static VkResult
++wsi_horizon_create_image_mem(const struct wsi_swapchain *chain,
++                             const struct wsi_image_info *info,
++                             struct wsi_image *image)
++{
++   const struct wsi_device *wsi = chain->wsi;
++
++   VkMemoryRequirements reqs;
++   wsi->GetImageMemoryRequirements(chain->device, image->image, &reqs);
++
++   /* DEDICATED, and that is load-bearing rather than a habit: the
++    * compositor is given the *whole* memory object's name and an offset
++    * inside it, and this backend only ever offers offset 0. A
++    * suballocated image would still work only by accident of being
++    * first. */
++   const VkMemoryDedicatedAllocateInfo dedicated = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++      .image = image->image,
++      .buffer = VK_NULL_HANDLE,
++   };
++   const VkMemoryAllocateInfo mem_info = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++      .pNext = &dedicated,
++      .allocationSize = reqs.size,
++      .memoryTypeIndex = wsi_select_device_memory_type(wsi,
++                                                       reqs.memoryTypeBits),
++   };
++
++   VkResult result = wsi->AllocateMemory(chain->device, &mem_info,
++                                         &chain->alloc, &image->memory);
++   if (result != VK_SUCCESS)
++      return result;
++
++   image->num_planes = 1;
++   image->sizes[0] = reqs.size;
++   image->offsets[0] = 0;
++   /* row_pitches is filled in after the driver has described the
++    * layout; there is no vkGetImageSubresourceLayout for an OPTIMAL
++    * image. */
++   image->row_pitches[0] = 0;
++
++   return VK_SUCCESS;
++}
++
++VkResult
++wsi_horizon_configure_image(const struct wsi_swapchain *chain,
++                            const VkSwapchainCreateInfoKHR *pCreateInfo,
++                            const struct wsi_horizon_image_params *params,
++                            struct wsi_image_info *info)
++{
++   assert(params->base.image_type == WSI_IMAGE_TYPE_HORIZON);
++   assert(chain->blit.type == WSI_SWAPCHAIN_NO_BLIT);
++
++   /* No external handle types: there is no dma-buf here, and the memory
++    * is named to the compositor rather than exported. */
++   VkResult result = wsi_configure_image(chain, pCreateInfo, 0, info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   info->select_image_memory_type = wsi_select_device_memory_type;
++   info->create_mem = wsi_horizon_create_image_mem;
++
++   return VK_SUCCESS;
++}
++
++/* ---- the zero-copy decision -------------------------------------- */
++
++/* Fills `gb` for one image. Returns false — with `why` set — when the
++ * image's layout is not one an NvGraphicBuffer can describe.
++ *
++ * Everything checked here is checked against the image the driver
++ * actually allocated. A prediction made before allocation would be a
++ * different claim, and the interesting failures are exactly the ones
++ * where the prediction and the allocation disagree.
++ */
++static bool
++wsi_horizon_fill_graphic_buffer(struct wsi_horizon_swapchain *chain,
++                                const struct wsi_horizon_image *image,
++                                NvGraphicBuffer *gb, const char **why)
++{
++   const struct wsi_horizon_image_info *info = &image->info;
++   const uint32_t bpp = chain->format->bytes_per_pixel;
++
++   if (!info->block_linear) {
++      *why = "the image is pitch-linear and the display block was asked "
++             "for a block-linear layout";
++      return false;
++   }
++   if (!info->gob_layout_is_display) {
++      *why = "the image's GOB sector ordering is not the one this display "
++             "block reads";
++      return false;
++   }
++   if (info->pte_kind != WSI_HORIZON_PTE_KIND_GENERIC_16BX2) {
++      *why = "the image's page-table kind is not generic 16Bx2, so the "
++             "compositor would read it with the wrong sector ordering";
++      return false;
++   }
++   if (info->block_height_log2 > WSI_HORIZON_MAX_BLOCK_HEIGHT_LOG2) {
++      *why = "the image's block height is larger than the graphic buffer "
++             "can express";
++      return false;
++   }
++   if (info->row_stride_B == 0 || (info->row_stride_B % bpp) != 0) {
++      *why = "the image's row stride is not a whole number of pixels";
++      return false;
++   }
++   if ((info->row_stride_B % WSI_HORIZON_GOB_WIDTH_B) != 0) {
++      *why = "the image's row stride is not a whole number of GOBs";
++      return false;
++   }
++   if (info->offset_B > UINT32_MAX || info->size_B > UINT32_MAX) {
++      *why = "the image does not fit the 32-bit offset and size fields of "
++             "a graphic buffer";
++      return false;
++   }
++
++   /* The compositor reads rows of GOBs, so the allocation has to cover
++    * the height rounded out to a whole block. An image that is short by
++    * one row is one the display block reads past. */
++   const uint32_t block_rows =
++      WSI_HORIZON_GOB_HEIGHT_ROWS << info->block_height_log2;
++   uint32_t height_aligned;
++   if (!wsi_horizon_align_up(chain->extent.height, block_rows,
++                             &height_aligned)) {
++      *why = "the image's height cannot be rounded out to a whole block";
++      return false;
++   }
++   if (height_aligned != 0 &&
++       info->row_stride_B > UINT32_MAX / height_aligned) {
++      *why = "the image's scanout size overflows 32 bits";
++      return false;
++   }
++   const uint32_t scanout_size_B = info->row_stride_B * height_aligned;
++   if ((uint64_t)scanout_size_B > info->size_B) {
++      *why = "the allocation is smaller than the region the display block "
++             "would read";
++      return false;
++   }
++
++   memset(gb, 0, sizeof(*gb));
++
++   /* THE FIELD THAT DECIDES WHETHER ANY OF THIS WORKS. Left at zero,
++    * bqSetPreallocatedBuffer succeeds and marshals an empty buffer, and
++    * the first dequeue then blocks forever — hardware-confirmed by the
++    * reference port (docs/reference-analysis.md § 1). num_fds is zero:
++    * the handle carries no file descriptors. */
++   gb->header.num_ints =
++      (int)((sizeof(NvGraphicBuffer) - sizeof(NativeHandle)) / 4);
++   gb->header.num_fds = 0;
++
++   gb->unk0 = -1;
++   gb->magic = WSI_HORIZON_GB_MAGIC;
++   gb->pid = WSI_HORIZON_GB_PID;
++   gb->usage = WSI_HORIZON_GB_USAGE;
++   gb->format = chain->format->pixel_format;
++   gb->ext_format = chain->format->pixel_format;
++   gb->num_planes = 1;
++
++   gb->nvmap_id = (s32)info->scanout_id;
++   gb->stride = info->row_stride_B / bpp;   /* in pixels, per the header */
++   gb->total_size = scanout_size_B;
++
++   gb->planes[0].width = chain->extent.width;
++   gb->planes[0].height = chain->extent.height;
++   gb->planes[0].color_format = chain->format->color_format;
++   gb->planes[0].layout = NvLayout_BlockLinear;
++   gb->planes[0].kind = NvKind_Generic_16BX2;
++   gb->planes[0].block_height_log2 = info->block_height_log2;
++   gb->planes[0].pitch = info->row_stride_B;
++   gb->planes[0].offset = (uint32_t)info->offset_B;
++   gb->planes[0].size = scanout_size_B;
++
++   return true;
++}
++
++/* ---- registration ownership -------------------------------------- */
++
++static void wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain);
++
++/* Takes the window's registration for `chain`, evicting whoever had it.
++ * Called with the surface unlocked; takes the lock itself. */
++static void
++wsi_horizon_claim_window(struct wsi_horizon_swapchain *chain)
++{
++   struct wsi_horizon_surface *surface = chain->surface;
++
++   simple_mtx_lock(&surface->lock);
++
++   struct wsi_horizon_swapchain *prev = surface->owner;
++   if (prev != NULL && prev != chain) {
++      /* Vulkan created this swapchain before destroying that one, which
++       * is exactly what oldSwapchain means. Its slots go back to the
++       * compositor first — the reference only cleared a `busy` flag,
++       * which leaks every dequeued slot from the BufferQueue's point of
++       * view — and then it stops being presentable, so its next present
++       * says VK_ERROR_OUT_OF_DATE_KHR instead of writing into buffers
++       * this swapchain now owns.
++       */
++      wsi_horizon_release_slots(prev);
++      prev->presentable = false;
++
++      Result rc = nwindowReleaseBuffers(prev->window);
++      if (R_FAILED(rc)) {
++         mesa_logw("wsi_horizon: nwindowReleaseBuffers on the previous "
++                   "swapchain failed: 0x%08x", rc);
++      }
++   }
++
++   surface->owner = chain;
++   chain->presentable = true;
++
++   simple_mtx_unlock(&surface->lock);
++}
++
++/* Gives the window back, if this swapchain is still the one holding it. */
++static void
++wsi_horizon_release_window(struct wsi_horizon_swapchain *chain)
++{
++   struct wsi_horizon_surface *surface = chain->surface;
++
++   simple_mtx_lock(&surface->lock);
++
++   if (surface->owner == chain) {
++      Result rc = nwindowReleaseBuffers(chain->window);
++      if (R_FAILED(rc)) {
++         mesa_logw("wsi_horizon: nwindowReleaseBuffers failed: 0x%08x", rc);
++      }
++      surface->owner = NULL;
++   }
++   chain->presentable = false;
++
++   simple_mtx_unlock(&surface->lock);
++}
++
++/* ---- the producer, one level below NWindow ----------------------- */
++
++static Result
++wsi_horizon_try_dequeue(struct wsi_horizon_swapchain *chain,
++                        s32 *slot_out, NvMultiFence *fence_out)
++{
++   NWindow *win = chain->window;
++   s32 slot = -1;
++   NvMultiFence fence;
++   memset(&fence, 0, sizeof(fence));
++
++   Result rc = bqDequeueBuffer(&win->bq, true, win->width, win->height,
++                               (s32)win->format, win->usage, &slot, &fence);
++   if (R_FAILED(rc))
++      return rc;
++
++   if (slot < 0 || slot >= (s32)chain->image_count) {
++      /* Out of range: hand it straight back rather than index with it.
++       * The reference discards this cancel's result. */
++      Result crc = bqCancelBuffer(&win->bq, slot, &fence);
++      if (R_FAILED(crc))
++         return crc;
++      return MAKERESULT(Module_Libnx, LibnxError_BadGfxDequeueBuffer);
++   }
++
++   if (!(chain->slots_requested & (1u << (uint32_t)slot))) {
++      rc = bqRequestBuffer(&win->bq, slot, NULL);
++      if (R_FAILED(rc)) {
++         bqCancelBuffer(&win->bq, slot, &fence);
++         return rc;
++      }
++      chain->slots_requested |= 1u << (uint32_t)slot;
++   }
++
++   *slot_out = slot;
++   *fence_out = fence;
++   return 0;
++}
++
++/* Hands every slot this swapchain still holds back to the compositor.
++ * Used both by release_images and by teardown. */
++static void
++wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain)
++{
++   if (!chain->zero_copy)
++      return;
++
++   for (uint32_t i = 0; i < chain->image_count; i++) {
++      struct wsi_horizon_image *image = &chain->images[i];
++      if (image->state != WSI_HORIZON_SLOT_ACQUIRED)
++         continue;
++
++      const NvMultiFence *fence =
++         image->have_release_fence ? &image->release_fence : NULL;
++      Result rc = bqCancelBuffer(&chain->window->bq, (s32)i, fence);
++      if (R_FAILED(rc)) {
++         mesa_logw("wsi_horizon: cancelling slot %u failed: 0x%08x", i, rc);
++      }
++      image->state = WSI_HORIZON_SLOT_FREE;
++      image->have_release_fence = false;
++      image->base.acquired = false;
++   }
++}
++
++/* ---- acquire ----------------------------------------------------- */
++
++/* True when the window has changed size under the swapchain. Checked at
++ * every acquire, which is where Vulkan expects to hear about it. */
++static bool
++wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
++{
++   u32 width = 0, height = 0;
++   Result rc = nwindowGetDimensions(chain->window, &width, &height);
++   if (R_FAILED(rc))
++      return true;
++
++   return width != chain->extent.width || height != chain->extent.height;
++}
++
++static VkResult
++wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
++                              uint64_t timeout_ns, uint32_t *image_index)
++{
++   const uint64_t start_ns = os_time_get_nano();
++
++   for (;;) {
++      s32 slot = -1;
++      NvMultiFence fence;
++      Result rc = wsi_horizon_try_dequeue(chain, &slot, &fence);
++
++      if (R_SUCCEEDED(rc)) {
++         struct wsi_horizon_image *image = &chain->images[slot];
++
++         if (image->state != WSI_HORIZON_SLOT_FREE &&
++             image->state != WSI_HORIZON_SLOT_QUEUED) {
++            /* The compositor handed back a slot this swapchain believes
++             * it already holds. That is a broken invariant, not a
++             * transient condition, so it is reported rather than
++             * papered over. */
++            mesa_loge("wsi_horizon: the compositor released slot %d, which "
++                      "this swapchain has acquired", slot);
++            bqCancelBuffer(&chain->window->bq, slot, &fence);
++            return VK_ERROR_OUT_OF_DATE_KHR;
++         }
++
++         image->state = WSI_HORIZON_SLOT_ACQUIRED;
++         image->release_fence = fence;
++         image->have_release_fence = fence.num_fences > 0;
++
++         /* THE ONE CPU WAIT ON THIS PATH, and it is where CLAUDE.md
++          * puts one: swapchain acquire. The fence says when the
++          * compositor finished reading the buffer, and the application
++          * is about to render into it.
++          *
++          * Ideally this would become a wait dependency of the
++          * application's first submit instead. It cannot be, yet, and
++          * not because of this file: nvkmd_horizon_ctx_wait performs a
++          * submit's waits on the CPU rather than emitting a GPU-side
++          * syncpoint wait, so expressing the dependency would move this
++          * same stall later without removing it. When cross-channel GPU
++          * waits exist, this becomes a vk_sync and the stall goes.
++          *
++          * The timeout the caller asked for is honoured and the result
++          * is checked. The reference waits a fixed second and discards
++          * the answer, which turns a timeout into "go ahead and render
++          * over the buffer being scanned out".
++          */
++         if (image->have_release_fence) {
++            const uint64_t spent_ns = os_time_get_nano() - start_ns;
++            const uint64_t left_ns =
++               timeout_ns > spent_ns ? timeout_ns - spent_ns : 0;
++            /* nvMultiFenceWait takes microseconds in an s32, with -1
++             * meaning forever. Saturate rather than truncate. */
++            s32 wait_us;
++            if (timeout_ns == UINT64_MAX) {
++               wait_us = -1;
++            } else {
++               const uint64_t us = left_ns / 1000;
++               wait_us = us > INT32_MAX ? INT32_MAX : (s32)us;
++            }
++
++            Result frc = nvMultiFenceWait(&image->release_fence, wait_us);
++            if (R_FAILED(frc)) {
++               mesa_logw("wsi_horizon: waiting for the compositor to "
++                         "release slot %d failed: 0x%08x", slot, frc);
++               bqCancelBuffer(&chain->window->bq, slot, &image->release_fence);
++               image->state = WSI_HORIZON_SLOT_FREE;
++               image->have_release_fence = false;
++               return VK_TIMEOUT;
++            }
++         }
++
++         *image_index = (uint32_t)slot;
++         return VK_SUCCESS;
++      }
++
++      if (R_VALUE(rc) !=
++          MAKERESULT(Module_LibnxBinder, LibnxBinderError_WouldBlock)) {
++         mesa_loge("wsi_horizon: bqDequeueBuffer failed: 0x%08x", rc);
++         return VK_ERROR_OUT_OF_DATE_KHR;
++      }
++
++      /* No buffer yet. Every path from here honours the caller's
++       * timeout exactly, including zero. */
++      if (timeout_ns == 0)
++         return VK_NOT_READY;
++
++      if (!eventActive(&chain->window->event)) {
++         mesa_loge("wsi_horizon: no buffer is available and the window has "
++                   "no release event to wait on");
++         return VK_ERROR_OUT_OF_DATE_KHR;
++      }
++
++      uint64_t left_ns = UINT64_MAX;
++      if (timeout_ns != UINT64_MAX) {
++         const uint64_t spent_ns = os_time_get_nano() - start_ns;
++         if (spent_ns >= timeout_ns)
++            return VK_TIMEOUT;
++         left_ns = timeout_ns - spent_ns;
++      }
++
++      Result erc = eventWait(&chain->window->event, left_ns);
++      if (R_FAILED(erc)) {
++         if (R_VALUE(erc) == MAKERESULT(Module_Kernel, KernelError_TimedOut))
++            return VK_TIMEOUT;
++         mesa_loge("wsi_horizon: waiting for a buffer release failed: "
++                   "0x%08x", erc);
++         return VK_ERROR_OUT_OF_DATE_KHR;
++      }
++   }
++}
++
++/* The fallback's acquire never touches the compositor: the dequeue
++ * happens inside framebufferBegin at present time, because libnx's
++ * Framebuffer owns the window's slots on that path. An image is free
++ * here as soon as its own present has returned, which for a copy is as
++ * soon as the copy is done. */
++static VkResult
++wsi_horizon_acquire_fallback(struct wsi_horizon_swapchain *chain,
++                             uint64_t timeout_ns, uint32_t *image_index)
++{
++   for (uint32_t i = 0; i < chain->image_count; i++) {
++      const uint32_t idx = (chain->next_image + i) % chain->image_count;
++      if (chain->images[idx].state != WSI_HORIZON_SLOT_FREE)
++         continue;
++
++      chain->images[idx].state = WSI_HORIZON_SLOT_ACQUIRED;
++      chain->next_image = (idx + 1) % chain->image_count;
++      *image_index = idx;
++      return VK_SUCCESS;
++   }
++
++   /* Every image is already with the application. Nothing this backend
++    * does will change that — only a present will — so blocking would be
++    * a deadlock rather than a wait, and the answer is the truthful one
++    * whatever the timeout says. */
++   return timeout_ns == 0 ? VK_NOT_READY : VK_TIMEOUT;
++}
++
++static VkResult
++wsi_horizon_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
++                                         const VkAcquireNextImageInfoKHR *info,
++                                         uint32_t *image_index)
++{
++   struct wsi_horizon_swapchain *chain =
++      (struct wsi_horizon_swapchain *)wsi_chain;
++
++   if (!chain->presentable) {
++      /* A newer swapchain took the window. Nothing acquired from here
++       * could be presented. */
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   if (wsi_horizon_extent_changed(chain))
++      return VK_ERROR_OUT_OF_DATE_KHR;
++
++   if (chain->zero_copy)
++      return wsi_horizon_acquire_zero_copy(chain, info->timeout, image_index);
++
++   return wsi_horizon_acquire_fallback(chain, info->timeout, image_index);
++}
++
++static VkResult
++wsi_horizon_swapchain_release_images(struct wsi_swapchain *wsi_chain,
++                                     uint32_t count, const uint32_t *indices)
++{
++   struct wsi_horizon_swapchain *chain =
++      (struct wsi_horizon_swapchain *)wsi_chain;
++
++   for (uint32_t i = 0; i < count; i++) {
++      const uint32_t index = indices[i];
++      assert(index < chain->image_count);
++      struct wsi_horizon_image *image = &chain->images[index];
++
++      if (chain->zero_copy && image->state == WSI_HORIZON_SLOT_ACQUIRED) {
++         /* GIVE THE SLOT BACK, do not merely forget it. The reference
++          * clears a busy flag here (wsi_common_switch.c:441-449), which
++          * leaves the BufferQueue believing the producer still holds the
++          * buffer — permanently, since nothing ever cancels it. */
++         const NvMultiFence *fence =
++            image->have_release_fence ? &image->release_fence : NULL;
++         Result rc = bqCancelBuffer(&chain->window->bq, (s32)index, fence);
++         if (R_FAILED(rc)) {
++            mesa_logw("wsi_horizon: releasing slot %u failed: 0x%08x",
++                      index, rc);
++         }
++      }
++
++      image->state = WSI_HORIZON_SLOT_FREE;
++      image->have_release_fence = false;
++   }
++
++   return VK_SUCCESS;
++}
++
++/* ---- present ----------------------------------------------------- */
++
++/* Builds the queue input libnx's nwindowQueueBuffer would build,
++ * reading the window's own crop and transform rather than inventing
++ * them. */
++static void
++wsi_horizon_fill_queue_input(struct wsi_horizon_swapchain *chain,
++                             const NvMultiFence *fence, BqBufferInput *in)
++{
++   memset(in, 0, sizeof(*in));
++   in->crop = chain->window->crop;
++   in->scalingMode = chain->window->scaling_mode;
++   in->transform = chain->window->transform;
++   in->stickyTransform = chain->window->sticky_transform;
++   in->swapInterval = chain->swap_interval;
++   if (fence != NULL)
++      in->fence = *fence;
++}
++
++static VkResult
++wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
++                              uint32_t image_index)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   struct wsi_horizon_image *image = &chain->images[image_index];
++
++   /* The fence the WSI's own pre-present submit signals for this image.
++    * Handing it to the compositor is what lets the display block do the
++    * waiting instead of this thread. */
++   NvMultiFence multi_fence;
++   memset(&multi_fence, 0, sizeof(multi_fence));
++   bool have_fence = false;
++
++   const VkFence render_fence = chain->base.fences[image_index];
++   if (render_fence != VK_NULL_HANDLE && wsi->horizon.get_fence != NULL) {
++      struct wsi_horizon_fence f = { 0 };
++      const uint64_t deadline =
++         os_time_get_absolute_timeout(WSI_HORIZON_FENCE_SUBMIT_TIMEOUT_NS);
++
++      VkResult result = wsi->horizon.get_fence(chain->base.device,
++                                               render_fence, deadline, &f);
++      if (result == VK_SUCCESS && f.valid) {
++         NvFence nv_fence = { .id = f.syncpt_id, .value = f.threshold };
++         nvMultiFenceCreate(&multi_fence, &nv_fence);
++         have_fence = true;
++      } else if (result != VK_SUCCESS) {
++         /* The submit had not reached a channel within the deadline, so
++          * there is no fence to hand over. Waiting for the render on
++          * the CPU is the only correct thing left — presenting without
++          * either would show a half-drawn frame — and it is said once
++          * rather than every frame. */
++         if (!chain->warned_about_cpu_wait) {
++            chain->warned_about_cpu_wait = true;
++            vk_logw(VK_LOG_OBJS(&chain->base.base),
++                    "wsi_horizon: no syncpoint fence for this present (%s); "
++                    "waiting for the render on the CPU instead",
++                    vk_Result_to_str(result));
++         }
++         result = wsi->WaitForFences(chain->base.device, 1, &render_fence,
++                                     true, UINT64_MAX);
++         if (result != VK_SUCCESS)
++            return result;
++      }
++      /* result == VK_SUCCESS && !f.valid: the submit signalled nothing
++       * that needs waiting on. Queue with no fence, which is correct
++       * rather than a fall-through. */
++   }
++
++   BqBufferInput in;
++   wsi_horizon_fill_queue_input(chain, have_fence ? &multi_fence : NULL, &in);
++
++   BqBufferOutput out;
++   memset(&out, 0, sizeof(out));
++
++   Result rc = bqQueueBuffer(&chain->window->bq, (s32)image_index, &in, &out);
++   if (R_FAILED(rc)) {
++      /* CHECKED. The reference discards this result and reports
++       * VK_SUCCESS for a present that did not happen. */
++      mesa_loge("wsi_horizon: bqQueueBuffer(slot %u) failed: 0x%08x",
++                image_index, rc);
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   image->state = WSI_HORIZON_SLOT_QUEUED;
++   image->have_release_fence = false;
++
++   /* The consumer's own view of how far behind it is. Kept because it
++    * is the only compositor-side number a producer can see, and the
++    * window's dimensions may have changed with it. */
++   chain->window->consumer_running_behind = out.numPendingBuffers > 1;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_present_fallback(struct wsi_horizon_swapchain *chain,
++                             uint32_t image_index)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   struct wsi_horizon_image *image = &chain->images[image_index];
++
++   if (!chain->fb_created) {
++      /* No path here returns success having presented nothing: the
++       * reference falls through both of its branches when neither the
++       * zero-copy registration nor the framebuffer exists
++       * (wsi_common_switch.c:437-438). */
++      mesa_loge("wsi_horizon: the copy fallback has no framebuffer");
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   /* THE FALLBACK'S CPU WAIT, and the reason it is not the reference's.
++    * The bytes about to be copied are written by the GPU, and the CPU
++    * is the one copying them, so the render has to be finished before
++    * the read — the wait is what makes the copy correct, not a habit.
++    * On the zero-copy path above there is no such read and no such
++    * wait. */
++   const VkFence render_fence = chain->base.fences[image_index];
++   if (render_fence != VK_NULL_HANDLE) {
++      VkResult result = wsi->WaitForFences(chain->base.device, 1,
++                                           &render_fence, true, UINT64_MAX);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   if (image->base.cpu_map == NULL) {
++      mesa_loge("wsi_horizon: the copy fallback has no mapping to copy from");
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   u32 fb_stride = 0;
++   void *dst = framebufferBegin(&chain->fb, &fb_stride);
++   if (dst == NULL) {
++      mesa_loge("wsi_horizon: framebufferBegin returned no buffer");
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   const uint32_t bpp = chain->format->bytes_per_pixel;
++   const uint32_t src_stride = image->base.row_pitches[0];
++   const uint32_t row_B = chain->extent.width * bpp;
++   const uint32_t copy_B = MIN2(row_B, MIN2(src_stride, fb_stride));
++
++   const uint8_t *src = image->base.cpu_map;
++   for (uint32_t y = 0; y < chain->extent.height; y++) {
++      memcpy((uint8_t *)dst + (size_t)y * fb_stride,
++             src + (size_t)y * src_stride, copy_B);
++   }
++
++   /* framebufferEnd flushes, swizzles into the block-linear layout and
++    * queues the buffer. It is where the fallback's cost lives. */
++   framebufferEnd(&chain->fb);
++
++   image->state = WSI_HORIZON_SLOT_FREE;
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_horizon_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
++                                    uint32_t image_index,
++                                    uint64_t present_id,
++                                    const VkPresentRegionKHR *damage)
++{
++   struct wsi_horizon_swapchain *chain =
++      (struct wsi_horizon_swapchain *)wsi_chain;
++
++   assert(image_index < chain->image_count);
++
++   if (!chain->presentable) {
++      /* Another swapchain owns the window now. Reporting success here
++       * would be a present that never happened. */
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   if (chain->zero_copy)
++      return wsi_horizon_present_zero_copy(chain, image_index);
++
++   return wsi_horizon_present_fallback(chain, image_index);
++}
++
++static VkResult
++wsi_horizon_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
++                                       uint64_t present_id, uint64_t timeout)
++{
++   return wsi_swapchain_wait_for_present_semaphore(wsi_chain, present_id,
++                                                   timeout);
++}
++
++/* ---- creation and teardown --------------------------------------- */
++
++static VkResult
++wsi_horizon_swapchain_destroy(struct wsi_swapchain *wsi_chain,
++                              const VkAllocationCallbacks *pAllocator)
++{
++   struct wsi_horizon_swapchain *chain =
++      (struct wsi_horizon_swapchain *)wsi_chain;
++
++   /* Reverse order of creation. Slots first, because the window cannot
++    * be released while the producer still holds one. */
++   wsi_horizon_release_slots(chain);
++
++   if (chain->fb_created) {
++      framebufferClose(&chain->fb);
++      chain->fb_created = false;
++   }
++
++   wsi_horizon_release_window(chain);
++
++   for (uint32_t i = 0; i < chain->image_count; i++) {
++      if (chain->images[i].base.image != VK_NULL_HANDLE)
++         wsi_destroy_image(&chain->base, &chain->images[i].base);
++   }
++
++   wsi_swapchain_finish(&chain->base);
++
++   if (chain->holds_nv_fence) {
++      nvFenceExit();
++      chain->holds_nv_fence = false;
++   }
++
++   vk_free(pAllocator, chain);
++   return VK_SUCCESS;
++}
++
++/* Registers every image as a scanout buffer. On any failure every slot
++ * already registered is unwound before returning, so the window is
++ * never left half-configured. */
++static bool
++wsi_horizon_register_images(struct wsi_horizon_swapchain *chain,
++                            const char **why)
++{
++   Result rc = nwindowSetDimensions(chain->window, chain->extent.width,
++                                    chain->extent.height);
++   if (R_FAILED(rc)) {
++      mesa_logw("wsi_horizon: nwindowSetDimensions failed: 0x%08x", rc);
++      *why = "the window would not take the swapchain's dimensions";
++      return false;
++   }
++
++   for (uint32_t i = 0; i < chain->image_count; i++) {
++      NvGraphicBuffer gb;
++      if (!wsi_horizon_fill_graphic_buffer(chain, &chain->images[i], &gb, why))
++         goto unwind;
++
++      rc = nwindowConfigureBuffer(chain->window, (s32)i, &gb);
++      if (R_FAILED(rc)) {
++         mesa_logw("wsi_horizon: nwindowConfigureBuffer(slot %u) failed: "
++                   "0x%08x", i, rc);
++         *why = "the compositor refused one of the scanout buffers";
++         goto unwind;
++      }
++   }
++
++   return true;
++
++unwind:
++   /* Everything registered so far comes off together: there is no
++    * per-slot unregister, and leaving them would make the next
++    * swapchain's registration collide with a swapchain that failed. */
++   rc = nwindowReleaseBuffers(chain->window);
++   if (R_FAILED(rc)) {
++      mesa_logw("wsi_horizon: unwinding a partial registration failed: "
++                "0x%08x", rc);
++   }
++   return false;
++}
++
++/* Asks the driver about every image, then tries to register them all.
++ * Returns false with `why` set for any reason zero-copy cannot be used;
++ * that is a normal outcome and the caller falls back. */
++static bool
++wsi_horizon_try_zero_copy(struct wsi_horizon_swapchain *chain,
++                          const char **why)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++
++   if (wsi->horizon.get_image_info == NULL) {
++      *why = "the driver cannot describe an image's memory to the display";
++      return false;
++   }
++
++   for (uint32_t i = 0; i < chain->image_count; i++) {
++      struct wsi_horizon_image *image = &chain->images[i];
++
++      VkResult result =
++         wsi->horizon.get_image_info(chain->base.device, image->base.image,
++                                     image->base.memory, &image->info);
++      if (result != VK_SUCCESS) {
++         *why = "the driver could not name this image's memory to the "
++                "display server";
++         return false;
++      }
++
++      /* wsi_image::row_pitches is what the rest of Mesa reads; fill it
++       * in from what the driver just said rather than leaving the zero
++       * wsi_horizon_create_image_mem put there. */
++      image->base.row_pitches[0] = image->info.row_stride_B;
++   }
++
++   return wsi_horizon_register_images(chain, why);
++}
++
++static bool
++wsi_horizon_init_fallback(struct wsi_horizon_swapchain *chain,
++                          const char **why)
++{
++   /* libnx's Framebuffer registers its own buffers on the window, so it
++    * takes the same ownership the zero-copy path takes — which is why
++    * the surface tracks one owner and not one per path. */
++   uint32_t num_fbs = MIN2(chain->image_count, WSI_HORIZON_MAX_FB_IMAGES);
++
++   Result rc = framebufferCreate(&chain->fb, chain->window,
++                                 chain->extent.width, chain->extent.height,
++                                 chain->format->pixel_format, num_fbs);
++   if (R_FAILED(rc)) {
++      mesa_loge("wsi_horizon: framebufferCreate failed: 0x%08x", rc);
++      *why = "the copy fallback could not create a framebuffer";
++      return false;
++   }
++
++   /* A linear shadow buffer, so the copy above is a row memcpy and the
++    * block-linear swizzle is libnx's problem rather than a second
++    * implementation of it here. */
++   rc = framebufferMakeLinear(&chain->fb);
++   if (R_FAILED(rc)) {
++      mesa_loge("wsi_horizon: framebufferMakeLinear failed: 0x%08x", rc);
++      framebufferClose(&chain->fb);
++      *why = "the copy fallback could not make its framebuffer linear";
++      return false;
++   }
++
++   chain->fb_created = true;
++   return true;
++}
++
++static VkResult
++wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
++                                     VkDevice device,
++                                     struct wsi_device *wsi_device,
++                                     const VkSwapchainCreateInfoKHR *pCreateInfo,
++                                     const VkAllocationCallbacks *pAllocator,
++                                     struct wsi_swapchain **swapchain_out)
++{
++   struct wsi_horizon_surface *surface = wsi_horizon_surface(icd_surface);
++   VkResult result;
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
++
++   /* THE FORMAT IS RE-VALIDATED HERE, not only offered by get_formats.
++    * The reference offers RGBA8/BGRA8 and never re-checks what the
++    * application actually asked for, so a format of a different block
++    * size silently corrupts the pixel stride. */
++   const struct wsi_horizon_format *format =
++      wsi_horizon_find_format(pCreateInfo->imageFormat);
++   if (format == NULL)
++      return VK_ERROR_INITIALIZATION_FAILED;
++
++   VkExtent2D extent;
++   result = wsi_horizon_get_extent(icd_surface, &extent);
++   if (result != VK_SUCCESS)
++      return result;
++
++   if (pCreateInfo->imageExtent.width != extent.width ||
++       pCreateInfo->imageExtent.height != extent.height) {
++      /* The capabilities report a fixed currentExtent, so this is an
++       * application that ignored it. */
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++
++   /* CLAMPED INTO THE RANGE, in both directions. A request below the
++    * minimum must not produce a swapchain below the minimum — a
++    * one-image swapchain has no buffer to render into while another is
++    * on screen — and the reference only ever truncates downward. */
++   uint32_t image_count = pCreateInfo->minImageCount;
++   image_count = MAX2(image_count, WSI_HORIZON_MIN_IMAGES);
++   image_count = MIN2(image_count, WSI_HORIZON_MAX_IMAGES);
++
++   const size_t size = sizeof(struct wsi_horizon_swapchain) +
++                       image_count * sizeof(struct wsi_horizon_image);
++   struct wsi_horizon_swapchain *chain =
++      vk_zalloc(pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (chain == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   chain->surface = surface;
++   chain->window = (NWindow *)surface->icd.window;
++   chain->extent = extent;
++   chain->format = format;
++   chain->image_count = image_count;
++
++   /* IMMEDIATE means swapInterval 0, which libnx documents as honoured
++    * only with three or more buffers registered; below that the system
++    * enforces 1. Said here rather than left to be discovered from a
++    * frame rate that did not change. */
++   const VkPresentModeKHR present_mode =
++      wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
++   chain->swap_interval =
++      (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR && image_count >= 3) ?
++      0 : 1;
++
++   /* nvFenceInit is reference counted by libnx (NX_GENERATE_SERVICE_GUARD
++    * in nvidia/fence.c), so taking a reference here is safe next to
++    * whatever else in the process has one, and destroy drops exactly
++    * this one. nvMultiFenceWait needs it; the reference calls it per
++    * swapchain and never calls nvFenceExit at all. */
++   Result rc = nvFenceInit();
++   if (R_FAILED(rc)) {
++      mesa_loge("wsi_horizon: nvFenceInit failed: 0x%08x", rc);
++      vk_free(pAllocator, chain);
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++   chain->holds_nv_fence = true;
++
++   /* Take the window before creating anything that registers on it. */
++   wsi_horizon_claim_window(chain);
++
++   /* Attempt 0 is zero-copy; attempt 1 is the copy fallback. Each one
++    * either succeeds or says why it did not, and the images are
++    * destroyed between attempts because the two paths need different
++    * ones: block-linear and device-local for scanout, linear with a
++    * host-visible blit buffer for a copy. */
++   const char *why = NULL;
++   bool zero_copy_wanted = true;
++
++   for (uint32_t attempt = 0; attempt < 2; attempt++) {
++      const bool try_zero_copy = (attempt == 0) && zero_copy_wanted;
++
++      struct wsi_horizon_image_params horizon_params = {
++         .base.image_type = WSI_IMAGE_TYPE_HORIZON,
++      };
++      struct wsi_cpu_image_params cpu_params = {
++         .base.image_type = WSI_IMAGE_TYPE_CPU,
++      };
++      const struct wsi_base_image_params *image_params =
++         try_zero_copy ? &horizon_params.base : &cpu_params.base;
++
++      result = wsi_swapchain_init(wsi_device, &chain->base, device,
++                                  pCreateInfo, image_params, pAllocator);
++      if (result != VK_SUCCESS)
++         goto fail_no_chain;
++
++      chain->base.destroy = wsi_horizon_swapchain_destroy;
++      chain->base.get_wsi_image = wsi_horizon_swapchain_get_wsi_image;
++      chain->base.acquire_next_image =
++         wsi_horizon_swapchain_acquire_next_image;
++      chain->base.release_images = wsi_horizon_swapchain_release_images;
++      chain->base.queue_present = wsi_horizon_swapchain_queue_present;
++      chain->base.wait_for_present = wsi_horizon_swapchain_wait_for_present;
++      chain->base.present_mode = present_mode;
++      chain->base.image_count = image_count;
++
++      uint32_t created = 0;
++      for (; created < image_count; created++) {
++         result = wsi_create_image(&chain->base, &chain->base.image_info,
++                                   &chain->images[created].base);
++         if (result != VK_SUCCESS)
++            break;
++         chain->images[created].state = WSI_HORIZON_SLOT_FREE;
++      }
++
++      if (result == VK_SUCCESS) {
++         chain->zero_copy = try_zero_copy;
++         if (try_zero_copy) {
++            if (wsi_horizon_try_zero_copy(chain, &why)) {
++               chain->decision =
++                  "zero-copy: the swapchain images are the scanout buffers";
++               goto done;
++            }
++         } else {
++            if (wsi_horizon_init_fallback(chain, &why)) {
++               chain->decision = why != NULL ? why :
++                  "copy fallback: no reason was recorded";
++               goto done;
++            }
++            /* The fallback failed too; there is nothing below it. */
++            goto fail_images;
++         }
++      } else if (!try_zero_copy) {
++         goto fail_images;
++      } else {
++         why = "the swapchain images could not be allocated for scanout";
++      }
++
++      /* Unwind this attempt completely: images, then the chain. */
++      for (uint32_t i = 0; i < created; i++)
++         wsi_destroy_image(&chain->base, &chain->images[i].base);
++      memset(chain->images, 0, image_count * sizeof(chain->images[0]));
++      wsi_swapchain_finish(&chain->base);
++
++      zero_copy_wanted = false;
++      result = VK_SUCCESS;
++   }
++
++   /* Both attempts fell through, which the loop above cannot reach: the
++    * fallback either succeeds or jumps to fail_images. Left as an
++    * explicit failure rather than a fall-through that returns success.
++    */
++   result = VK_ERROR_INITIALIZATION_FAILED;
++   goto fail_no_chain;
++
++done:
++   /* The decision, its reason, and enough of the geometry to check it
++    * against — at INFO through the debug-utils messenger, so an
++    * application can observe which path it got instead of reading a log
++    * afterwards. */
++   vk_logi(VK_LOG_OBJS(&chain->base.base),
++           "wsi_horizon: %s (%u images, %ux%u, swap interval %u)",
++           chain->decision, image_count, extent.width, extent.height,
++           chain->swap_interval);
++   if (!chain->zero_copy && why != NULL) {
++      vk_logi(VK_LOG_OBJS(&chain->base.base),
++              "wsi_horizon: zero-copy was declined because %s", why);
++   }
++
++   *swapchain_out = &chain->base;
++   return VK_SUCCESS;
++
++fail_images:
++   for (uint32_t i = 0; i < image_count; i++) {
++      if (chain->images[i].base.image != VK_NULL_HANDLE)
++         wsi_destroy_image(&chain->base, &chain->images[i].base);
++   }
++   wsi_swapchain_finish(&chain->base);
++   if (result == VK_SUCCESS)
++      result = VK_ERROR_INITIALIZATION_FAILED;
++
++fail_no_chain:
++   if (chain->fb_created)
++      framebufferClose(&chain->fb);
++   wsi_horizon_release_window(chain);
++   if (chain->holds_nv_fence)
++      nvFenceExit();
++   vk_free(pAllocator, chain);
++   return result;
++}
++
++/* ------------------------------------------------------------------ */
++
++VkResult
++wsi_horizon_init_wsi(struct wsi_device *wsi_device,
++                     const VkAllocationCallbacks *alloc,
++                     VkPhysicalDevice physical_device)
++{
++   struct wsi_horizon *wsi =
++      vk_alloc(alloc, sizeof(*wsi), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (wsi == NULL) {
++      wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI] = NULL;
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   wsi->base.get_support = wsi_horizon_surface_get_support;
++   wsi->base.get_capabilities2 = wsi_horizon_surface_get_capabilities2;
++   wsi->base.get_formats = wsi_horizon_surface_get_formats;
++   wsi->base.get_formats2 = wsi_horizon_surface_get_formats2;
++   wsi->base.get_present_modes = wsi_horizon_surface_get_present_modes;
++   wsi->base.get_present_rectangles =
++      wsi_horizon_surface_get_present_rectangles;
++   wsi->base.create_swapchain = wsi_horizon_surface_create_swapchain;
++
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI] = &wsi->base;
++
++   return VK_SUCCESS;
++}
++
++void
++wsi_horizon_finish_wsi(struct wsi_device *wsi_device,
++                       const VkAllocationCallbacks *alloc)
++{
++   struct wsi_horizon *wsi =
++      (struct wsi_horizon *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI];
++   if (wsi == NULL)
++      return;
++
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI] = NULL;
++   vk_free(alloc, wsi);
++}
+-- 
+2.43.0
+

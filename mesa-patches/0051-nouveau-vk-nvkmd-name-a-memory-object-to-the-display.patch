@@ -1,0 +1,144 @@
+From ea19f62ce0a49a2cbcc7d192c559ddde69f789c0 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:06:20 +0000
+Subject: [PATCH 51/54] nouveau/vk: nvkmd, name a memory object to the display
+ server
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (Zero-copy when the format/tiling
+ combination allows it)
+Why: presenting a rendered VkImage without copying it means handing the
+ window system the identity of the image's memory. nvkmd's only such
+ operation was export_dma_buf, which needs a file descriptor and a
+ dma-buf, neither of which Horizon has; nvkmd_info::has_dma_buf is false
+ on this backend for that reason. The compositor here takes an NvMap id
+ instead — a plain 32-bit name it resolves to the same pages — and
+ nothing in nvkmd could produce one, so a WSI backend had no way to ask
+ without reaching into nvkmd_horizon's own structures, which the layer
+ rules forbid it.
+ export_scanout_id is optional, and the wrapper answers
+ VK_ERROR_FEATURE_NOT_PRESENT rather than asserting when a backend does
+ not implement it: "this image cannot be presented directly" is an
+ ordinary answer that a WSI turns into a copy, not a failure. nouveau
+ leaves it NULL and behaves exactly as before.
+ The wrapper deliberately does NOT assert NVKMD_MEM_SHARED, unlike
+ export_dma_buf. The memory is not being handed to another process's
+ Vulkan driver; it is being named to the display server of this one.
+ Requiring the shared flag would mean allocating every swapchain image
+ as shareable to obtain a number it already has.
+Evidence: cross build (aarch64-none-elf-gcc 15.2.0 from
+ ghcr.io/d3fau4/nx-dev, meson 1.9.1) of build/mesa-nvk; the id returned
+ is horizon_gpu_mem_get_id(), the same value t_nwindow puts in
+ NvGraphicBuffer::nvmap_id when it registers scanout buffers by hand.
+ Not run on a console in this form yet.
+Upstream: no — the operation is meaningful only on a platform whose
+ window system names buffers rather than passing file descriptors.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 26 +++++++++++++
+ src/nouveau/vulkan/nvkmd/nvkmd.h              | 37 +++++++++++++++++++
+ 2 files changed, 63 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index a54b2ed..0d191a4 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -140,6 +140,31 @@ nvkmd_horizon_mem_log_handle(struct nvkmd_mem *_mem)
+    return horizon_gpu_mem_get_handle(mem->gpu_mem);
+ }
+ 
++static VkResult
++nvkmd_horizon_mem_export_scanout_id(struct nvkmd_mem *_mem,
++                                    struct vk_object_base *log_obj,
++                                    uint32_t *id_out)
++{
++   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   /* The process-EXTERNAL NvMap id, not the in-process handle
++    * log_handle above returns. horizon_gpu keeps the two apart on
++    * purpose (horizon_gpu/memory.h, memory-model § 1 #4): the handle is
++    * this process's reference for mapping, the id is what another
++    * service — here the VI compositor — resolves to the same pages.
++    * Handing the handle over instead would name a different object in
++    * the receiver, or nothing at all.
++    */
++   const uint32_t id = horizon_gpu_mem_get_id(mem->gpu_mem);
++   if (id == 0) {
++      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
++                       "nvkmd_horizon: this memory object has no NvMap id");
++   }
++
++   *id_out = id;
++   return VK_SUCCESS;
++}
++
+ const struct nvkmd_mem_ops nvkmd_horizon_mem_ops = {
+    .free = nvkmd_horizon_mem_free,
+    .map = nvkmd_horizon_mem_map,
+@@ -147,6 +172,7 @@ const struct nvkmd_mem_ops nvkmd_horizon_mem_ops = {
+    .sync_to_gpu = nvkmd_horizon_mem_sync_to_gpu,
+    .sync_from_gpu = nvkmd_horizon_mem_sync_from_gpu,
+    .log_handle = nvkmd_horizon_mem_log_handle,
++   .export_scanout_id = nvkmd_horizon_mem_export_scanout_id,
+    /* overmap and export_dma_buf are left NULL: nvkmd_info says
+     * has_overmap and has_dma_buf are false, and nvkmd.h's wrappers
+     * assert on that before dispatching.
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index f33a405..bd82905 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -251,6 +251,24 @@ struct nvkmd_mem_ops {
+                               struct vk_object_base *log_obj,
+                               int *fd_out);
+ 
++   /** Name this memory object to a display server, if the platform has
++    * a way to.
++    *
++    * The counterpart of export_dma_buf for a platform that has no
++    * dma-buf and no file descriptors: it produces whatever token the
++    * window system uses to look a buffer up. On Horizon that is the
++    * NvMap id, which the VI compositor resolves to the same pages.
++    *
++    * Optional. A backend that leaves it NULL is saying its memory
++    * cannot be scanned out, and nvkmd_mem_export_scanout_id() answers
++    * VK_ERROR_FEATURE_NOT_PRESENT for it rather than asserting: "this
++    * image cannot be presented directly" is a normal answer that a WSI
++    * turns into a copy, not an error.
++    */
++   VkResult (*export_scanout_id)(struct nvkmd_mem *mem,
++                                 struct vk_object_base *log_obj,
++                                 uint32_t *id_out);
++
+    /** Handle to use for NVK_DEBUG_VM logging */
+    uint32_t (*log_handle)(struct nvkmd_mem *mem);
+ };
+@@ -573,6 +591,25 @@ nvkmd_mem_export_dma_buf(struct nvkmd_mem *mem,
+    return mem->ops->export_dma_buf(mem, log_obj, fd_out);
+ }
+ 
++/** The window system's name for this memory, or FEATURE_NOT_PRESENT.
++ *
++ * No NVKMD_MEM_SHARED assertion, unlike export_dma_buf: the buffer is
++ * not being handed to another *process's* Vulkan driver, it is being
++ * named to the display server of this one. Requiring the shared flag
++ * would mean allocating every swapchain image as shareable to obtain a
++ * number the allocation already has.
++ */
++static inline VkResult MUST_CHECK
++nvkmd_mem_export_scanout_id(struct nvkmd_mem *mem,
++                            struct vk_object_base *log_obj,
++                            uint32_t *id_out)
++{
++   if (mem->ops->export_scanout_id == NULL)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   return mem->ops->export_scanout_id(mem, log_obj, id_out);
++}
++
+ void
+ nvkmd_va_free(struct nvkmd_va *va);
+ 
+-- 
+2.43.0
+

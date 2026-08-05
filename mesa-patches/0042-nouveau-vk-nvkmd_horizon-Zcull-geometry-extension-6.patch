@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 9066301662ba8c1fd6c2788303bc6dfd99ed96e6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:50:28 +0000
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
+Subject: [PATCH 42/54] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
 
 has_zcull_info was hardcoded false, on the grounds that Zcull "belongs
 to the channel and nothing in Phase 4 uses it". The query is a device
@@ -97,3 +97,6 @@ index 7fa53a8..6b797ca 100644
  
     /* What this backend can and cannot do. Each false is a statement
      * about Horizon, not a gap left for later:
+-- 
+2.43.0
+

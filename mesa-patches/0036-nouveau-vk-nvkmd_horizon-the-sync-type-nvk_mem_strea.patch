@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From e203c918eb7d61df2167eb5e7fde9b5e5d527d15 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:37:42 +0000
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, the sync type nvk_mem_stream uses
- needs get_value
+Subject: [PATCH 36/54] nouveau/vk: nvkmd_horizon, the sync type nvk_mem_stream
+ uses needs get_value
 
 nvk_mem_stream_init creates its stream sync on sync_types[0] with
 VK_SYNC_IS_TIMELINE. On nouveau that is a DRM syncobj, which is binary
@@ -233,3 +233,6 @@ index 3d226f9..a96ec64 100644
 +   sync->signalled_value = signal_value;
     sync->state = NVK_HORIZON_SYNC_PENDING;
  }
+-- 
+2.43.0
+

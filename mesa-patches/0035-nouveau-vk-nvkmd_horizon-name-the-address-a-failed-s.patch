@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0cd07f310d07c1a440dfeab1fc8fcac048704f6b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:10:56 +0000
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, name the address a failed submit
- handed the GPU
+Subject: [PATCH 35/54] nouveau/vk: nvkmd_horizon, name the address a failed
+ submit handed the GPU
 
 An MMU fault is the one GPU failure that says nothing on its own here.
 nvgpu's error notifier carries the fault type and nothing else, and libnx
@@ -283,3 +283,6 @@ index 2c2c4b1..afb8b02 100644
     *va_out = &va->base;
  
     return VK_SUCCESS;
+-- 
+2.43.0
+
