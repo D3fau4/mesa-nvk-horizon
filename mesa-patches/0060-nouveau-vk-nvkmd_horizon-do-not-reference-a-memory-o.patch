@@ -1,0 +1,106 @@
+From fa8be843b617cc0c7a3a122d4f396f320507f746 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 13:29:39 +0000
+Subject: [PATCH 60/61] nouveau/vk: nvkmd_horizon, do not reference a memory
+ object from its own VA
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 4 (Safe recreation and destruction)
+Why: patch 0058 made every VA binding hold a reference to the memory it
+ binds, to stop a vkFreeMemory-before-vkDestroyImage from leaking. It
+ made the leak worse, because every nvkmd_mem here carries a VA of its
+ own — allocated into nvkmd_mem::va and bound at offset 0 the moment it
+ is created (nvkmd_horizon_mem.c) — and referencing the memory from that
+ binding makes the two objects hold each other. The refcount never
+ reaches zero, so the free never runs, so the VA is never released, so
+ the binding never lets go.
+ The exception is exact rather than a guess about ordering: alloc_mem
+ assigns mem->va and then binds, so `_va == _mem->va` identifies the
+ self-binding at the moment bind_mem runs. Every other VA belongs to
+ somebody else — an image plane's, a sparse bind's — and those are the
+ ones that outlive a vkFreeMemory and need to keep the memory alive.
+Evidence: HARDWARE, and it is the reason this patch exists rather than
+ an edit to 0058. t_vk_swapchain on the owner's console, 2026-08-05,
+ with 0058 in: "device destroy refused: live mem=33 va_ranges=33
+ mappings=33 channels=0", against "live mem=14 va_ranges=0 mappings=0"
+ without it. Thirty-three of each, where the bug being fixed had leaked
+ fourteen objects and no VAs at all — the VAs leaking too is the
+ signature of the cycle
+ (docs/hw-logs/t_vk_swapchain-run2-refcycle-FAIL.log).
+Upstream: no.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 35 ++++++++++++++++---
+ 1 file changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index c5dbdb9..9ffe7c4 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -43,6 +43,9 @@ struct nvkmd_horizon_binding {
+     * ERR_BUSY while any mapping of the object is alive
+     * (memory-model § 7).
+     *
++    * NULL for a memory object's own VA: see bind_mem for why that
++    * exception is not optional.
++    *
+     * Without a reference here the two rules collide and the memory
+     * leaks: the free is refused, nothing retries it, and the object
+     * stays alive with its storage and its NvMap for the rest of the
+@@ -181,8 +184,10 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+       list_del(&b->link);
+       /* Last, and after the unmap: this may be the reference that
+        * destroys the object, and horizon_gpu_mem_destroy refuses while
+-       * the mapping is still alive. */
+-      nvkmd_mem_unref(b->mem);
++       * the mapping is still alive. NULL for a memory object's own VA,
++       * which holds no reference — see bind_mem. */
++      if (b->mem != NULL)
++         nvkmd_mem_unref(b->mem);
+       FREE(b);
+     }
+ 
+@@ -244,7 +249,28 @@ nvkmd_horizon_va_bind_mem(struct nvkmd_va *_va,
+ 
+    b->va_offset_B = va_offset_B;
+    b->range_B = range_B;
+-   b->mem = nvkmd_mem_ref(_mem);
++
++   /* NOT FOR THE MEMORY'S OWN VA, and that exception is the whole
++    * difference between a reference and a cycle.
++    *
++    * Every nvkmd_mem here carries a VA of its own, allocated into
++    * nvkmd_mem::va and bound at offset 0 the moment it is created
++    * (nvkmd_horizon_mem.c). Referencing the memory from that binding
++    * makes the two objects hold each other: the mem's refcount never
++    * reaches zero, so its free never runs, so the VA is never released,
++    * so the binding never lets go. Measured on hardware — the first
++    * version of this reference leaked 33 memory objects, 33 VAs and 33
++    * mappings where the bug it was fixing had leaked 14 objects and no
++    * VAs at all. A fix that makes the number worse is worth saying out
++    * loud.
++    *
++    * mem->va is already assigned when this runs — alloc_mem sets it and
++    * then binds — so the comparison is exact rather than a guess about
++    * ordering. Every other VA is somebody else's: an image plane's, a
++    * sparse bind's. Those are the ones that outlive a vkFreeMemory and
++    * the ones that need to keep the memory alive.
++    */
++   b->mem = (_va == _mem->va) ? NULL : nvkmd_mem_ref(_mem);
+ 
+    simple_mtx_lock(&va->mutex);
+    list_addtail(&b->link, &va->bindings);
+@@ -308,7 +334,8 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+                        va_offset_B, (int)res.status, res.nv);
+    }
+ 
+-   nvkmd_mem_unref(found->mem);
++   if (found->mem != NULL)
++      nvkmd_mem_unref(found->mem);
+    FREE(found);
+    return VK_SUCCESS;
+ }
+-- 
+2.43.0
+

@@ -1213,8 +1213,18 @@ out:
     *
     * The message deliberately does not contain the string it looks for,
     * so a failure cannot make a later scan match itself. */
-   t_check(t, !t_log_contains(t, "destroy refused"),
-           "the driver tore down every object it created: nothing in this "
-           "log says it could not");
+   bool could_not_destroy = false;
+   if (t_log_scan(t, "destroy refused", &could_not_destroy)) {
+      t_check(t, !could_not_destroy,
+              "the driver tore down every object it created: nothing in "
+              "this log says it could not");
+   } else {
+      /* NOT a pass. The scan is the only way this test can see a
+       * teardown failure at all, and one that could not run has
+       * verified nothing. */
+      t_check(t, false,
+              "the log could not be read back, so whether the driver tore "
+              "everything down was NOT checked");
+   }
    return rv;
 }

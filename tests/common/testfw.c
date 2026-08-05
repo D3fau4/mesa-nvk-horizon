@@ -62,7 +62,12 @@ int main(void)
     char path[128];
     snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", test_name);
     snprintf(t.log_path, sizeof(t.log_path), "%s", path);
-    t.log = fopen(path, "w");
+    /* "w+", not "w": t_log_scan reads the log back through this same
+     * handle. A second fopen() of a file already open for writing is
+     * not something the SD card's device layer promises, and the first
+     * version of that check silently answered "nothing found" every
+     * time because of it. */
+    t.log = fopen(path, "w+");
 
     /* Everything Mesa says goes into the same file, in order.
      *
@@ -156,9 +161,11 @@ int main(void)
 #define T_LOG_SCAN_OVERLAP 128
 #define T_LOG_SCAN_CHUNK   4096
 
-bool t_log_contains(test_ctx *t, const char *needle)
+bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
 {
-    if (t->log == NULL || t->log_path[0] == '\0' || needle == NULL)
+    *found_out = false;
+
+    if (t->log == NULL || needle == NULL)
         return false;
 
     const size_t needle_len = strlen(needle);
@@ -170,8 +177,10 @@ bool t_log_contains(test_ctx *t, const char *needle)
     fflush(t->log);
     fflush(stderr);
 
-    FILE *f = fopen(t->log_path, "r");
-    if (f == NULL)
+    const long resume = ftell(t->log);
+    if (resume < 0)
+        return false;
+    if (fseek(t->log, 0, SEEK_SET) != 0)
         return false;
 
     char buf[T_LOG_SCAN_OVERLAP + T_LOG_SCAN_CHUNK + 1];
@@ -179,7 +188,7 @@ bool t_log_contains(test_ctx *t, const char *needle)
     bool found = false;
 
     for (;;) {
-        const size_t n = fread(buf + carry, 1, T_LOG_SCAN_CHUNK, f);
+        const size_t n = fread(buf + carry, 1, T_LOG_SCAN_CHUNK, t->log);
         if (n == 0)
             break;
 
@@ -198,6 +207,12 @@ bool t_log_contains(test_ctx *t, const char *needle)
         carry = keep;
     }
 
-    fclose(f);
-    return found;
+    /* Back where the writers left it, before anything else writes. A
+     * failure here would put every later line in the wrong place, so it
+     * is reported as a scan that did not happen. */
+    if (fseek(t->log, resume, SEEK_SET) != 0)
+        return false;
+
+    *found_out = found;
+    return true;
 }

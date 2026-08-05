@@ -260,13 +260,27 @@ typedef struct nw_slot {
 /* Non-blocking dequeue. Returns the raw Result so a caller can tell "no
  * buffer available yet" from a genuine failure — the distinction the
  * reference discards. */
-static Result nw_try_dequeue(nw_producer *p, nw_slot *out)
+/* `blocking` chooses between the BufferQueue's two dequeue modes.
+ *
+ * libnx passes the producer's `async` flag as true when it has a
+ * release event to wait on and false when it does not. They are not
+ * interchangeable: async mode asks the queue to keep a buffer in
+ * reserve so the producer never blocks, which a two-buffer queue cannot
+ * do. MEASURED — with two registered buffers, both queued, an async
+ * dequeue answers NO_INIT for as long as you keep asking and no release
+ * ever arrives to it, so retrying it just burns the deadline. Three
+ * buffers never reach the condition.
+ *
+ * The non-blocking mode probes; the blocking mode is used once the
+ * release event says a buffer has come back.
+ */
+static Result nw_try_dequeue(nw_producer *p, bool blocking, nw_slot *out)
 {
     s32 slot = -1;
     NvMultiFence fence;
     memset(&fence, 0, sizeof(fence));
 
-    Result rc = bqDequeueBuffer(&p->win->bq, true, p->win->width,
+    Result rc = bqDequeueBuffer(&p->win->bq, !blocking, p->win->width,
                                 p->win->height, (s32)p->win->format,
                                 p->win->usage, &slot, &fence);
     if (R_FAILED(rc))
@@ -332,9 +346,11 @@ static bool nw_dequeue_would_block(Result rc)
 static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
     const u64 start = armGetSystemTick();
+    bool blocking = false;
 
     for (;;) {
-        Result rc = nw_try_dequeue(p, out);
+        Result rc = nw_try_dequeue(p, blocking, out);
+        blocking = false;
         if (!nw_dequeue_would_block(rc))
             return rc;
 
@@ -348,6 +364,10 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
         Result erc = eventWait(&p->win->event, timeout_ns - spent_ns);
         if (R_FAILED(erc))
             return erc;
+
+        /* A buffer came back. Ask for it in the mode a two-buffer queue
+         * will answer. */
+        blocking = true;
     }
 }
 
@@ -531,7 +551,7 @@ static uint32_t nw_measure_concurrent_dequeues(nw_session *s)
 
     while (n < NW_MAX_BUFFERS) {
         nw_slot got;
-        Result rc = nw_try_dequeue(&s->prod, &got);
+        Result rc = nw_try_dequeue(&s->prod, false, &got);
         if (R_FAILED(rc)) {
             /* Report anything that is not simply "no buffer free": a
              * measurement that stops for an unrelated failure would
