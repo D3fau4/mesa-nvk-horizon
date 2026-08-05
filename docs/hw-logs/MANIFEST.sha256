@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-b108547fa63e4f25f56d4046873c84828a1fc1a7fb5ad45bab204906f30da6dd  README.md
+a5672bb29f6fedcff0363c668e99cd1af2542cc241b0b47f910b4c052108a4ea  README.md
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
 718f0d37974da73d04a552c64d5d8024b9de3fdac638307779b35d1e615a3fa1  t_channel.log
@@ -30,6 +30,7 @@ cc7b2713b85fb9a7a267daa4c8498938a4b5ff253389f7853870aee46c2be615  t_nwindow-run1
 0f3e9dc02285d1480b093cd523546e2fe702c0c2b41bdc6188ce5c76cbc20553  t_nwindow-run3-STALE-BINARIES.log
 fca60c8cd90a5ae2fd1974ec1a2cd4f33dff71995111ab53b799f08f4257f2f1  t_nwindow-run4-starves-at-two-FAIL.log
 77aa700a955c4a99508c16fbb937eb442e63c4a22cc0516e8f06a39ebf4df777  t_nwindow-run5-probe-did-not-reproduce-FAIL.log
+3804dffd1255a6f75d97b2b8b7c90ab9fa95c65294ad45640ee550d138e9a81d  t_nwindow-run6-event-is-not-an-edge-FAIL.log
 170eaabced3c1df4205ce98043c38813753887aa7f0e3a814893a711014fe66b  t_ostime-run1-debt-batch-PASS.log
 98fca531ebb9a5a7557ba559fc335fde6dc93807d82ada38b4e2018c1d27e52f  t_ostime.log
 f9cddacf5bb763f26dd7e0662b085b6c5289a5f67c0361aad91ad2f30a300642  t_pbsize-run-phase6-samechannel-PASS.log
@@ -80,6 +81,7 @@ d647264e7d620d6dc1b4fbeee525bb208a113436011d1ffa234620ffc43790c9  t_vk_submits-r
 73037caa58d947c766e668319eeac227e5b06840ace0329a92bad7cda1035802  t_vk_swapchain-run2-refcycle-FAIL.log
 fc222688c79ba97991ecb4af8ebb9b0730c5961c4f051cdf39fc41545cf33014  t_vk_swapchain-run3-STALE-BINARIES.log
 8b9c3ed3617337815b7532f0da5f4887acfee557f046d452801dfb3dc32a1573  t_vk_swapchain-run4-leak-fixed-FAIL.log
+e7beada428cfa6c14c56c6c2ea4986283fe79316cf401086a9007ec7dc14998d  t_vk_swapchain-run6-FAIL.log
 d4a9918952707d7c6b6ce520eca1cd36d40b15d9eba75b94b1820eeaf637c1d1  t_vk_texture-run-phase6-samechannel-PASS.log
 feaeee1d657c7cde113b18b2270d47171ed8ad5bb9df4db18cb364c32c135a7b  t_vk_texture-run5-batch5-FAIL.log
 56079e5513285a374baf841fedbd4466b29f6fac4ccfb79117673c23fca6e1ed  t_vk_texture-run6-not-reproduced-PASS.log

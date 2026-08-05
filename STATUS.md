@@ -12,18 +12,85 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console five times. Three of four exit criteria are met and one defect is open — and run 5 found that the defect was mine.** The two-buffer failure is not the compositor starving the producer: the acquire spent its whole deadline inside one `eventWait` and then gave up after a single retry in a dequeue mode nothing on this platform uses. Fixed in `t_nwindow` and as patch **0062**, unrun. Run 4 closed the leak (0060) and **confirmed the exit crash was the leak**. Run 2 confirmed the swapchain — **89 of 89 intervals inside 10% of a 60 Hz refresh**, zero-copy chosen by the driver — and **the pattern was reported correct by the operator** |
+| **Phase** | **Phase 6 has been to the console six times. Three of four exit criteria are met and one defect is open.** Run 6 (2026-08-05) ruled out the last two explanations for it: **the release event is a level, not an edge** — 84327 `eventWait` returns in five seconds, 59 us apiece — and `async=true` answered `NoInit` **84328 times running** on the failing window while the same call returned a buffer in **97 us** on another two-buffer window in the same process. Runs 2 and 4 stand: 89 of 89 intervals inside 10% of a 60 Hz refresh, zero-copy chosen by the driver, the pattern confirmed by the operator, no leak and no exit crash |
 | **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 6: `t_nwindow` and `t_vk_swapchain` with the single-mode, sliced-wait acquire.** It answers either way: if the fix is right the two-buffer sessions present 90/90 and the pacing comparison — the half of exit criterion 2 that has never run — finally runs; if it is wrong, the diagnostic now attached to the *real* failure reports from it with numbers instead of from a reconstruction |
-| **Known failures** | **1. A two-buffer window stops at the third frame**, in raw `bq*` and in Vulkan alike, five runs. **Cause found in run 5 and it is ours**: the loop waited out its entire budget in one `eventWait`, then asked once in async=false — the mode libnx uses only on a window with no release event — and ran out of time without ever asking in async=true again. The reported `0x00006359` is `LibnxError_Timeout`, our own deadline. Fixed in `t_nwindow` and as patch 0062; **unrun**. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Next concrete task** | **Run 7: `t_nwindow`, the position A/B.** The same probe BEFORE any paced session and AFTER all of them, everything else held constant — because the only thing left uncontrolled is where in the run a session happens (the failing ones are 2nd and 4th, the working probe was 6th and 7th). Plus `async=false` tried once at the real failure, the one mode never reached on a genuinely starved window |
+| **Known failures** | **1. A two-buffer window stops at the third frame**, in raw `bq*` and in Vulkan alike, six runs. **Ruled out:** the dequeue mode (0059, 0061), the release event (0062), and the compositor never freeing a buffer — it freed one in 97 us on another two-buffer window in the same process. **Left:** session state, which run 7's position A/B tests. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether patch 0062 and its `t_nwindow` twin fix the two-buffer sessions. Whether `minImageCount = 2` is a promise this compositor can keep — no two-buffer session has ever completed, though run 5 showed a fully-queued two-buffer window handing a buffer back in 104 us. Any display mode change. Anything multi-threaded |
+| **What is still unverified** | Why one two-buffer window starves and another does not. Whether `minImageCount = 2` is a promise this compositor can keep — the surface advertises it and `t_vk_swapchain` asserts it. Any display mode change. Anything multi-threaded |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7 only** |
-| **Never verified on hardware** | Patch **0062** and the `t_nwindow` change beside it; the diagnostic attached to the real failure; `t_fault` as it stands |
+| **Open decisions** | **D7**, and **D18 (new): does `minImageCount` become 3?** If run 7 does not resolve the two-buffer case, the honest reading is that this compositor cannot sustain FIFO on two buffers, and both the advertised 2 and the check that blesses it are wrong. Recorded as pending rather than taken quietly |
+| **Never verified on hardware** | The position A/B and the `async=false` attempt at the real failure; `t_fault` as it stands |
+
+
+---
+
+## Run 6 — the release event is a level, not an edge (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 79/81 and `t_vk_swapchain` 114/116,
+build `2026-08-05T18:11:16Z 503d008`. Logs in `docs/hw-logs/*run6*`.
+
+Patch 0062 did not fix the two-buffer sessions. It was still the right
+change — the old code returned a *mislabelled* timeout after one retry in
+the wrong mode — but it was necessary, not sufficient.
+
+### The two numbers, from the real failure
+
+The diagnostic ran attached to the dequeue that actually failed:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 84328 dequeue(s) in
+       libnx's mode, release event fired 84327 time(s), last result
+       0x0000115d
+```
+
+**84327 `eventWait` returns in five seconds is 59 us apiece.** The event
+comes back immediately every time: it is permanently signalled, a level
+and not an edge, and it carries no information about a buffer having
+been released. Waiting on it is a spin — in libnx's own
+`nwindowDequeueBuffer` loop as much as in ours. Every design here that
+read it as "a buffer came back" was reading a level as an edge, and the
+only reason three buffers work is that the dequeue is probed *first*.
+
+**And `async=true` answered `0x115d` — `LibnxBinderError_NoInit` — 84328
+times running.** Thirty lines later in the same log, the reconstructed
+probe's two-buffer window answered the same call with a buffer in 97 us.
+
+### What that rules out, and what is left
+
+Ruled out: the dequeue mode (0059, 0061), the release event (0062's
+slicing), and the compositor simply never freeing a buffer — it freed
+one in 97 us on a window in the same process with the same buffer count.
+
+Left: **state**. Two windows, identical last three calls, opposite
+answers. The one thing nothing has controlled for is *where in the run
+each session happens* — the failing ones are the 2nd and 4th sessions,
+the probe was the 6th and 7th.
+
+So the same probe now runs **BEFORE** any paced session and **AFTER**
+all of them, everything else held constant. If BEFORE starves and AFTER
+does not, the variable is what the window has been through. If both
+behave alike, position is ruled out and the difference is inside the
+paced code path, which is the next thing to bisect.
+
+The diagnostic also now tries `async=false` once at the end of the real
+failure — the one mode never reached on a genuinely starved window, and
+the one that Android's BufferQueue allows to block in the server. It may
+not return; the log says so a line in advance and every line before it
+is already flushed.
+
+### The fallback, stated now rather than after another run
+
+The numeric half of exit criterion 2 has never run, across four attempts
+at it. If run 7 does not resolve the two-buffer case, the honest
+conclusion is that this compositor cannot sustain FIFO on two buffers,
+and then **`minImageCount` must become 3** — the surface currently
+advertises 2 and `t_vk_swapchain` asserts it, which would make both a
+promise the driver cannot keep. That is a decision, and it is recorded
+here as pending rather than taken quietly.
 
 
 ---

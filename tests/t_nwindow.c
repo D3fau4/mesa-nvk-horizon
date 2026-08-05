@@ -626,20 +626,27 @@ static uint32_t nw_measure_concurrent_dequeues(nw_session *s)
 }
 
 /* Ask a fully-queued window for a buffer, for five seconds, and report
- * what happened as numbers: how many dequeues, how many times the
- * release event fired, the last result, and how long the first success
- * took.
+ * what happened as numbers.
  *
- * Called from two places, and the difference between them is the whole
- * lesson of run 5. As a standalone probe — a session built to look like
- * the failing one — it got a buffer back in 104 us with the release
- * event never firing, while the real two-buffer sessions in the same
- * log were still dying at frame 2 sixty lines above. **The
- * reconstruction did not reproduce the failure**, so its four `ok` lines
- * measured a state the failure never reaches.
+ * WHAT RUN 6 GOT OUT OF THIS, ATTACHED TO THE REAL FAILURE:
  *
- * So it is now also called from the failure itself, inside
- * nw_session_present, where there is nothing to reconstruct.
+ *   2 buffers, interval 1: asked for 5000 ms — 84328 dequeue(s) in
+ *   libnx's mode, release event fired 84327 time(s), last result
+ *   0x0000115d
+ *
+ * Two facts, both new. **The release event is not an edge.** 84327
+ * returns in five seconds is 59 us apiece: eventWait returns
+ * immediately every time, so the event is permanently signalled and
+ * carries no information about a buffer coming back. Waiting on it is
+ * a spin, in libnx's loop as much as in ours. And **async=true answers
+ * NO_INIT 84328 times running** on that window, while the very same
+ * call on the reconstructed probe's two-buffer window, thirty lines
+ * later in the same log, returned a buffer in 97 us.
+ *
+ * So the mode is not the variable and the event is not the variable.
+ * Two windows in one process, same buffer count, same last three calls,
+ * opposite answers — which is why this now also tries the other mode
+ * once, at the end, where the failure actually happens.
  */
 static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
 {
@@ -677,11 +684,46 @@ static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
               "libnx's mode, release event fired %" PRIu32 " time(s), last "
               "result 0x%08x", tag, elapsed / 1000000, tries, events, last);
 
-    if (got_one)
+    if (got_one) {
         t_note(t, "%s: a buffer came back after %" PRIu64 " us (%" PRIu64
                   " refresh(es))", tag, elapsed / 1000, elapsed / NW_REFRESH_NS);
+        return true;
+    }
 
-    return got_one;
+    /* THE OTHER MODE, ONCE, AND IT MAY NOT RETURN.
+     *
+     * async=false is what libnx passes only on a window with no release
+     * event, and in Android's BufferQueue it is the mode whose dequeue
+     * is allowed to block inside the server until a buffer frees. On
+     * this window async=true has just failed 84328 times, so blocking
+     * is the one behaviour that has not been observed and cannot be
+     * ruled out.
+     *
+     * If the call does not come back, that is an answer — a different
+     * one from "the queue never frees a buffer" — and it costs the rest
+     * of the run and none of the evidence: t_vemit flushes every line,
+     * so everything above is already on the SD card, and the note below
+     * says in advance what a missing next line means.
+     */
+    t_note(t, "%s: ABOUT TO TRY async=false, which can block inside the "
+              "compositor. If the next line of this log is missing, that call "
+              "never returned — and that is the finding, not a crash", tag);
+
+    const u64 other_start = armGetSystemTick();
+    Result orc = nw_try_dequeue(&s->prod, true /* async=false */, out);
+    const uint64_t other_ns = armTicksToNs(armGetSystemTick() - other_start);
+
+    t_note(t, "%s: async=false returned 0x%08x after %" PRIu64 " us", tag, orc,
+           other_ns / 1000);
+
+    if (R_SUCCEEDED(orc)) {
+        t_check(t, true,
+                "%s: async=false produced a buffer where libnx's async=true "
+                "could not, %" PRIu32 " times running", tag, tries);
+        return true;
+    }
+
+    return false;
 }
 
 /* THE QUESTION FOUR RUNS HAVE FAILED TO ANSWER, ASKED DIRECTLY.
@@ -710,7 +752,7 @@ static bool nw_ask_for_a_buffer(nw_session *s, const char *tag, nw_slot *out)
  * with no release event. So the async=true arm here is libnx's path
  * exactly, and if that arm starves then libnx starves too.
  */
-static void nw_probe_starvation(nw_session *s)
+static void nw_probe_starvation(nw_session *s, const char *where)
 {
     test_ctx *t = s->t;
     const uint32_t n = s->num_buffers;
@@ -723,16 +765,16 @@ static void nw_probe_starvation(nw_session *s)
         nw_slot got;
         Result rc = nw_dequeue(&s->prod, NW_DEQUEUE_TIMEOUT_NS, &got);
         if (!t_check(t, R_SUCCEEDED(rc),
-                     "starvation probe, %" PRIu32 " buffers: buffer %" PRIu32
-                     " of %" PRIu32 " dequeued -> 0x%08x", n, i + 1, n, rc))
+                     "probe %s, %" PRIu32 " buffers: buffer %" PRIu32
+                     " of %" PRIu32 " dequeued -> 0x%08x", where, n, i + 1, n, rc))
             break;
 
         if (got.fence.num_fences > 0) {
             Result frc = nvMultiFenceWait(&got.fence, 1000000 /* us */);
             if (!t_check(t, R_SUCCEEDED(frc),
-                         "starvation probe, %" PRIu32 " buffers: the release "
+                         "probe %s, %" PRIu32 " buffers: the release "
                          "fence on buffer %" PRIu32 " -> 0x%08x",
-                         n, i + 1, frc)) {
+                         where, n, i + 1, frc)) {
                 bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
                 break;
             }
@@ -743,9 +785,9 @@ static void nw_probe_starvation(nw_session *s)
         horizon_gpu_result mres =
             horizon_gpu_mem_flush(s->mem, off, s->geom.buffer_size_B);
         if (!t_check(t, mres.status == HORIZON_GPU_OK,
-                     "starvation probe, %" PRIu32 " buffers: cache flush on "
+                     "probe %s, %" PRIu32 " buffers: cache flush on "
                      "buffer %" PRIu32 " (status %d)",
-                     n, i + 1, (int)mres.status)) {
+                     where, n, i + 1, (int)mres.status)) {
             bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
             break;
         }
@@ -754,22 +796,22 @@ static void nw_probe_starvation(nw_session *s)
         memset(&out, 0, sizeof(out));
         rc = nw_queue(&s->prod, got.slot, s->swap_interval, NULL, &out);
         if (!t_check(t, R_SUCCEEDED(rc),
-                     "starvation probe, %" PRIu32 " buffers: buffer %" PRIu32
+                     "probe %s, %" PRIu32 " buffers: buffer %" PRIu32
                      " queued -> 0x%08x (the queue then reported %" PRIu32
-                     " pending)", n, i + 1, rc, out.numPendingBuffers))
+                     " pending)", where, n, i + 1, rc, out.numPendingBuffers))
             break;
         queued++;
     }
 
     if (!t_check(t, queued == n,
-                 "starvation probe, %" PRIu32 " buffers: the compositor holds "
+                 "probe %s, %" PRIu32 " buffers: the compositor holds "
                  "all %" PRIu32 " of them (%" PRIu32 " queued)",
-                 n, n, queued))
+                 where, n, n, queued))
         return;
 
     char tag[64];
-    snprintf(tag, sizeof(tag),
-             "reconstructed probe, %" PRIu32 " buffers", (uint32_t)n);
+    snprintf(tag, sizeof(tag), "reconstructed probe %s, %" PRIu32 " buffers",
+             where, (uint32_t)n);
 
     nw_slot got;
     const bool got_one = nw_ask_for_a_buffer(s, tag, &got);
@@ -790,42 +832,59 @@ static void nw_probe_starvation(nw_session *s)
         Result rc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
         t_check(t, R_SUCCEEDED(rc),
                 "%s: the buffer went back -> 0x%08x", tag, rc);
-        return;
+    }
+}
+
+/* The probe at both ends of the run, so its position is a variable
+ * instead of a confound.
+ *
+ * Run 6 left exactly one thing unexplained: two windows in the same
+ * process, both with two registered buffers and both fully queued,
+ * answered the same async=true dequeue in opposite ways — NO_INIT
+ * 84328 times running in the paced session, a buffer in 97 us in the
+ * reconstructed probe thirty lines later. Every call in the last three
+ * steps is identical, so what differs is state, and the only state
+ * nothing has controlled for is **where in the run each session
+ * happened**: the failing ones are the 2nd and 4th, the probe was the
+ * 6th and 7th.
+ *
+ * So the same probe now runs BEFORE any paced session and AFTER all of
+ * them, with everything else held constant. If BEFORE starves and AFTER
+ * does not, the variable is what the window has been through; if both
+ * behave the same, position is ruled out and the difference is in the
+ * paced code path, which is the next thing to bisect.
+ */
+static bool nw_run_probes(nw_session *s, const char *where)
+{
+    const uint32_t saved_buffers = s->num_buffers;
+    const uint32_t saved_interval = s->swap_interval;
+    const uint64_t saved_load = s->busy_ns_odd;
+    bool ok = true;
+
+    for (uint32_t n = 3; n >= 2; n--) {
+        s->num_buffers = n;
+        s->swap_interval = 1;
+        s->busy_ns_odd = 0;
+        if (!nw_session_register(s)) {
+            ok = false;
+            break;
+        }
+
+        nw_probe_starvation(s, where);
+
+        Result rc = nwindowReleaseBuffers(s->prod.win);
+        if (!t_check(s->t, R_SUCCEEDED(rc),
+                     "probe %s, %" PRIu32 " buffers: released back to the "
+                     "compositor -> 0x%08x", where, n, rc)) {
+            ok = false;
+            break;
+        }
     }
 
-    /* THE LAST THING THIS PROBE DOES, AND IT MAY NOT RETURN.
-     *
-     * async=false is the mode libnx uses only on a window that has no
-     * release event, and in Android's BufferQueue it is the mode whose
-     * dequeue is allowed to block inside the server until a buffer
-     * frees. If that is what happens here, this call does not come
-     * back and the console has to be power-cycled — which is itself the
-     * answer, and a different one from "the compositor never releases".
-     *
-     * It is last on purpose. Every line above is already flushed to the
-     * SD card (t_vemit flushes each one), so a hang here costs the rest
-     * of the run and none of the evidence.
-     */
-    t_note(t, "%s: ABOUT TO TRY async=false, which can block inside the "
-              "compositor. If the next line of this log is missing, that call "
-              "never returned — and that is the finding, not a crash", tag);
-
-    Result rc = nw_try_dequeue(&s->prod, true /* async=false */, &got);
-
-    /* That this line exists at all is the "it returned" evidence — the
-     * note above says so, and a tautological condition here (R_FAILED
-     * || R_SUCCEEDED) would be a check that verifies nothing. The
-     * assertion is the thing actually in question: whether the other
-     * mode can get a buffer where libnx's could not. */
-    t_check(t, R_SUCCEEDED(rc),
-            "%s: async=false produced a buffer where libnx's async=true could "
-            "not (0x%08x)", tag, rc);
-    if (R_SUCCEEDED(rc)) {
-        Result crc = bqCancelBuffer(&s->prod.win->bq, got.slot, &got.fence);
-        t_check(t, R_SUCCEEDED(crc),
-                "%s: the buffer async=false produced went back -> 0x%08x",
-                tag, crc);
-    }
+    s->num_buffers = saved_buffers;
+    s->swap_interval = saved_interval;
+    s->busy_ns_odd = saved_load;
+    return ok;
 }
 
 static void nw_session_present(nw_session *s, nw_stats *st)
@@ -1102,6 +1161,12 @@ int run_test(test_ctx *t)
     bool ran3 = false, ran2 = false, ran3_free = false;
     bool ran3_load = false, ran2_load = false;
 
+    /* --- the probe, BEFORE anything has touched this window -------- */
+    if (!nw_run_probes(&s, "BEFORE")) {
+        rv = 1;
+        goto out_mem;
+    }
+
     /* --- session A: three buffers, interval 1, no extra load ------- */
     if (!nw_session_register(&s)) {
         rv = 1;
@@ -1290,25 +1355,8 @@ int run_test(test_ctx *t)
      * counted before it runs. Three buffers first, so the two-buffer
      * answer is read next to a working one rather than alone.
      */
-    for (uint32_t n = 3; n >= 2; n--) {
-        s.num_buffers = n;
-        s.swap_interval = 1;
-        s.busy_ns_odd = 0;
-        if (!nw_session_register(&s)) {
-            rv = 1;
-            goto out_mem;
-        }
-
-        nw_probe_starvation(&s);
-
-        rc = nwindowReleaseBuffers(win);
-        if (!t_check(t, R_SUCCEEDED(rc),
-                     "starvation probe, %" PRIu32 " buffers: released back to "
-                     "the compositor -> 0x%08x", n, rc)) {
-            rv = 1;
-            goto out_mem;
-        }
-    }
+    if (!nw_run_probes(&s, "AFTER"))
+        rv = 1;
 
 out_mem:
     if (mem != NULL) {

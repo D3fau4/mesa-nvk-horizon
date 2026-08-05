@@ -27,6 +27,39 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## The release event is not an edge
+
+### `t_nwindow-run6-event-is-not-an-edge-FAIL.log`
+
+The first log in which the diagnostic sat on the *real* failure rather than a
+reconstruction, and it produced the two numbers that rule out everything tried
+so far:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 84328 dequeue(s) in libnx's
+       mode, release event fired 84327 time(s), last result 0x0000115d
+```
+
+**84327 `eventWait` returns in five seconds is 59 us apiece.** The release
+event returns immediately every time, so it is permanently signalled and
+carries no information about a buffer coming back. Waiting on it is a spin —
+in libnx's own `nwindowDequeueBuffer` loop as much as in ours. Every design in
+this project that treated it as "a buffer was released" was treating a level as
+an edge.
+
+**And `async=true` answered `0x115d` (`LibnxBinderError_NoInit`) 84328 times
+running** on that window — while the same call, on the reconstructed probe's
+two-buffer window thirty lines further down the same log, returned a buffer in
+97 us. Two windows in one process, same buffer count, same last three calls,
+opposite answers. The dequeue mode is not the variable and the event is not the
+variable.
+
+Everything else in the run is as good as it has been: 3 buffers 90/90 at mean
+16502 us, 87 of 90 dequeues carrying a compositor-signalled release fence, and
+`t_vk_swapchain-run6-FAIL.log` beside it with 89 of 89 intervals inside 10% of
+a refresh, both present paths, two coexisting swapchains, no leak and no exit
+crash.
+
 ## A probe that reported success next to the failure it was built to explain
 
 ### `t_nwindow-run5-probe-did-not-reproduce-FAIL.log`
