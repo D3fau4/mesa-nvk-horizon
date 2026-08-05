@@ -33,7 +33,7 @@ Fixed in `d75f7b8`: every test now prints its build stamp as the second line of
 its log —
 
 ```
-  note horizon-build-id 2026-08-05T14:27:32Z 72a6333
+  note horizon-build-id 2026-08-05T14:31:36Z e0bb31f
 ```
 
 — the stamp is regenerated on every build in both build paths, the packaging
