@@ -87,9 +87,10 @@ Not taken unilaterally; two of them change advertised behaviour.
 2. **`vkCreateSwapchainKHR` should return
    `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`** when the surface already has a
    non-retired swapchain and `oldSwapchain` does not name it. It
-   currently evicts the owner instead — **and `t_vk_swapchain`'s
-   section D asserts the eviction**, so exit criterion 3's test encodes
-   the non-conformant behaviour.
+   currently evicts the owner instead. Section D of
+   `t_vk_swapchain` already passed `oldSwapchain`, so it was legitimate
+   either way and **could not tell a conformant driver from this one**
+   — the gap was in the test's coverage, not in what it asserted.
 3. **IMMEDIATE with two images silently becomes FIFO** (`swap_interval`
    is 0 only at three or more images).
 4. **A failed `bqCancelBuffer` still marks the slot `FREE`.** Less

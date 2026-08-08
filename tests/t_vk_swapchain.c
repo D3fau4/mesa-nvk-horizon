@@ -1047,6 +1047,70 @@ int run_test(test_ctx *t)
     * contract — the new one exists before the old one is destroyed —
     * and exactly the collision the reference ports fixed with a
     * file-scope pointer. */
+   /* FIRST, THE REFUSAL. Creating a swapchain over a window that
+    * already has a non-retired one, without naming it in oldSwapchain,
+    * must fail with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR — and must leave
+    * the existing swapchain presenting, because a failed creation is
+    * not allowed to break one that already works.
+    *
+    * The driver used to evict the owner unconditionally, and nothing
+    * here noticed: the recreation below passes oldSwapchain and is
+    * legitimate either way, so the conformant and non-conformant
+    * drivers were indistinguishable to this test. */
+   {
+      const VkSwapchainCreateInfoKHR ci = {
+         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+         .surface = surface,
+         .minImageCount = 3,
+         .imageFormat = VK_FORMAT_R8G8B8A8_UNORM,
+         .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+         .imageExtent = extent,
+         .imageArrayLayers = 1,
+         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+         .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+         .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+         .clipped = VK_TRUE,
+         .oldSwapchain = VK_NULL_HANDLE,
+      };
+      VkSwapchainKHR intruder = VK_NULL_HANDLE;
+      VkResult r = fw.wsi.vkCreateSwapchainKHR(fw.dev, &ci, NULL, &intruder);
+      t_check(t, r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR,
+              "a swapchain over a window that already has one, with no "
+              "oldSwapchain, is refused with "
+              "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR -> %s", vkfw_result_str(r));
+      if (r == VK_SUCCESS) {
+         /* It was allowed anyway; do not leak it. */
+         fw.wsi.vkDestroySwapchainKHR(fw.dev, intruder, NULL);
+      }
+
+      /* And the one that already had the window still works. This is
+       * the half that matters: a refusal that broke the incumbent would
+       * be worse than the eviction it replaced. */
+      uint32_t idx = 0;
+      VkResult ar =
+         fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle, SC_WAIT_NS,
+                                      VK_NULL_HANDLE, sc2.acquire_fence,
+                                      &idx);
+      t_check(t, ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR,
+              "the refused creation left the existing swapchain able to "
+              "acquire -> %s", vkfw_result_str(ar));
+      if (ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR) {
+         fw.vk.vkWaitForFences(fw.dev, 1, &sc2.acquire_fence, VK_TRUE,
+                               SC_WAIT_NS);
+         fw.vk.vkResetFences(fw.dev, 1, &sc2.acquire_fence);
+         const VkPresentInfoKHR pi = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .swapchainCount = 1,
+            .pSwapchains = &sc2.handle,
+            .pImageIndices = &idx,
+         };
+         fw.wsi.vkQueuePresentKHR(fw.queue, &pi);
+      }
+   }
+
    sc_swapchain scB;
    if (!sc_create(&fw, surface, 3, VK_PRESENT_MODE_FIFO_KHR,
                   VK_FORMAT_R8G8B8A8_UNORM, extent, sc2.handle,
