@@ -12,18 +12,80 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **`t_nwindow` PASSES 118/118 — the first PASS this phase — and exit criterion 2's numeric half has run at last: double buffering paces 24918 us against triple's 16793 us under the same load.** The cause was ours: the retry loop spun on binder at ~17000 transactions a second and starved the compositor it waited on; sleeping an eighth of a refresh between rounds fixes it. `t_vk_swapchain` still fails at two images **because the driver in it was three days old** — patch 0064 never reached the archive it linked. Rebuilt, and the packaging gate now catches that direction too |
-| **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 12: `t_vk_swapchain` with a driver that actually contains patch 0064.** It is the same fix `t_nwindow` just proved on the same window through raw `bq*`. If two images present 90 of 90, all four exit criteria are met and D18 closes at `minImageCount = 2` |
-| **Known failures** | **1. `t_vk_swapchain` fails at two images** — measured against a driver missing patch 0064, so **unmeasured** rather than failing. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Phase** | **PHASE 6 IS DONE. All four exit criteria are met on hardware.** `t_nwindow` PASS 118/118 (run 11) and `t_vk_swapchain` PASS 117/117 (run 12). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
+| **Next concrete task** | **Phase 7**, per `docs/milestones.md`. Nothing in Phase 6 is outstanding |
+| **Known failures** | **1.** `t_fault` still takes the console down on exit. **2.** `t_vk_texture`'s one unexplained occurrence stays on the record. Neither is Phase 6 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
-| **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Met in `t_nwindow`** — 24918 us on two buffers against 16793 us on three under the same bursty load, plus 3 concurrent slots against 2 — and unmeasured through Vulkan, pending run 12. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | A two-image swapchain through Vulkan with patch 0064 in the driver. Any display mode change. Anything multi-threaded |
+| **Exit criteria** | **All four met.** **1.** 89/89 intervals within 10% of 16666 us. **2.** 25169 us on two images against 16807 us on three under the same load (Vulkan), 24918 against 16793 (raw `bq*`), plus 3 concurrent slots against 2. **3.** Met. **4.** Met, both paths named through the debug-utils messenger in one run |
+| **What is still unverified** | Any display mode change. Anything multi-threaded. Docked resolution. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8171 us against 16339 us** |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Almost certainly no — `t_nwindow` presents 90 of 90 on two buffers. Closed by run 12 |
-| **Never verified on hardware** | Patch **0064** through Vulkan; the reverse staleness gate has been broken in both directions here but never shipped; `t_fault` as it stands |
+| **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
+| **Never verified on hardware** | The reverse staleness gate has been broken in both directions here but has not yet caught a real regression; `t_fault` as it stands |
+
+
+---
+
+## Run 12 — Phase 6 is done (2026-08-08)
+
+**Class: hardware (HW).** `t_vk_swapchain` **PASS 117/117**, build
+`2026-08-08T12:35:43Z d41e12a`. Log in
+`docs/hw-logs/t_vk_swapchain-run12-PASS.log`.
+
+The driver in it contains patch 0064, which the run-11 binary did not:
+`wsi_horizon.c:1851` in the log against 1847 in run 11, and the
+two-image sessions that had failed eleven times now present.
+
+```
+  ok   2 images, FIFO: 90 of 90 frames presented
+  ok   under the same bursty load two images pace at least 10% slower
+       than three (25169 us vs 16807 us)
+```
+
+### All four exit criteria, with the numbers
+
+1. **A swapchain presents at the display's rate.** 89 of 89 intervals
+   within 10% of 16666 us, mean 16664 us, through the zero-copy path.
+2. **Triple differs from double, measurably.** 25169 us against 16807 us
+   under the same bursty load through Vulkan; 24918 us against 16793 us
+   through raw `bq*` in `t_nwindow`. Structurally, 3 slots dequeued at
+   once against 2.
+3. **Two swapchains coexist over one window and destroy
+   independently.** The superseded one reports
+   `VK_ERROR_OUT_OF_DATE_KHR`; the survivor presents 20 of 20 after the
+   other is destroyed.
+4. **The zero-copy decision is runtime-observable and says why.** Both
+   paths named by the driver through the debug-utils messenger in one
+   run, the fallback carrying its reason.
+
+And the layout evidence, which is the one thing no readback could give:
+the operator confirmed the four bars, the border, the diagonal and the
+corner square in run 2, and the pattern code has not changed since.
+
+### D18 is closed: `minImageCount` stays 2
+
+Two images present 90 of 90 frames. The compositor was never the limit;
+the retry loop was.
+
+### What it cost, and what that says
+
+Twelve hardware runs. The two-buffer failure took nine of them, and the
+cause — a retry loop with no idle in it, spinning binder at ~17000
+transactions a second into the compositor it was waiting for — was
+inferred wrongly five times before the loop was made to report its own
+rounds and per-mode timings. **That instrument should have been the
+first thing built, not the sixth.** Every earlier diagnosis was read off
+a probe that ran afterwards, on a window in a different state, and each
+one produced a patch that changed the failure's spelling and not the
+failure.
+
+Two artefacts also shipped as something they were not — run 3's stale
+`.nro` and run 11's stale driver archive — and both are now gated: every
+log states its build, and packaging refuses a directory holding more
+than one build, an unstamped artefact, or archives older than the Mesa
+sources they were meant to be built from.
 
 
 ---

@@ -5,27 +5,28 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
-## The two logs Phase 6 currently rests on
+## The two logs Phase 6 rests on
 
-`t_nwindow-run4-starves-at-two-FAIL.log` and
-`t_vk_swapchain-run4-leak-fixed-FAIL.log`, both stamped
-`2026-08-05T14:31:36Z e0bb31f` in their second line — the first runs whose
-build is stated in the artefact itself.
+`t_nwindow-run11-PASS.log` (118/118) and `t_vk_swapchain-run12-PASS.log`
+(117/117). Between them every Phase 6 exit criterion is measured:
 
-Both report `FAIL`, and both are the evidence for three separate results:
+1. **A swapchain presents at the display's rate.** 89 of 89 intervals within
+   10% of 16666 us, mean 16664 us, zero-copy.
+2. **Triple buffering differs from double, in numbers.** Under the same bursty
+   load, two images pace at **25169 us** against three at **16807 us** through
+   Vulkan, and two buffers at **24918 us** against three at **16793 us**
+   through raw `bq*`. Structurally, 3 slots dequeued at once against 2.
+3. **Two swapchains coexist over one window and destroy independently.** The
+   superseded one reports `VK_ERROR_OUT_OF_DATE_KHR`; the survivor presents
+   20 of 20 after the other is gone.
+4. **The zero-copy decision is runtime-observable and says why.** Both paths
+   named by the driver through the debug-utils messenger in one run, the copy
+   fallback carrying `zero-copy was declined because
+   MESA_VK_WSI_HORIZON_FORCE_COPY asked for it`.
 
-- **The leak is gone.** `device destroy refused` does not appear anywhere in
-  the swapchain log, where run 2 and run 3 both had `live mem=33 va_ranges=33
-  mappings=33`. The teardown check that reports it is the `t_log_scan` version
-  that fails when it cannot read, so its `ok` is worth something now.
-- **The exit crash was the leak.** Reported by the operator: the console
-  returns to the homebrew menu on `+`. Three runs tried to ask this question
-  and this is the one that got to ask it.
-- **Two buffers still starve, and the earlier diagnosis was wrong.** The
-  failing result is `0x00006359` = `MAKERESULT(Module_Libnx,
-  LibnxError_Timeout)` — the test's own wait expiring, not an error from the
-  BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
-  at which dequeue mode to use, and no dequeue mode is ever reached.
+The layout evidence is separate and human: the operator confirmed the four
+bars, the border, the diagonal and the corner square in run 2, and the pattern
+code has not changed since.
 
 ## The first PASS, and a second stale-artefact failure
 

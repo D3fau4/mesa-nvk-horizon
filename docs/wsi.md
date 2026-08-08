@@ -318,6 +318,42 @@ When cross-channel GPU waits exist (`docs/synchronization.md` § 4), this become
 a `vk_sync` and the stall goes. The one line that has to change is in
 `wsi_horizon_acquire_zero_copy`.
 
+#### The retry loop, and the two things about it that were wrong
+
+Neither was in this document when it was written; both cost hardware runs, so
+they belong here.
+
+**The window's release event is a level, not an edge.** `nwindowCreate` obtains
+it with `binderGetNativeHandle(&nw->bq, 0x0f, &nw->event)` and libnx's own
+`nwindowDequeueBuffer` loops `eventWait(UINT64_MAX)` then
+`bqDequeueBuffer(async=true)` while the result is `WOULD_BLOCK`. Measured on
+console: **84327 `eventWait` returns in five seconds, 59 us apiece.** It is
+permanently signalled and carries no information about a buffer having come
+back. A retry loop built on it has no idle in it at all.
+
+**So the loop must sleep, and not sleeping starves the compositor it waits
+for.** Measured on the failing window: 8320 rounds in one second, both dequeue
+modes reached, both answering `NO_INIT`, and **989 ms of the 1000 ms budget
+spent inside `bqDequeueBuffer`** — roughly 17000 binder transactions a second
+into the compositor's own service. A buffer arrived 146 us after the asking
+stopped, and a three-second budget changed nothing (23192 rounds, same answer).
+Three images never showed it because a slot is nearly always free and the loop
+never spins; two images spin on every frame. The acquire now sleeps an eighth
+of a refresh between rounds (`svcSleepThread`), and two images present 90 of 90.
+
+**The `async` flag is not a preference.** Android's producer reads it as *this
+producer is in asynchronous mode* — `queueBuffer` never blocks and older frames
+are dropped — which costs the queue one buffer held in reserve. libnx passes
+`true` on any window that has a release event. The acquire asks that first and
+falls back to `async=false` in the same round when the queue says it would
+block, except at a zero timeout, where `async=false` is the mode Android permits
+to block in the server and `VK_NOT_READY` has to be prompt.
+
+Five patches were written against wrong readings of this failure before the loop
+was made to report its own rounds and per-mode timings. That instrument should
+have come first: every earlier diagnosis was inferred from a probe that ran
+afterwards, on a window in a different state.
+
 ### Present
 
 ```

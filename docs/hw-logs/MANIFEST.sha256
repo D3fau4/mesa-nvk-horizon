@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-ead533a3b09960bb88f464d1fbc3f5726ebeea86f94223b9c12b6d141cc3ebf1  README.md
+e37ddb43e3a48e9752d41b7c4a282001fd5837777602354cf45f7d8d0cedc42a  README.md
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
 718f0d37974da73d04a552c64d5d8024b9de3fdac638307779b35d1e615a3fa1  t_channel.log
@@ -85,6 +85,7 @@ d647264e7d620d6dc1b4fbeee525bb208a113436011d1ffa234620ffc43790c9  t_vk_submits-r
 094cc78b823d55ee58baee2caa8f84da7a810a22e3b41a49805b166f30104ed8  t_vk_submits-run6-pr7-rerun-PASS.log
 67fd3aab8c58f203b86017caf715da74f232c68c66945b6d56034d749355cbb1  t_vk_swapchain-run1-phase6-FAIL.log
 468b8f9e19af95d9fd027f76108fc75660aa0b2748bd5f0e7f038172af73daca  t_vk_swapchain-run11-STALE-DRIVER-FAIL.log
+af58cee6a395af0a32302c08bffffa08c33d7b0a09a5eb506b9bc30fc5382f37  t_vk_swapchain-run12-PASS.log
 73037caa58d947c766e668319eeac227e5b06840ace0329a92bad7cda1035802  t_vk_swapchain-run2-refcycle-FAIL.log
 fc222688c79ba97991ecb4af8ebb9b0730c5961c4f051cdf39fc41545cf33014  t_vk_swapchain-run3-STALE-BINARIES.log
 8b9c3ed3617337815b7532f0da5f4887acfee557f046d452801dfb3dc32a1573  t_vk_swapchain-run4-leak-fixed-FAIL.log
