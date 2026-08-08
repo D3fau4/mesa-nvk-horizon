@@ -12,9 +12,9 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6's four exit criteria were met on hardware in run 13.** Run 15 then presented **90 of 90 frames with 89 of 89 intervals inside 10% of a refresh** on three images and 90 of 90 on two, with **no MMU fault** — the fault of run 14 did not reproduce without nxlink. `t_vk_swapchain` still produced no verdict in run 15, but for a different and entirely self-inflicted reason: the acquire-refusal control kept an image it never presented, and one usable buffer cannot make progress in FIFO. Fixed in the test, and in the driver (patch **0069**). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **Phase** | **PHASE 6 IS DONE, and run 16 is the first run in which every piece of coverage this branch has built actually executed.** `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Run 16: `t_vk_swapchain`, several times, and at least one of them under nxlink.** Two questions. (a) Does the run now reach `RESULT`? Both hangs are fixed — the test returns every image the control took, and patches 0068 and 0069 stop the driver waiting on a wait that cannot end. (b) **Does the MMU fault come back, and only under nxlink?** Run 14 (nxlink) faulted; run 15 (no nxlink) did not. That is one run each — a hypothesis, not a finding. Still outstanding: **how the pattern looked**, which has now presented 120 of 120 twice with nobody saying what was on screen |
+| **Next concrete task** | **Two things, and neither is code.** (a) **How the pattern looked**, showings 1 and 2, separately. It has now presented 120 of 120 frames on the zero-copy path in three runs and on the copy fallback in one, and nobody has yet said what was on screen. That answer is the entire layout evidence for this phase. (b) **`t_vk_swapchain` under nxlink, two or three times.** Run 14 (nxlink) MMU-faulted; runs 15 and 16 (no nxlink) did not. One faulting run against two clean ones is a hypothesis, not a finding |
 | **Known failures** | **1. An unexplained MMU fault in `t_vk_swapchain` (run 14)** — open, never seen before outside `t_fault`, and **it did not reproduce in run 15 without nxlink**, which is one run each and a hypothesis, not a finding. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
@@ -23,8 +23,71 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
-| **Never verified on hardware** | Patch **0068** (it was in run 15's build and never fired — the device never died) and patch **0069**; the rewritten acquire-refusal control; **`t_vk_swapchain`'s `timeout = UINT64_MAX` coverage, which no run has yet reached** — `t_nwindow`'s equivalent has now run twice, 20 of 20 both times |
+| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Run 16 — everything this branch built finally ran (2026-08-08)
+
+Build `2026-08-08T20:46:09.792Z 8b5b1de mesa:57e85ae`, both tests, no
+nxlink. **`t_vk_swapchain` PASS 125/125**, **`t_nwindow` PASS 119/119**.
+`docs/hw-logs/t_vk_swapchain-run16-PASS.log` and
+`docs/hw-logs/t_nwindow-run16-PASS.log`.
+
+This is the first run that reached the end of `t_vk_swapchain`. Runs 14
+and 15 both hung before the last third of the file, for two unrelated
+reasons, so the checks after that point had never executed at all.
+
+### First-time evidence, none of which existed before this run
+
+- **The infinite-timeout session through Vulkan**: `2 images, FIFO,
+  infinite acquire timeout: 20 of 20 frames presented`, 19 of 19
+  intervals inside 10% of a refresh, acquire mean 15794 us. Patch 0067
+  removed a dequeue mode on the strength of `t_nwindow`'s raw `bq*`
+  measurement; this is the same question answered through the API.
+- **The copy fallback presented the pattern**: `the copy path presented
+  the pattern 120 times`. The fallback had never displayed anything an
+  eye could falsify.
+- **`VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted.**
+  `an acquire that cannot be satisfied within its deadline returns
+  VK_TIMEOUT`, and the same acquire at zero returns `VK_NOT_READY`.
+  Before this, "no acquire returned VK_TIMEOUT" was a sentence about
+  something this test had never seen.
+- **The rewritten control measured its old premise instead of assuming
+  it**: `the application could hold 1 of this swapchain's 2 images at
+  once`. One, not two — which is exactly what broke run 15 — and
+  `every image the control held was presented back (1 of 1)`.
+
+### The numbers, and they are the best recorded
+
+| | run 16 | run 13 |
+|---|---|---|
+| 3 images, FIFO | 90 of 90, **89 of 89** within 10%, mean **16666 us** | 89 of 89, 16666 us |
+| 2 images, FIFO | 90 of 90, 87 of 89 | 90 of 90, 87 of 89 |
+| infinite timeout | **20 of 20, 19 of 19** within 10% | never reached |
+| copy fallback | 90 of 90, **89 of 89** within 10%, acquire mean **6 us** | 87 of 89 |
+| bursty, 3 vs 2 | 16855 us vs 25176 us, 45 and 45 | 16837 vs 25170, 45 and 45 |
+
+Exit criterion 2's corrected claim has now reproduced three times, with
+`over_1p5_refresh` at 45 and 45 every time. The claim it replaced would
+have failed three times.
+
+### What run 16 does not settle
+
+**The MMU fault.** Run 14 streamed over nxlink and faulted; runs 15 and
+16 did not stream and did not fault. One faulting run against two clean
+ones, with nxlink the only difference — a hypothesis with three data
+points, not a finding.
+
+**Patch 0068** has now been in three builds without firing, because no
+device has been lost since run 14. The path it fixes is still untaken.
+
+**The pattern.** It has presented 120 of 120 frames on the zero-copy
+path in three runs and on the copy fallback in one, and **nobody has
+said what was on screen**. Every number here is about delivery. The
+layout evidence for this phase does not exist yet and no amount of code
+can produce it.
 
 ---
 
