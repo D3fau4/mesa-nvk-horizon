@@ -260,6 +260,16 @@ so accepting the wrong one passes every size and stride check and puts a
 scrambled image on screen. `TegraColor` is what Horizon's display block reads as
 "generic 16Bx2", and it is the only one accepted.
 
+**And it is right, confirmed by an operator on 2026-08-08.** The scrambling this
+paragraph predicts is what the pattern test exists to catch — four bars, a
+border, a diagonal, a corner square, held on screen for two seconds — and the
+answer from the console is that the image comes out correct every time it has
+been shown. That is the only evidence there can be: a presented frame cannot be
+read back, and a GPU readback would write and read with the same layout and
+agree with itself. Scope of the claim: 1280x720 handheld, `R8G8B8A8_UNORM`,
+`block_height_log2 = 4`. Another resolution, format or block height is another
+agreement and has not been shown to anybody.
+
 ### 3.1.1 The alignment that turned out not to matter
 
 Predicted before the first run, and it did not happen: libnx creates its
