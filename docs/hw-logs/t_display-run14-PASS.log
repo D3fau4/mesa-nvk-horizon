@@ -1,0 +1,11 @@
+== t_display ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   no console was started: main() acted on test_uses_display rather than merely being told about it
+  ok   nwindowGetDefault() returned a window
+  ok   nwindowGetDimensions -> 0x00000000 (1280 x 720)
+  note the default window is 1280 x 720
+  note if you are reading this line, a console-less run reported itself and Phase 6 can report through this file
+RESULT: PASS (3/3)
+  note the run is finished; press + to exit (there is no console to show this)

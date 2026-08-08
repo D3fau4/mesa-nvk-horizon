@@ -1,0 +1,121 @@
+== t_vk_swapchain ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   instance extension list fits (3 asked for)
+  ok   instance extension list fits (3 asked for)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x7a8f5ef2a0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x7a8f5ef2a0: up, syncpt=26 initial=184082 zcull=off
+[horizon_gpu:I] channel 0x7a8f640010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x7a8f640010: up, syncpt=27 initial=5314 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   every window-system entry point resolved
+  ok   nwindowGetDefault() returned a valid window
+  ok   vkCreateViSurfaceNN over the default window -> VK_SUCCESS
+  ok   queue family 0 can present to this surface -> VK_SUCCESS
+  ok   surface capabilities -> VK_SUCCESS
+  note surface: 1280x720, 2 to 4 images, usage 0x0008009f
+  ok   minImageCount is 2, so double buffering exists (2)
+  ok   maxImageCount is 4 (4)
+  ok   the surface reports a real current extent
+  ok   swapchain images can be rendered to and copied into
+  ok   the surface has no transform of its own
+  ok   the surface offers 4 format(s), including R8G8B8A8_UNORM -> VK_SUCCESS
+  ok   VK_PRESENT_MODE_FIFO_KHR is offered (2 mode(s)) -> VK_SUCCESS
+  note VK_PRESENT_MODE_IMMEDIATE_KHR is offered
+MESA: warning: vk_log*() called with client-invisible object 0x7a8f644240 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2054]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  ok   3 images, FIFO: vkCreateSwapchainKHR(3 images) -> VK_SUCCESS
+  ok   3 images, FIFO: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   3 images, FIFO: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   3 images, FIFO: the acquire fence -> VK_SUCCESS
+  ok   3 images, FIFO: command buffer 0 -> VK_SUCCESS
+  ok   3 images, FIFO: semaphore 0 -> VK_SUCCESS
+  ok   3 images, FIFO: fence 0 -> VK_SUCCESS
+  ok   3 images, FIFO: command buffer 1 -> VK_SUCCESS
+  ok   3 images, FIFO: semaphore 1 -> VK_SUCCESS
+  ok   3 images, FIFO: fence 1 -> VK_SUCCESS
+  ok   3 images, FIFO: command buffer 2 -> VK_SUCCESS
+  ok   3 images, FIFO: semaphore 2 -> VK_SUCCESS
+  ok   3 images, FIFO: fence 2 -> VK_SUCCESS
+  ok   asking for 3 images produced 3 (3)
+  ok   the swapchain reported which present path it got
+  note the driver said: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  ok   vkCreateBuffer(0x384000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x384000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  note SHOWING THE PATTERN FOR TWO SECONDS, ON THE PATH THE DRIVER CHOSE BY ITSELF. What should be on screen, and what a wrong memory layout would destroy: four full-height vertical bars, red then green then blue then white, left to right; a white border 16 pixels wide all the way round; a black diagonal from the top-left corner to the bottom-right; and a yellow square just inside the top-left corner. Anything scrambled, striped or blocky means the compositor and the driver disagree about the block-linear layout
+  ok   the pattern was presented 120 times -> VK_SUCCESS
+  note OPERATOR: this was SHOWING 1 OF 2, and the two are not the same evidence. Say in the report whether the four bars, the border, the diagonal and the yellow corner were all there and in that order. Showing 2 comes later in the run, on the forced copy path, and needs its own separate answer
+[horizon_gpu:E] channel 0x7a8f640010: fault notification 31 (MMU fault) — marking lost
+  note vk warning [../../mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c:386]: horizon_gpu_channel_wait_fence(27, 5437) failed: status 8, nv 0x00000000 (VK_ERROR_DEVICE_LOST)
+  FAIL 3 images, FIFO: 2 of 90 frames presented (see the note below)
+  note 3 images, FIFO: recording and submitting the frame at frame 2 -> DEVICE_LOST
+  note 3 images, FIFO: 1 intervals, mean 16520 us, min 16520 us, max 16520 us; 1 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 3 images, FIFO: acquire mean 34874 us / max 49105 us; record+submit mean 562 us; 0 SUBOPTIMAL
+  note a frame's own CPU cost measured 562 us; the bursty load adds 23874 us to every odd frame, for a mean of 12499 us against a 16666 us refresh
+  note vk warning [../../mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c:386]: horizon_gpu_channel_wait_fence(27, 5438) failed: status 8, nv 0x00000000 (VK_ERROR_DEVICE_LOST)
+  FAIL 3 images, FIFO, bursty load: 0 of 90 frames presented (see the note below)
+  note 3 images, FIFO, bursty load: recording and submitting the frame at frame 0 -> DEVICE_LOST
+  note 3 images, FIFO, bursty load: no intervals recorded
+MESA: warning: vk_log*() called with client-invisible object 0x7a901f1220 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2054]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+  ok   2 images, FIFO: vkCreateSwapchainKHR(2 images) -> VK_SUCCESS
+  ok   2 images, FIFO: the swapchain has 2 image(s) -> VK_SUCCESS
+  ok   2 images, FIFO: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   2 images, FIFO: the acquire fence -> VK_SUCCESS
+  ok   2 images, FIFO: command buffer 0 -> VK_SUCCESS
+  ok   2 images, FIFO: semaphore 0 -> VK_SUCCESS
+  ok   2 images, FIFO: fence 0 -> VK_SUCCESS
+  ok   2 images, FIFO: command buffer 1 -> VK_SUCCESS
+  ok   2 images, FIFO: semaphore 1 -> VK_SUCCESS
+  ok   2 images, FIFO: fence 1 -> VK_SUCCESS
+  ok   asking for 2 images produced 2 (2)
+MESA: error: nvkmd_horizon: channel 0x7a8f640010 push 0/1: 0xb144000 + 0x21c bytes — inside VA 0xb144000+0x10000, bound at +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0x80f9000+0x1000 page 0x1000  bound +0x0 for 0x1000
+MESA: error: nvkmd_horizon: map  VA 0x80fa000+0x2000000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa0fa000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa10a000+0x20000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa10a000+0x20000 page 0x1000  bound +0x10000 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa12a000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa13a000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0x100000000+0x100000000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa14a000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa253000+0x1000 page 0x1000  bound +0x0 for 0x1000
+MESA: error: nvkmd_horizon: map  VA 0xa254000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xada4000+0x3a0000 page 0x1000  bound +0x0 for 0x3a0000
+MESA: error: nvkmd_horizon: map  VA 0xb144000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xb154000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xb164000+0x10000 page 0x1000  bound +0x0 for 0x10000
+MESA: error: nvkmd_horizon: map  VA 0xa264000+0x3c0000 page 0x1000  bound +0x0 for 0x3c0000
+MESA: error: nvkmd_horizon: map  VA 0x400000000+0x3c0000 page 0x20000  bound +0x0 for 0x3c0000
+MESA: error: nvkmd_horizon: map  VA 0xa624000+0x3c0000 page 0x1000  bound +0x0 for 0x3c0000
+MESA: error: nvkmd_horizon: map  VA 0x4003c0000+0x3c0000 page 0x20000  bound +0x0 for 0x3c0000
+MESA: error: nvkmd_horizon: map  18 reservation(s), all shown
+  note vk warning [../../mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c:235]: horizon_gpu_submit(1 spans) on channel 0x7a8f640010 failed: status 8, nv 0x00000000 (VK_ERROR_DEVICE_LOST)
+  FAIL 2 images, FIFO: 0 of 90 frames presented (see the note below)
+  note 2 images, FIFO: recording and submitting the frame at frame 0 -> DEVICE_LOST
+  note 2 images, FIFO: no intervals recorded
+  note vk warning [../../mesa/src/nouveau/vulkan/nvk_queue.c:306]: Submit failed (VK_ERROR_DEVICE_LOST)
+  FAIL 2 images, FIFO, bursty load: 0 of 90 frames presented (see the note below)
+  note 2 images, FIFO, bursty load: waiting for the acquire fence at frame 0 -> DEVICE_LOST
+  note 2 images, FIFO, bursty load: no intervals recorded
+  note the two images could not both be held (VK_TIMEOUT, VK_TIMEOUT), so the acquire's failure results were not exercised and the VK_TIMEOUT check below has no control behind it
+  note acquiring with timeout = UINT64_MAX for 20 frames. If the driver's dequeue policy cannot get a buffer, this hangs instead of failing, and the driver says so in the log after three seconds

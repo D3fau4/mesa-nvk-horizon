@@ -703,6 +703,32 @@ static void sc_run(vkfw *fw, sc_swapchain *sc, uint32_t frames,
    }
 }
 
+/* IS THE DEVICE STILL ALIVE, AND IF NOT, AFTER WHAT?
+ *
+ * Run 14 lost the graphics channel to an MMU fault somewhere between
+ * the pattern's 120 presents and the third frame of the session that
+ * followed. "Somewhere between" is as precise as that log can be,
+ * because nothing asked in between: the fault surfaced at the first
+ * fence wait that happened to come after it, and 120 frames is a wide
+ * place to lose something.
+ *
+ * vkDeviceWaitIdle is the cheapest question with a real answer — it
+ * returns VK_ERROR_DEVICE_LOST once NVK has marked the device — and it
+ * is asked between phases, never inside one, so no timing measurement
+ * sees it. A phase boundary that reports a dead device names the phase
+ * that killed it.
+ */
+static bool sc_device_alive(vkfw *fw, test_ctx *t, const char *after)
+{
+   const VkResult r = fw->vk.vkDeviceWaitIdle(fw->dev);
+   if (r == VK_SUCCESS)
+      return true;
+
+   t_check(t, false, "the device is still alive after %s -> %s", after,
+           vkfw_result_str(r));
+   return false;
+}
+
 static bool sc_report(test_ctx *t, const sc_stats *st, uint32_t expected)
 {
    const bool ok = t_check(t, !st->failed && st->frames_presented == expected,
@@ -984,6 +1010,9 @@ int run_test(test_ctx *t)
                       "corner were all there and in that order. Showing 2 "
                       "comes later in the run, on the forced copy path, and "
                       "needs its own separate answer");
+
+            /* The boundary run 14 could not see across. */
+            (void)sc_device_alive(&fw, t, "the pattern's 120 presents");
          }
       } else {
          t_note(t, "the pattern buffer could not be created or mapped; "
@@ -1163,7 +1192,27 @@ int run_test(test_ctx *t)
       }
    }
 
-   {
+   /* NOT STARTED ON A DEVICE THAT IS ALREADY DEAD, and run 14 is why.
+    *
+    * An unbounded wait is only a measurement while the thing it waits
+    * for can still happen. With the device lost, every present fails,
+    * the application keeps every image it acquired, the queue can never
+    * free one — and this session asked for a buffer forever. The test
+    * hung, so the run produced no RESULT line at all and the twenty-odd
+    * checks after this one were never reached. One fault cost the whole
+    * verdict.
+    *
+    * Patch 0068 makes the driver return VK_ERROR_DEVICE_LOST from that
+    * wait, which fixes the hang at its source. This guard is the second
+    * half: a test should not start an unbounded wait it has reason to
+    * believe cannot end, and it should say that it did not rather than
+    * skipping in silence. */
+   if (!sc_device_alive(&fw, t, "the two-image sessions")) {
+      t_note(t, "NOT asking for an image with timeout = UINT64_MAX: the "
+                "device is already lost, so nothing can free a buffer and "
+                "this wait would only end because patch 0068 now stops it. "
+                "The infinite-timeout coverage did NOT run in this session");
+   } else {
       sc_stats st2_inf;
       sc_stats_init(&st2_inf, "2 images, FIFO, infinite acquire timeout");
       sc2.acquire_timeout_ns = UINT64_MAX;

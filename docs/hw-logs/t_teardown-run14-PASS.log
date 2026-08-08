@@ -1,0 +1,40 @@
+== t_teardown ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  ok   cycle 1: device_create (status=ok nv=0x00000000)
+  ok   cycle 1: mem
+  ok   cycle 1: range
+  ok   cycle 1: flush NOP list
+  ok   cycle 1: map
+  ok   cycle 1: channel (+zcull)
+  ok   cycle 1: submit 1
+  ok   cycle 1: add_retirement
+  ok   cycle 1: submit 2
+  note cycle 1: work already retired at destroy time; channel destroyed (destroy's reap ran the callbacks)
+  ok   cycle 1: retirement callback ran exactly once (1)
+[horizon_gpu:E] device destroy refused: live mem=1 va_ranges=1 mappings=1 channels=0
+  ok   cycle 1: device destroy with live children refused (leak detected at teardown)
+  ok   cycle 1: unmap
+  ok   cycle 1: release range
+  ok   cycle 1: destroy mem
+  ok   cycle 1: every counter zero (mem=0 ranges=0 maps=0 chans=0)
+  ok   cycle 1: device_destroy now succeeds (status=ok)
+  ok   cycle 2: device_create (status=ok nv=0x00000000)
+  ok   cycle 2: mem
+  ok   cycle 2: range
+  ok   cycle 2: flush NOP list
+  ok   cycle 2: map
+  ok   cycle 2: channel (+zcull)
+  ok   cycle 2: submit 1
+  ok   cycle 2: add_retirement
+  ok   cycle 2: submit 2
+  note cycle 2: work already retired at destroy time; channel destroyed (destroy's reap ran the callbacks)
+  ok   cycle 2: retirement callback ran exactly once (1)
+[horizon_gpu:E] device destroy refused: live mem=1 va_ranges=1 mappings=1 channels=0
+  ok   cycle 2: device destroy with live children refused (leak detected at teardown)
+  ok   cycle 2: unmap
+  ok   cycle 2: release range
+  ok   cycle 2: destroy mem
+  ok   cycle 2: every counter zero (mem=0 ranges=0 maps=0 chans=0)
+  ok   cycle 2: device_destroy now succeeds (status=ok)
+RESULT: PASS (32/32)

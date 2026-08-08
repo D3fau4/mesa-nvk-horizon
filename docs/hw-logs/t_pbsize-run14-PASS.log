@@ -1,0 +1,82 @@
+== t_pbsize ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  ok   device create (status=ok)
+  ok   a 2097156-byte push buffer is mapped (status=ok)
+  ok   the release target is mapped (status=ok)
+  ok   33 dwords: channel create (status=ok)
+  ok   33 dwords: the rung has room for filler and a release
+  ok   33 dwords: 14 NOP pair(s) encoded (28 dwords)
+  ok   33 dwords: the release encoded at the end
+  ok   33 dwords: the entry is exactly the size it claims (built 33)
+  ok   33 dwords: push buffer flushed (status=ok)
+  ok   33 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   33 dwords: the entry completes (status=ok)
+  ok   33 dwords: the release at the END of the entry ran (0x5a5a0100)
+  ok   129 dwords: channel create (status=ok)
+  ok   129 dwords: the rung has room for filler and a release
+  ok   129 dwords: 62 NOP pair(s) encoded (124 dwords)
+  ok   129 dwords: the release encoded at the end
+  ok   129 dwords: the entry is exactly the size it claims (built 129)
+  ok   129 dwords: push buffer flushed (status=ok)
+  ok   129 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   129 dwords: the entry completes (status=ok)
+  ok   129 dwords: the release at the END of the entry ran (0x5a5a0200)
+  ok   513 dwords: channel create (status=ok)
+  ok   513 dwords: the rung has room for filler and a release
+  ok   513 dwords: 254 NOP pair(s) encoded (508 dwords)
+  ok   513 dwords: the release encoded at the end
+  ok   513 dwords: the entry is exactly the size it claims (built 513)
+  ok   513 dwords: push buffer flushed (status=ok)
+  ok   513 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   513 dwords: the entry completes (status=ok)
+  ok   513 dwords: the release at the END of the entry ran (0x5a5a0300)
+  ok   2049 dwords: channel create (status=ok)
+  ok   2049 dwords: the rung has room for filler and a release
+  ok   2049 dwords: 1022 NOP pair(s) encoded (2044 dwords)
+  ok   2049 dwords: the release encoded at the end
+  ok   2049 dwords: the entry is exactly the size it claims (built 2049)
+  ok   2049 dwords: push buffer flushed (status=ok)
+  ok   2049 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   2049 dwords: the entry completes (status=ok)
+  ok   2049 dwords: the release at the END of the entry ran (0x5a5a0400)
+  ok   8193 dwords: channel create (status=ok)
+  ok   8193 dwords: the rung has room for filler and a release
+  ok   8193 dwords: 4094 NOP pair(s) encoded (8188 dwords)
+  ok   8193 dwords: the release encoded at the end
+  ok   8193 dwords: the entry is exactly the size it claims (built 8193)
+  ok   8193 dwords: push buffer flushed (status=ok)
+  ok   8193 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   8193 dwords: the entry completes (status=ok)
+  ok   8193 dwords: the release at the END of the entry ran (0x5a5a0500)
+  ok   32769 dwords: channel create (status=ok)
+  ok   32769 dwords: the rung has room for filler and a release
+  ok   32769 dwords: 16382 NOP pair(s) encoded (32764 dwords)
+  ok   32769 dwords: the release encoded at the end
+  ok   32769 dwords: the entry is exactly the size it claims (built 32769)
+  ok   32769 dwords: push buffer flushed (status=ok)
+  ok   32769 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   32769 dwords: the entry completes (status=ok)
+  ok   32769 dwords: the release at the END of the entry ran (0x5a5a0600)
+  ok   131073 dwords: channel create (status=ok)
+  ok   131073 dwords: the rung has room for filler and a release
+  ok   131073 dwords: 65534 NOP pair(s) encoded (131068 dwords)
+  ok   131073 dwords: the release encoded at the end
+  ok   131073 dwords: the entry is exactly the size it claims (built 131073)
+  ok   131073 dwords: push buffer flushed (status=ok)
+  ok   131073 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   131073 dwords: the entry completes (status=ok)
+  ok   131073 dwords: the release at the END of the entry ran (0x5a5a0700)
+  ok   524289 dwords: channel create (status=ok)
+  ok   524289 dwords: the rung has room for filler and a release
+  ok   524289 dwords: 262142 NOP pair(s) encoded (524284 dwords)
+  ok   524289 dwords: the release encoded at the end
+  ok   524289 dwords: the entry is exactly the size it claims (built 524289)
+  ok   524289 dwords: push buffer flushed (status=ok)
+  ok   524289 dwords: the submit is accepted (status=ok nv=0x00000000)
+  ok   524289 dwords: the entry completes (status=ok)
+  ok   524289 dwords: the release at the END of the entry ran (0x5a5a0800)
+  note D15: every rung up to 524289 dwords (2048 KiB) executed to its last dword; no entry-size limit was found in this range
+  ok   entries at least as large as nxvk's top rung (8192 dwords) execute; the largest measured here is 524289
+  ok   device destroy (status=ok)
+RESULT: PASS (77/77)

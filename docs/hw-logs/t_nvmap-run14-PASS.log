@@ -1,0 +1,21 @@
+== t_nvmap ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  ok   device_create (status=ok nv=0x00000000)
+  ok   create A
+  ok   create B
+  note A: id=40976 handle=40976  B: id=40980 handle=40980
+  ok   NvMap ids nonzero
+  ok   NvMap handles nonzero
+  ok   ids distinct across objects
+  ok   handles distinct across objects
+  ok   fresh object has no recorded GPU VA
+  ok   destroy A
+  ok   create C after closing A (close left nvmap usable)
+  ok   C handle valid
+  ok   destroy(NULL) rejected, no crash (invalid argument)
+  ok   destroy B
+  ok   destroy C
+  ok   live_mem back to zero (0)
+  ok   device_destroy (status=ok)
+RESULT: PASS (16/16)
