@@ -194,12 +194,34 @@ horizon_tests = [
   # with no console, so the reporting path a swapchain test will depend
   # on is measured before anything depends on it.
   't_display',
+  # Phase 6, and it comes before the WSI rather than after it: our own
+  # scanout buffers on the default nwindow, driven one level below
+  # NWindow, so the number of slots that can be held at once is measured
+  # instead of assumed. Uses no Mesa — the question is about the
+  # compositor, not about Vulkan.
+  't_nwindow',
 ]
+
+# The build stamp every test prints in its first lines. Regenerated on
+# every build (build_always_stale), which is the whole point: a .nro on
+# an SD card looks exactly like the one it replaced, and on 2026-08-05
+# a hardware run was spent on the previous build's binaries without
+# anything in the log saying so. See scripts/gen-build-id.sh.
+build_id_h = custom_target(
+  'horizon_build_id.h',
+  output : 'horizon_build_id.h',
+  command : [find_program('scripts/gen-build-id.sh')],
+  capture : true,
+  build_always_stale : true,
+)
 
 testfw = static_library(
   'testfw',
-  files('tests/common/testfw.c'),
-  include_directories : [horizon_gpu_inc, tests_inc],
+  [files('tests/common/testfw.c'), build_id_h],
+  # include_directories('.') covers this build directory as well as the
+  # source one, which is where the generated header lands.
+  include_directories : [horizon_gpu_inc, tests_inc,
+                         include_directories('.')],
   install : false,
 )
 
@@ -351,6 +373,10 @@ nvk_tests = [
   # in both directions, and patch 0045's alloc_tiled_mem, reached
   # through the one path that can reach it.
   't_vk_caps',
+  # Phase 6: the swapchain itself. It owns the display, so it runs with
+  # no console and reports through its log alone — and every one of the
+  # phase's four exit criteria is a section of it.
+  't_vk_swapchain',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -393,6 +419,9 @@ nvk_test_shaders = {
   # push-constant colour, because what t_vk_caps measures is where the
   # pixels land, not what draws them.
   't_vk_caps' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
+  # None: a presented frame here is a vkCmdClearColorImage, so nothing
+  # about the swapchain depends on a shader compiling.
+  't_vk_swapchain' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
@@ -476,6 +505,12 @@ if nvk_libs_present
     link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
                 ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
                 ['-lstdc++'],
+    # The same platform define the driver was built with. Without it
+    # <vulkan/vulkan.h> hides VK_NN_vi_surface — VkViSurfaceCreateInfoNN,
+    # PFN_vkCreateViSurfaceNN, the extension's name macro — so a test
+    # could not name the surface type the driver advertises. It costs the
+    # tests that do not present nothing but a few declarations.
+    compile_args : ['-DVK_USE_PLATFORM_VI_NN'],
   )
   horizon_tests += nvk_tests
 else

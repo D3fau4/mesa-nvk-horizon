@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-05
-**Branch:** `claude/phase-5-offscreen-rendering-vnl6q9`
+**Last updated:** 2026-08-08
+**Branch:** `claude/phase-6-horizon-wsi-5hu1jt`
 
 ---
 
@@ -12,14 +12,1667 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 5 is complete.** Its nine items were each met on hardware on 2026-08-04, by CPU readback of the result, item 9 with eight submits outstanding. The PR #7 review then found two of the tests behind that evidence measuring less than they claimed, so the corrected binaries were re-run: **thirteen tests on a console on 2026-08-05, thirteen PASS, 2942 checks, zero failures.** The evidence and the tree describe the same binaries again — with one exception, named in the last row |
-| **What runs on a Switch** | *Counts from the binaries in this tree, run 2026-08-05.* Transfers (**203/203**), a compute shader compiled by NAK (**37/37**), off-screen images and clears (**72/72**), a rasterised triangle with interpolated vertex colours (**84/84**), **sampled textures with mip levels and bilinear filtering** (**1685/1685**), the depth test with the depth buffer read back (**66/66**), twelve colour formats (**282/282**), eight submits outstanding at once (**287/287**), a linear-modifier image rendered through a tiled shadow (**52/52**), the mandatory sequence (**62/62**), and from `horizon/` itself `t_submit` (**32/32**), `t_pbsize` (**77/77**) and `t_display` (**3/3**) |
-| **Next concrete task** | **Phase 6, the Horizon WSI.** Nothing in Phase 5 is outstanding. The `t_fault` exit crash is characterised, its two experiments are built, and running them costs a reboot — the owner's call, not a blocker |
-| **The debt batch** | Seven of seven back. Six PASS, and `t_fault`, whose one failure was a real defect it was built to find. `t_vulkan` 62/62 · `t_threads` **67/67** and `t_ostime` **43/43**, Phase 3's debt closed on a console at last · `t_vk_caps` **52/52**, patch 0046's gating right in both directions and patch 0045's `alloc_tiled_mem` executed · `t_pbsize` **69/69** — superseded, because that build's rungs were one dword short of the size they named, so D15's boundary was never reached at the boundary; the number that stands is the **77/77** above · `t_display` **3/3**, console-less reporting works · `t_fault` **20/20** after the latch it earned, plus an exit crash it also earned |
-| **Known failures** | **`t_fault` crashes the console on exit.** Its checks pass — 14/15 on run 1, 15/15 with the latch that failure earned, 20/20 once the two diagnostic sections were added; three numbers for three builds, which this table used to give as though they described one. The log is written and closed, and pressing + to leave takes the system down — after everything the test reports, including a clean teardown. A real application that takes a GPU fault would hit the same path. Characterised, instrumented and left: the session survives a fault completely, teardown is clean, and a 2 s settle changes nothing, so it is the exit path itself. Only reachable by a process that faults on purpose. **One unexplained single occurrence stays on the record**: `t_vk_texture` run 1 returned zeros for texel rows 4 and 5 of an 8x8 tiled source, and **56** subsequent attempts under the same configuration have not reproduced it — 32 up to run 8, plus the 24 the 2026-08-05 re-run adds. Every mechanism that could produce it has been excluded by a run that would have shown it; intermittency has not |
-| **Open, not blocking** | **Two** unconditional L2 operations per submit, not one: the dirty writeback in the fence epilogue and the sysmem invalidate in the prologue this phase added — which also took a second GPFIFO entry per submit, permanently reducing usable queue depth from 0x800 to 0x7fe. Neither cost is measured on its own; the nearest number is **115 us** per serialised round trip with both of them in it (`t_vk_submits`, 2026-08-05; 126 us on the previous build, and nothing between the two runs was aimed at that number) |
-| **Open decisions** | **D7 only**, and it is written up and waiting for a person to file it. D15 and D17 are closed |
-| **Never verified on hardware** | **`t_fault` as it now stands**, and it alone. It was kept out of the 2026-08-05 batch on purpose — it takes the console down on exit, so running it ends the session and everything after it in the order — and it has changed since its last run: the `atexit` marker built to say whether the crash is before or after `exit()`. Its 20/20 is from run 3. Of the rest, the **fifteen** non-Vulkan tests not in that batch (`t_init`, `t_alloc`, `t_nvmap`, `t_va_reserve`, `t_map`, `t_channel`, `t_syncpt`, `t_fence_wait`, `t_gpuwrite`, `t_teardown`, `t_uncached`, `t_sysinfo`, `t_va_window`, `t_threads`, `t_ostime`) carry exactly one change since their last console run — `testfw`'s exit loop, which runs after every check has been made and written |
+| **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
+| **Next concrete task** | **Nothing is blocked.** The layout answer arrived and the phase's last open question with it. What remains is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), never had a test (display mode change, docked resolution, `VK_SUBOPTIMAL_KHR`, `IMMEDIATE` through Vulkan, anything multi-threaded), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes next is a decision, not a task |
+| **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
+| **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
+| **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
+| **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
+| **Exit criteria** | **1. Met** (89 of 89 intervals within 10% of 16666 us, run 13). **3. Met.** **4. Met**, and since run 13 the check that proves it is no longer gated on zero-copy succeeding. **2. Met as throughput, and only as throughput** — the structural half stands (3 concurrent slots against 2) and the pacing half is a 50% difference in throughput (25170 us against 16837 us, run 13), *not* the burst absorption the tests originally claimed: `over_1p5_refresh` is **45 with three images and 45 with two**, twice measured |
+| **THE LAYOUT IS CONFIRMED** | **The operator reports the pattern renders correctly on the console, every time it has been shown** (2026-08-08). Four coloured bars, the 16px border, the black diagonal corner to corner, the yellow square — the appearance a wrong stride, a wrong block height or a wrong GOB sector ordering would each destroy in a way that is not subtle. This is the only evidence in the phase that is about *what was in* the frames rather than that they arrived, and it is human by necessity: nothing can read a presented frame back, and a GPU readback would write and read with the same layout and agree with itself. **The zero-copy path is closed** — showing 1 ran in runs 14, 15 and 16. Showing 2, on the copy fallback, has only existed since run 16, so whether "every time" covers it is worth one word from the operator |
+| **What is still unverified** | Any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
+| **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
+| **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
+| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+
+
+---
+
+## The layout is right, and a human is the instrument that says so (2026-08-08)
+
+The operator, asked what was on the television: **the pattern comes out
+correctly, every time.**
+
+That closes the last open question of Phase 6, and it is worth being
+precise about why it needed a person. Nothing can read a presented
+frame back — it is gone, handed to the compositor. A GPU readback would
+not help either: it would write and read with the same layout and agree
+with itself, which is a tautology and not a check. The compositor is
+the other party to the agreement about how pixels are arranged in
+memory, and the eye is the only instrument that sees its side.
+
+So the test presents four coloured bars, a 16-pixel border, a black
+diagonal from corner to corner and a yellow square, writes down in the
+log what that should look like, and asks. A wrong stride steps the
+diagonal; a wrong block height bands the image; a wrong GOB sector
+ordering scrambles it at 16-byte granularity. None of those is subtle,
+and none of them was there.
+
+**What this covers.** Showing 1, on the zero-copy path — the images the
+compositor scans out are the images the application rendered into — ran
+in runs 14, 15 and 16, and is confirmed. Showing 2, on the copy
+fallback, has only existed since run 16, so whether the operator's
+"every time" reaches it is one word away and is recorded as such rather
+than assumed.
+
+**What it does not cover**, and this is the honest boundary: 1280x720
+handheld, `VK_FORMAT_R8G8B8A8_UNORM`, `block_height_log2 = 4`. A docked
+resolution, a different format or a different block height would each
+be a different agreement, and none of them has been shown to anybody.
+
+---
+
+## nxlink removed, and the MMU fault closed unexplained (2026-08-08)
+
+**Decided by the user**, in as many words: ignore the nxlink question,
+and the code can go. Both were done.
+
+### What was removed
+
+The whole streaming path in `tests/common/testfw.c` — `t_nx_start`,
+`t_nx_raw`, `t_nx_replay`, `t_nx_stop`, the status line, and the socket
+headers. 230 lines out, 7 in. It is recoverable in one command: the
+feature is commit `9b4f976` and nothing else has touched it since.
+
+**What deliberately stayed**, because it is independent of nxlink and
+confirmed on hardware:
+
+- the **write-after-`fclose`** fix. `testfw` used to write the "press +
+  to exit" note to a `FILE *` it had already closed — the handle closed,
+  the pointer not cleared, so the `t.log != NULL` guard was still true.
+  Every log up to run 14 ends at `RESULT`; runs 15 and 16 are the first
+  in this project to carry that line.
+- `t_sink`, which composes each line once and writes it to the console
+  and the log rather than formatting it twice.
+- `t_check` and `t_note` are byte-identical to their pre-nxlink form,
+  and that was checked by diff rather than by eye — the first attempt at
+  this removal deleted both of them along with the socket code, and the
+  build caught it as "`t_vemit` defined but not used".
+
+### The MMU fault, and why it is being left alone
+
+One occurrence, run 14, on the graphics channel of `t_vk_swapchain`,
+immediately after the pattern's 120 presents. Runs 15 and 16 went
+through the identical sequence and were clean, so it has **never
+reproduced**. The only variable that differed was nxlink, and with
+nxlink gone there is no known way to provoke it — which also means
+patch **0068**, whose whole job is to stop a lost device hanging the
+acquire, has no route to being exercised.
+
+That is the honest position and it is not a good one: an unexplained
+GPU fault stays on the record, and the code written to survive it stays
+unverified. Both are stated rather than quietly dropped.
+
+---
+
+## Run 16 — everything this branch built finally ran (2026-08-08)
+
+Build `2026-08-08T20:46:09.792Z 8b5b1de mesa:57e85ae`, both tests, no
+nxlink. **`t_vk_swapchain` PASS 125/125**, **`t_nwindow` PASS 119/119**.
+`docs/hw-logs/t_vk_swapchain-run16-PASS.log` and
+`docs/hw-logs/t_nwindow-run16-PASS.log`.
+
+This is the first run that reached the end of `t_vk_swapchain`. Runs 14
+and 15 both hung before the last third of the file, for two unrelated
+reasons, so the checks after that point had never executed at all.
+
+### First-time evidence, none of which existed before this run
+
+- **The infinite-timeout session through Vulkan**: `2 images, FIFO,
+  infinite acquire timeout: 20 of 20 frames presented`, 19 of 19
+  intervals inside 10% of a refresh, acquire mean 15794 us. Patch 0067
+  removed a dequeue mode on the strength of `t_nwindow`'s raw `bq*`
+  measurement; this is the same question answered through the API.
+- **The copy fallback presented the pattern**: `the copy path presented
+  the pattern 120 times`. The fallback had never displayed anything an
+  eye could falsify.
+- **`VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted.**
+  `an acquire that cannot be satisfied within its deadline returns
+  VK_TIMEOUT`, and the same acquire at zero returns `VK_NOT_READY`.
+  Before this, "no acquire returned VK_TIMEOUT" was a sentence about
+  something this test had never seen.
+- **The rewritten control measured its old premise instead of assuming
+  it**: `the application could hold 1 of this swapchain's 2 images at
+  once`. One, not two — which is exactly what broke run 15 — and
+  `every image the control held was presented back (1 of 1)`.
+
+### The numbers, and they are the best recorded
+
+| | run 16 | run 13 |
+|---|---|---|
+| 3 images, FIFO | 90 of 90, **89 of 89** within 10%, mean **16666 us** | 89 of 89, 16666 us |
+| 2 images, FIFO | 90 of 90, 87 of 89 | 90 of 90, 87 of 89 |
+| infinite timeout | **20 of 20, 19 of 19** within 10% | never reached |
+| copy fallback | 90 of 90, **89 of 89** within 10%, acquire mean **6 us** | 87 of 89 |
+| bursty, 3 vs 2 | 16855 us vs 25176 us, 45 and 45 | 16837 vs 25170, 45 and 45 |
+
+Exit criterion 2's corrected claim has now reproduced three times, with
+`over_1p5_refresh` at 45 and 45 every time. The claim it replaced would
+have failed three times.
+
+### What run 16 does not settle
+
+**The MMU fault.** Run 14 streamed over nxlink and faulted; runs 15 and
+16 did not stream and did not fault. One faulting run against two clean
+ones, with nxlink the only difference — a hypothesis with three data
+points, not a finding.
+
+**Patch 0068** has now been in three builds without firing, because no
+device has been lost since run 14. The path it fixes is still untaken.
+
+**The pattern.** It has presented 120 of 120 frames on the zero-copy
+path in three runs and on the copy fallback in one, and **nobody has
+said what was on screen**. Every number here is about delivery. The
+layout evidence for this phase does not exist yet and no amount of code
+can produce it.
+
+---
+
+## Run 15 — the fault did not reproduce, and the hang was mine (2026-08-08)
+
+Build `2026-08-08T20:23:02.777Z c2c17b9 mesa:4d90ca5`, both tests,
+launched from the homebrew menu: `note nxlink: no host, so nothing is
+streamed`. Logs are `docs/hw-logs/t_nwindow-run15-PASS.log` and
+`docs/hw-logs/t_vk_swapchain-run15-HUNG-NO-FAULT.log`.
+
+### No MMU fault
+
+`t_vk_swapchain` ran the whole way through both swapchains with a
+healthy device — and the numbers are the best this project has
+recorded:
+
+| | run 15 | run 13 |
+|---|---|---|
+| 3 images, FIFO | 90 of 90, **89 of 89** within 10% | 90 of 90, 89 of 89 |
+| 3 images, acquire | mean 15956 us | 15733 us |
+| 2 images, FIFO | 90 of 90, 87 of 89 | 90 of 90, 87 of 89 |
+| record+submit | **369 us** | 564 us |
+| bursty, 3 vs 2 | 16815 us vs 25162 us | 16837 vs 25170 |
+
+`t_nwindow` PASS 119/119 again, including `no deadline, 2 buffers:
+20 of 20 frames`.
+
+**The MMU fault of run 14 did not come back.** The one difference
+between the two runs is nxlink: run 14 streamed, run 15 did not. That
+is **one run each**, which makes it a hypothesis and not a finding, and
+it is the thing run 16 is for. What can be said is that the fault is
+not inherent to the sequence — the same 120 pattern presents followed
+by the same session ran clean.
+
+### The hang, and it was entirely mine
+
+The acquire-refusal control assumed both images of a two-image
+swapchain could be held at once. Straight after a FIFO session they
+cannot: the compositor is still holding what it was given, so the
+first acquire returned `VK_SUCCESS` and the second `VK_TIMEOUT`. **That
+is the control succeeding** — a refusal is exactly what it exists to
+observe — but the code read it as the setup falling through, took the
+`else` branch, printed a note, and **returned nothing**.
+
+So a two-image swapchain was left with one usable buffer. One buffer
+cannot make progress in FIFO: the compositor will not release the frame
+it is scanning out until it is handed another, and there was no other.
+The next session asked for an image with no deadline and waited
+forever. The driver's own warning is the last line of the log —
+`no buffer in 3000 ms and this swapchain still owns the window; last
+dequeue said 0x0000115d` — and there is no `RESULT` after it.
+
+Three fixes, and the third is the one that matters beyond this test:
+
+- **The control now drives the acquire until it is refused**, whatever
+  number of images that takes, and asserts on the refusal it gets. The
+  premise it used to assume is now the thing it measures.
+- **Every image is presented back on every path**, and that is a
+  `t_check` rather than an assumption. An acquired image that is never
+  presented is not a memory leak — it is a swapchain that cannot run.
+- **Patch 0069**: the zero-copy acquire refuses to block forever when
+  every image is with the application. The copy fallback has done this
+  since 0053; the same condition existed on both paths and was checked
+  on one. That asymmetry is what turned a test bug into a hang with no
+  cause on screen.
+
+**The caller was at fault, and that is the point.** Vulkan permits the
+acquire to block when an application holds more images than it
+presents. Blocking silently and forever turns someone's bug into a
+hang; this backend has the state to name it instead.
+
+### What run 15 says about run 14's fixes
+
+Patch 0068 (a lost device ends the acquire) was in this build and never
+fired, because the device never died. It remains unverified.
+
+---
+
+## Run 14 — 28 of 29 pass, and the one that did not is a real defect (2026-08-08)
+
+All 29 tests, one build (`2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2`),
+every one streamed over nxlink. Logs are `docs/hw-logs/*-run14-*.log`.
+
+### What passed, and what it settles
+
+- **28 PASS**, including every `horizon/` test, nine of the ten Vulkan
+  regression tests, and `t_vk_texture` at 1685/1685.
+- **`t_nwindow` PASS 119/119.** Two buffers present **90 of 90** with
+  **87 of 89** intervals inside 10% of a refresh, and the new
+  `no deadline` session dequeued **20 of 20 frames at `UINT64_MAX`**,
+  ~2.25 ms each. Patch 0067's single dequeue policy holds at both
+  finite and infinite timeouts through raw `bq*`.
+- **nxlink works.** `note nxlink: streaming this log live to
+  192.168.1.104` in all 29 logs — and it is the reason there is
+  anything to read about the failure below.
+- **The `fclose` defect is confirmed fixed on hardware.** `note the run
+  is finished; press + to exit` appears at the end of `t_nwindow`'s log
+  — the first time that line has existed in any log in this project.
+- **`t_fault` PASS 20/20**, and the syncpoint values prove it ran
+  **last** (its fence is `26:298193`, above every other test), so it
+  did not contaminate anything.
+
+### The failure: an MMU fault nobody asked for
+
+```
+[horizon_gpu:E] channel 0x7a8f640010: fault notification 31 (MMU fault) — marking lost
+```
+
+`t_vk_swapchain`, immediately after the pattern had presented **120 of
+120 frames successfully**, and before the third frame of the session
+that followed. Every submit and fence wait afterwards returned
+`VK_ERROR_DEVICE_LOST`, correctly: `horizon_gpu` caught the notifier,
+marked the channel lost, and NVK reported it rather than returning
+success for work that never ran. That part of the stack behaved.
+
+**What is known.** The syncpoint counters order the session:
+`t_vk_swapchain` ran **first** of the Vulkan tests (syncpt 26 at
+184082, against 187916 for the next one), so this is not fallout from
+another test. An unintentional MMU fault has never appeared in this
+project before — the only other occurrences in `docs/hw-logs/` are
+`t_fault`'s own, which it provokes on purpose. Run 13 went through the
+identical sequence — same pattern, same 120 presents, same session
+after it — and did not fault.
+
+**What is not known: why.** Between run 13 and run 14 the executed code
+at that point differs only by nxlink's socket driver being resident,
+since patch 0067 changes nothing for a finite-timeout acquire. So the
+candidates are: intermittent and pre-existing; a latent mapping defect
+that a different heap layout exposed; or something else. **Nothing here
+can distinguish them, and this is not going to be guessed at.** Run 15
+repeats `t_vk_swapchain` to find out whether it reproduces at all.
+
+### And then it hung, which was ours
+
+With the device lost, every present failed, so the application kept
+both images of a two-image swapchain, so the queue could never free
+one — and the test's `timeout = UINT64_MAX` session asked for a buffer
+forever. **The run produced no `RESULT` line**: one fault cost the
+entire verdict, and the twenty-odd checks after that point never ran.
+
+The hazard was written down before the run — the run-order document and
+the test's own comment both said this could hang rather than fail — and
+being predicted is not the same as being acceptable. Two fixes:
+
+- **Patch 0068**: `vkAcquireNextImageKHR` returns `VK_ERROR_DEVICE_LOST`
+  rather than waiting. Checked every round in the blocking loop, because
+  the device can be lost *while* it runs, which is the case that hung;
+  and once at entry, before the `VK_ERROR_OUT_OF_DATE_KHR` paths, so the
+  copy fallback is covered too — an application told to recreate its
+  swapchain on a dead device will recreate it and ask again.
+- **The test no longer starts an unbounded wait it has reason to think
+  cannot end**, and says in the log that the coverage did not run
+  rather than skipping in silence.
+
+### A phase boundary, so this is not so vague next time
+
+"Somewhere between 120 pattern presents and frame 2 of the next
+session" is as precise as run 14's log can be, because nothing asked in
+between: the fault surfaces at the first fence wait that happens after
+it. `t_vk_swapchain` now calls `vkDeviceWaitIdle` at the phase boundary
+and fails a named check there. Between phases only, never inside one,
+so no timing measurement sees it.
+
+---
+
+## The log, on the developer's machine, while it happens (2026-08-08)
+
+`testfw` now streams every line it writes to an nxlink host, and
+replays the whole log file down the same socket when the run ends.
+
+**Why it is not just convenience.** Two tests own the display and start
+no console, so their stdout goes nowhere and the SD card file is the
+entire record — readable only after the run, by taking the card out.
+Every hardware lesson in this project has come through that loop. And
+one of those tests can now *hang* rather than fail: the acquire session
+at `timeout = UINT64_MAX` has no deadline left to expire. A hang leaves
+an SD log that stops mid-run with no indication of where; a live stream
+shows the last line that made it out, which is the diagnosis.
+
+**Sent twice, on purpose.** Live lines are the test's own. The
+end-of-run replay carries what the live stream cannot: Mesa's
+diagnostics arrive on `stderr`, `stderr` is `dup2`'d onto the log file,
+and those are historically the lines that say *why* a run failed.
+
+**What is deliberately not done.** Neither `stdout` nor `stderr` is
+redirected to the socket — `nxlinkConnectToHost(false, false)`.
+Redirecting `stderr` would take Mesa's messages out of the artefact;
+redirecting `stdout` would blank the console on the tests that have
+one. Nothing that exists today loses anything.
+
+### Two things read out of machine code rather than assumed
+
+- **`nxlinkConnectToHost(false, false)` really does connect and hand
+  back the fd.** The header only promises a socket; the behaviour with
+  neither redirect requested is not documented. Disassembled from
+  libnx's own `nxlink_stdio.o`: the host check, `socket`, `connect` to
+  port 28771 and the return of the fd all happen before the two
+  `tbnz` tests that gate the `dup2` calls.
+- **The socket comes back blocking.** The same disassembly sets
+  `O_NONBLOCK` for the `connect` and masks it off again afterwards. A
+  host that stops reading would therefore stall a console inside
+  `write()`, and a test stuck writing a log line is indistinguishable
+  from a test stuck doing the thing it measures. Every write now
+  carries `SO_SNDTIMEO` of one second; a timeout closes the stream,
+  says so in the file, and the run continues without a network.
+- **A run not launched by nxlink pays nothing.** Verified in the
+  compiled object, not in the source: the guard folds to
+  `sub w0, w0, #1` / `cmn w0, #3` / `b.ls`, and `socketInitialize` is
+  only reachable through that branch. Every measurement in
+  `docs/hw-logs/` stays comparable with the ones taken after this.
+
+### The defect it uncovered
+
+`testfw`'s "the run is finished; press + to exit" note — added in the
+PR #7 review for the tests with no console — **has never appeared in
+any log**. It wrote to `t.log` *after* `fclose()`, three lines above,
+with the handle closed but the pointer not cleared, so its
+`t.log != NULL` guard was still true. Check any log in
+`docs/hw-logs/`: they all end at `RESULT`. Writing to a closed stream
+is undefined behaviour, not merely a lost line. The log is now closed
+once, at the end, after everything that writes to it. The same class —
+a handle closed while the pointer guarding its use stays live — does
+not occur anywhere else in the tree; the other two `fclose` calls are
+on locals that die immediately.
+
+### What this does not do
+
+It is not a measurement channel. A socket in the picture is a
+difference in what the timings were measured against, so every log now
+carries a `note nxlink:` line saying which kind of run it was, and
+**pacing evidence should be taken without nxlink**. Whether streaming
+perturbs the frame numbers has not been measured, and the tests print
+no lines inside their timed loops, which is a reason to expect little
+rather than evidence of none.
+
+Cross build green in both build paths (meson and the Makefile), under
+`-Wall -Wextra -Werror`. **No hardware behind any of it.**
+
+---
+
+## Run 13 — the answer, and what it retired (2026-08-08)
+
+Build `2026-08-08T15:40:28.620Z b958bd0 mesa:587ac72`, both tests, one
+build. `t_nwindow` PASS 118/118, `t_vk_swapchain` PASS 120/120.
+Recorded as `docs/hw-logs/t_nwindow-run13-PASS.log` and
+`docs/hw-logs/t_vk_swapchain-run13-PASS.log`.
+
+### The question it was built to answer
+
+Patch 0065 restricted `async=false` to an infinite timeout, and since
+every acquire in both tests carries a finite budget, run 13 is the first
+run in which that mode could not be reached at all. What was left had to
+carry the two-buffer case on its own, and it did:
+
+| | 2 images / buffers | 3 |
+|---|---|---|
+| `t_vk_swapchain` FIFO | 90 of 90, **87 of 89** within 10% | 90 of 90, **89 of 89** |
+| acquire | mean 15719 us / max 21303 us | mean 15733 us / max 16075 us |
+| `t_nwindow` raw `bq*` | 90 of 90, **87 of 89** within 10% | 90 of 90, 86 of 89 |
+| dequeue | mean 2254 us / max 6581 us | mean 230 us / max 13202 us |
+
+So `async=true` plus a real sleep is sufficient by itself. **Patch 0067
+deletes the second mode**, and with it the `blocking` parameter that
+existed only to select it — which also settles the naming finding from
+the PR #8 review by deletion rather than by renaming.
+
+The 2026-08-05 measurement that had put `async=false` there in the first
+place — `async=true` answering NO_INIT 78166 times running while
+`async=false` produced a buffer in 145 us — was taken from a loop with
+no idle in it. It measured the spin, not the mode.
+
+### What run 13 also settled, without being asked
+
+- **Both PASS logs are from one build.** The review found the previous
+  pair were `5995c12` and `d41e12a` narrated as one body of evidence.
+  This pair is one stamp, and `scripts/package-horizon.sh` is what
+  makes that checkable rather than claimed.
+- **Exit criterion 4's check is no longer gated on zero-copy.** It ran
+  ungated and passed: `zero-copy by default, the copy fallback when
+  forced`, both named by the driver in one run.
+- **The eviction refusal**, added blind after the review: `a swapchain
+  over a window that already has one, with no oldSwapchain, is refused
+  with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`, and the incumbent still
+  acquired afterwards.
+- **Criterion 2 measured the same way a second time** — 45 and 45 over
+  1.5 refreshes, 25170 us against 16837 us. The corrected claim
+  reproduces; the original one would have failed again.
+
+### The NO_INIT overload, seen from outside
+
+`t_nwindow` line 64: the dequeue that ends the two-buffer count returns
+**`0x0000115d`** (`LibnxBinderError_NoInit`), while the three-buffer one
+returns **`0x00001d5d`** (`WouldBlock`). Same condition — no buffer free
+— reported two different ways depending on how full the queue is. That
+is the overload patch 0066 bounded by ownership rather than by result
+code, and this is the first log that shows both codes side by side in
+one run.
+
+### What run 13 did not answer
+
+**How the pattern looked.** Both showings presented 120 of 120 frames,
+which says they reached the compositor and nothing about their layout.
+The operator's two answers are still outstanding, and the second one is
+the entire layout evidence for the copy fallback.
+
+---
+
+## The fallback had no layout evidence, and now it is asked (2026-08-08)
+
+The last thing on this branch that was unmeasured *and* measurable
+without waiting for anything: the copy fallback's memory layout.
+
+The state of the evidence before this change. The pattern — four
+coloured bars, a border, a diagonal, a corner square — is the only
+oracle in the phase that can catch a wrong stride, a wrong block height
+or a wrong GOB sector ordering, because every other frame the test
+presents is a solid colour and a solid colour is the same image under
+any swizzle. It was presented on the zero-copy path only. The fallback
+presented 90 of 90 frames in run 12 and that number is worth exactly
+what it says: frames reached the compositor. It is not a statement
+about what was in them.
+
+The two paths do not share the code that fills the presented buffer —
+zero-copy hands the compositor the image the application rendered into,
+the fallback blits into a buffer of its own — so a layout error in the
+fallback is invisible in the zero-copy showing, and the phase would
+have shipped with one of its two present paths never having displayed
+anything an eye could falsify.
+
+`t_vk_swapchain` now shows the pattern twice: showing 1 in section F on
+whichever path the driver picks, showing 2 in section E on the
+swapchain already forced onto the fallback, reusing the same buffer.
+The operator is asked twice and told explicitly that the two answers
+are different evidence. Presenting all 120 frames is a `t_check` in
+both cases; the appearance is the operator's line in the report.
+
+**This is a test change, not a driver change.** Nothing in
+`mesa-patches/` moved. Cross build green (`build/meson`, one ninja
+invocation, one build id). Nothing here is verified on hardware: the
+answer this adds does not exist until run 13 comes back.
+
+---
+
+## The branch review — twenty-one findings, twenty-one real (2026-08-08)
+
+Every one was checked against the code before being accepted. None was
+noise. Fixed across `8e3d16a`, `6b5ee33`, patch **0065**, patch **0066**
+and the commit this section lands in.
+
+### The three that were about the record, not the code
+
+- **Exit criterion 2 was overstated** — its own section above.
+- **The two PASS logs are two different builds**, `5995c12` and
+  `d41e12a`, narrated as one body of evidence while
+  `scripts/package-horizon.sh` refuses exactly that pairing. Stated in
+  `docs/hw-logs/README.md`.
+- **Patch 0065's commit message cited `t_nwindow` as evidence for the
+  opposite of what it does.** It claimed a finite timeout gets
+  async=true and the sleep "which is what t_nwindow uses"; `nw_dequeue`
+  asked both modes every round regardless of the budget. The spec
+  argument for 0065 stands on its own — nothing can bound how long
+  async=false blocks — but the evidence cited did not support it, and
+  the regression risk to the two-image case is unmeasured. `t_nwindow`
+  now applies the same policy, so a run measures one policy in both.
+
+### Eleven in the driver (0066)
+
+`presentable` read without the lock that writes it; the acquire loop
+never re-checking it, so an evicted swapchain on an infinite timeout
+waited forever; `LibnxBinderError_NoInit` overloaded with no boundary —
+now bounded by ownership, since a producer that still owns its window
+and says NO_INIT is full and one that does not is gone; the
+`eventActive` guard left dead by 0064, failing valid windows with a
+false message; a TOCTOU between reading ownership and cancelling slots
+in teardown; no check that the row stride covers the width; IMMEDIATE
+still degrading to FIFO on the copy fallback, which 0065 fixed on one
+path only; the fallback narrowing rows silently; and `try_dequeue`
+reporting the cancel's failure instead of the fault, with a negative
+slot handed to `bqCancelBuffer`.
+
+Two are noted and not changed: `blocking` is the negation of the
+`async` argument it controls — a naming hazard in the function this
+series misdiagnosed across four patches — and `consumer_running_behind`
+is never updated since 0055, because the zero-copy path bypasses
+`nwindowQueueBuffer`. Renaming the parameter touches every call site in
+the file and is deliberately not mixed into a correctness patch.
+
+### Five in tests and tooling
+
+Exit criterion 4's check was inside `if (zc)`, so the case where the
+decision is most in doubt was the one case that could not fail it; it
+fails now. `vkfw`'s message buffer was documented as a ring and
+implemented as a truncating prefix, keeping the first sixteen — and exit
+criterion 4 asserts against it; it is a ring now, and
+`VKFW_MESSAGE_CHARS` went from 192 to 384 because the asserted message
+was within about 35 characters of the old limit.
+`scripts/package-horizon.sh` could check zero artefacts and exit 0,
+which is its own stated rule unapplied to its own counter; it fails, and
+was broken in both directions. `check-mesa-test-parity.sh`'s narrowing
+now prints what it does not compare and why. And the build stamp gained
+milliseconds, because two builds in the same second read identical and
+telling two builds apart is its whole job.
+
+---
+
+## The exit-criterion-2 claim was wrong, and my own log says so (2026-08-08)
+
+Raised in review of PR #8, verified against the logs, and correct.
+
+The claim was that triple buffering absorbs a bursty load where double
+cannot: 16807 us against 25169 us through Vulkan, 16793 against 24918
+through raw `bq*`. The means are real. **The mechanism is not**, and the
+same log lines refute it:
+
+```
+3 images, FIFO, bursty load: mean 16807 us, min 495, max 33245;
+    0 within 10% of 16666 us; 45 longer than 1.5 refreshes
+2 images, FIFO, bursty load: mean 25169 us, min 9592, max 40525;
+    0 within 10% of 16666 us; 45 longer than 1.5 refreshes
+```
+
+**Zero of 89 intervals paced correctly in either case, and both put 45
+of 89 over 1.5 refreshes — the same number.** `t_nwindow` says 44 and
+44. Whatever three buffers did, absorbing the bursts is not it, and a
+mean that lands near the refresh because the load alternates on and off
+is an artefact of the load, not evidence about the queue.
+
+What the measurement does support: **double buffering took 50% longer
+to deliver the same 90 frames under the same load** — 2.24 s against
+1.50 s. That is a difference in throughput, and it is what the check
+`m2 * 10 > m3 * 11` actually tests. The rationale written above that
+check — "two buffers must round every overrun up to a whole extra
+refresh; three can absorb it" — is wrong and is corrected in both tests.
+
+Exit criterion 2 asks for the difference "recorded with numbers, not
+adjectives". The numbers are recorded and they differ. The adjective was
+mine.
+
+---
+
+## Codex review on PR #8 — seven right, two wrong (2026-08-08)
+
+**Class: review, not hardware.** Ten findings from the automated
+reviewer on `ce3311a`.
+
+### Four were about the artefact-identity machinery, and all four landed
+
+Fixed in `8e3d16a`, each gate broken in both directions first:
+
+1. **The reverse staleness gate was wrong in the ordinary case.** It
+   compared every file under `mesa/src` against `libvulkan_wsi.a`, and
+   Ninja does not touch an archive whose inputs did not change — so
+   editing anything outside WSI leaves that archive older than source
+   that was just correctly compiled. Demonstrated here: after a clean
+   rebuild, `nvk_device.c` is 13:02:47 and `libvulkan_wsi.a` is
+   13:02:00, so the gate would have refused a good build. Now
+   `build-mesa-nvk.sh` touches `.horizon-build-ok` as its last act under
+   `set -e`, and the gate compares against that.
+2. **Every gate ran after the package was published.** A rejected
+   package was already in the output directory looking valid. All gates
+   now run before anything is written; a failing run leaves
+   `MANIFEST.txt` byte-identical.
+3. **A partial build leaving one archive was accepted.** Both are now
+   required.
+4. **The build id described only the outer repository.** `mesa/` is a
+   separate gitignored checkout holding the code every driver-linked
+   test actually links, so an edit under `mesa/src` left the stamp
+   looking clean — a hole in the exact mechanism built to stop
+   misattribution, and the same family as run 11's stale archive. The
+   stamp now carries mesa's HEAD and dirty state.
+
+### Two were wrong, and are answered on the PR
+
+- **`framebufferBegin` stride.** Claimed to be in pixels; libnx's header
+  says "distance **in bytes** between rows of pixels in memory", and
+  states the addressing convention on the next line. `fb_stride * bpp`
+  would overshoot by 4×.
+- **The fallback acquire needs a lock.** `vkAcquireNextImageKHR`
+  requires host access to `swapchain` to be externally synchronised, so
+  concurrent calls on one swapchain are invalid usage. The zero-copy
+  path's surface lock is for a different thing: registration shared
+  *between* swapchains.
+
+The first of those did surface something real anyway — see "what is
+still unverified": the copy fallback has **no layout oracle**, because
+the pattern only runs on the zero-copy path and solid colours hide any
+stride error.
+
+### Four are real driver findings, and each needs a hardware run
+
+Not taken unilaterally; two of them change advertised behaviour.
+
+1. **`async=false` can overrun a finite `timeout`.** It is skipped at
+   timeout 0 but not at finite non-zero, and Android permits that mode
+   to block in the server. Measured at 134–158 us on this compositor,
+   which is evidence it does not, not that it cannot.
+2. **`vkCreateSwapchainKHR` should return
+   `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`** when the surface already has a
+   non-retired swapchain and `oldSwapchain` does not name it. It
+   currently evicts the owner instead. Section D of
+   `t_vk_swapchain` already passed `oldSwapchain`, so it was legitimate
+   either way and **could not tell a conformant driver from this one**
+   — the gap was in the test's coverage, not in what it asserted.
+3. **IMMEDIATE with two images silently becomes FIFO** (`swap_interval`
+   is 0 only at three or more images).
+4. **A failed `bqCancelBuffer` still marks the slot `FREE`.** Less
+   severe than reported on the zero-copy path — the next slot comes from
+   `bqDequeueBuffer`, so a slot the queue still holds cannot be handed
+   out twice — but it is wrong bookkeeping and loses the slot until
+   teardown.
+
+
+---
+
+## Run 12 — Phase 6 is done (2026-08-08)
+
+**Class: hardware (HW).** `t_vk_swapchain` **PASS 117/117**, build
+`2026-08-08T12:35:43Z d41e12a`. Log in
+`docs/hw-logs/t_vk_swapchain-run12-PASS.log`.
+
+The driver in it contains patch 0064, which the run-11 binary did not:
+`wsi_horizon.c:1851` in the log against 1847 in run 11, and the
+two-image sessions that had failed eleven times now present.
+
+```
+  ok   2 images, FIFO: 90 of 90 frames presented
+  ok   under the same bursty load two images pace at least 10% slower
+       than three (25169 us vs 16807 us)
+```
+
+### All four exit criteria, with the numbers
+
+1. **A swapchain presents at the display's rate.** 89 of 89 intervals
+   within 10% of 16666 us, mean 16664 us, through the zero-copy path.
+2. **Triple differs from double, measurably.** 25169 us against 16807 us
+   under the same bursty load through Vulkan; 24918 us against 16793 us
+   through raw `bq*` in `t_nwindow`. Structurally, 3 slots dequeued at
+   once against 2.
+3. **Two swapchains coexist over one window and destroy
+   independently.** The superseded one reports
+   `VK_ERROR_OUT_OF_DATE_KHR`; the survivor presents 20 of 20 after the
+   other is destroyed.
+4. **The zero-copy decision is runtime-observable and says why.** Both
+   paths named by the driver through the debug-utils messenger in one
+   run, the fallback carrying its reason.
+
+And the layout evidence, which is the one thing no readback could give:
+the operator confirmed the four bars, the border, the diagonal and the
+corner square in run 2, and the pattern code has not changed since.
+
+### D18 is closed: `minImageCount` stays 2
+
+Two images present 90 of 90 frames. The compositor was never the limit;
+the retry loop was.
+
+### What it cost, and what that says
+
+Twelve hardware runs. The two-buffer failure took nine of them, and the
+cause — a retry loop with no idle in it, spinning binder at ~17000
+transactions a second into the compositor it was waiting for — was
+inferred wrongly five times before the loop was made to report its own
+rounds and per-mode timings. **That instrument should have been the
+first thing built, not the sixth.** Every earlier diagnosis was read off
+a probe that ran afterwards, on a window in a different state, and each
+one produced a patch that changed the failure's spelling and not the
+failure.
+
+Two artefacts also shipped as something they were not — run 3's stale
+`.nro` and run 11's stale driver archive — and both are now gated: every
+log states its build, and packaging refuses a directory holding more
+than one build, an unstamped artefact, or archives older than the Mesa
+sources they were meant to be built from.
+
+
+---
+
+## Run 11 — t_nwindow PASSES, and the Vulkan test measured a stale driver (2026-08-08)
+
+**Class: hardware (HW).** `t_nwindow` **PASS 118/118** — the first PASS
+this phase — and `t_vk_swapchain` 114/116. Build
+`2026-08-08T12:24:55Z 5995c12`. Logs in `docs/hw-logs/*run11*`.
+
+### The sleep is the fix
+
+```
+  ok   2 buffers, interval 1: 90 of 90 frames presented
+  ok   under the same bursty load two buffers pace at least 10% slower
+       than three (24918 us vs 16793 us)
+  ok   slow lane, 2 buffers: 10 frames presented with a three-second
+       budget per dequeue (10)
+```
+
+**Exit criterion 2's numeric half has run, at the eleventh attempt.**
+Double buffering paces 24918 us against triple's 16793 us under the same
+bursty load — a 48% difference, where the check needs 10%. The slow lane
+went from `frame 2 gave up after 3000094 us (23192 rounds)` to every
+frame in ~2.3 ms and two rounds each.
+
+Two-buffer dequeues now carry release fences — **88 of 90**, where every
+previous run recorded zero.
+
+### And the Vulkan test measured a driver from three days earlier
+
+`t_vk_swapchain` still fails at two images, and the reason is not the
+driver's: `build/mesa-nvk/src/vulkan/wsi/libvulkan_wsi.a` was dated 5
+August. **Patch 0064 never reached it.** The `.nro` was built minutes
+before shipping and linked against that archive.
+
+The NVK build that should have produced it failed — the Docker daemon
+was down — and said so. The command running it ended in an
+unconditional `echo "built"` after a filtered pipeline, so a failure was
+reported as a success. That is the second time this project has shipped
+an artefact that was not what it claimed, and the first one cost a run
+too.
+
+The packaging staleness gate could not catch it. It asks whether an
+artefact is older than the archives it links; here the artefact was
+*newer*. It now also asks whether any tracked source under `mesa/src` is
+newer than the archives, and refuses to package if one is. Broken in
+both directions before being believed: touching `wsi_horizon.c` fails it
+by name, rebuilding passes it again.
+
+What that log does still show is real — three images at 89 of 89
+intervals inside 10% of a refresh, both present paths, two coexisting
+swapchains, no leak, no exit crash. Only the two-image lines measured
+the wrong driver.
+
+
+---
+
+## Run 10 — we were starving the compositor (2026-08-08)
+
+**Class: hardware (HW), twice.** `t_nwindow` 113/118 in applet mode and
+113/118 in title-takeover mode, build `2026-08-05T18:45:48Z b246f2d`.
+Logs in `docs/hw-logs/t_nwindow-run10-*`.
+
+### The failing dequeue reported itself, and it was the loop
+
+```
+  note 2 buffers, interval 1: the failing dequeue made 8320 round(s);
+       async=true 490818 us total, last 0x0000115d;
+       async=false 499026 us total, last 0x0000115d
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 146 us
+       (0 refresh(es)), in async=true
+```
+
+Both modes reached, both answering `NO_INIT`, and together **989 ms of
+the 1000 ms budget spent inside `bqDequeueBuffer`** — roughly 17000
+binder transactions a second into the compositor's own service. The loop
+had no idle in it at all, because the release event is a level and
+`eventWait` returns immediately.
+
+And then `async=true` returned a buffer in **146 us, first attempt**,
+after failing 8320 times in the second before it. The only thing between
+the two was a `t_note` writing a line to the SD card. Run 9 has the same
+shape with a different pause: `async=false` blocked 10 ms and delivered.
+
+The slow lane closes it: a **three-second** budget changes nothing —
+23192 rounds, same answer — and the two frames that did go through took
+171 us and 149 us. **More asking never helps; stopping always does.**
+
+So the producer was starving the consumer it was waiting for. Three
+buffers never showed it because a slot is nearly always free and the
+loop never spins; two buffers spin on every frame.
+
+### Every earlier reading, and what was wrong with it
+
+- **0059, 0061, 0063 — the dequeue mode.** Both modes are reached and
+  both fail. The mode was never it.
+- **0062 — slicing the wait.** It dressed a spin up as a wait, which is
+  what hid this for five runs. Superseded by 0064.
+- **Run 7's `async=false` in 145 us**, and run 9's 9996 us, and run 10's
+  146 us in `async=true`: all the same fact seen three ways. What
+  delivered the buffer was not the mode — it was the pause before it.
+- **Run 9's "one buffer per second".** Wrong. It is one buffer per
+  *pause*, and the second was our own budget.
+
+### Applet mode is not the variable
+
+The operator ran the same binary in applet mode and in title-takeover
+(full memory) mode. Identical to within noise: 8320 rounds against 8270,
+989 ms against 990 ms inside binder, 23192 against 23032 in the slow
+lane, 146 us against 138 us for the buffer that arrives once the asking
+stops. That was a live hypothesis and it is now closed.
+
+### The fix
+
+`svcSleepThread` for an eighth of a refresh between rounds, in
+`t_nwindow` and as **patch 0064** in the WSI. Nothing against a 16.7 ms
+frame, and enough to leave the compositor alone. The caller's deadline
+stays at the top of the loop, so `vkAcquireNextImageKHR(timeout = 0)`
+still answers `VK_NOT_READY` without ever reaching the sleep.
+
+
+---
+
+## Run 9 — one buffer per second, not one per refresh (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 109/113, build
+`2026-08-05T18:38:50Z df5cd57`. Log in
+`docs/hw-logs/t_nwindow-run9-one-buffer-per-second-FAIL.log`.
+
+Both two-buffer sessions, identically:
+
+```
+  note asked for 9 ms in BOTH modes — 1 round(s), release event fired 0
+       time(s); last async=true 0x0000115d, last async=false 0x00000000
+  note THE TIME — a buffer came back after 9996 us (0 refresh(es)), in
+       async=false
+  note after the late buffer, 1 of 10 further frames presented
+```
+
+### It is a rate, and the recovery arm is what proves it
+
+The paced dequeue gives up after one second. The probe that runs next
+gets a buffer from `async=false` in ~10 ms. The late buffer is then used
+rather than returned — **one** frame goes through, and the next dequeue
+burns its whole second again. That repeats, so it is not a startup
+transient.
+
+**A two-buffer window here delivers about one buffer per second.** The
+same log has `3 buffers, interval 1: 90 of 90 frames presented`, mean
+16344 us, 87 of 90 dequeues carrying a release fence. Two-buffer
+sessions carry **zero** release fences, in every run so far.
+
+### Two readings still fit, and run 10 separates them
+
+Either `async=false` blocks and delivers in ~10 ms, and the paced loop
+is somehow not reaching it; or a buffer becomes free at about one second
+and the 10 ms is only how long the ask took once it nearly was.
+
+Eight runs have inferred what the failing second was spent on, and run 9
+showed the inference is unfalsifiable: `nw_dequeue` returns one Result,
+and everything about that second had to be guessed from a diagnostic
+running afterwards on a window in a different state. So `nw_producer`
+now records rounds, cumulative time in each mode, and the last result of
+each, and the failure prints them.
+
+And a **slow lane**: two buffers, ten frames, a **three-second** budget
+per dequeue, every dequeue's duration printed. Every dequeue in this file
+is otherwise cut off at one second, which is exactly where the boundary
+sits.
+
+If those come back at ~1 s each, two-buffer FIFO on this compositor runs
+at about 1 Hz and **D18 resolves to `minImageCount = 3`**. If they come
+back at ~10 ms, the one-second budget was the whole defect.
+
+
+---
+
+## Run 8 — the fix did not move it, and that sharpened the question (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 111/113 and `t_vk_swapchain`
+114/116, build `2026-08-05T18:30:39Z dec5a7a`. Logs in
+`docs/hw-logs/*run8*`.
+
+`nw_dequeue` and the WSI acquire both asked `async=true` and then
+`async=false` on every iteration. The two-buffer sessions still stop at
+the third frame.
+
+### What the same log says next to that
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 77900 dequeue(s) in
+       libnx's mode, ... last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 134 us
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`nw_dequeue` had been asking **both** modes for the entire second before
+the diagnostic ran, and both failed for that whole second. Then five
+seconds of `async=true` passed and one `async=false` succeeded in 134 us.
+
+**So `async=false` does not work at t = 0 and does work by t = 6 s.**
+Run 7's measurement was real; its reading was too narrow. The mode
+matters, but only once something has freed a buffer — and nothing on a
+two-buffer window frees one for at least a second.
+
+### The question, restated
+
+Not which mode. **When does a buffer become free on a two-buffer window,
+and does the window keep going once one does?** Every log so far is
+blind to both: the ask asked one mode for five seconds and the other
+once, and no session has ever continued past the stall.
+
+Run 9 measures both. The diagnostic asks both modes every round and
+prints the elapsed time and which mode won, turning "somewhere between
+1 s and 6 s" into a number. Then it takes the late buffer and attempts
+**ten more frames**, counting them: a startup transient and a permanent
+stall are different defects and look identical in every log to date.
+
+Patch 0063 stays. Its cost is one extra dequeue per acquire round when
+the queue says it would block, and run 7's measurement — `async=false`
+answering where `async=true` will not — is untouched by run 8.
+
+
+---
+
+## Run 7 — the mode that works, and it is the synchronous one (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 111/113, build
+`2026-08-05T18:24:09Z 12863c4`. Log in
+`docs/hw-logs/t_nwindow-run7-async-false-works-FAIL.log`.
+
+### async=false works, on the window that had just failed
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in
+       libnx's mode, release event fired 78165 time(s), last result
+       0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 145 us
+  ok   2 buffers, interval 1: async=false produced a buffer where libnx's
+       async=true could not, 78166 times running
+```
+
+Twice in the run — 145 us and 158 us — and it did **not** block inside
+the compositor, which was the one behaviour that could not be ruled out
+until it was tried.
+
+**And position is ruled out.** The same probe ran before any paced
+session and after all of them; `probe BEFORE, 2 buffers` and `probe
+AFTER, 2 buffers` both get a buffer in ~100 us. Where a session sits in
+the run is not the variable.
+
+### The reading, and every observation it has to fit
+
+Android's producer takes `async` to mean *this producer is in
+asynchronous mode*: `queueBuffer` never blocks and older frames are
+dropped, which costs the queue one buffer held in reserve. A two-buffer
+queue with both buffers out cannot spare it. FIFO presentation is
+synchronous by definition, so `async=false` is the mode that describes
+what a swapchain is actually doing.
+
+Everything measured across seven runs fits:
+
+- **Three buffers** usually have a free slot, so `async=true` answers.
+- **The reconstructed probe** queues two frames inside one refresh, the
+  consumer drops one and frees its slot, so `async=true` answers there
+  too — which is exactly why the reconstruction never reproduced the
+  failure.
+- **The concurrency count** says `WOULD_BLOCK` when three slots are
+  exhausted and `NO_INIT` when two are. Two different conditions: the
+  count running out, and the reserve not being satisfiable.
+
+### And patch 0061 had the right mode all along
+
+It used it wrongly. `async=false` was asked *only* after an `eventWait`
+that had already spent the whole budget, and `async=true` was never
+asked again — so the two runs that followed refuted the implementation,
+not the idea, and I read them as refuting the idea. Both modes are now
+asked on every iteration, `async=true` first because it is libnx's path
+and the common case, with 0062's slicing keeping any one call from
+eating the deadline.
+
+**Patch 0063** carries it into the WSI, with one difference: the
+fallback is skipped when the caller passed a zero timeout.
+`vkAcquireNextImageKHR(timeout = 0)` must answer `VK_NOT_READY`
+promptly, and `async=false` is the mode Android *permits* to block in
+the server. It did not block on the window measured; that promise is not
+worth risking on one measurement.
+
+### D18 is not being taken
+
+`minImageCount = 3` was the fallback if two buffers turned out to be
+impossible here. They are not impossible. The decision stays open until
+run 8 either presents 90 of 90 frames on two buffers or does not.
+
+
+---
+
+## Run 6 — the release event is a level, not an edge (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 79/81 and `t_vk_swapchain` 114/116,
+build `2026-08-05T18:11:16Z 503d008`. Logs in `docs/hw-logs/*run6*`.
+
+Patch 0062 did not fix the two-buffer sessions. It was still the right
+change — the old code returned a *mislabelled* timeout after one retry in
+the wrong mode — but it was necessary, not sufficient.
+
+### The two numbers, from the real failure
+
+The diagnostic ran attached to the dequeue that actually failed:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 84328 dequeue(s) in
+       libnx's mode, release event fired 84327 time(s), last result
+       0x0000115d
+```
+
+**84327 `eventWait` returns in five seconds is 59 us apiece.** The event
+comes back immediately every time: it is permanently signalled, a level
+and not an edge, and it carries no information about a buffer having
+been released. Waiting on it is a spin — in libnx's own
+`nwindowDequeueBuffer` loop as much as in ours. Every design here that
+read it as "a buffer came back" was reading a level as an edge, and the
+only reason three buffers work is that the dequeue is probed *first*.
+
+**And `async=true` answered `0x115d` — `LibnxBinderError_NoInit` — 84328
+times running.** Thirty lines later in the same log, the reconstructed
+probe's two-buffer window answered the same call with a buffer in 97 us.
+
+### What that rules out, and what is left
+
+Ruled out: the dequeue mode (0059, 0061), the release event (0062's
+slicing), and the compositor simply never freeing a buffer — it freed
+one in 97 us on a window in the same process with the same buffer count.
+
+Left: **state**. Two windows, identical last three calls, opposite
+answers. The one thing nothing has controlled for is *where in the run
+each session happens* — the failing ones are the 2nd and 4th sessions,
+the probe was the 6th and 7th.
+
+So the same probe now runs **BEFORE** any paced session and **AFTER**
+all of them, everything else held constant. If BEFORE starves and AFTER
+does not, the variable is what the window has been through. If both
+behave alike, position is ruled out and the difference is inside the
+paced code path, which is the next thing to bisect.
+
+The diagnostic also now tries `async=false` once at the end of the real
+failure — the one mode never reached on a genuinely starved window, and
+the one that Android's BufferQueue allows to block in the server. It may
+not return; the log says so a line in advance and every line before it
+is already flushed.
+
+### The fallback, stated now rather than after another run
+
+The numeric half of exit criterion 2 has never run, across four attempts
+at it. If run 7 does not resolve the two-buffer case, the honest
+conclusion is that this compositor cannot sustain FIFO on two buffers,
+and then **`minImageCount` must become 3** — the surface currently
+advertises 2 and `t_vk_swapchain` asserts it, which would make both a
+promise the driver cannot keep. That is a decision, and it is recorded
+here as pending rather than taken quietly.
+
+
+---
+
+## Run 5 — the probe answered, and it was the wrong question (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 79/81, build
+`2026-08-05T17:57:42Z 0c22d69`. Log in
+`docs/hw-logs/t_nwindow-run5-probe-did-not-reproduce-FAIL.log`.
+
+### The probe did not reproduce the failure
+
+`nw_probe_starvation` built a session that looked like the failing one
+and asked it the question. At two buffers:
+
+```
+  note starvation probe, 2 buffers: 1 dequeue(s) in libnx's mode over
+       0 ms, release event fired 0 time(s), last result 0x00000000
+  ok   starvation probe, 2 buffers: the compositor handed a buffer back
+  note starvation probe, 2 buffers: it came back after 104 us
+```
+
+Sixty lines above, in the same log, the real two-buffer sessions still
+die at frame 2. **A reconstruction that never reaches the state it was
+built to examine reports success about nothing**, and four `ok` lines
+say so in a way that reads like an answer. Fourth time this project has
+produced a check like that; second one I wrote myself.
+
+The instrument is now attached to the failure instead: when a dequeue in
+`nw_session_present` fails, *that* window — in exactly the state that
+made it fail — is the one asked for five seconds. There is nothing left
+to reconstruct.
+
+### What the log did measure, and it located the defect
+
+Two things.
+
+**A buffer came back with the release event never firing.** 104 us, zero
+event fires. The compositor can free a slot without signalling, so a
+producer that waits on the event alone stalls where one that probes
+first does not.
+
+**And the failing result names the culprit.** `0x00006359` is
+`MAKERESULT(Module_Libnx, LibnxError_Timeout)` — the test's own budget,
+not anything the BufferQueue said. The only branch that returns it is
+the deadline check at the top of an iteration, which is reachable *only
+after an `eventWait` succeeded*. So the sequence was:
+
+1. ask in async=true → no buffer yet
+2. wait on the release event, **with the whole remaining second as the
+   timeout** → the event fires
+3. ask once in async=false → fails
+4. round the loop → the budget is gone → `LibnxError_Timeout`
+
+**async=true was never asked again.** The compositor was not starving
+the producer; the loop spent its entire deadline in one wait and then
+gave up on one attempt in a mode nothing on this platform uses. Patch
+0061 introduced step 3, and patch 0059 before it aimed at the same
+non-problem.
+
+### The fix, in both implementations
+
+One mode — libnx's async=true, which `nwindowDequeueBuffer` uses on any
+window that has a release event — and the wait sliced to two refreshes,
+so a release that does not arrive costs one slice and another attempt
+instead of the whole acquire. A timeout from `eventWait` is not a
+failure; it is the reason to ask again, and the caller's deadline is
+checked at the top of the loop where it belongs.
+
+`t_nwindow` in commit `4a9a5f1`-adjacent; the WSI as **patch 0062**,
+which also corrects the comment that stated 0061's reading as measured
+fact. Cross build green, not verified on hardware.
+
+Run 6 answers either way: if the fix is right the two-buffer sessions
+present 90/90 and the pacing comparison finally runs; if it is wrong the
+attached diagnostic reports from the real failure with numbers.
+
+
+---
+
+## Run 4 — the leak is gone, the crash was the leak, and two still starves (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 48/50 and `t_vk_swapchain` 114/116,
+both stamped `2026-08-05T14:31:36Z e0bb31f` in their second line. Logs in
+`docs/hw-logs/*run4*`.
+
+### Two answers, and the second one took four runs to ask
+
+**Patch 0060 fixed the leak.** `device destroy refused` does not appear
+anywhere in the swapchain log. Runs 2 and 3 both ended with `live mem=33
+va_ranges=33 mappings=33`. The check that says so is the `t_log_scan`
+version, which fails when it cannot read the log rather than reporting
+"not found" — so unlike run 2, its `ok` is evidence.
+
+**The exit crash was the leak.** The operator reports the console
+returning to the homebrew menu on `+`. The hypothesis was written after
+run 1 and this is the first run in which it could be tested at all,
+because runs 2 and 3 both still leaked.
+
+That closes the reference cycle 0058 created: a VA binding held a
+reference to the memory it binds, and every `nvkmd_mem` carries its own
+VA, so each object held the other. 0060 excludes the self-binding.
+
+### And the diagnosis behind 0061 was wrong
+
+Two registered buffers still present two frames and then stop. The
+failing result is the one worth reading:
+
+```
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`0x6359` is `MAKERESULT(Module_Libnx, LibnxError_Timeout)` — **this
+test's own one-second wait expiring**, not an error from the
+BufferQueue. The release event never fires. Patches 0059 and 0061 both
+chose between dequeue modes; no dequeue mode is ever reached.
+
+The same failure appears through Vulkan, in an independent
+implementation: `vkAcquireNextImageKHR at frame 2 -> VK_TIMEOUT`.
+
+What the log does distinguish, and it is new:
+
+```
+3 registered, all 3 held: 0x00001d5d = LibnxBinderError_WouldBlock
+2 registered, both held:  0x0000115d = LibnxBinderError_NoInit
+```
+
+Different conditions, not one limit. And with three buffers the release
+path plainly works — `largest pending-buffer count 2`, a dequeue that
+waited 11869 us, 87 of 90 dequeues carrying a release fence.
+
+### What libnx actually does, read rather than assumed
+
+`nx/source/display/native_window.c`, `nwindowDequeueBuffer`:
+
+```c
+if (eventActive(&nw->event)) {
+    do {
+        eventWait(&nw->event, UINT64_MAX);
+        rc = bqDequeueBuffer(&nw->bq, true /* async */, ...);
+    } while (R_VALUE(rc) == MAKERESULT(Module_LibnxBinder,
+                                       LibnxBinderError_WouldBlock));
+} else
+    rc = bqDequeueBuffer(&nw->bq, false /* async */, ...);
+```
+
+So `async=true` is libnx's path on any window that has a release event —
+which the default window does — and `async=false` is a mode nothing on
+this platform is known to use. Patch 0061 switched to `async=false`
+after the event fired, which is neither libnx's path nor reachable when
+the event does not fire.
+
+### The experiment that replaces the guessing
+
+`nw_probe_starvation` (commit `ba1f549`) hands the compositor every
+registered buffer and then does nothing but ask, for five seconds — 300
+refreshes — reporting how many dequeues it made, **how many times the
+release event fired**, the last result, and how long the first success
+took. Run at three buffers and then at two, so the two-buffer answer has
+a working one beside it.
+
+Its last act tries `async=false`, the mode Android's BufferQueue allows
+to block inside the server. It may not return, and that would itself be
+a distinct answer from "the compositor never releases". It is last on
+purpose: every line above it is already on the SD card, and the log says
+in advance what a missing next line means.
+
+**Nothing in the driver changes until this reports.** Two patches have
+now been written against a reading of this failure and neither touched
+it.
+
+### The thing this makes suspicious
+
+The surface advertises `minImageCount = 2` and `t_vk_swapchain` asserts
+it. If two images cannot sustain FIFO on this compositor, that number is
+a promise the driver cannot keep, and both the value and the check that
+blesses it are wrong. Not changed yet: the probe decides whether the
+limit is the platform's or ours.
+
+
+---
+
+## Run 3 — it measured the previous build, and the fault is mine (2026-08-05)
+
+**Class: hardware (HW), and it tested nothing that was asked of it.**
+`t_nwindow` 48/50 and `t_vk_swapchain` 113/115, the same counts and the
+same failures as run 2. Logs in `docs/hw-logs/*run3-STALE-BINARIES*`.
+
+The `.nro` that ran were run 2's. Patches 0060 and 0061 were not in
+them, so what these two logs record is the behaviour those patches were
+written to change, measured a second time.
+
+### Why it was read wrong first
+
+They are not copies of run 2's logs. Every timing differs, every heap
+address differs, the syncpoint initial values differ:
+
+```
+run 2:  the NvMap has an id the compositor can look up (36412)
+run 3:  the NvMap has an id the compositor can look up (37092)
+run 2:  3 buffers at interval 0: mean 8152 us against 16352 us
+run 3:  3 buffers at interval 0: mean 8177 us against 16353 us
+```
+
+A genuine second execution of unchanged code and a fix that changed
+nothing produce the same artefact. Nothing else in either log
+distinguishes one build from the other.
+
+What separated them was luck. Mesa's `vk_logi` prints `__FILE__` and
+`__LINE__`:
+
+```
+../src/vulkan/wsi/wsi_horizon.c:1781: the swapchain presents zero-copy
+```
+
+and the source that was supposed to be running has that call at 1805.
+The shipped zip was then checked and did contain the intended build —
+it holds `"the log could not be read back"`, a string that exists only
+in the run-3 binaries, and its sha256 matches the manifest. So the
+batch was right and what reached the SD card was not.
+
+### The defect is not the SD card
+
+It is that **the logs carried no build identity**, and the only reason
+this was caught is that a line number happened to move. Fixed in
+`d75f7b8`:
+
+- `scripts/gen-build-id.sh` emits a UTC stamp plus the repository HEAD
+  (`-dirty` when the tree has edits).
+- Both build paths regenerate it on every build — `FORCE` in the
+  Makefile, `build_always_stale` in Meson. Verified in both: a rebuild
+  with no source change advances the stamp inside the `.nro`.
+- `testfw`'s `main()` prints it as the second line of every log, as one
+  string literal with its marker included, so the bytes in the binary
+  and the bytes in the log are the same bytes.
+- `scripts/package-horizon.sh` reads that marker back out of each
+  `.nro`, records it in the manifest, and **refuses** to write a
+  manifest over a directory holding more than one build, or one
+  artefact carrying no stamp.
+
+Both refusals were provoked before being believed — an unstamped `.nro`
+gives `error: no build id in: t_display.nro`, two stamps give `error: 2
+different build ids`, and restoring the one-build source passes again.
+
+### What run 3 is still worth
+
+One thing: run 2's failures are reproducible rather than one-off.
+`live mem=33 va_ranges=33 mappings=33` appeared again, and both
+two-buffer sessions died at frame 2 again. That is a second sample of a
+build that is about to be replaced, which is worth little, but it is not
+nothing.
+
+The three questions run 3 was to answer — 0061, 0060, and then the exit
+crash — are all still open, in that order, for run 4.
+
+
+---
+
+## Run 2 — the swapchain holds up, my fix does not (2026-08-05)
+
+**Class: hardware (HW).** `t_nwindow` 48/50 and `t_vk_swapchain`
+114/116. Logs in `docs/hw-logs/*run2*`.
+
+### What was confirmed
+
+**The pattern was right.** Reported by the operator: the four bars, the
+white border, the black diagonal and the yellow corner all appeared as
+the log said they should. That is the whole of the evidence that NVK's
+block-linear layout and the compositor's agree — every other frame this
+suite presents is a solid colour, which looks identical under any wrong
+swizzle, and a GPU readback would write and read with the same layout
+and agree with itself. **`TegraColor` was the right GOB ordering, the
+generic 16Bx2 page-table kind was the right kind, and the stride and
+block height are what the display block expects.**
+
+**And the swapchain paces exactly.** 89 of 89 intervals within 10% of
+16666 us, mean 16671 us. Both present paths named by the driver in the
+same run.
+
+### Three findings, and two of them are corrections to run 1's fixes
+
+**1. The leak fix made the leak worse.** Patch 0058 gave every VA
+binding a reference to the memory it binds. But every `nvkmd_mem` here
+carries a VA of its own, bound at offset 0 the moment it is created, so
+referencing the memory from *that* binding makes the two objects hold
+each other:
+
+```
+run 1:  device destroy refused: live mem=14 va_ranges=0  mappings=0
+run 2:  device destroy refused: live mem=33 va_ranges=33 mappings=33
+```
+
+The VAs leaking too is the signature. Patch 0060 excludes the
+self-binding, which `_va == _mem->va` identifies exactly — alloc_mem
+assigns `mem->va` and then binds, so the comparison is a fact at that
+moment and not an assumption about ordering.
+
+**2. Retrying NO_INIT was not enough.** Patch 0059 added it to the
+retryable set, and the two-image runs then spun until their deadline
+and returned `VK_TIMEOUT` instead. The mode is the problem, not the
+retry: libnx passes the producer's `async` flag as true when it has a
+release event to wait on and false when it does not, and async mode
+asks the queue to keep a buffer in reserve — which a two-buffer queue
+cannot do. Patch 0061 probes non-blocking, then dequeues **blocking**
+once the release event has fired. That is libnx's own loop.
+
+**3. And a check of mine reported success while 33 objects leaked.**
+
+```
+[horizon_gpu:E] device destroy refused: live mem=33 va_ranges=33 mappings=33
+MESA: error: horizon_gpu_device_destroy failed: status 9
+ok   the driver tore down every object it created: nothing in this log says it could not
+```
+
+`t_log_contains` opened the log a second time while it was still open
+for writing; the SD card's device layer refused, and the helper's one
+return value could not tell "not found" from "could not look", so it
+said not found. It is `t_log_scan` now: it reads through the log's own
+handle, and it returns whether the scan happened separately from what it
+found. A scan that could not run fails the test.
+
+**This is the third time this project has produced a check that reports
+success without verifying anything**, and the first one written by
+someone who had just finished writing that sentence about the other two.
+The pattern is the same every time: a helper with one return value for
+two different questions.
+
+### The exit crash learned nothing
+
+Run 2 was meant to test whether the crash follows the leak. The leak was
+still there — worse — so the experiment did not run. It is still
+untested, and run 3 is the first time it can be.
+
+
+---
+
+## Phase 6 on the console — three criteria met, three defects found (2026-08-05)
+
+**Class: hardware (HW).** Fifteen `.nro` in the order given, on the
+owner's Switch. **Thirteen PASS, two FAIL, 2986 checks.** Logs in
+`docs/hw-logs/*phase6*`.
+
+### A Vulkan swapchain presents on a Switch
+
+```
+note vk info [wsi_horizon.c:1750]: wsi_horizon: zero-copy: the swapchain
+     images are the scanout buffers (3 images, 1280x720, swap interval 1)
+ok   3 images, FIFO: 90 of 90 frames presented
+note 3 images, FIFO: 89 intervals, mean 16662 us, min 16150 us,
+     max 17238 us; 89 within 10% of 16666 us; 0 longer than 1.5 refreshes
+ok   90 frames were presented through 3 images, so the compositor
+     released at least 87 of them
+```
+
+**Zero-copy on the first attempt.** The alignment failure predicted in
+the previous section did not happen: `nwindowConfigureBuffer` accepted
+memory aligned to whatever NIL asked for, so libnx's 128 KiB is a habit
+and not a requirement — at least for a buffer of this size and shape.
+The page-table kind and the GOB ordering both passed, which means NIL
+classified GM20B as an SoC and produced `TegraColor`, as
+`nvk_wsi_get_image_info` requires.
+
+**89 of 89 intervals inside 10% of a 60 Hz refresh** is exit criterion 1,
+and there is no weaker reading of it: the swapchain has three images, 90
+frames went through them, and this process releases none — the
+compositor released at least 87.
+
+### THE NUMBER, and it is larger than the design needed
+
+```
+note THE NUMBER: with 3 registered buffers, 3 slot(s) could be dequeued at once
+note with 2 registered buffers, 2 slot(s) could be dequeued at once
+```
+
+The BufferQueue hands the producer **every** buffer it registered. So
+the single-`cur_slot` restriction is libnx's `NWindow` wrapper and not
+the platform's, and driving `bq*` directly — which the whole slot-
+ownership design rests on — is sound. `minImageCount = 2` is safe.
+
+### Three defects, and where each came from
+
+**1. Every swapchain image leaked.** Fourteen of them, and then the
+device itself:
+
+```
+[horizon_gpu:E] mem 0x...: destroy refused, 1 live mapping(s) at va=0x400000000
+MESA: error: horizon_gpu_mem_destroy failed: status 7
+[horizon_gpu:E] device destroy refused: live mem=14 va_ranges=0 mappings=0 channels=0
+```
+
+`wsi_destroy_image` frees the memory **before** destroying the image
+(`wsi_common.c`), which Vulkan permits and Mesa has always done;
+`horizon_gpu_mem_destroy` refuses while a mapping is alive
+(memory-model § 7), and `nvkmd_mem_unref` returns void, so nothing
+retried. The final counters are what fix the order: `va_ranges=0
+mappings=0` means the unbind *did* happen — later, when the image was
+destroyed — so what was left was memory whose free had already been
+refused. Patch 0058 makes the binding hold a reference; whichever of the
+two comes last destroys the object, and the order stops mattering.
+
+**No Phase 5 test showed this**, because they destroy the image first.
+It is a defect any application that frees memory before its images would
+hit, and the swapchain is simply what did it.
+
+**2. Every two-image swapchain died at frame 2.**
+
+```
+MESA: error: wsi_horizon: bqDequeueBuffer failed: 0x0000115d
+FAIL 2 images, FIFO: 2 of 90 frames presented
+```
+
+`0x115d` is `Module_LibnxBinder`, `LibnxBinderError_NoInit` — Android's
+`NO_INIT` (`-ENODEV`) through `binderConvertErrorCode`. The acquire
+retried only on `WOULD_BLOCK`, which is what libnx's own loop expects.
+Three images never reach the condition, so nothing before this run had
+seen it. `t_nwindow` failed identically at frame 2, which is what says
+the fault is in the retry set and not in the swapchain. Patch 0059.
+
+**The cost of this one is exit criterion 2**: the pacing comparison
+between two and three images has no data in this run. Its structural
+half — 3 concurrent slots against 2 — did measure.
+
+**3. `t_vk_swapchain` takes the console down on exit**, reported by the
+owner, after `RESULT` is written and on pressing +. The cause is not
+established. The hypothesis is defect 1: with the device destroy
+refused, `nvExit`, `nvMapExit` and `nvFenceExit` never ran and fourteen
+NvMaps were alive when the process ended. `t_nwindow` registers and
+releases the same kind of scanout buffers, tears everything down
+cleanly, and exits fine — which is what makes the hypothesis worth
+testing rather than assuming. Patch 0058 removes the condition; the
+re-run is the test.
+
+### And a check that would have caught the first one
+
+`t_log_contains` in `testfw`: the test reads back its own log — which
+`main()` has dup2'd stderr into — and fails if the driver said it could
+not destroy something. Some of what a driver reports has no Vulkan
+representation at all, and until now a test could only pass beside it.
+This run is the reason it exists.
+
+### The numbers worth keeping
+
+| | |
+|---|---|
+| swapchain, 3 images, FIFO | mean **16662 us**, 89/89 within 10% of a refresh |
+| acquire, zero-copy | mean **15729 us** — the frame's wait is here |
+| acquire, copy fallback | mean **4 us** — the wait is in the present instead |
+| record + submit | **584 us** zero-copy, **470 us** copy |
+| `t_nwindow`, 3 buffers, interval 1 | mean **16380 us**, 86/89 within 10% |
+| `t_nwindow`, 3 buffers, interval 0 | mean **8162 us** — the swap interval is the knob |
+| `t_nwindow`, fill + flush of one 3.75 MB buffer by CPU | **2173 us** |
+| release fences seen | **87 of 90** dequeues, first on syncpoint 103 |
+
+
+---
+
+## Phase 6 — the Horizon WSI, written and unrun (2026-08-05)
+
+**Class: cross build (CB).** Everything below builds and nothing below
+has executed. The distinction matters more in this phase than in any
+previous one, because a swapchain's output cannot be read back: a test
+that passes here proves less per check than a Phase 5 test did, and the
+gap is made up by evidence of other kinds, listed in the state block
+above under what the suite does not measure.
+
+### The question that had to be answered before anything was designed
+
+libnx's `nwindowDequeueBuffer` keeps a single `cur_slot` and refuses a
+second dequeue before the first is queued or cancelled. Vulkan does not
+permit that: with `VkSurfaceCapabilitiesKHR::minImageCount` = 2 and a
+three-image swapchain, an application may hold **two** images acquired,
+and blocking indefinitely for them is valid usage. Offering
+`minImageCount = 2` — which is what makes double buffering expressible
+at all, and therefore what exit criterion 2 rests on — makes that case
+legal.
+
+So either the BufferQueue underneath libnx hands out two slots at once,
+or `docs/wsi.md` § 2.3 cannot stand as written. `t_nwindow` measures the
+number, with no Vulkan anywhere near it, and the WSI backend drives
+libnx's `bq*` producer API directly on that basis — public API, on
+`nw->bq`, a public field — keeping the slot ownership itself.
+Registration and teardown still go through `nwindowConfigureBuffer` and
+`nwindowReleaseBuffers`, and `nw->cur_slot` is neither read nor written.
+
+**If the answer comes back 1, the design changes and this paragraph is
+what says so.**
+
+### Six things the design got wrong, corrected in `docs/wsi.md`
+
+Each one is marked in the document with what disproved it:
+
+| § | The design said | What it is |
+|---|---|---|
+| 2.2 | four slot states, including RENDERING | three: nothing at this layer can see an application start to render |
+| 2.3 | `nwindowSetBufferCount` is called | there is no such function in libnx, and the criticism of the reference for not calling it is withdrawn |
+| 2.5 | eviction releases the old swapchain's buffers slot by slot | a disconnect, which frees them all; a per-slot cancel would hand back buffers the application is still rendering into |
+| 3.1 | zero-copy needs `WSI_SWAPCHAIN_NO_BLIT` | done, and the part the design did not say is how the WSI learns an OPTIMAL image's layout: two driver callbacks and two new nvkmd operations |
+| 4 | the release fence becomes a wait dependency of the application's submit | a CPU wait inside acquire, because `nvkmd_horizon_ctx_wait` does waits on the CPU and the dependency would move the stall rather than remove it |
+| 5 | a dimension change is detected at acquire | it is, but not through `nwindowGetDimensions` — that returns what this backend itself set, so the check compared the extent with itself |
+
+### The GOB check that would have passed for the wrong reason
+
+NIL picks the sector ordering inside a GOB from the **device type**: an
+SoC gets `TegraColor`, a desktop Fermi gets `FermiColor`
+(`nil/tiling.rs:144-151`). Both are 512-byte, 64x8 GOBs, so accepting
+the wrong one passes every size, stride and block-height check in the
+backend and puts a scrambled image on screen. `TegraColor` is what
+Horizon's display block reads as "generic 16Bx2", and it is the only
+one `nvk_wsi_get_image_info` accepts.
+
+This is the finding this phase would most like to have caught with a
+test and cannot: see the pattern in `t_vk_swapchain` section F, and the
+reason a GPU readback proves nothing about it.
+
+### The one change to the submit path, and why it is not an optimisation
+
+`nvkmd_horizon_ctx_wait` performs a submit's waits on the CPU. For a
+wait on work **already submitted to the same channel** that is not a
+limitation but a wait that has already happened: a GPFIFO executes its
+entries in order, so the submit that waits cannot begin before the work
+it waits on has finished, whether or not anyone waits for it.
+
+It is the ordinary case and not a corner. A swapchain present waits on
+the semaphore the application's render submit signalled, on the same
+queue, every frame — so with the CPU wait in place, handing the
+compositor a syncpoint fence to wait on saved nothing, and patch 0052
+would have been decoration.
+
+The bound is exact: only a sync that is PENDING and whose fence came
+from this same channel. What it costs is stated rather than discovered —
+a wait on a faulted channel no longer reports `CHANNEL_LOST` from the
+wait; the error moves to the submit that follows, which `t_fault`
+measured on hardware as refused.
+
+**This is why the Phase 5 suite is in the batch.**
+
+### The Phase 6 batch, in order
+
+Every test writes `sdmc:/horizon_gpu_tests/<name>.log`. The two new ones
+own the display, so **they start no console and the screen shows what
+they present**; everything they report is in the log file.
+
+| # | Test | What to expect on screen | What its log is for |
+|---|---|---|---|
+| 1 | `t_nwindow` | about nine seconds of solid colours sweeping through hues, five times over | **THE NUMBER**: "with 3 registered buffers, N slot(s) could be dequeued at once". Also the frame cadence at 2 and 3 buffers, with and without a bursty load, and at swap interval 0 |
+| 2 | `t_vk_swapchain` | a **still pattern for two seconds** — four vertical bars red/green/blue/white, a white border, a black diagonal, a yellow top-left square — then about twelve seconds of colour sweeps | the four exit criteria. **Report what the pattern looked like**: it is the only evidence that the driver and the compositor agree about the memory layout |
+| 3-15 | the Phase 5 suite, in its usual order | the console, as before | patch 0056 moved the submit path under all of them |
+| last | `t_fault` | it takes the console down on exit; run it last or not at all | unchanged debt |
+
+If `t_nwindow` reports fewer than two concurrent slots, stop: everything
+after it is measuring a design that has to change.
+
+### The most likely way zero-copy gets declined on first contact
+
+Written down before the run so the log can be read against it rather
+than explained afterwards. libnx creates its framebuffers' NvMap with
+`nvMapCreate(..., align = 0x20000, ...)` — 128 KiB — while a swapchain
+image's memory is allocated with whatever alignment NVK's memory
+requirements ask for, which is NIL's and much smaller. Whether the
+display block needs the larger one is not known here; nothing in
+switchbrew says, and libnx's choice may be a requirement or a habit.
+
+If it is a requirement, `nwindowConfigureBuffer` fails and the backend
+falls back to the copy path with "the compositor refused one of the
+scanout buffers" in the log. That is the designed outcome and not a
+crash, which is the point of validating and falling back rather than
+predicting. The fix, if it is needed, is a larger allocation alignment
+for scanout images, and it is one patch.
+
+The other candidates, in the order they would show: a page-table kind
+that is not generic 16Bx2 (would mean compression is on, which
+`nvkmd_info::has_compression` says it is not), and a GOB sector ordering
+that is not TegraColor (would mean NIL classified this chip as something
+other than an SoC).
 
 
 ---

@@ -96,10 +96,36 @@ compare "archive paths" "Makefile:$mk_libs" "meson.build:$ms_libs" \
 # 3. The defines Mesa's own configure decided here and both paths copy.
 #    A missing one changes which types the headers declare, and the
 #    result still links.
+#
+#    The meson side is read from idep_mesa_core's compile_args and NOT
+#    from every -D in the file. It used to be the latter, which was
+#    right while tests 12 and 13 were the only ones with defines of
+#    their own: Phase 6 gave the NVK tests -DVK_USE_PLATFORM_VI_NN
+#    through idep_nvk_driver, and a file-wide grep then reported a
+#    disagreement between the Makefile and meson.build about a define
+#    that has nothing to do with either of the two tests this gate is
+#    about. The extraction is narrowed to the dependency those tests
+#    actually carry.
 mk_defs=$(sed -n 's/^MESA_CFLAGS  *:*= *//p' Makefile |
           grep -o -- '-D[A-Za-z_][A-Za-z0-9_]*' | tokens)
-ms_defs=$(grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" meson.build | tokens)
+ms_defs=$(sed -n '/idep_mesa_core = declare_dependency(/,/^  )/p' meson.build |
+          grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" | tokens)
 compare "defines" "Makefile:$mk_defs" "meson.build:$ms_defs"
+
+# AND THE NARROWING IS DECLARED, not silent. Review of PR #8 called this
+# "narrowed to silence a real difference", and the scope needs saying out
+# loud for that to be answerable: the two build paths do not build the
+# same set of tests. The Makefile builds the two that link Mesa's core
+# archives; meson also builds the NVK tests, which carry defines of their
+# own through idep_nvk_driver. Those are out of this gate's scope because
+# the Makefile has nothing to apply them to — but "out of scope" is a
+# claim, so it is printed and can be checked by eye.
+nvk_only=$(sed -n "/idep_nvk_driver = declare_dependency(/,/^  )/p" meson.build |
+           grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" | tokens)
+if [ -n "$nvk_only" ]; then
+    echo "check-mesa-test-parity: NOT compared — defines that reach only the" \
+         "NVK tests, which the Makefile path does not build: $nvk_only"
+fi
 
 # 4. Mesa's include paths.
 mk_incs=$(sed -n 's/^MESA_CFLAGS  *:*= *//p' Makefile |

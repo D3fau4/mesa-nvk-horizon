@@ -6,6 +6,9 @@
  */
 #include "testfw.h"
 
+/* Generated on every build by scripts/gen-build-id.sh. */
+#include "horizon_build_id.h"
+
 #include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -13,16 +16,29 @@
 
 #include <switch.h>
 
+/* One place that knows where a line goes: the console (or nowhere, on a
+ * test that owns the display) and the log file. */
+static void t_sink(test_ctx *t, const char *line, size_t len)
+{
+    fwrite(line, 1, len, stdout);
+    if (t->log) {
+        fwrite(line, 1, len, t->log);
+        fflush(t->log);
+    }
+}
+
 static void t_vemit(test_ctx *t, const char *prefix, const char *fmt,
                     va_list ap)
 {
-    char line[512];
-    vsnprintf(line, sizeof(line), fmt, ap);
-    printf("%s%s\n", prefix, line);
-    if (t->log) {
-        fprintf(t->log, "%s%s\n", prefix, line);
-        fflush(t->log);
-    }
+    char body[512];
+    vsnprintf(body, sizeof(body), fmt, ap);
+
+    char line[640];
+    const int n = snprintf(line, sizeof(line), "%s%s\n", prefix, body);
+    if (n <= 0)
+        return;
+    const size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1;
+    t_sink(t, line, len);
 }
 
 bool t_check(test_ctx *t, bool cond, const char *fmt, ...)
@@ -61,7 +77,13 @@ int main(void)
     mkdir("sdmc:/horizon_gpu_tests", 0777);
     char path[128];
     snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", test_name);
-    t.log = fopen(path, "w");
+    snprintf(t.log_path, sizeof(t.log_path), "%s", path);
+    /* "w+", not "w": t_log_scan reads the log back through this same
+     * handle. A second fopen() of a file already open for writing is
+     * not something the SD card's device layer promises, and the first
+     * version of that check silently answered "nothing found" every
+     * time because of it. */
+    t.log = fopen(path, "w+");
 
     /* Everything Mesa says goes into the same file, in order.
      *
@@ -92,11 +114,33 @@ int main(void)
             setvbuf(stderr, NULL, _IONBF, 0);
     }
 
-    printf("== %s ==\n", test_name);
-    if (t.log)
-        fprintf(t.log, "== %s ==\n", test_name);
-    else
+    char head[160];
+    int head_len = snprintf(head, sizeof(head), "== %s ==\n", test_name);
+    if (head_len > 0)
+        t_sink(&t, head, (size_t)head_len < sizeof(head) ? (size_t)head_len
+                                                         : sizeof(head) - 1);
+    if (!t.log)
         printf("  note (sdmc log unavailable: %s)\n", path);
+
+    /* WHICH BUILD THIS IS, in the second line of every log.
+     *
+     * A .nro on an SD card looks exactly like the .nro it replaced, and
+     * a run that reports the previous build's behaviour is
+     * indistinguishable from a fix that did not work — which cost this
+     * project a hardware run on 2026-08-05. The stamp is regenerated on
+     * every build; the run instructions say which one to expect.
+     *
+     * One string literal, marker included, and printed with "%s" rather
+     * than composed by the format: the same bytes then appear in the
+     * .nro and in the log, so scripts/package-horizon.sh can read a
+     * binary's identity out of the binary and the operator can match it
+     * against the log by eye. Composing it ("build %s") would leave the
+     * marker and the stamp as two unrelated literals in the image, and
+     * whatever the manifest then grepped for would not be the thing the
+     * log prints.
+     */
+    static const char build_id_line[] = "horizon-build-id " HORIZON_BUILD_ID;
+    t_note(&t, "%s", build_id_line);
 
     /* Stated in the artefact, because a log with no console output in
      * it and a log from a run whose console never started look the
@@ -111,23 +155,37 @@ int main(void)
 
     int total = t.pass + t.fail;
     const char *verdict = (t.fail == 0 && !aborted) ? "PASS" : "FAIL";
-    printf("RESULT: %s (%d/%d)%s\n", verdict, t.pass, total,
-           aborted ? " [aborted early]" : "");
-    if (t.log) {
-        fprintf(t.log, "RESULT: %s (%d/%d)%s\n", verdict, t.pass, total,
-                aborted ? " [aborted early]" : "");
-        fclose(t.log);
-    }
+    char tail[160];
+    int tail_len = snprintf(tail, sizeof(tail), "RESULT: %s (%d/%d)%s\n",
+                            verdict, t.pass, total,
+                            aborted ? " [aborted early]" : "");
+    if (tail_len > 0)
+        t_sink(&t, tail, (size_t)tail_len < sizeof(tail) ? (size_t)tail_len
+                                                         : sizeof(tail) - 1);
 
     printf("\nLog: %s\nPress + to exit.\n", path);
     /* With no console there is no screen to read that on, so the log —
      * which is the whole record for such a run — says it instead.
-     * Found in review of PR #7. */
-    if (test_uses_display && t.log) {
-        fprintf(t.log, "  note the run is finished; press + to exit "
-                       "(there is no console to show this)\n");
-        fflush(t.log);
+     * Found in review of PR #7.
+     *
+     * AND IT NEVER APPEARED. This wrote to `t.log` after fclose() had
+     * already closed it, three lines above: the handle was closed but
+     * not cleared, so the guard `t.log != NULL` was still true. The
+     * line is absent from every log collected up to run 14 — check any
+     * of them, they end at RESULT — and writing to a closed stream is
+     * undefined behaviour, not merely a lost line. The log is now
+     * closed once, at the end, after everything that writes to it, and
+     * runs 15 and 16 are the first logs in this project that carry the
+     * line. */
+    if (test_uses_display)
+        t_note(&t, "the run is finished; press + to exit (there is no "
+                   "console to show this)");
+
+    if (t.log) {
+        fclose(t.log);
+        t.log = NULL;
     }
+
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
@@ -147,4 +205,66 @@ int main(void)
     if (!test_uses_display)
         consoleExit(NULL);
     return (t.fail == 0 && !aborted) ? 0 : 1;
+}
+
+/* Overlap between chunks: the longest needle this can find spans two
+ * reads by at most this much, so a needle up to that length is never
+ * split across a boundary and missed. */
+#define T_LOG_SCAN_OVERLAP 128
+#define T_LOG_SCAN_CHUNK   4096
+
+bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
+{
+    *found_out = false;
+
+    if (t->log == NULL || needle == NULL)
+        return false;
+
+    const size_t needle_len = strlen(needle);
+    if (needle_len == 0 || needle_len > T_LOG_SCAN_OVERLAP)
+        return false;
+
+    /* Both writers, because stderr was dup2'd onto this file and the
+     * lines that matter most are usually the driver's. */
+    fflush(t->log);
+    fflush(stderr);
+
+    const long resume = ftell(t->log);
+    if (resume < 0)
+        return false;
+    if (fseek(t->log, 0, SEEK_SET) != 0)
+        return false;
+
+    char buf[T_LOG_SCAN_OVERLAP + T_LOG_SCAN_CHUNK + 1];
+    size_t carry = 0;
+    bool found = false;
+
+    for (;;) {
+        const size_t n = fread(buf + carry, 1, T_LOG_SCAN_CHUNK, t->log);
+        if (n == 0)
+            break;
+
+        const size_t total = carry + n;
+        buf[total] = '\0';
+        if (strstr(buf, needle) != NULL) {
+            found = true;
+            break;
+        }
+
+        /* Keep the tail, so a needle straddling this boundary is seen
+         * with the next chunk. */
+        const size_t keep = total < T_LOG_SCAN_OVERLAP ? total
+                                                       : T_LOG_SCAN_OVERLAP;
+        memmove(buf, buf + total - keep, keep);
+        carry = keep;
+    }
+
+    /* Back where the writers left it, before anything else writes. A
+     * failure here would put every later line in the wrong place, so it
+     * is reported as a scan that did not happen. */
+    if (fseek(t->log, resume, SEEK_SET) != 0)
+        return false;
+
+    *found_out = found;
+    return true;
 }

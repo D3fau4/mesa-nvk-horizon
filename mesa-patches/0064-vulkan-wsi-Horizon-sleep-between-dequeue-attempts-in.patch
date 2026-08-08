@@ -1,0 +1,123 @@
+From a9e016c920dcd8733bb462ceb8d7ffa21c42c177 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 12:21:40 +0000
+Subject: [PATCH] vulkan/wsi: Horizon, sleep between dequeue attempts instead
+ of spinning
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 7 (nwindowDequeueBuffer / nwindowQueueBuffer)
+Why: the acquire was starving the compositor it was waiting for.
+
+ eventWait cannot wait on this window. The release event is permanently
+ signalled — measured, 84327 returns in five seconds, 59 us apiece — so
+ a loop that "waits" on it has no idle in it, and what is left is binder
+ transactions as fast as the CPU can issue them.
+
+ t_nwindow's copy of this loop was made to report itself, and the
+ numbers are unambiguous: 8320 rounds in one second, both dequeue modes
+ reached, both answering NO_INIT, and 989 ms of the 1000 ms budget spent
+ inside bqDequeueBuffer — roughly 17000 transactions a second into the
+ compositor's own service. Three lines later in the same log, after
+ nothing but a log line being written to the SD card, async=true
+ returned a buffer in 146 us on its first attempt. A three-second budget
+ changes nothing: 23192 rounds, same NO_INIT. More asking never helps
+ and stopping always does.
+
+ Three images never showed it because a slot is nearly always free and
+ this loop never spins. Two images spin on every frame.
+
+What: the retry waits with svcSleepThread for an eighth of a refresh
+ instead of calling eventWait on an event that returns immediately.
+ Nothing against a 16.7 ms frame, and enough to leave the compositor
+ alone. The caller's deadline is still checked at the top of the loop,
+ so vkAcquireNextImageKHR(timeout = 0) answers VK_NOT_READY without ever
+ reaching the sleep.
+
+ This supersedes 0062's slicing, which dressed a spin up as a wait and
+ is what hid this for five hardware runs.
+
+Cross build: green. Not verified on hardware.
+---
+ src/vulkan/wsi/wsi_horizon.c | 54 +++++++++++++++++++-----------------
+ 1 file changed, 29 insertions(+), 25 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 7f68685..7d8e83a 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -1159,41 +1159,45 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+          return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+ 
+-      /* THE WAIT IS SLICED, AND THAT IS THE FIX.
++      /* THE WAIT IS A REAL SLEEP, AND THAT IS THE FIX.
+        *
+-       * This used to spend the whole remaining timeout inside one
+-       * eventWait and then retry in async=false. On hardware every
+-       * two-image swapchain died there: the acquire waited, the event
+-       * fired, the single async=false attempt that followed failed,
+-       * and the deadline was gone before async=true was ever asked
+-       * again. t_nwindow's own copy of the loop reported the same
+-       * failure as LibnxError_Timeout — its own budget expiring, not
+-       * anything the BufferQueue said.
++       * eventWait cannot wait on this window. The release event is
++       * permanently signalled — measured on hardware, 84327 returns in
++       * five seconds, 59 us apiece — so a loop that "waits" on it has
++       * no idle in it at all, and what is left is binder transactions
++       * as fast as the CPU can issue them.
+        *
+-       * Two refreshes per slice: a release that does not come costs
+-       * one slice and another attempt, not the entire acquire. A
+-       * timeout from eventWait is therefore not a failure here; it is
+-       * the reason to ask again, and the caller's deadline is checked
+-       * at the top of the loop where it belongs.
++       * That is what was wrong, and the number is unambiguous.
++       * t_nwindow's copy of this loop reported itself: 8320 rounds in
++       * one second, both dequeue modes reached, both answering NO_INIT,
++       * and **989 ms of the 1000 ms budget spent inside
++       * bqDequeueBuffer** — roughly 17000 transactions a second into
++       * the compositor's own service. Three lines later, after nothing
++       * but a log line being written, async=true returned a buffer in
++       * 146 us on its first attempt. A three-second budget changes
++       * nothing: 23192 rounds, same answer. More asking never helps and
++       * stopping always does.
++       *
++       * So the producer was starving the consumer it was waiting for.
++       * Three images never showed it because a slot is nearly always
++       * free and this loop never spins.
++       *
++       * An eighth of a refresh: nothing against a 16.7 ms frame, and
++       * enough to leave the compositor alone. The caller's deadline is
++       * checked at the top of the loop, so a zero timeout still answers
++       * VK_NOT_READY without ever reaching here.
+        */
+-      const uint64_t slice_ns = 2 * WSI_HORIZON_REFRESH_NS;
+-      uint64_t left_ns = slice_ns;
++      uint64_t sleep_ns = WSI_HORIZON_REFRESH_NS / 8;
+       if (timeout_ns != UINT64_MAX) {
+          const uint64_t spent_ns = os_time_get_nano() - start_ns;
+          if (spent_ns >= timeout_ns)
+             return VK_TIMEOUT;
+          const uint64_t budget_ns = timeout_ns - spent_ns;
+-         if (budget_ns < left_ns)
+-            left_ns = budget_ns;
++         if (budget_ns < sleep_ns)
++            sleep_ns = budget_ns;
+       }
+ 
+-      Result erc = eventWait(&chain->window->event, left_ns);
+-      if (R_FAILED(erc) &&
+-          R_VALUE(erc) != MAKERESULT(Module_Kernel, KernelError_TimedOut)) {
+-         mesa_loge("wsi_horizon: waiting for a buffer release failed: "
+-                   "0x%08x", erc);
+-         return VK_ERROR_OUT_OF_DATE_KHR;
+-      }
++      svcSleepThread(sleep_ns);
+    }
+ }
+ 
+-- 
+2.43.0
+

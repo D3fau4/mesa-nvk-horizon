@@ -25,6 +25,7 @@ typedef struct test_ctx {
     int pass;
     int fail;
     FILE *log; /* sdmc log file; may be NULL */
+    char log_path[128];
 } test_ctx;
 
 /* Record one check. Returns `cond` so callers can bail out on failure. */
@@ -34,6 +35,36 @@ bool t_check(test_ctx *t, bool cond, const char *fmt, ...);
 /* Free-form annotation (measurements, decoded errors). */
 __attribute__((format(printf, 2, 3)))
 void t_note(test_ctx *t, const char *fmt, ...);
+
+/* Searches the log written so far for `needle`.
+ *
+ * WHY A TEST WOULD READ ITS OWN LOG. main() dup2s stderr onto this
+ * file, so everything the driver says with mesa_loge, mesa_logw or
+ * vk_errorf is in it, interleaved with the test's own lines. Some of
+ * what a driver reports has no Vulkan representation at all — a memory
+ * object it could not destroy, a teardown it refused — and a test that
+ * cannot see those can only report success beside them. This is how a
+ * check is made out of one.
+ *
+ * TWO OUTCOMES, NOT ONE, AND THAT IS THE POINT. The return value says
+ * whether the scan happened; `*found_out` says what it found. An
+ * earlier version returned only the second, and when the scan could not
+ * be performed at all it answered "not found" — so a run that leaked 33
+ * memory objects and said so in this very file reported
+ * "ok the driver tore down every object it created". A check that
+ * cannot look must not answer.
+ *
+ * Flushes both writers first, so the scan sees everything up to the
+ * call, and reads through the log's own handle rather than opening the
+ * file a second time — the SD card's device layer does not promise a
+ * second handle to a file that is already open for writing, and that
+ * is what the earlier version tripped over.
+ *
+ * `needle` must be shorter than 128 bytes. Not thread-safe against
+ * anything else writing to stderr, because it moves the shared file
+ * offset and puts it back.
+ */
+bool t_log_scan(test_ctx *t, const char *needle, bool *found_out);
 
 extern const char *const test_name;
 int run_test(test_ctx *t);

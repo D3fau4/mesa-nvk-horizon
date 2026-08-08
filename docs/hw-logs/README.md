@@ -5,6 +5,361 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The two logs Phase 6 rests on
+
+`t_nwindow-run11-PASS.log` (118/118) and `t_vk_swapchain-run12-PASS.log`
+(117/117).
+
+**They are two different builds** — `5995c12` and `d41e12a`, eleven minutes and
+one commit apart — and `scripts/package-horizon.sh` refuses to package a
+directory holding two stamps for exactly that reason. Reading them as one body
+of evidence is therefore a claim about two builds, not one, and it is made here
+knowingly: the commit between them (`d41e12a`) touched `STATUS.md`,
+`docs/hw-logs/` and `scripts/package-horizon.sh`, and the only reason
+`t_vk_swapchain` was rebuilt at all is that its driver archive had been stale.
+`t_nwindow`'s binary is byte-identical across the two. Raised in review of
+PR #8, and a fair hit: nothing in the pairing was checked before it was
+narrated.
+
+Between them every Phase 6 exit criterion is measured:
+
+1. **A swapchain presents at the display's rate.** 89 of 89 intervals within
+   10% of 16666 us, mean 16664 us, zero-copy.
+2. **Triple buffering differs from double, in numbers — but read the whole
+   line.** Under the same bursty load, two images pace at **25169 us** against
+   three at **16807 us** through Vulkan (24918 against 16793 through raw
+   `bq*`): double buffering takes 50% longer to deliver the same 90 frames.
+   That is a throughput difference. It is **not** the burst absorption the
+   tests claimed: the same lines report `0 within 10% of 16666 us` for both,
+   and `45 longer than 1.5 refreshes` for both (44 and 44 in `t_nwindow`).
+   Whatever three buffers did, absorbing the bursts is not it. Structurally,
+   3 slots dequeued at once against 2, which stands unqualified.
+3. **Two swapchains coexist over one window and destroy independently.** The
+   superseded one reports `VK_ERROR_OUT_OF_DATE_KHR`; the survivor presents
+   20 of 20 after the other is gone.
+4. **The zero-copy decision is runtime-observable and says why.** Both paths
+   named by the driver through the debug-utils messenger in one run, the copy
+   fallback carrying `zero-copy was declined because
+   MESA_VK_WSI_HORIZON_FORCE_COPY asked for it`.
+
+The layout evidence is separate and human: the operator confirmed the four
+bars, the border, the diagonal and the corner square in run 2, and the pattern
+code has not changed since.
+
+## The first PASS, and a second stale-artefact failure
+
+### `t_nwindow-run11-PASS.log`
+
+**118/118.** The sleep between dequeue rounds is the fix, and this is the log
+that says so:
+
+```
+  ok   2 buffers, interval 1: 90 of 90 frames presented
+  ok   under the same bursty load two buffers pace at least 10% slower than
+       three (24918 us vs 16793 us)
+  note slow lane, 2 buffers: frame 3 dequeued in 2324 us (2 round(s))
+  ok   slow lane, 2 buffers: 10 frames presented with a three-second budget
+       per dequeue (10)
+```
+
+The pacing comparison is Phase 6's second exit criterion in numbers, and it had
+never run in ten attempts. The slow lane went from `frame 2 gave up after
+3000094 us (23192 rounds)` to every frame in ~2.3 ms and two rounds.
+
+### `t_vk_swapchain-run11-STALE-DRIVER-FAIL.log`
+
+114/116, the same two-image failure — **because the driver inside it was three
+days old**. `build/mesa-nvk/src/vulkan/wsi/libvulkan_wsi.a` was dated 5 August;
+patch 0064 was written on the 8th and never reached it. The `.nro` was built
+minutes before shipping and linked against that archive.
+
+The build that should have produced it failed (the Docker daemon was down) and
+said so, but the command running it ended in an unconditional `echo "built"`
+after a filtered pipeline, so the failure was reported as a success.
+
+The packaging staleness gate could not catch it: it asks whether an artefact is
+older than the archives it links, and here the artefact was *newer*. It now
+also asks the other direction — whether any tracked source under `mesa/src` is
+newer than the archives — and refuses to package if one is. Broken in both
+directions before being believed: touching `wsi_horizon.c` fails the gate by
+name, rebuilding passes it again.
+
+The log is kept because what it does show is real: three images at 89 of 89
+intervals inside 10% of a refresh, both present paths, two coexisting
+swapchains, no leak, no exit crash. Only the two-image lines are a measurement
+of the wrong driver.
+
+## We were starving the compositor
+
+### `t_nwindow-run10-applet-starving-the-compositor-FAIL.log`, `t_nwindow-run10-full-memory-identical-FAIL.log`
+
+The first log in which the failing dequeue reports itself instead of being
+inferred from a probe that runs afterwards on a window in a different state:
+
+```
+  note 2 buffers, interval 1: the failing dequeue made 8320 round(s);
+       async=true 490818 us total, last 0x0000115d;
+       async=false 499026 us total, last 0x0000115d
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 146 us
+       (0 refresh(es)), in async=true
+```
+
+Both dequeue modes were reached, both answered `NO_INIT`, and together they
+account for **989 ms of the 1000 ms budget**. The loop had no idle in it: the
+release event is a level, `eventWait` returned at once, and what was left was
+~17000 binder transactions a second into the compositor's own service.
+
+Then, three lines later, `async=true` returned a buffer in **146 us on its
+first attempt** — after failing 8320 times in the second before. The only thing
+that happened in between was a `t_note` writing one line to the SD card. Run 9
+has the same shape with a different pause: `async=false` blocked for 10 ms and
+delivered.
+
+The slow lane closes it. A **three-second** budget changes nothing — 23192
+rounds, same `NO_INIT`, and the two frames that did go through took **171 us
+and 149 us**. More asking never helps; stopping always does.
+
+**The producer was starving the consumer it was waiting for.** Three buffers
+never showed it because a slot is nearly always free and the loop never spins.
+Two buffers spin on every frame. Fixed by sleeping an eighth of a refresh
+between rounds instead of calling `eventWait` on an event that cannot wait —
+in `t_nwindow`, and as patch 0064 in the WSI, which supersedes 0062's slicing.
+
+**Applet mode is not the variable.** The operator ran the same binary in applet
+mode and in title-takeover (full memory) mode. The numbers are the same to
+within noise: 8320 rounds against 8270, 989 ms against 990 ms in binder, 23192
+rounds against 23032 in the slow lane, 146 us against 138 us for the buffer
+that arrives once the asking stops.
+
+## One buffer per second, not one per refresh
+
+### `t_nwindow-run9-one-buffer-per-second-FAIL.log`
+
+The diagnostic asked both dequeue modes every round and printed a time, and the
+failure path used the late buffer instead of returning it. Both two-buffer
+sessions say the same thing:
+
+```
+  note 2 buffers, interval 1: asked for 9 ms in BOTH modes — 1 round(s),
+       release event fired 0 time(s); last async=true 0x0000115d,
+       last async=false 0x00000000
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 9996 us
+       (0 refresh(es)), in async=false
+  note 2 buffers, interval 1: after the late buffer, 1 of 10 further frames
+       presented
+```
+
+Read with the paced dequeue that had just given up one second earlier, that is
+a rate, not a transient. One frame goes through, the next dequeue burns its
+whole second, the probe that follows gets a buffer from `async=false` in ~10
+ms, one more frame goes through, and it repeats. **A two-buffer window on this
+compositor delivers roughly one buffer per second, where a three-buffer window
+delivers one every 16 ms** — the same log has `3 buffers, interval 1: 90 of 90
+frames presented`, mean 16344 us, with 87 of 90 dequeues carrying a release
+fence. Two-buffer sessions carry **zero**.
+
+Two readings still fit the 9996 us, and run 10 separates them: either
+`async=false` blocks and delivers in ~10 ms and the paced loop is not reaching
+it, or a buffer becomes free at about one second and the 10 ms is only how long
+the ask took once it nearly was. So run 10 records what the failing second was
+actually spent on — rounds, cumulative time in each mode, the last result of
+each, from the loop itself rather than from a probe that runs afterwards on a
+window in a different state — and runs ten frames with a **three-second**
+budget, printing every dequeue's duration.
+
+If those come back at ~1 s each, two-buffer FIFO here runs at about 1 Hz and
+`minImageCount = 2` is a promise the driver cannot keep. If they come back at
+~10 ms, the one-second budget was the whole defect.
+
+## async=false does not work at t=0 and does work by t=6 s
+
+### `t_nwindow-run8-both-modes-fail-early-FAIL.log`, `t_vk_swapchain-run8-FAIL.log`
+
+Run 8 carried the fix run 7's evidence pointed at — `nw_dequeue` asks both
+dequeue modes on every iteration — and **the failure did not move**. Two
+buffers still stop at the third frame, in raw `bq*` and through Vulkan alike.
+
+That is not a refutation of `async=false`; it is a much sharper statement of
+the problem, because both logs put the two facts side by side:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 77900 dequeue(s) in libnx's
+       mode, ... last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 134 us
+  FAIL 2 buffers, interval 1: 2 of 90 frames presented
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+`nw_dequeue` had been asking **both** modes for the whole second before that
+diagnostic ran, and both failed for the whole second. Then five seconds of
+`async=true` went by, and one `async=false` succeeded in 134 us. So
+`async=false` does not work at t = 0 and does work by t = 6 s, and a single
+late attempt cannot say which second in between it started working in.
+
+The question is therefore no longer which mode to ask in. It is **when a buffer
+becomes free at all on a two-buffer window**, and whether the window keeps
+going once one does. Both are measured from run 9: the diagnostic asks both
+modes every round and prints the elapsed time and the winning mode, and then
+attempts ten more frames and counts them — a startup transient and a permanent
+stall look identical in every log so far.
+
+## The mode that works
+
+### `t_nwindow-run7-async-false-works-FAIL.log`
+
+Two results, and between them they end a question that cost five hardware runs.
+
+**`async=false` works, immediately, on the window that had just failed:**
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in libnx's
+       mode, release event fired 78165 time(s), last result 0x0000115d
+  note 2 buffers, interval 1: async=false returned 0x00000000 after 145 us
+  ok   2 buffers, interval 1: async=false produced a buffer where libnx's
+       async=true could not, 78166 times running
+```
+
+Twice in the run, 145 us and 158 us, and it did **not** block inside the
+compositor — the one behaviour that could not be ruled out until it was tried.
+
+**And position is ruled out.** The same probe ran before any paced session and
+after all of them; `probe BEFORE, 2 buffers` and `probe AFTER, 2 buffers` both
+get a buffer in ~100 us. Where a session happens in the run is not the
+variable.
+
+The reading is that Android's producer takes `async` to mean "this producer is
+in asynchronous mode" — `queueBuffer` never blocks, older frames are dropped —
+which costs the queue one buffer held in reserve. A two-buffer queue with both
+buffers out cannot spare it. FIFO presentation is synchronous by definition, so
+`async=false` is the mode that describes what a swapchain is doing. Every other
+observation in this file fits: three buffers usually have a free slot, and the
+reconstructed probe drops a frame and frees one, so both answer `async=true`
+without trouble. And the concurrency count says `WOULD_BLOCK` when three slots
+are exhausted but `NO_INIT` when two are — two different conditions, which is
+what "the count ran out" versus "the reserve cannot be met" looks like.
+
+Patch 0061 had this mode and used it wrongly: it asked for it only after an
+`eventWait` that had already spent the entire budget, and never asked
+`async=true` again. Both modes are now asked on every iteration, with 0062's
+slicing keeping any one call from eating the deadline. Patch 0063.
+
+## The release event is not an edge
+
+### `t_nwindow-run6-event-is-not-an-edge-FAIL.log`
+
+The first log in which the diagnostic sat on the *real* failure rather than a
+reconstruction, and it produced the two numbers that rule out everything tried
+so far:
+
+```
+  note 2 buffers, interval 1: asked for 5000 ms — 84328 dequeue(s) in libnx's
+       mode, release event fired 84327 time(s), last result 0x0000115d
+```
+
+**84327 `eventWait` returns in five seconds is 59 us apiece.** The release
+event returns immediately every time, so it is permanently signalled and
+carries no information about a buffer coming back. Waiting on it is a spin —
+in libnx's own `nwindowDequeueBuffer` loop as much as in ours. Every design in
+this project that treated it as "a buffer was released" was treating a level as
+an edge.
+
+**And `async=true` answered `0x115d` (`LibnxBinderError_NoInit`) 84328 times
+running** on that window — while the same call, on the reconstructed probe's
+two-buffer window thirty lines further down the same log, returned a buffer in
+97 us. Two windows in one process, same buffer count, same last three calls,
+opposite answers. The dequeue mode is not the variable and the event is not the
+variable.
+
+Everything else in the run is as good as it has been: 3 buffers 90/90 at mean
+16502 us, 87 of 90 dequeues carrying a compositor-signalled release fence, and
+`t_vk_swapchain-run6-FAIL.log` beside it with 89 of 89 intervals inside 10% of
+a refresh, both present paths, two coexisting swapchains, no leak and no exit
+crash.
+
+## A probe that reported success next to the failure it was built to explain
+
+### `t_nwindow-run5-probe-did-not-reproduce-FAIL.log`
+
+`nw_probe_starvation` was written to answer why a two-buffer window stops at
+the third frame. It built a session that looked like the failing one, handed
+the compositor every buffer, and asked for one back for up to five seconds.
+It reports, at 2 buffers:
+
+```
+  note starvation probe, 2 buffers: 1 dequeue(s) in libnx's mode over 0 ms,
+       release event fired 0 time(s), last result 0x00000000
+  ok   starvation probe, 2 buffers: the compositor handed a buffer back
+       within 5000 ms
+  note starvation probe, 2 buffers: it came back after 104 us
+```
+
+Sixty lines above it in the same file:
+
+```
+  FAIL 2 buffers, interval 1: 2 of 90 frames presented
+  note 2 buffers, interval 1: dequeue failed at frame 2 -> 0x00006359
+```
+
+**The reconstruction never reached the state it was built to examine**, so its
+four `ok` lines are not evidence about the failure. That is the same shape as
+the checks listed under "Superseded runs" below — a green line that measured
+something other than what its text implies — and it is the fourth in this
+project.
+
+The log is still worth reading for two things it did measure. A buffer came
+back to a fully-queued two-buffer window in 104 us **with the release event
+never firing**, which says the compositor can free a slot without signalling —
+so a producer that waits on the event alone will stall where one that probes
+first will not. And the failing result itself, `0x00006359` =
+`MAKERESULT(Module_Libnx, LibnxError_Timeout)`, is the test's own budget
+expiring; the only branch that returns it is the deadline check at the top of
+an iteration, which is reachable only after an `eventWait` **succeeded**. That
+is what located the defect: the loop spent its whole second inside one wait and
+then gave up after a single retry in a dequeue mode nothing on this platform
+uses. Fixed in `t_nwindow` and, as patch 0062, in the WSI.
+
+## Runs that measured the wrong build
+
+### `t_nwindow-run3-STALE-BINARIES.log`, `t_vk_swapchain-run3-STALE-BINARIES.log`
+
+Real console runs, and they measured **nothing that was asked of them**. They
+were run to test patches 0060 and 0061; the `.nro` on the SD card were the
+previous batch's, so what these logs record is the behaviour patches 0060 and
+0061 were written to change, measured again.
+
+They are not copies of the run-2 logs — every timing differs, every heap
+address differs, the syncpoint initial values differ. They are a genuine second
+execution of the same binaries, which is exactly why the first reading of them
+was wrong: a re-run of unchanged code looks like a fix that did nothing.
+
+What gave it away was luck. Mesa's `vk_logi` prints `__FILE__` and `__LINE__`,
+and
+
+```
+../src/vulkan/wsi/wsi_horizon.c:1781: the swapchain presents zero-copy
+```
+
+names line 1781 while the source that was meant to be running has that call at
+1805. Nothing else in either log distinguishes one build from another.
+
+Fixed in `d75f7b8`: every test now prints its build stamp as the second line of
+its log —
+
+```
+  note horizon-build-id 2026-08-05T14:31:36Z e0bb31f
+```
+
+— the stamp is regenerated on every build in both build paths, the packaging
+manifest reads it back out of the `.nro` and refuses a directory holding more
+than one, and the run instructions say which stamp to expect. From run 4
+onwards a log whose stamp is not the expected one says so in its own first
+lines.
+
+Nothing in these two files should be quoted as a measurement of the current
+driver. What they do still show, being a second sample of the run-2 build, is
+that run 2's failures are reproducible rather than one-off: `live mem=33` on
+teardown, and the two-buffer sessions dying at frame 2.
+
 ## Superseded runs
 
 A `-PASS` in a filename means the run reported PASS. It does **not** mean every

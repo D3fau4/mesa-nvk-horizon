@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From be58763667cbf3bd4c47b534037cf655168b064e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 17:48:56 +0000
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, the reservation's size does not
- pick its page half
+Subject: [PATCH 34/61] nouveau/vk: nvkmd_horizon, the reservation's size does
+ not pick its page half
 
 horizon_gpu_vm_map uses the reservation's page size for every mapping
 inside it: both offsets must be aligned to it, and the size is rounded
@@ -137,3 +137,6 @@ index 9376eb9..2c2c4b1 100644
      */
     if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
        page_size = big;
+-- 
+2.43.0
+

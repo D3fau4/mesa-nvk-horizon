@@ -1,0 +1,69 @@
+== t_vk_caps ==
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x5d79136720: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x5d79136720: up, syncpt=26 initial=70856 zcull=off
+[horizon_gpu:I] channel 0x5d79187010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x5d79187010: up, syncpt=27 initial=2017 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   vkEnumerateDeviceExtensionProperties (count) -> VK_SUCCESS
+  ok   the device advertises 171 extension(s)
+  ok   room for 171 extension names
+  ok   vkEnumerateDeviceExtensionProperties (list) -> VK_SUCCESS
+  ok   VK_KHR_external_memory_fd is not advertised — has_dma_buf is false: there is no dma-buf and no DRM to carry one
+  ok   VK_EXT_external_memory_dma_buf is not advertised — has_dma_buf is false
+  ok   VK_EXT_map_memory_placed is not advertised — has_map_fixed is false: NvMap hands back a CPU address of its own
+  ok   VK_EXT_image_drm_format_modifier is advertised — has_alloc_tiled is true, and this is the gate letting one through
+  ok   no sparse feature is advertised — has_sparse is false, and patch 0029 made these follow it rather than the 3D class
+  ok   vkCreateBuffer(0x4400) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4400, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   the driver offers 7 DRM format modifier(s) for R8G8B8A8_UNORM
+  ok   room for 7 modifier(s)
+  note modifier 0x3000000000fe015: 1 plane(s), features 0x0001dd83
+  note modifier 0x3000000000fe014: 1 plane(s), features 0x0001dd83
+  note modifier 0x3000000000fe013: 1 plane(s), features 0x0001dd83
+  note modifier 0x3000000000fe012: 1 plane(s), features 0x0001dd83
+  note modifier 0x3000000000fe011: 1 plane(s), features 0x0001dd83
+  note modifier 0x3000000000fe010: 1 plane(s), features 0x0001dd83
+  note modifier 0x0: 1 plane(s), features 0x0001dd83
+  ok   DRM_FORMAT_MOD_LINEAR can be a colour attachment — the only path in Vulkan that reaches nvkmd_dev_alloc_tiled_mem
+  ok   a linear-modifier colour attachment is supported -> VK_SUCCESS
+  ok   vkCreateImage(DRM_FORMAT_MOD_LINEAR, colour attachment) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  note the linear image itself wants 0x4000 bytes, align 0x80
+  ok   vkAllocateMemory(linear image) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkCreateImageView -> VK_SUCCESS
+  ok   linear modifier: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   linear modifier: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   linear modifier: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   linear modifier: vkCreateGraphicsPipelines -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(render into a linear-modifier image) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(render into a linear-modifier image) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   every texel of the linear image holds what the tiled shadow rendered: 4096/4096 words are 0xff996633 (all of them)
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+RESULT: PASS (52/52)

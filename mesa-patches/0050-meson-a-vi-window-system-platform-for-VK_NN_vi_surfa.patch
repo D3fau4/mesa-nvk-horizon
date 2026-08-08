@@ -1,0 +1,80 @@
+From ddbb934d83779a349e66ff2b08dbc888af2f0fbb Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:06:20 +0000
+Subject: [PATCH 50/61] meson: a 'vi' window-system platform for
+ VK_NN_vi_surface
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 1 (Swapchain with no global state)
+Why: Horizon's window system is VI, reached through libnx's NWindow.
+ Vulkan's surface type for it is VK_NN_vi_surface, whose declarations in
+ vulkan_vi.h and whose VkIcdSurfaceVi in vk_icd.h are both behind
+ VK_USE_PLATFORM_VI_NN, and whose entry point vkCreateViSurfaceNN is
+ generated from vk.xml only when that macro is defined. There was no
+ -Dplatforms value that defines it, so no build of Mesa could contain a
+ VI surface at all.
+Evidence: mesa/src/vulkan/registry/vk.xml:22559 declares VK_NN_vi_surface
+ with platform="vi"; mesa/include/vulkan/vk_icd.h:226 puts VkIcdSurfaceVi
+ behind VK_USE_PLATFORM_VI_NN; and `grep -rn VK_USE_PLATFORM_VI_NN
+ src/vulkan` at mesa-26.1.5 finds nothing that defines it. Configuring
+ this tree with -Dplatforms=vi before this patch fails at
+ meson.options:14 with "platforms is not one of the choices".
+Upstream: yes — it adds a platform the registry already describes, and
+ defines nothing conditional on Horizon. 'vi' is never selected by
+ 'auto': no host_machine.system() maps to it, so it must be asked for.
+---
+ meson.build            | 4 ++++
+ meson.options          | 2 +-
+ src/vulkan/meson.build | 6 ++++++
+ 3 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index 013889c..e387685 100644
+--- a/meson.build
++++ b/meson.build
+@@ -472,6 +472,10 @@ with_platform_wayland = _platforms.contains('wayland')
+ with_platform_haiku = _platforms.contains('haiku')
+ with_platform_windows = _platforms.contains('windows')
+ with_platform_macos = _platforms.contains('macos')
++# Never reached by 'auto': there is no host_machine.system() that selects
++# it, so it is always asked for explicitly. VK_NN_vi_surface is the
++# Vulkan surface type for Horizon's VI compositor.
++with_platform_vi = _platforms.contains('vi')
+ 
+ with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
+ if with_gfxstream_emulated_android
+diff --git a/meson.options b/meson.options
+index db48653..099120b 100644
+--- a/meson.options
++++ b/meson.options
+@@ -12,7 +12,7 @@ option(
+   type : 'array',
+   value : ['auto'],
+   choices : [
+-    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
++    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos', 'vi',
+   ],
+   description : 'window systems to support. If this is set to `auto`, all ' +
+                 'platforms applicable will be enabled.'
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 614a33a..81a7bfb 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -68,6 +68,12 @@ endif
+ if with_platform_windows
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_WIN32_KHR'
+ endif
++if with_platform_vi
++  # No dependency to add: the platform's window system is libnx, which
++  # the driver already links, and vulkan_vi.h needs nothing but the
++  # define to expose VK_NN_vi_surface.
++  vulkan_wsi_list += '-DVK_USE_PLATFORM_VI_NN'
++endif
+ if with_platform_macos
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_MACOS_MVK'
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_METAL_EXT'
+-- 
+2.43.0
+

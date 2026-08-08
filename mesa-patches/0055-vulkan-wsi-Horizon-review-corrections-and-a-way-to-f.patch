@@ -1,0 +1,466 @@
+From 5c2714b730f87ef44a2b1e32886b093f7d871bf2 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:42:04 +0000
+Subject: [PATCH 55/61] vulkan/wsi: Horizon, review corrections and a way to
+ force the copy path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 items 4, 5, 8, 9 (recreation, zero-copy,
+ fences, resize)
+Why: a review of patch 0053 before any console run found seven things,
+ and they are here rather than folded into it because a correction to an
+ applied patch is a change with no record of what was believed first.
+
+ 1. THE RESIZE CHECK COULD NOT FIRE. It compared the swapchain's extent
+    against nwindowGetDimensions, which returns NWindow::width when it
+    is set — and this backend is what sets it, at creation. It was
+    comparing the extent with itself. The consumer's own answer is
+    NWindow::default_*, which libnx fills from the BufferQueue's output
+    at connect and at every queue; the zero-copy path now records
+    BqBufferOutput::width/height from each queue and the copy path picks
+    up what libnx recorded, and a change in either turns the next
+    acquire into VK_ERROR_OUT_OF_DATE_KHR. Docking the console, which
+    makes the display 1920x1080, is what exercises it.
+ 2. Surface capabilities read the same wrong field, so a swapchain
+    created after a mode change would have been given the previous
+    swapchain's extent.
+ 3. EVICTING A SWAPCHAIN CANCELLED SLOTS THE APPLICATION STILL HELD.
+    nwindowReleaseBuffers disconnects the producer, which frees every
+    slot the BufferQueue believes it holds; cancelling first additionally
+    handed back buffers the application was still rendering into. It now
+    marks the old swapchain non-presentable, disconnects, and brings its
+    own bookkeeping into line. Teardown cancels only while this
+    swapchain still owns the window.
+ 4. chain->zero_copy was set before the attempt rather than after it
+    succeeded, so a fallback reached by any path that did not set it
+    again would have run the zero-copy present code with no registered
+    buffers.
+ 5. The copy fallback's acquire returned VK_TIMEOUT for an infinite
+    timeout, which the spec forbids — a timeout that cannot have
+    happened. It now says VK_ERROR_OUT_OF_DATE_KHR and names what the
+    application did. Same for a release-fence wait that fails on an
+    infinite acquire.
+ 6. With no get_fence callback at all the present queued the buffer with
+    no fence and no wait, which is a half-drawn frame on screen and
+    exactly the silent-success class this backend exists to avoid. A
+    missing callback now takes the same CPU wait a late submit does.
+ 7. wsi_horizon_image_info::gob_height_8 was a name for the wrong fact.
+    What matters is not the GOB's height but the sector ordering inside
+    it, which is the driver's to know and the WSI's to act on;
+    gob_layout_is_display says that.
+ And force_swapchain_to_currentExtent is set for this platform, so the
+ common WSI clamps an application's imageExtent to the window's rather
+ than leaving the backend to refuse a swapchain over a difference the
+ application could not have avoided.
+
+ The eighth change is not a correction: MESA_VK_WSI_HORIZON_FORCE_COPY
+ asks for the copy fallback on purpose. Phase 6's fourth exit criterion
+ wants the zero-copy decision to be observable at run time, and a
+ decision that can only ever come out one way on working hardware is a
+ constant rather than a decision. With this set the same application
+ takes the other path and can be measured against itself, which is what
+ t_vk_swapchain's last section does.
+Evidence: cross build of build/mesa-nvk with -Dplatforms=vi. Findings 1
+ and 2 are read off libnx's native_window.c: nwindowGetDimensions
+ returns `nw->width ? nw->width : nw->default_width`, and
+ nwindowSetDimensions is what sets nw->width — which this backend calls
+ in wsi_horizon_register_images. NOT RUN ON A CONSOLE.
+Upstream: no.
+---
+ src/nouveau/vulkan/nvk_wsi.c |   8 ++
+ src/vulkan/wsi/wsi_horizon.c | 221 ++++++++++++++++++++++++++---------
+ 2 files changed, 177 insertions(+), 52 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
+index bc7c93c..bb06cc6 100644
+--- a/src/nouveau/vulkan/nvk_wsi.c
++++ b/src/nouveau/vulkan/nvk_wsi.c
+@@ -54,6 +54,14 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
+ #ifdef VK_USE_PLATFORM_VI_NN
+    pdev->wsi_device.horizon.get_image_info = nvk_wsi_get_image_info;
+    pdev->wsi_device.horizon.get_fence = nvk_wsi_get_fence;
++
++   /* The window's size is the compositor's to choose and every buffer
++    * registered on it must match, so the surface reports a fixed
++    * currentExtent. This makes the common WSI clamp an application's
++    * imageExtent to it rather than leaving the backend to refuse a
++    * swapchain over a difference the application could not have
++    * avoided. */
++   pdev->wsi_device.force_swapchain_to_currentExtent = true;
+ #endif
+ 
+    pdev->vk.wsi_device = &pdev->wsi_device;
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 1fe9268..834fe8a 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -50,6 +50,7 @@
+ #include "util/log.h"
+ #include "util/macros.h"
+ #include "util/os_time.h"
++#include "util/u_debug.h"
+ #include "vk_instance.h"
+ #include "vk_log.h"
+ #include "vk_physical_device.h"
+@@ -272,20 +273,37 @@ wsi_horizon_surface_get_support(VkIcdSurfaceBase *surface,
+    return VK_SUCCESS;
+ }
+ 
+-/* The window's current size, which is also the only size a swapchain
+- * over it may have: nwindowSetDimensions refuses to change it while
+- * buffers are registered, and every registered buffer must match. */
++/* The size the COMPOSITOR says this window is, which is also the only
++ * size a swapchain over it may have: nwindowSetDimensions refuses to
++ * change the window while buffers are registered, and every registered
++ * buffer must match.
++ *
++ * NOT nwindowGetDimensions, and the difference matters. That returns
++ * NWindow::width when it is set, which is whatever the last
++ * nwindowSetDimensions asked for — and this backend is what calls it,
++ * so asking would be reading back our own request. NWindow::default_*
++ * is the consumer's answer: libnx fills it from the BufferQueue's
++ * output at connect and at every queue. It is what changes when the
++ * console is docked and the display becomes 1920x1080.
++ */
+ static VkResult
+ wsi_horizon_get_extent(VkIcdSurfaceBase *surface, VkExtent2D *extent)
+ {
+    NWindow *win = wsi_horizon_window(surface);
+-   u32 width = 0, height = 0;
+-
+-   Result rc = nwindowGetDimensions(win, &width, &height);
+-   if (R_FAILED(rc)) {
+-      mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
+-      return VK_ERROR_SURFACE_LOST_KHR;
++   u32 width = win->default_width;
++   u32 height = win->default_height;
++
++   if (width == 0 || height == 0) {
++      /* Nothing has been queued yet and the connect told us nothing.
++       * Fall back on the window's own answer, which is what t_display
++       * measured as 1280x720 on this hardware. */
++      Result rc = nwindowGetDimensions(win, &width, &height);
++      if (R_FAILED(rc)) {
++         mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
++         return VK_ERROR_SURFACE_LOST_KHR;
++      }
+    }
++
+    if (width == 0 || height == 0)
+       return VK_ERROR_SURFACE_LOST_KHR;
+ 
+@@ -537,6 +555,10 @@ struct wsi_horizon_swapchain {
+    NWindow *window;
+ 
+    VkExtent2D extent;
++   /* The size the consumer last said this window is. Updated from every
++    * queue; a change is what turns the next acquire into
++    * VK_ERROR_OUT_OF_DATE_KHR. */
++   VkExtent2D reported;
+    const struct wsi_horizon_format *format;
+    uint32_t swap_interval;
+ 
+@@ -795,14 +817,20 @@ wsi_horizon_claim_window(struct wsi_horizon_swapchain *chain)
+    struct wsi_horizon_swapchain *prev = surface->owner;
+    if (prev != NULL && prev != chain) {
+       /* Vulkan created this swapchain before destroying that one, which
+-       * is exactly what oldSwapchain means. Its slots go back to the
+-       * compositor first — the reference only cleared a `busy` flag,
+-       * which leaks every dequeued slot from the BufferQueue's point of
+-       * view — and then it stops being presentable, so its next present
+-       * says VK_ERROR_OUT_OF_DATE_KHR instead of writing into buffers
+-       * this swapchain now owns.
++       * is exactly what oldSwapchain means. The old one stops being
++       * presentable first, so any present that races this reports
++       * VK_ERROR_OUT_OF_DATE_KHR rather than writing into a buffer this
++       * swapchain now owns.
++       *
++       * Its slots are NOT cancelled one by one. nwindowReleaseBuffers
++       * disconnects the producer, which frees every slot the
++       * BufferQueue believes it holds — including the ones the
++       * application still has acquired, whose VkImages stay valid until
++       * vkDestroySwapchainKHR and whose presents are now refused. A
++       * per-slot cancel here would additionally hand back buffers the
++       * application is still rendering into, which is a worse race than
++       * the one it would prevent.
+        */
+-      wsi_horizon_release_slots(prev);
+       prev->presentable = false;
+ 
+       Result rc = nwindowReleaseBuffers(prev->window);
+@@ -810,6 +838,15 @@ wsi_horizon_claim_window(struct wsi_horizon_swapchain *chain)
+          mesa_logw("wsi_horizon: nwindowReleaseBuffers on the previous "
+                    "swapchain failed: 0x%08x", rc);
+       }
++
++      /* The disconnect took them; this is the bookkeeping catching up,
++       * so teardown does not try to cancel a slot the window no longer
++       * has. */
++      for (uint32_t i = 0; i < prev->image_count; i++) {
++         prev->images[i].state = WSI_HORIZON_SLOT_FREE;
++         prev->images[i].have_release_fence = false;
++      }
++      prev->slots_requested = 0;
+    }
+ 
+    surface->owner = chain;
+@@ -898,21 +935,35 @@ wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain)
+       }
+       image->state = WSI_HORIZON_SLOT_FREE;
+       image->have_release_fence = false;
+-      image->base.acquired = false;
++      /* wsi_image::acquired is Mesa's own bookkeeping and is left
++       * alone: the application still holds this VkImage, and
++       * wsi_common_queue_present asserts on that flag before it reaches
++       * this backend's queue_present, which is where the present is
++       * refused with VK_ERROR_OUT_OF_DATE_KHR. */
+    }
+ }
+ 
+ /* ---- acquire ----------------------------------------------------- */
+ 
+-/* True when the window has changed size under the swapchain. Checked at
+- * every acquire, which is where Vulkan expects to hear about it. */
++/* True when the compositor has changed the window's size under the
++ * swapchain. Checked at every acquire, which is where Vulkan expects to
++ * hear about it.
++ *
++ * `reported` is the consumer's own answer, not ours: every queue comes
++ * back with the size the BufferQueue believes the window is, and this
++ * backend records it there. Comparing against nwindowGetDimensions
++ * instead would compare the swapchain's extent with the value this
++ * backend itself wrote into the window at creation, which can never
++ * differ — a resize check that cannot fire.
++ */
+ static bool
+ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+ {
+-   u32 width = 0, height = 0;
+-   Result rc = nwindowGetDimensions(chain->window, &width, &height);
+-   if (R_FAILED(rc))
+-      return true;
++   const uint32_t width = chain->reported.width;
++   const uint32_t height = chain->reported.height;
++
++   if (width == 0 || height == 0)
++      return false;   /* nothing has reported a size yet */
+ 
+    return width != chain->extent.width || height != chain->extent.height;
+ }
+@@ -986,7 +1037,12 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+                bqCancelBuffer(&chain->window->bq, slot, &image->release_fence);
+                image->state = WSI_HORIZON_SLOT_FREE;
+                image->have_release_fence = false;
+-               return VK_TIMEOUT;
++               /* VK_TIMEOUT only where a timeout can have happened. An
++                * infinite wait that came back failed for some other
++                * reason, and saying "timed out" about it would be a
++                * result the caller cannot act on. */
++               return timeout_ns == UINT64_MAX ? VK_ERROR_OUT_OF_DATE_KHR
++                                               : VK_TIMEOUT;
+             }
+          }
+ 
+@@ -1050,11 +1106,25 @@ wsi_horizon_acquire_fallback(struct wsi_horizon_swapchain *chain,
+       return VK_SUCCESS;
+    }
+ 
+-   /* Every image is already with the application. Nothing this backend
+-    * does will change that — only a present will — so blocking would be
+-    * a deadlock rather than a wait, and the answer is the truthful one
+-    * whatever the timeout says. */
+-   return timeout_ns == 0 ? VK_NOT_READY : VK_TIMEOUT;
++   /* Every image is already with the application. On this path the only
++    * thing that frees one is a present by the application itself, so
++    * blocking here would be a deadlock and not a wait.
++    *
++    * VK_TIMEOUT is the answer for a finite deadline. For UINT64_MAX it
++    * would be a lie — the spec forbids reporting a timeout that cannot
++    * have happened — so an infinite wait gets VK_ERROR_OUT_OF_DATE_KHR
++    * and a line saying what the application did: it acquired more
++    * images than VkSurfaceCapabilitiesKHR::minImageCount allows it to
++    * hold, which the copy fallback has no spare buffer to absorb. */
++   if (timeout_ns == 0)
++      return VK_NOT_READY;
++   if (timeout_ns != UINT64_MAX)
++      return VK_TIMEOUT;
++
++   mesa_loge("wsi_horizon: every image of this swapchain is acquired and "
++             "the copy fallback frees one only at present; blocking here "
++             "would deadlock");
++   return VK_ERROR_OUT_OF_DATE_KHR;
+ }
+ 
+ static VkResult
+@@ -1147,23 +1217,29 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+    bool have_fence = false;
+ 
+    const VkFence render_fence = chain->base.fences[image_index];
+-   if (render_fence != VK_NULL_HANDLE && wsi->horizon.get_fence != NULL) {
++   if (render_fence != VK_NULL_HANDLE) {
++      VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
+       struct wsi_horizon_fence f = { 0 };
+-      const uint64_t deadline =
+-         os_time_get_absolute_timeout(WSI_HORIZON_FENCE_SUBMIT_TIMEOUT_NS);
+ 
+-      VkResult result = wsi->horizon.get_fence(chain->base.device,
+-                                               render_fence, deadline, &f);
++      if (wsi->horizon.get_fence != NULL) {
++         const uint64_t deadline =
++            os_time_get_absolute_timeout(WSI_HORIZON_FENCE_SUBMIT_TIMEOUT_NS);
++         result = wsi->horizon.get_fence(chain->base.device, render_fence,
++                                         deadline, &f);
++      }
++
+       if (result == VK_SUCCESS && f.valid) {
+          NvFence nv_fence = { .id = f.syncpt_id, .value = f.threshold };
+          nvMultiFenceCreate(&multi_fence, &nv_fence);
+          have_fence = true;
+       } else if (result != VK_SUCCESS) {
+-         /* The submit had not reached a channel within the deadline, so
+-          * there is no fence to hand over. Waiting for the render on
+-          * the CPU is the only correct thing left — presenting without
+-          * either would show a half-drawn frame — and it is said once
+-          * rather than every frame. */
++         /* No fence to hand over: either the driver cannot produce one
++          * or the submit had not reached a channel within the deadline.
++          * Waiting for the render on the CPU is then the only correct
++          * thing left — queueing with neither would put a half-drawn
++          * frame on screen, which is the class of silent failure this
++          * backend exists to avoid — and it is said once rather than
++          * every frame. */
+          if (!chain->warned_about_cpu_wait) {
+             chain->warned_about_cpu_wait = true;
+             vk_logw(VK_LOG_OBJS(&chain->base.base),
+@@ -1177,8 +1253,8 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+             return result;
+       }
+       /* result == VK_SUCCESS && !f.valid: the submit signalled nothing
+-       * that needs waiting on. Queue with no fence, which is correct
+-       * rather than a fall-through. */
++       * that needs waiting on — queue with no fence, which is an answer
++       * and not a fall-through. */
+    }
+ 
+    BqBufferInput in;
+@@ -1199,10 +1275,15 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+    image->state = WSI_HORIZON_SLOT_QUEUED;
+    image->have_release_fence = false;
+ 
+-   /* The consumer's own view of how far behind it is. Kept because it
+-    * is the only compositor-side number a producer can see, and the
+-    * window's dimensions may have changed with it. */
+-   chain->window->consumer_running_behind = out.numPendingBuffers > 1;
++   /* The size the consumer believes this window is, straight from the
++    * queue that just happened. It is the only place a producer hears
++    * about a display mode change — docking the console makes it
++    * 1920x1080 — and the next acquire turns a change into
++    * VK_ERROR_OUT_OF_DATE_KHR. */
++   if (out.width != 0 && out.height != 0) {
++      chain->reported.width = out.width;
++      chain->reported.height = out.height;
++   }
+ 
+    return VK_SUCCESS;
+ }
+@@ -1264,6 +1345,15 @@ wsi_horizon_present_fallback(struct wsi_horizon_swapchain *chain,
+     * queues the buffer. It is where the fallback's cost lives. */
+    framebufferEnd(&chain->fb);
+ 
++   /* framebufferEnd goes through nwindowQueueBuffer, which updates the
++    * window's default_* from the queue's output. Same signal as the
++    * zero-copy path records for itself. */
++   if (chain->window->default_width != 0 &&
++       chain->window->default_height != 0) {
++      chain->reported.width = chain->window->default_width;
++      chain->reported.height = chain->window->default_height;
++   }
++
+    image->state = WSI_HORIZON_SLOT_FREE;
+    return VK_SUCCESS;
+ }
+@@ -1308,9 +1398,15 @@ wsi_horizon_swapchain_destroy(struct wsi_swapchain *wsi_chain,
+    struct wsi_horizon_swapchain *chain =
+       (struct wsi_horizon_swapchain *)wsi_chain;
+ 
+-   /* Reverse order of creation. Slots first, because the window cannot
+-    * be released while the producer still holds one. */
+-   wsi_horizon_release_slots(chain);
++   /* Reverse order of creation. Slots first, because the producer must
++    * not still hold one when the window is released — and only while
++    * this swapchain is still the owner: if a later one evicted it, the
++    * window has already been disconnected and every slot with it. */
++   simple_mtx_lock(&chain->surface->lock);
++   const bool still_owner = chain->surface->owner == chain;
++   simple_mtx_unlock(&chain->surface->lock);
++   if (still_owner)
++      wsi_horizon_release_slots(chain);
+ 
+    if (chain->fb_created) {
+       framebufferClose(&chain->fb);
+@@ -1498,6 +1594,10 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    chain->surface = surface;
+    chain->window = (NWindow *)surface->icd.window;
+    chain->extent = extent;
++   /* Starts as the size the swapchain was built for, so the resize
++    * check compares like with like until the first queue reports one.
++    */
++   chain->reported = extent;
+    chain->format = format;
+    chain->image_count = image_count;
+ 
+@@ -1533,8 +1633,19 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+     * ones: block-linear and device-local for scanout, linear with a
+     * host-visible blit buffer for a copy. */
+    const char *why = NULL;
++   const char *fb_why = NULL;
+    bool zero_copy_wanted = true;
+ 
++   /* The fallback, on purpose. Phase 6's fourth exit criterion asks for
++    * the zero-copy decision to be observable at run time; a decision
++    * that can only ever come out one way on working hardware is not
++    * observable, it is a constant. With this set, the same application
++    * takes the other path and can be measured against itself. */
++   if (debug_get_bool_option("MESA_VK_WSI_HORIZON_FORCE_COPY", false)) {
++      zero_copy_wanted = false;
++      why = "MESA_VK_WSI_HORIZON_FORCE_COPY asked for it";
++   }
++
+    for (uint32_t attempt = 0; attempt < 2; attempt++) {
+       const bool try_zero_copy = (attempt == 0) && zero_copy_wanted;
+ 
+@@ -1572,19 +1683,25 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       }
+ 
+       if (result == VK_SUCCESS) {
+-         chain->zero_copy = try_zero_copy;
+          if (try_zero_copy) {
+             if (wsi_horizon_try_zero_copy(chain, &why)) {
++               /* Set only once it has worked. Setting it before the
++                * attempt would leave it true through the fallback if
++                * anything below jumped straight out. */
++               chain->zero_copy = true;
+                chain->decision =
+                   "zero-copy: the swapchain images are the scanout buffers";
+                goto done;
+             }
+          } else {
+-            if (wsi_horizon_init_fallback(chain, &why)) {
+-               chain->decision = why != NULL ? why :
+-                  "copy fallback: no reason was recorded";
++            if (wsi_horizon_init_fallback(chain, &fb_why)) {
++               chain->zero_copy = false;
++               chain->decision =
++                  "copy fallback: the rendered image is copied into a "
++                  "framebuffer the compositor owns";
+                goto done;
+             }
++            why = fb_why;
+             /* The fallback failed too; there is nothing below it. */
+             goto fail_images;
+          }
+-- 
+2.43.0
+

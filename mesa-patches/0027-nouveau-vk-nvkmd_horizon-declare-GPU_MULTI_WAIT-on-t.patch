@@ -1,7 +1,7 @@
-From c743ee8235c2ab974014297b7e54aa563c13e3ad Mon Sep 17 00:00:00 2001
+From 0cda10e9765cb8c1785ce46d476dfcd0b98bc42b Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 14:47:44 +0000
-Subject: [PATCH 27/30] nouveau/vk: nvkmd_horizon, declare GPU_MULTI_WAIT on
+Subject: [PATCH 27/61] nouveau/vk: nvkmd_horizon, declare GPU_MULTI_WAIT on
  the sync type
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,0 +1,61 @@
+From d8d789fa401e8bd8ec8d0664e2a73b2a697350b9 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 09:57:37 +0000
+Subject: [PATCH 49/61] vulkan/wsi: size the platform table from the last
+ enumerator
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 1 (Swapchain with no global state)
+Why: wsi_device::wsi[] and ::supports_protected[] are indexed by
+ VkIcdSurfaceBase::platform, which is whatever the backend that created
+ the surface put there. The bound was VK_ICD_WSI_PLATFORM_METAL + 1 = 11,
+ while VkIcdWsiPlatform runs to VK_ICD_WSI_PLATFORM_FUCHSIA = 15. A
+ backend at any index above METAL — DIRECTFB, VI, GGP, SCREEN, FUCHSIA —
+ writes past both arrays in its init_wsi, and every
+ wsi[surface->platform] lookup for one of its surfaces reads past them.
+ Horizon's backend is VK_ICD_WSI_PLATFORM_VI = 12.
+Evidence: VK_ICD_WSI_PLATFORM_VI is 12 and the array had 11 entries
+ (mesa/include/vulkan/vk_icd.h:104-121 against
+ mesa/src/vulkan/wsi/wsi_common.h:56 at mesa-26.1.5). Measured by
+ building the Horizon backend against the old bound: the assignment
+ wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI] = &wsi->base compiles and
+ stores one pointer past wsi_device::wsi, on top of
+ wsi_device::pdevice's neighbouring fields.
+Upstream: yes — it is a latent out-of-bounds for any platform above
+ METAL and the fix names no platform, it names the enum's own end.
+---
+ src/vulkan/wsi/wsi_common.h | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index 8c9f1f1..196d17d 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -52,7 +52,21 @@ struct vk_queue;
+ 
+ struct driOptionCache;
+ 
+-#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
++/* Sized from the LAST enumerator of VkIcdWsiPlatform, not from the last
++ * platform Mesa happens to implement today.
++ *
++ * wsi_device::wsi and wsi_device::supports_protected are indexed by
++ * VkIcdSurfaceBase::platform in wsi_common.c — a value that comes from
++ * the surface, i.e. from whichever backend created it. A backend
++ * registering itself at an index above the bound writes past both
++ * arrays, and every read of wsi[surface->platform] for such a surface is
++ * out of bounds too. Deriving the bound from METAL made that true for
++ * DIRECTFB, VI, GGP, SCREEN and FUCHSIA, which are simply the
++ * enumerators that come after it.
++ *
++ * The cost is five pointers and five bools per wsi_device.
++ */
++#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_FUCHSIA + 1)
+ 
+ struct wsi_device {
+    /* Allocator for the instance */
+-- 
+2.43.0
+

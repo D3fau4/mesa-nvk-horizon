@@ -42,6 +42,209 @@ else
     exit 1
 fi
 
+
+# STALENESS GATE: an artefact older than what it links is not this
+# build's artefact.
+#
+# This manifest exists to attribute a .nro to one exact build, and a
+# copy step that only looks at content cannot tell a current binary from
+# one linked against the previous driver. The failure it is here to stop
+# was real: scripts/build-mesa-nvk.sh built the tests BEFORE it built
+# the archives they link, so every packaged Vulkan test was one driver
+# build behind and the manifest said nothing about it.
+#
+# Compared by modification time against the NVK archives, and only for
+# the tests that link them — meson.build's own nvk_tests list, read
+# here rather than guessed from a name prefix, so a test added there is
+# covered without anyone remembering this file. The horizon_gpu tests
+# link none of it and are legitimately older.
+#
+# A tree with no NVK build has nothing to compare against and this says
+# so rather than passing quietly.
+_nvk_dir="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
+_nvk_tests=$(sed -n '/^nvk_tests = \[/,/^]/p' meson.build |
+             grep -o "'t_[a-z_0-9]*'" | tr -d "'")
+if [ -z "$_nvk_tests" ]; then
+    echo "error: no nvk_tests list found in meson.build; the staleness" \
+         "gate cannot tell which artefacts link the driver, and a gate" \
+         "that checks nothing must not report success" >&2
+    exit 1
+fi
+# AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN.
+#
+# The check below asks whether an artefact is older than the archives it
+# links. It cannot ask whether those archives are older than the source
+# they were built from — and on 2026-08-08 that is exactly what shipped:
+# a t_vk_swapchain.nro built minutes earlier, linked against a
+# libvulkan_wsi.a from three days before, missing the one patch the run
+# was meant to test. The .nro was newer than the archive, so the gate
+# below passed with nothing to say.
+#
+# The build had failed and said so; the command that ran it printed
+# "built" regardless, because an unconditional echo followed a filtered
+# pipeline. A gate is the answer to that, not more care.
+#
+# AGAINST THE BUILD'S OWN SUCCESS STAMP, not against an archive. The
+# first version of this compared every file under mesa/src with
+# libvulkan_wsi.a, and that is wrong in the ordinary case: Ninja does
+# not touch an archive whose inputs did not change, so editing anything
+# outside WSI leaves libvulkan_wsi.a older than the source that was just
+# correctly compiled, and a good build reads as stale. Reported by
+# Codex on PR #8, and right.
+#
+# scripts/build-mesa-nvk.sh touches .horizon-build-ok as its last act,
+# under `set -e`, so the stamp exists only if every step succeeded and
+# is newer than everything that run compiled.
+_stamp="$_nvk_dir/.horizon-build-ok"
+if [ -d mesa/src ]; then
+    if [ ! -f "$_stamp" ]; then
+        echo "error: $_stamp does not exist, so no complete" \
+             "scripts/build-mesa-nvk.sh run has produced the archives in" \
+             "$_nvk_dir. Run it and package again." >&2
+        exit 1
+    fi
+    _newer_src=$(find mesa/src -type f \( -name '*.c' -o -name '*.h' \
+                      -o -name '*.rs' -o -name '*.build' \) \
+                 -newer "$_stamp" 2>/dev/null | head -5)
+    if [ -n "$_newer_src" ]; then
+        echo "error: these Mesa sources are newer than the last successful" \
+             "build ($_stamp):" >&2
+        echo "$_newer_src" | sed 's/^/         /' >&2
+        echo "       The archives do not contain them, so every" \
+             "driver-linked artefact here is built against source that is" \
+             "no longer what the tree says. Run" \
+             "scripts/build-mesa-nvk.sh and package again." >&2
+        exit 1
+    fi
+fi
+
+# BOTH ARCHIVES, NOT WHICHEVER SURVIVED. A partial build that leaves
+# only one of them used to be accepted: the loop below `continue`d past
+# the missing one, the "no NVK archives" branch did not fire either, and
+# an old .nro could be validated against libnvk.a alone while also
+# linking WSI. Reported by Codex on PR #8.
+_required_libs="$_nvk_dir/src/nouveau/vulkan/libnvk.a
+$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"
+_missing=""
+for _lib in $_required_libs; do
+    [ -f "$_lib" ] || _missing="$_missing $_lib"
+done
+if [ -n "$_missing" ] && [ -f "$_stamp" ]; then
+    echo "error: a successful build is recorded but these archives the" \
+         "tests link are missing:$_missing" >&2
+    exit 1
+fi
+
+_newest_lib=""
+for _lib in "$_nvk_dir/src/nouveau/vulkan/libnvk.a" \
+            "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"; do
+    [ -f "$_lib" ] || continue
+    if [ -z "$_newest_lib" ] || [ "$_lib" -nt "$_newest_lib" ]; then
+        _newest_lib="$_lib"
+    fi
+done
+
+if [ -z "$_newest_lib" ]; then
+    echo "package-horizon: no NVK archives in $_nvk_dir, so nothing here" \
+         "links them and there is no staleness to check" >&2
+else
+    _stale=0
+    _checked=0
+    for _t in $_nvk_tests; do
+        # The artefact in the BUILD directory, not the packaged copy.
+        # Copying here is idempotent — a file whose content already
+        # matches is left alone, mtime included — so comparing the
+        # packaged copy would report a build that was correctly rebuilt
+        # and produced identical bytes as permanently stale. The
+        # question this gate asks is about what is being packaged.
+        _nro="$SRC/$_t.nro"
+        [ -f "$_nro" ] || continue
+        _checked=$((_checked + 1))
+        if [ "$_newest_lib" -nt "$_nro" ]; then
+            echo "error: $_t.nro is older than $_newest_lib" >&2
+            _stale=$((_stale + 1))
+        fi
+    done
+    # ITS OWN RULE, APPLIED TO ITS OWN COUNTER. This refuses outright
+    # when the nvk_tests list is empty, on the stated principle that a
+    # gate which checks nothing must not report success — and then
+    # printed "0 driver-linked artefact(s) checked" and exited 0, which
+    # is what happens whenever it falls back to the Makefile output in
+    # build/. Raised in review of PR #8.
+    if [ "$_checked" -eq 0 ]; then
+        echo "error: the NVK archives exist but none of the tests that" \
+             "link them ($_nvk_tests) is in $SRC, so this checked nothing." \
+             "Build the driver-linked tests and package again, or package" \
+             "a directory that has them." >&2
+        exit 1
+    fi
+    echo "package-horizon: $_checked driver-linked artefact(s) checked" \
+         "against $_newest_lib"
+    if [ "$_stale" -gt 0 ]; then
+        echo "package-horizon: $_stale artefact(s) predate the driver they" \
+             "link. Run scripts/build-horizon.sh and package again; a" \
+             "manifest over stale binaries attributes a hardware result to" \
+             "the wrong build." >&2
+        exit 1
+    fi
+fi
+
+# BUILD IDENTITY, read out of the binaries rather than out of the tree.
+#
+# Every .nro carries the stamp scripts/gen-build-id.sh generated for the
+# build that produced it (testfw.c prints it as the second line of every
+# log). Reading it back here answers two different questions that the
+# sha256 list cannot:
+#
+#   - which build these artefacts are, in a form the operator can match
+#     against the first lines of the log they send back;
+#   - whether they are all the SAME build. A directory holding two
+#     stamps is a mix — some tests rebuilt, some left over — and a
+#     manifest that attributes the whole set to one toolchain would be
+#     lying about part of it.
+#
+# The marker is grepped, not the date pattern alone: "horizon-build-id "
+# is the same token the log line starts with, so what this reads and
+# what the operator reads are the same bytes.
+#
+# Read from $SRC, and every gate below runs before anything is copied.
+# They used to run after: the manifest was already published and the
+# rejected .nro were already in the output directory, so a later manual
+# copy of that directory looked like a valid package and attributed
+# exactly the stale binaries the gates exist to stop. Reported by Codex
+# on PR #8, and right.
+_pkg_ids=""
+_pkg_unstamped=""
+for nro in "$SRC"/*.nro; do
+    [ -e "$nro" ] || continue
+    _id=$(strings -a "$nro" | sed -n 's/^horizon-build-id //p' | head -1)
+    if [ -z "$_id" ]; then
+        _pkg_unstamped="$_pkg_unstamped $(basename "$nro")"
+    else
+        _pkg_ids="$_pkg_ids$_id
+"
+    fi
+done
+_pkg_id_count=$(printf '%s' "$_pkg_ids" | sort -u | grep -c . || true)
+_pkg_id=$(printf '%s' "$_pkg_ids" | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
+# Before the manifest is written, not after: a manifest naming one build
+# over a directory holding two is exactly the claim this refuses to make.
+if [ -n "$_pkg_unstamped" ]; then
+    echo "error: no build id in:$_pkg_unstamped" >&2
+    echo "       Every .nro links testfw, which embeds one. An artefact" \
+         "without it cannot be told apart from the copy it replaced on" \
+         "an SD card, which is the failure this field exists to stop." >&2
+    exit 1
+fi
+if [ "$_pkg_id_count" -gt 1 ]; then
+    echo "error: $_pkg_id_count different build ids in $SRC: $_pkg_id" >&2
+    echo "       These artefacts are not one build. Rebuild (both paths:" \
+         "scripts/build-mesa-nvk.sh covers the driver-linked tests) and" \
+         "package again." >&2
+    exit 1
+fi
+
 mkdir -p "$OUT"
 copied=0
 kept=0
@@ -93,6 +296,16 @@ _pkg_img=$(horizon_image_digest)
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
     echo "image      : $_pkg_img"
+    echo "build id   : ${_pkg_id:-(none of these artefacts carries one)}"
+    echo
+    echo "# The build id is printed by every test as the second line of"
+    echo "# its log:"
+    echo "#"
+    echo "#   note horizon-build-id ${_pkg_id:-<stamp>}"
+    echo "#"
+    echo "# A log whose stamp is not that one came from other binaries."
+    echo "# It is read here out of the .nro themselves, not out of the"
+    echo "# source tree, so it describes what is in this directory."
     echo
     echo "# Switch toolchain, as READ from the environment at packaging"
     echo "# time. This project neither pins nor updates it — libnx and"

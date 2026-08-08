@@ -20,6 +20,14 @@
 #                               dependencies, for aarch64-horizon, where
 #                               none of them exist.
 #                               scripts/build-mesa-clc.sh supplies it.
+#   -Dplatforms=vi              the window system: Horizon's VI
+#                               compositor, reached through libnx's
+#                               NWindow. It defines VK_USE_PLATFORM_VI_NN,
+#                               which is what makes VK_NN_vi_surface and
+#                               the Horizon WSI backend exist at all.
+#                               'auto' never selects it — no
+#                               host_machine.system() maps to it — so it
+#                               has to be named here.
 #   -Dhorizon-gpu-dir=...       where this project's horizon_gpu layer
 #                               is, since it lives outside Mesa
 #   -Dxmlconfig=disabled        driconf parses an XML file with expat and
@@ -94,7 +102,7 @@ set -- \
     --cross-file "$HORIZON_CROSS_FILE" \
     -Dgallium-drivers= \
     -Dvulkan-drivers=nouveau \
-    -Dplatforms= \
+    -Dplatforms=vi \
     -Dopengl=false \
     -Dllvm=disabled \
     -Dshader-cache=disabled \

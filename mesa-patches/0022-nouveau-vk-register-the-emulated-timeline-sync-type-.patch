@@ -1,7 +1,7 @@
-From 292808d73b8c16f4aa441aaad31ac65989d78277 Mon Sep 17 00:00:00 2001
+From 915db624a40eb27362991c0be2cea24b1429efd7 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:55:01 +0000
-Subject: [PATCH 22/30] nouveau/vk: register the emulated timeline sync type on
+Subject: [PATCH 22/61] nouveau/vk: register the emulated timeline sync type on
  Horizon
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

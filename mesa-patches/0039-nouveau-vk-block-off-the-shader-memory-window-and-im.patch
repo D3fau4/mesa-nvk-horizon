@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 880444854d82a1bab25c39a9c1d3d9219e93c6a9 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:25:27 +0000
-Subject: [PATCH 39/40] nouveau/vk: block off the shader memory window, and
+Subject: [PATCH 39/61] nouveau/vk: block off the shader memory window, and
  implement fixed VA (extension 5)
 
 An earlier note in this backend said NVGPU_AS_IOCTL_ALLOC_SPACE had no
@@ -180,3 +180,6 @@ index 8607413..54e53c9 100644
        return vk_errorf(log_obj, nvkmd_horizon_result(res),
                         "horizon_gpu_vm_reserve(0x%" PRIx64 ", %" PRIu32 ", "
                         "0x%" PRIx64 ") failed: status %d, nv 0x%08" PRIx32,
+-- 
+2.43.0
+

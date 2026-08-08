@@ -1,0 +1,1726 @@
+== t_vk_texture ==
+  note horizon-build-id 2026-08-08T18:48:25.691Z 9b4f976 mesa:815dca2
+  note nxlink: streaming this log live to 192.168.1.104, and the whole file again at the end
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x76ebb702a0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x76ebb702a0: up, syncpt=26 initial=214442 zcull=off
+[horizon_gpu:I] channel 0x76ebbc1010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x76ebbc1010: up, syncpt=27 initial=5542 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   a source texel names its own position (0 collisions)
+  ok   no texel of level 1 equals one of level 0 (0 do)
+  ok   vkCreateImage(37, 64x64x1, 1 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x4000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkCreateImageView(target) -> VK_SUCCESS
+  ok   vkCreateBuffer(0x4400) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4400, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkCreateBuffer(0x5400) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x5400, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   the staging buffer is mapped
+  ok   vkCreateBuffer(0x5400) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x5400, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkCreateSampler(nearest) -> VK_SUCCESS
+  ok   vkCreateSampler(linear) -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   implicit LOD: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   implicit LOD: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   implicit LOD: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   implicit LOD: vkCreateGraphicsPipelines -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   explicit LOD 1: vkCreateGraphicsPipelines -> VK_SUCCESS
+  note 8x8 optimal, run 1 shape: 16 iterations, each building, uploading and sampling the source from scratch
+  ok   8x8 optimal, run 1 shape #1: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #1: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #1: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #1 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #1 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #1 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #1 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #1 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #1 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #1 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #1 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #1 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #1 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #2: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #2: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #2: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #2 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #2 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #2 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #2 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #2 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #2 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #2 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #2 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #2 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #2 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #3: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #3: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #3: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #3 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #3 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #3 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #3 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #3 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #3 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #3 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #3 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #3 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #3 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #4: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #4: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #4: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #4 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #4 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #4 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #4 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #4 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #4 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #4 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #4 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #4 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #4 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #5: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #5: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #5: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #5 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #5 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #5 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #5 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #5 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #5 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #5 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #5 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #5 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #5 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #6: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #6: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #6: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #6 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #6 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #6 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #6 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #6 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #6 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #6 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #6 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #6 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #6 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #7: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #7: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #7: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #7 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #7 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #7 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #7 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #7 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #7 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #7 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #7 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #7 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #7 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #8: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #8: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #8: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #8 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #8 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #8 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #8 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #8 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #8 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #8 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #8 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #8 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #8 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #9: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #9: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #9: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #9 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #9 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #9 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #9 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #9 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #9 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #9 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #9 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #9 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #9 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #10: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #10: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #10: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #10 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #10 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #10 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #10 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #10 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #10 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #10 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #10 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #10 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #10 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #11: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #11: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #11: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #11 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #11 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #11 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #11 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #11 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #11 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #11 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #11 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #11 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #11 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #12: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #12: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #12: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #12 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #12 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #12 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #12 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #12 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #12 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #12 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #12 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #12 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #12 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #13: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #13: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #13: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #13 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #13 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #13 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #13 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #13 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #13 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #13 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #13 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #13 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #13 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #14: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #14: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #14: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #14 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #14 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #14 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #14 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #14 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #14 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #14 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #14 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #14 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #14 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #15: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #15: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #15: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #15 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #15 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #15 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #15 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #15 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #15 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #15 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #15 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #15 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #15 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 optimal, run 1 shape #16: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #16: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #16: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #16 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #16 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #16 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #16 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #16 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #16 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, run 1 shape #16 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, run 1 shape #16 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, run 1 shape #16 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, run 1 shape #16 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  note 8x8 optimal, checked after: 8 iterations, each building, uploading and sampling the source from scratch
+  ok   8x8 optimal, checked after #1: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #1 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #1 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #1 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #1 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #1 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #1 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #1 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #1: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #1: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #2: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #2 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #2 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #2 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #2 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #2 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #2 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #2 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #2: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #2: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #3: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #3 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #3 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #3 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #3 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #3 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #3 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #3 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #3: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #3: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #4: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #4 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #4 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #4 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #4 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #4 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #4 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #4 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #4: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #4: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #5: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #5 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #5 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #5 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #5 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #5 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #5 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #5 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #5: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #5: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #6: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #6 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #6 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #6 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #6 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #6 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #6 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #6 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #6: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #6: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #7: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #7 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #7 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #7 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #7 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #7 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #7 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #7 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #7: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #7: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked after #8: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #8 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #8 A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8 A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #8 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #8 B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8 B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked after #8 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked after #8 C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8 C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked after #8 C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(read the source back afterwards) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(read the source back afterwards) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked after #8: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked after #8: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked first: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x1000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked first: level 0 came back as it went in (64/64 texels)
+  ok   8x8 optimal, checked first: level 1 came back as it went in (16/16 texels)
+  ok   8x8 optimal, checked first: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   8x8 optimal, checked first: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked first A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked first A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked first A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked first B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked first B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked first B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 optimal, checked first C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 optimal, checked first C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 optimal, checked first C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 optimal, checked first C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   64x64 optimal: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 64x64x1, 2 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x5000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   64x64 optimal: level 0 came back as it went in (4096/4096 texels)
+  ok   64x64 optimal: level 1 came back as it went in (1024/1024 texels)
+  ok   64x64 optimal: vkCreateImageView(2 level(s)) -> VK_SUCCESS
+  ok   64x64 optimal: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(64x64 optimal A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(64x64 optimal A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   64x64 optimal A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(64x64 optimal B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(64x64 optimal B: nearest, explicit LOD 1) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   64x64 optimal B: nearest, explicit LOD 1: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(64x64 optimal C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(64x64 optimal C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   64x64 optimal C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 64x64 optimal C: linear, implicit LOD: largest deviation 0 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  ok   8x8 linear: image format query -> VK_SUCCESS
+  ok   vkCreateImage(37, 8x8x1, 1 mip, 1 layer, linear) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x400 align 0x80) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (5376/5376 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(upload the source) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(upload the source) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 linear: level 0 came back as it went in (64/64 texels)
+  ok   8x8 linear: vkCreateImageView(1 level(s)) -> VK_SUCCESS
+  ok   8x8 linear: vkAllocateDescriptorSets(2) -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 linear A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 linear A: nearest, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 linear A: nearest, implicit LOD: 4096/4096 pixels hold the texel they sampled
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+  note 8x8 linear: one mip level, so there is no explicit-LOD case
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4352/4352 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(8x8 linear C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(8x8 linear C: linear, implicit LOD) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   8x8 linear C: linear, implicit LOD: 4096/4096 pixels are within 2 of the computed filter result
+  note 8x8 linear C: linear, implicit LOD: largest deviation 1 of 255
+  ok   nothing was written past the image: 256/256 words are 0xdeadbeef (all of them)
+RESULT: PASS (1685/1685)
