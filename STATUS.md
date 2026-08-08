@@ -20,10 +20,83 @@ long. This block is the state itself, and it is the part that must be true.*
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **All four met.** **1.** 89/89 intervals within 10% of 16666 us. **2.** 25169 us on two images against 16807 us on three under the same load (Vulkan), 24918 against 16793 (raw `bq*`), plus 3 concurrent slots against 2. **3.** Met. **4.** Met, both paths named through the debug-utils messenger in one run |
-| **What is still unverified** | Any display mode change. Anything multi-threaded. Docked resolution. `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — `t_nwindow` measured the swap interval underneath it at **8171 us against 16339 us** |
+| **What is still unverified** | **The copy fallback's layout.** The pattern frames — the only layout oracle this phase has — are presented on the zero-copy path alone; the fallback presents solid colours, which survive any stride or swizzle error unchanged, so its 90-of-90 is not evidence about layout either way. Costs one hardware run to close: present the pattern under `MESA_VK_WSI_HORIZON_FORCE_COPY` too. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
 | **Never verified on hardware** | The reverse staleness gate has been broken in both directions here but has not yet caught a real regression; `t_fault` as it stands |
+
+
+---
+
+## Codex review on PR #8 — seven right, two wrong (2026-08-08)
+
+**Class: review, not hardware.** Ten findings from the automated
+reviewer on `ce3311a`.
+
+### Four were about the artefact-identity machinery, and all four landed
+
+Fixed in `8e3d16a`, each gate broken in both directions first:
+
+1. **The reverse staleness gate was wrong in the ordinary case.** It
+   compared every file under `mesa/src` against `libvulkan_wsi.a`, and
+   Ninja does not touch an archive whose inputs did not change — so
+   editing anything outside WSI leaves that archive older than source
+   that was just correctly compiled. Demonstrated here: after a clean
+   rebuild, `nvk_device.c` is 13:02:47 and `libvulkan_wsi.a` is
+   13:02:00, so the gate would have refused a good build. Now
+   `build-mesa-nvk.sh` touches `.horizon-build-ok` as its last act under
+   `set -e`, and the gate compares against that.
+2. **Every gate ran after the package was published.** A rejected
+   package was already in the output directory looking valid. All gates
+   now run before anything is written; a failing run leaves
+   `MANIFEST.txt` byte-identical.
+3. **A partial build leaving one archive was accepted.** Both are now
+   required.
+4. **The build id described only the outer repository.** `mesa/` is a
+   separate gitignored checkout holding the code every driver-linked
+   test actually links, so an edit under `mesa/src` left the stamp
+   looking clean — a hole in the exact mechanism built to stop
+   misattribution, and the same family as run 11's stale archive. The
+   stamp now carries mesa's HEAD and dirty state.
+
+### Two were wrong, and are answered on the PR
+
+- **`framebufferBegin` stride.** Claimed to be in pixels; libnx's header
+  says "distance **in bytes** between rows of pixels in memory", and
+  states the addressing convention on the next line. `fb_stride * bpp`
+  would overshoot by 4×.
+- **The fallback acquire needs a lock.** `vkAcquireNextImageKHR`
+  requires host access to `swapchain` to be externally synchronised, so
+  concurrent calls on one swapchain are invalid usage. The zero-copy
+  path's surface lock is for a different thing: registration shared
+  *between* swapchains.
+
+The first of those did surface something real anyway — see "what is
+still unverified": the copy fallback has **no layout oracle**, because
+the pattern only runs on the zero-copy path and solid colours hide any
+stride error.
+
+### Four are real driver findings, and each needs a hardware run
+
+Not taken unilaterally; two of them change advertised behaviour.
+
+1. **`async=false` can overrun a finite `timeout`.** It is skipped at
+   timeout 0 but not at finite non-zero, and Android permits that mode
+   to block in the server. Measured at 134–158 us on this compositor,
+   which is evidence it does not, not that it cannot.
+2. **`vkCreateSwapchainKHR` should return
+   `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`** when the surface already has a
+   non-retired swapchain and `oldSwapchain` does not name it. It
+   currently evicts the owner instead — **and `t_vk_swapchain`'s
+   section D asserts the eviction**, so exit criterion 3's test encodes
+   the non-conformant behaviour.
+3. **IMMEDIATE with two images silently becomes FIFO** (`swap_interval`
+   is 0 only at three or more images).
+4. **A failed `bqCancelBuffer` still marks the slot `FREE`.** Less
+   severe than reported on the zero-copy path — the next slot comes from
+   `bqDequeueBuffer`, so a slot the queue still holds cannot be handed
+   out twice — but it is wrong bookkeeping and loses the slot until
+   teardown.
 
 
 ---
