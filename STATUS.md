@@ -14,8 +14,8 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS DONE, and run 16 is the first run in which every piece of coverage this branch has built actually executed.** `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Two things, and neither is code.** (a) **How the pattern looked**, showings 1 and 2, separately. It has now presented 120 of 120 frames on the zero-copy path in three runs and on the copy fallback in one, and nobody has yet said what was on screen. That answer is the entire layout evidence for this phase. (b) **`t_vk_swapchain` under nxlink, two or three times.** Run 14 (nxlink) MMU-faulted; runs 15 and 16 (no nxlink) did not. One faulting run against two clean ones is a hypothesis, not a finding |
-| **Known failures** | **1. An unexplained MMU fault in `t_vk_swapchain` (run 14)** — open, never seen before outside `t_fault`, and **it did not reproduce in run 15 without nxlink**, which is one run each and a hypothesis, not a finding. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
+| **Next concrete task** | **One thing, and it is not code: how the pattern looked**, showings 1 and 2, separately. It has presented 120 of 120 frames on the zero-copy path in three runs and on the copy fallback in one, and nobody has yet said what was on screen. That answer is the entire layout evidence for this phase. The nxlink line of investigation is **closed by decision** — see below |
+| **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
@@ -23,8 +23,51 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
-| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## nxlink removed, and the MMU fault closed unexplained (2026-08-08)
+
+**Decided by the user**, in as many words: ignore the nxlink question,
+and the code can go. Both were done.
+
+### What was removed
+
+The whole streaming path in `tests/common/testfw.c` — `t_nx_start`,
+`t_nx_raw`, `t_nx_replay`, `t_nx_stop`, the status line, and the socket
+headers. 230 lines out, 7 in. It is recoverable in one command: the
+feature is commit `9b4f976` and nothing else has touched it since.
+
+**What deliberately stayed**, because it is independent of nxlink and
+confirmed on hardware:
+
+- the **write-after-`fclose`** fix. `testfw` used to write the "press +
+  to exit" note to a `FILE *` it had already closed — the handle closed,
+  the pointer not cleared, so the `t.log != NULL` guard was still true.
+  Every log up to run 14 ends at `RESULT`; runs 15 and 16 are the first
+  in this project to carry that line.
+- `t_sink`, which composes each line once and writes it to the console
+  and the log rather than formatting it twice.
+- `t_check` and `t_note` are byte-identical to their pre-nxlink form,
+  and that was checked by diff rather than by eye — the first attempt at
+  this removal deleted both of them along with the socket code, and the
+  build caught it as "`t_vemit` defined but not used".
+
+### The MMU fault, and why it is being left alone
+
+One occurrence, run 14, on the graphics channel of `t_vk_swapchain`,
+immediately after the pattern's 120 presents. Runs 15 and 16 went
+through the identical sequence and were clean, so it has **never
+reproduced**. The only variable that differed was nxlink, and with
+nxlink gone there is no known way to provoke it — which also means
+patch **0068**, whose whole job is to stop a lost device hanging the
+acquire, has no route to being exercised.
+
+That is the honest position and it is not a good one: an unexplained
+GPU fault stays on the record, and the code written to survive it stays
+unverified. Both are stated rather than quietly dropped.
 
 ---
 
