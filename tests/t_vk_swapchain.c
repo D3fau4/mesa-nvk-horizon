@@ -52,6 +52,16 @@
  *      not subtle when it happens: the sector ordering scrambles the
  *      image at 16-byte granularity.
  *
+ *      IT IS SHOWN TWICE, once on each present path, and the operator
+ *      is asked twice. The two paths put pixels into the presented
+ *      buffer through different code — zero-copy gives the compositor
+ *      the image the application rendered into, the fallback blits
+ *      into a buffer of its own — so a wrong layout in one is invisible
+ *      in the other. Showing 1 is in section F on whichever path the
+ *      driver picks; showing 2 is in section E on the forced copy
+ *      path, which until then had never presented anything but solid
+ *      colours.
+ *
  *   E. The zero-copy decision is observable at run time and says why.
  *      Observable means the application can hear it, not that a log
  *      contains it: the backend reports the decision through the
@@ -746,6 +756,10 @@ int run_test(test_ctx *t)
     * teardown that destroys it. */
    vkfw_buffer pattern;
    memset(&pattern, 0, sizeof(pattern));
+   /* Set only once the pattern is in memory and flushed, because
+    * section E shows the same buffer again on the other present path
+    * and must not present whatever was in an unfilled mapping. */
+   bool pattern_ready = false;
    VkSurfaceKHR surface = VK_NULL_HANDLE;
 
    /* (testfw's main() writes the "this test owns the display" note; it
@@ -937,7 +951,9 @@ int run_test(test_ctx *t)
           pattern.map != NULL) {
          sc_fill_pattern((uint32_t *)pattern.map, extent.width, extent.height);
          if (vkfw_buffer_flush(&fw, &pattern)) {
-            t_note(t, "SHOWING THE PATTERN FOR TWO SECONDS. What should be "
+            pattern_ready = true;
+            t_note(t, "SHOWING THE PATTERN FOR TWO SECONDS, ON THE PATH THE "
+                      "DRIVER CHOSE BY ITSELF. What should be "
                       "on screen, and what a wrong memory layout would "
                       "destroy: four full-height vertical bars, red then "
                       "green then blue then white, left to right; a white "
@@ -955,10 +971,12 @@ int run_test(test_ctx *t)
             t_check(t, shown == 2u * SC_REFRESH_HZ,
                     "the pattern was presented %" PRIu32 " times -> %s",
                     shown, vkfw_result_str(pattern_fail));
-            t_note(t, "OPERATOR: say in the report whether the four bars, "
-                      "the border, the diagonal and the yellow corner were "
-                      "all there and in that order. That answer is the "
-                      "whole of the layout evidence for this phase");
+            t_note(t, "OPERATOR: this was SHOWING 1 OF 2, and the two are "
+                      "not the same evidence. Say in the report whether the "
+                      "four bars, the border, the diagonal and the yellow "
+                      "corner were all there and in that order. Showing 2 "
+                      "comes later in the run, on the forced copy path, and "
+                      "needs its own separate answer");
          }
       } else {
          t_note(t, "the pattern buffer could not be created or mapped; "
@@ -1243,6 +1261,48 @@ int run_test(test_ctx *t)
                       "forcing it changed nothing. The reason zero-copy was "
                       "declined is in the message above, and it is why the "
                       "check above failed rather than being skipped");
+         }
+
+         /* THE LAYOUT ORACLE, ON THE OTHER PATH. Until this ran, every
+          * frame the copy fallback had ever presented was a solid
+          * colour, and a solid colour is the same image under any
+          * stride, any block height and any sector ordering: its
+          * 90-of-90 was evidence that frames reached the compositor,
+          * and no evidence at all about what was in them. The two
+          * paths write the destination buffer through different code —
+          * zero-copy hands the compositor the image the application
+          * rendered into, the fallback blits into a separate
+          * linear-or-block-linear buffer of its own — so a layout
+          * error in one is not visible in the other. Same pattern,
+          * same operator, same question. */
+         if (pattern_ready) {
+            t_note(t, "SHOWING THE PATTERN FOR TWO SECONDS, ON THE FORCED "
+                      "COPY PATH. This is SHOWING 2 OF 2, and it is the "
+                      "only layout evidence the fallback has: every other "
+                      "frame it presents in this test is a solid colour, "
+                      "which survives any layout error unchanged. Expect "
+                      "exactly what showing 1 expected: four full-height "
+                      "vertical bars, red then green then blue then white, "
+                      "left to right; a white border 16 pixels wide all the "
+                      "way round; a black diagonal from the top-left corner "
+                      "to the bottom-right; and a yellow square just inside "
+                      "the top-left corner");
+
+            VkResult copy_pattern_fail = VK_SUCCESS;
+            const uint32_t copy_shown =
+               sc_show_pattern(&fw, &sc_c, pattern.buf, 2u * SC_REFRESH_HZ,
+                               &copy_pattern_fail);
+            t_check(t, copy_shown == 2u * SC_REFRESH_HZ,
+                    "the copy path presented the pattern %" PRIu32 " times "
+                    "-> %s", copy_shown,
+                    vkfw_result_str(copy_pattern_fail));
+            t_note(t, "OPERATOR: answer for THIS showing separately from "
+                      "showing 1. If showing 1 was right and showing 2 is "
+                      "scrambled, striped or blocky, the fallback's layout "
+                      "is wrong and the zero-copy path was hiding it");
+         } else {
+            t_note(t, "the pattern buffer was never filled, so the copy "
+                      "path has no layout evidence in this run either");
          }
 
          t_note(t, "record+submit cost per frame: %" PRIu64 " us on the "

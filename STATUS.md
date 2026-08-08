@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-08
 **Branch:** `claude/phase-6-horizon-wsi-5hu1jt`
 
 ---
@@ -14,17 +14,53 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS DONE. All four exit criteria are met on hardware.** `t_nwindow` PASS 118/118 (run 11) and `t_vk_swapchain` PASS 117/117 (run 12). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Run 13: `t_vk_swapchain` and `t_nwindow`**, both carrying patches 0065 and 0066 and the same dequeue policy. The open question is the one 0065 leaves: **is `async=true` plus the sleep enough on its own?** Every acquire in both tests uses a finite budget, so neither reaches `async=false` any more |
+| **Next concrete task** | **Run 13: `t_vk_swapchain` and `t_nwindow` from batch 14** — batch 13 was packaged and never run, and is superseded, because `t_vk_swapchain` has changed since. The run answers two questions, not one. **(a)** The one 0065 leaves: *is `async=true` plus the sleep enough on its own?* Every acquire in both tests uses a finite budget, so neither reaches `async=false` any more. **(b)** *Is the copy fallback's memory layout right?* The pattern is now shown twice, once per present path, and the operator is asked twice |
 | **Known failures** | **1.** `t_fault` still takes the console down on exit. **2.** `t_vk_texture`'s one unexplained occurrence stays on the record. Neither is Phase 6 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met** (89/89 intervals within 10% of 16666 us). **3. Met.** **4. Met**, though the check that proves it is gated on zero-copy succeeding. **2. OVERSTATED — see the correction below.** The structural half stands (3 concurrent slots against 2). The pacing half measured a 50% difference in *throughput*, not the burst absorption the test claims: under the same load, `over_1p5_refresh` is **45 with three images and 45 with two** |
-| **What is still unverified** | **The copy fallback's layout.** The pattern frames — the only layout oracle this phase has — are presented on the zero-copy path alone; the fallback presents solid colours, which survive any stride or swizzle error unchanged, so its 90-of-90 is not evidence about layout either way. Costs one hardware run to close: present the pattern under `MESA_VK_WSI_HORIZON_FORCE_COPY` too. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
+| **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
 | **Never verified on hardware** | Patches **0065** and **0066**, and the `t_nwindow` policy change beside them; `t_fault` as it stands |
 
+
+---
+
+## The fallback had no layout evidence, and now it is asked (2026-08-08)
+
+The last thing on this branch that was unmeasured *and* measurable
+without waiting for anything: the copy fallback's memory layout.
+
+The state of the evidence before this change. The pattern — four
+coloured bars, a border, a diagonal, a corner square — is the only
+oracle in the phase that can catch a wrong stride, a wrong block height
+or a wrong GOB sector ordering, because every other frame the test
+presents is a solid colour and a solid colour is the same image under
+any swizzle. It was presented on the zero-copy path only. The fallback
+presented 90 of 90 frames in run 12 and that number is worth exactly
+what it says: frames reached the compositor. It is not a statement
+about what was in them.
+
+The two paths do not share the code that fills the presented buffer —
+zero-copy hands the compositor the image the application rendered into,
+the fallback blits into a buffer of its own — so a layout error in the
+fallback is invisible in the zero-copy showing, and the phase would
+have shipped with one of its two present paths never having displayed
+anything an eye could falsify.
+
+`t_vk_swapchain` now shows the pattern twice: showing 1 in section F on
+whichever path the driver picks, showing 2 in section E on the
+swapchain already forced onto the fallback, reusing the same buffer.
+The operator is asked twice and told explicitly that the two answers
+are different evidence. Presenting all 120 frames is a `t_check` in
+both cases; the appearance is the operator's line in the report.
+
+**This is a test change, not a driver change.** Nothing in
+`mesa-patches/` moved. Cross build green (`build/meson`, one ninja
+invocation, one build id). Nothing here is verified on hardware: the
+answer this adds does not exist until run 13 comes back.
 
 ---
 
