@@ -8,14 +8,32 @@ the log, not `STATUS.md`.
 ## The two logs Phase 6 rests on
 
 `t_nwindow-run11-PASS.log` (118/118) and `t_vk_swapchain-run12-PASS.log`
-(117/117). Between them every Phase 6 exit criterion is measured:
+(117/117).
+
+**They are two different builds** — `5995c12` and `d41e12a`, eleven minutes and
+one commit apart — and `scripts/package-horizon.sh` refuses to package a
+directory holding two stamps for exactly that reason. Reading them as one body
+of evidence is therefore a claim about two builds, not one, and it is made here
+knowingly: the commit between them (`d41e12a`) touched `STATUS.md`,
+`docs/hw-logs/` and `scripts/package-horizon.sh`, and the only reason
+`t_vk_swapchain` was rebuilt at all is that its driver archive had been stale.
+`t_nwindow`'s binary is byte-identical across the two. Raised in review of
+PR #8, and a fair hit: nothing in the pairing was checked before it was
+narrated.
+
+Between them every Phase 6 exit criterion is measured:
 
 1. **A swapchain presents at the display's rate.** 89 of 89 intervals within
    10% of 16666 us, mean 16664 us, zero-copy.
-2. **Triple buffering differs from double, in numbers.** Under the same bursty
-   load, two images pace at **25169 us** against three at **16807 us** through
-   Vulkan, and two buffers at **24918 us** against three at **16793 us**
-   through raw `bq*`. Structurally, 3 slots dequeued at once against 2.
+2. **Triple buffering differs from double, in numbers — but read the whole
+   line.** Under the same bursty load, two images pace at **25169 us** against
+   three at **16807 us** through Vulkan (24918 against 16793 through raw
+   `bq*`): double buffering takes 50% longer to deliver the same 90 frames.
+   That is a throughput difference. It is **not** the burst absorption the
+   tests claimed: the same lines report `0 within 10% of 16666 us` for both,
+   and `45 longer than 1.5 refreshes` for both (44 and 44 in `t_nwindow`).
+   Whatever three buffers did, absorbing the bursts is not it. Structurally,
+   3 slots dequeued at once against 2, which stands unqualified.
 3. **Two swapchains coexist over one window and destroy independently.** The
    superseded one reports `VK_ERROR_OUT_OF_DATE_KHR`; the survivor presents
    20 of 20 after the other is gone.

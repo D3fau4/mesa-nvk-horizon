@@ -18,8 +18,15 @@
  *      render both simply track the display, so the difference is made
  *      visible the way it appears in a real application: a load that
  *      alternates between cheap and expensive frames, averaging under
- *      one refresh and peaking over it. Two buffers must round every
- *      overrun up to a whole extra refresh; three can absorb it.
+ *      one refresh and peaking over it.
+ *
+ *      WHAT THIS MEASURES IS THROUGHPUT, not smoothness. The rationale
+ *      used to be that two buffers round every overrun up to a whole
+ *      extra refresh while three absorb it; run 12 refutes it — 45 of
+ *      89 intervals over 1.5 refreshes with three images and 45 with
+ *      two, 0 of 89 inside 10% of a refresh either way. The means
+ *      differ by 50% and that difference is real; the absorption was
+ *      not.
  *
  *   D. Two swapchains over one window coexist and are destroyed
  *      independently. This is the case the reference ports fixed with a
@@ -1035,8 +1042,9 @@ int run_test(test_ctx *t)
       /* 10% is far below the 50% the arithmetic predicts and far above
        * measurement noise. */
       t_check(t, m2 * 10 > m3 * 11,
-              "under the same bursty load two images pace at least 10%% "
-              "slower than three (%" PRIu64 " us vs %" PRIu64 " us)",
+              "under the same bursty load two images deliver the same frames "
+              "at least 10%% slower than three (%" PRIu64 " us vs %" PRIu64
+              " us mean interval)",
               m2 / 1000, m3 / 1000);
    }
 

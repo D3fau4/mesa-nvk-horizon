@@ -42,7 +42,13 @@
  *      visible the way it appears in a real application: a load that
  *      alternates between cheap and expensive frames, averaging under
  *      one refresh but peaking over it. Two buffers must round every
- *      overrun up to a whole extra refresh; three can absorb it. The
+ *      overrun up to a whole extra refresh; three can absorb it.
+ *      MEASURED, AND THAT RATIONALE IS WRONG: run 11 puts 44 of 89
+ *      intervals over 1.5 refreshes with three buffers and 44 with two,
+ *      and 0 of 89 inside 10% of a refresh either way. Three absorbed
+ *      nothing. What the run does show is throughput — the same 90
+ *      frames take 50% longer on two — which is what the check below
+ *      actually tests. The
  *      load is derived from the measured cost of a frame rather than
  *      guessed — see nw_choose_load().
  *
@@ -1515,10 +1521,18 @@ int run_test(test_ctx *t)
             "three buffers let the producer hold more slots than two "
             "(%" PRIu32 " vs %" PRIu32 ")", concurrent3, concurrent2);
 
-    /* Double against triple, in frame pacing. The same bursty load
-     * through both: two buffers must round every overrun up to a whole
-     * extra refresh, three can absorb it. 10%% is far below the 50%%
-     * the arithmetic predicts and far above measurement noise. */
+    /* Double against triple, in frame pacing — as THROUGHPUT, which is
+     * what this actually measures.
+     *
+     * The rationale here used to say two buffers must round every
+     * overrun up to a whole extra refresh while three absorb it. Run 11
+     * refutes it: 44 of 89 intervals over 1.5 refreshes with three and
+     * 44 with two, 0 of 89 inside 10% of a refresh either way. The
+     * means still differ by 50% — the same 90 frames take half again as
+     * long on two buffers — and that is the difference this asserts.
+     * The distribution is reported beside it in the note above, because
+     * a mean over a load that alternates on and off says nothing about
+     * smoothness on its own. */
     if (ran3_load && ran2_load) {
         const uint64_t m3 = nw_mean_ns(&st3_load);
         const uint64_t m2 = nw_mean_ns(&st2_load);
@@ -1528,8 +1542,9 @@ int run_test(test_ctx *t)
                m3 / 1000, m2 / 1000, st3_load.over_1p5_refresh,
                st2_load.over_1p5_refresh);
         t_check(t, m2 * 10 > m3 * 11,
-                "under the same bursty load two buffers pace at least 10%% "
-                "slower than three (%" PRIu64 " us vs %" PRIu64 " us)",
+                "under the same bursty load two buffers deliver the same "
+                "frames at least 10%% slower than three (%" PRIu64 " us vs "
+                "%" PRIu64 " us mean interval)",
                 m2 / 1000, m3 / 1000);
     }
 

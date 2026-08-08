@@ -19,12 +19,47 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
-| **Exit criteria** | **All four met.** **1.** 89/89 intervals within 10% of 16666 us. **2.** 25169 us on two images against 16807 us on three under the same load (Vulkan), 24918 against 16793 (raw `bq*`), plus 3 concurrent slots against 2. **3.** Met. **4.** Met, both paths named through the debug-utils messenger in one run |
+| **Exit criteria** | **1. Met** (89/89 intervals within 10% of 16666 us). **3. Met.** **4. Met**, though the check that proves it is gated on zero-copy succeeding. **2. OVERSTATED — see the correction below.** The structural half stands (3 concurrent slots against 2). The pacing half measured a 50% difference in *throughput*, not the burst absorption the test claims: under the same load, `over_1p5_refresh` is **45 with three images and 45 with two** |
 | **What is still unverified** | **The copy fallback's layout.** The pattern frames — the only layout oracle this phase has — are presented on the zero-copy path alone; the fallback presents solid colours, which survive any stride or swizzle error unchanged, so its 90-of-90 is not evidence about layout either way. Costs one hardware run to close: present the pattern under `MESA_VK_WSI_HORIZON_FORCE_COPY` too. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
 | **Never verified on hardware** | The reverse staleness gate has been broken in both directions here but has not yet caught a real regression; `t_fault` as it stands |
 
+
+---
+
+## The exit-criterion-2 claim was wrong, and my own log says so (2026-08-08)
+
+Raised in review of PR #8, verified against the logs, and correct.
+
+The claim was that triple buffering absorbs a bursty load where double
+cannot: 16807 us against 25169 us through Vulkan, 16793 against 24918
+through raw `bq*`. The means are real. **The mechanism is not**, and the
+same log lines refute it:
+
+```
+3 images, FIFO, bursty load: mean 16807 us, min 495, max 33245;
+    0 within 10% of 16666 us; 45 longer than 1.5 refreshes
+2 images, FIFO, bursty load: mean 25169 us, min 9592, max 40525;
+    0 within 10% of 16666 us; 45 longer than 1.5 refreshes
+```
+
+**Zero of 89 intervals paced correctly in either case, and both put 45
+of 89 over 1.5 refreshes — the same number.** `t_nwindow` says 44 and
+44. Whatever three buffers did, absorbing the bursts is not it, and a
+mean that lands near the refresh because the load alternates on and off
+is an artefact of the load, not evidence about the queue.
+
+What the measurement does support: **double buffering took 50% longer
+to deliver the same 90 frames under the same load** — 2.24 s against
+1.50 s. That is a difference in throughput, and it is what the check
+`m2 * 10 > m3 * 11` actually tests. The rationale written above that
+check — "two buffers must round every overrun up to a whole extra
+refresh; three can absorb it" — is wrong and is corrected in both tests.
+
+Exit criterion 2 asks for the difference "recorded with numbers, not
+adjectives". The numbers are recorded and they differ. The adjective was
+mine.
 
 ---
 
