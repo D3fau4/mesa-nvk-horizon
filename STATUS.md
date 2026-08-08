@@ -12,10 +12,10 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6's four exit criteria were met on hardware in run 13, and run 14 has since put a real defect in front of them.** Run 14 ran all 29 tests on one build: **28 PASS**, and `t_vk_swapchain` took an **unexplained MMU fault** on the graphics channel and then hung, producing no verdict. The fault is open; the hang is fixed (patch 0068). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **Phase** | **Phase 6's four exit criteria were met on hardware in run 13.** Run 15 then presented **90 of 90 frames with 89 of 89 intervals inside 10% of a refresh** on three images and 90 of 90 on two, with **no MMU fault** — the fault of run 14 did not reproduce without nxlink. `t_vk_swapchain` still produced no verdict in run 15, but for a different and entirely self-inflicted reason: the acquire-refusal control kept an image it never presented, and one usable buffer cannot make progress in FIFO. Fixed in the test, and in the driver (patch **0069**). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Run 15: `t_vk_swapchain` alone, repeatedly.** The question is whether the MMU fault reproduces. It has never been seen before outside `t_fault`, which provokes one deliberately; run 13 went through the identical sequence without faulting. The build carries patch **0068** (a lost device now ends the acquire instead of hanging) and a device-health checkpoint after the pattern, so a repeat lands on a named phase instead of somewhere in 120 frames. Still outstanding and unrelated: **how the pattern looked** — showing 1 presented 120 of 120 in run 14 and nobody has said what was on screen |
-| **Known failures** | **1. An unexplained MMU fault in `t_vk_swapchain` (run 14)** — open, never seen before outside `t_fault`, and not reproduced yet. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
+| **Next concrete task** | **Run 16: `t_vk_swapchain`, several times, and at least one of them under nxlink.** Two questions. (a) Does the run now reach `RESULT`? Both hangs are fixed — the test returns every image the control took, and patches 0068 and 0069 stop the driver waiting on a wait that cannot end. (b) **Does the MMU fault come back, and only under nxlink?** Run 14 (nxlink) faulted; run 15 (no nxlink) did not. That is one run each — a hypothesis, not a finding. Still outstanding: **how the pattern looked**, which has now presented 120 of 120 twice with nobody saying what was on screen |
+| **Known failures** | **1. An unexplained MMU fault in `t_vk_swapchain` (run 14)** — open, never seen before outside `t_fault`, and **it did not reproduce in run 15 without nxlink**, which is one run each and a hypothesis, not a finding. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
@@ -23,8 +23,83 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
-| **Never verified on hardware** | Patch **0068**; the device-health checkpoint and the guard that stops the test starting an unbounded wait; **`t_vk_swapchain`'s `timeout = UINT64_MAX` coverage and its positive control, which run 14 never reached** — `t_nwindow`'s equivalent did run, 20 of 20. Off this list since run 14: 0067, and the nxlink streaming |
+| **Never verified on hardware** | Patch **0068** (it was in run 15's build and never fired — the device never died) and patch **0069**; the rewritten acquire-refusal control; **`t_vk_swapchain`'s `timeout = UINT64_MAX` coverage, which no run has yet reached** — `t_nwindow`'s equivalent has now run twice, 20 of 20 both times |
 
+
+---
+
+## Run 15 — the fault did not reproduce, and the hang was mine (2026-08-08)
+
+Build `2026-08-08T20:23:02.777Z c2c17b9 mesa:4d90ca5`, both tests,
+launched from the homebrew menu: `note nxlink: no host, so nothing is
+streamed`. Logs are `docs/hw-logs/t_nwindow-run15-PASS.log` and
+`docs/hw-logs/t_vk_swapchain-run15-HUNG-NO-FAULT.log`.
+
+### No MMU fault
+
+`t_vk_swapchain` ran the whole way through both swapchains with a
+healthy device — and the numbers are the best this project has
+recorded:
+
+| | run 15 | run 13 |
+|---|---|---|
+| 3 images, FIFO | 90 of 90, **89 of 89** within 10% | 90 of 90, 89 of 89 |
+| 3 images, acquire | mean 15956 us | 15733 us |
+| 2 images, FIFO | 90 of 90, 87 of 89 | 90 of 90, 87 of 89 |
+| record+submit | **369 us** | 564 us |
+| bursty, 3 vs 2 | 16815 us vs 25162 us | 16837 vs 25170 |
+
+`t_nwindow` PASS 119/119 again, including `no deadline, 2 buffers:
+20 of 20 frames`.
+
+**The MMU fault of run 14 did not come back.** The one difference
+between the two runs is nxlink: run 14 streamed, run 15 did not. That
+is **one run each**, which makes it a hypothesis and not a finding, and
+it is the thing run 16 is for. What can be said is that the fault is
+not inherent to the sequence — the same 120 pattern presents followed
+by the same session ran clean.
+
+### The hang, and it was entirely mine
+
+The acquire-refusal control assumed both images of a two-image
+swapchain could be held at once. Straight after a FIFO session they
+cannot: the compositor is still holding what it was given, so the
+first acquire returned `VK_SUCCESS` and the second `VK_TIMEOUT`. **That
+is the control succeeding** — a refusal is exactly what it exists to
+observe — but the code read it as the setup falling through, took the
+`else` branch, printed a note, and **returned nothing**.
+
+So a two-image swapchain was left with one usable buffer. One buffer
+cannot make progress in FIFO: the compositor will not release the frame
+it is scanning out until it is handed another, and there was no other.
+The next session asked for an image with no deadline and waited
+forever. The driver's own warning is the last line of the log —
+`no buffer in 3000 ms and this swapchain still owns the window; last
+dequeue said 0x0000115d` — and there is no `RESULT` after it.
+
+Three fixes, and the third is the one that matters beyond this test:
+
+- **The control now drives the acquire until it is refused**, whatever
+  number of images that takes, and asserts on the refusal it gets. The
+  premise it used to assume is now the thing it measures.
+- **Every image is presented back on every path**, and that is a
+  `t_check` rather than an assumption. An acquired image that is never
+  presented is not a memory leak — it is a swapchain that cannot run.
+- **Patch 0069**: the zero-copy acquire refuses to block forever when
+  every image is with the application. The copy fallback has done this
+  since 0053; the same condition existed on both paths and was checked
+  on one. That asymmetry is what turned a test bug into a hang with no
+  cause on screen.
+
+**The caller was at fault, and that is the point.** Vulkan permits the
+acquire to block when an application holds more images than it
+presents. Blocking silently and forever turns someone's bug into a
+hang; this backend has the state to name it instead.
+
+### What run 15 says about run 14's fixes
+
+Patch 0068 (a lost device ends the acquire) was in this build and never
+fired, because the device never died. It remains unverified.
 
 ---
 

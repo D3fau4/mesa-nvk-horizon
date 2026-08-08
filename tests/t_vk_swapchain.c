@@ -793,6 +793,11 @@ int run_test(test_ctx *t)
     * section E shows the same buffer again on the other present path
     * and must not present whatever was in an unfilled mapping. */
    bool pattern_ready = false;
+   /* Whether the acquire-refusal control gave every image back. The
+    * infinite-timeout session that follows it cannot run otherwise:
+    * an image the application keeps is one the compositor can never
+    * free, and that is what hung run 15. */
+   bool control_returned_all = false;
    VkSurfaceKHR surface = VK_NULL_HANDLE;
 
    /* (testfw's main() writes the "this test owns the display" note; it
@@ -1112,81 +1117,132 @@ int run_test(test_ctx *t)
     * "No acquire returned VK_TIMEOUT" is worth exactly as much as this
     * test's ability to see a VK_TIMEOUT at all. A backend that returned
     * VK_SUCCESS with a garbage index, or one whose acquire could not
-    * fail, would pass it without ever having been asked a question.
+    * fail, would pass it without ever having been asked a question. So
+    * the acquire is driven until it cannot be satisfied, and the two
+    * results the specification distinguishes there — VK_TIMEOUT for a
+    * finite deadline, VK_NOT_READY for a zero one — are asserted.
     *
-    * So both images are taken and held, which on a two-image swapchain
-    * means nothing is free, and the acquire is asked twice more: once
-    * with a millisecond, which must be VK_TIMEOUT, and once with zero,
-    * which must be VK_NOT_READY. Those are the two results the
-    * specification distinguishes and nothing here had ever produced.
-    * The images are handed back by presenting them — Vulkan has no
-    * un-acquire. */
+    * THE FIRST VERSION OF THIS HUNG THE RUN, and both of its mistakes
+    * are worth keeping written down.
+    *
+    * It assumed both images of a two-image swapchain could be held at
+    * once. Run 15 says otherwise: straight after a FIFO session the
+    * compositor is still holding what it was given, so the first
+    * acquire returned VK_SUCCESS and the second VK_TIMEOUT. That is not
+    * a failure — it is the control succeeding — but the code treated it
+    * as the setup falling through.
+    *
+    * And on that path it returned nothing. The image the first acquire
+    * had taken was never presented, so a two-image swapchain was left
+    * with one usable buffer, and one buffer cannot make progress in
+    * FIFO: the compositor will not release the frame it is scanning out
+    * until it is given another, and there was no other. The next
+    * session asked for an image with no deadline and waited forever.
+    *
+    * So: acquire until it refuses, assert on the refusal, and give
+    * every image back on every path. An acquired image that is not
+    * presented is not a leak of memory — it is a swapchain that can no
+    * longer run.
+    */
    {
       const VkFenceCreateInfo fci = {
          .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
       };
-      VkFence held[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+      VkFence held[SC_MAX_IMAGES + 1];
       bool made = true;
-      for (uint32_t i = 0; i < 3; i++) {
+      for (uint32_t i = 0; i < SC_MAX_IMAGES + 1; i++) {
+         held[i] = VK_NULL_HANDLE;
          if (fw.vk.vkCreateFence(fw.dev, &fci, NULL, &held[i]) != VK_SUCCESS)
             made = false;
       }
 
-      uint32_t idx[2] = { 0, 0 };
-      VkResult ar[2] = { VK_ERROR_UNKNOWN, VK_ERROR_UNKNOWN };
-      if (made) {
-         for (uint32_t i = 0; i < 2; i++)
-            ar[i] = fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle,
-                                                 SC_WAIT_NS, VK_NULL_HANDLE,
-                                                 held[i], &idx[i]);
+      uint32_t idx[SC_MAX_IMAGES];
+      uint32_t taken = 0;
+      VkResult refusal = VK_ERROR_UNKNOWN;
+
+      /* Up to image_count, because that is the most that can ever be
+       * outstanding; the refusal usually comes well before it. */
+      while (made && taken < sc2.image_count) {
+         const VkResult r =
+            fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle, SC_WAIT_NS,
+                                         VK_NULL_HANDLE, held[taken],
+                                         &idx[taken]);
+         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+            refusal = r;
+            break;
+         }
+         taken++;
       }
 
-      if (made && ar[0] == VK_SUCCESS && ar[1] == VK_SUCCESS) {
-         uint32_t spare = 0;
-         const VkResult r_ms =
-            fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle,
-                                         UINT64_C(1000000) /* 1 ms */,
-                                         VK_NULL_HANDLE, held[2], &spare);
-         t_check(t, r_ms == VK_TIMEOUT,
-                 "with both images held, a 1 ms acquire times out -> %s",
-                 vkfw_result_str(r_ms));
+      if (made && taken > 0) {
+         t_note(t, "the application could hold %" PRIu32 " of this "
+                   "swapchain's %" PRIu32 " images at once", taken,
+                sc2.image_count);
 
+         /* If the loop above ran out of images rather than being
+          * refused, ask once more so there is a refusal to assert on. */
+         if (refusal == VK_ERROR_UNKNOWN) {
+            uint32_t spare = 0;
+            refusal =
+               fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle,
+                                            UINT64_C(1000000) /* 1 ms */,
+                                            VK_NULL_HANDLE,
+                                            held[SC_MAX_IMAGES], &spare);
+         }
+
+         t_check(t, refusal == VK_TIMEOUT,
+                 "an acquire that cannot be satisfied within its deadline "
+                 "returns VK_TIMEOUT -> %s", vkfw_result_str(refusal));
+
+         uint32_t spare = 0;
          const VkResult r_zero =
             fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle, 0,
-                                         VK_NULL_HANDLE, held[2], &spare);
+                                         VK_NULL_HANDLE,
+                                         held[SC_MAX_IMAGES], &spare);
          t_check(t, r_zero == VK_NOT_READY,
-                 "with both images held, a zero-timeout acquire is "
-                 "VK_NOT_READY rather than a timeout -> %s",
-                 vkfw_result_str(r_zero));
-
-         /* Give them back. Both fences are signalled by now or the
-          * acquires above would not have returned VK_SUCCESS, but the
-          * wait is what makes that true rather than assumed. */
-         if (fw.vk.vkWaitForFences(fw.dev, 2, held, VK_TRUE,
-                                   SC_WAIT_NS) == VK_SUCCESS) {
-            for (uint32_t i = 0; i < 2; i++) {
-               if (sc_record_and_submit(&fw, &sc2, idx[i], i) != VK_SUCCESS)
-                  break;
-               const VkPresentInfoKHR pi = {
-                  .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                  .waitSemaphoreCount = 1,
-                  .pWaitSemaphores = &sc2.res[idx[i]].render_done,
-                  .swapchainCount = 1,
-                  .pSwapchains = &sc2.handle,
-                  .pImageIndices = &idx[i],
-               };
-               if (fw.wsi.vkQueuePresentKHR(fw.queue, &pi) != VK_SUCCESS)
-                  break;
-            }
-         }
+                 "the same acquire with a zero timeout is VK_NOT_READY "
+                 "rather than a timeout -> %s", vkfw_result_str(r_zero));
+      } else if (made) {
+         t_check(t, false,
+                 "the application could hold at least one image (first "
+                 "acquire -> %s)", vkfw_result_str(refusal));
       } else {
-         t_note(t, "the two images could not both be held (%s, %s), so the "
-                   "acquire's failure results were not exercised and the "
-                   "VK_TIMEOUT check below has no control behind it",
-                vkfw_result_str(ar[0]), vkfw_result_str(ar[1]));
+         t_check(t, false, "the control's fences were created");
       }
 
-      for (uint32_t i = 0; i < 3; i++) {
+      /* EVERY IMAGE BACK, ON EVERY PATH. Vulkan has no un-acquire, so
+       * presenting is the only way to return one, and a swapchain that
+       * keeps an image it will not present cannot run again. */
+      uint32_t returned = 0;
+      for (uint32_t i = 0; i < taken; i++) {
+         if (fw.vk.vkWaitForFences(fw.dev, 1, &held[i], VK_TRUE,
+                                   SC_WAIT_NS) != VK_SUCCESS)
+            break;
+         if (sc_record_and_submit(&fw, &sc2, idx[i], i) != VK_SUCCESS)
+            break;
+         const VkPresentInfoKHR pi = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &sc2.res[idx[i]].render_done,
+            .swapchainCount = 1,
+            .pSwapchains = &sc2.handle,
+            .pImageIndices = &idx[i],
+         };
+         const VkResult pr = fw.wsi.vkQueuePresentKHR(fw.queue, &pi);
+         if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR)
+            break;
+         returned++;
+      }
+
+      /* Asserted, not assumed: an image left behind here is what hung
+       * run 15, and the session after this one is the one that would
+       * hang again. */
+      t_check(t, returned == taken,
+              "every image the control held was presented back (%" PRIu32
+              " of %" PRIu32 ")", returned, taken);
+      control_returned_all = (returned == taken);
+
+      for (uint32_t i = 0; i < SC_MAX_IMAGES + 1; i++) {
          if (held[i] != VK_NULL_HANDLE)
             fw.vk.vkDestroyFence(fw.dev, held[i], NULL);
       }
@@ -1207,11 +1263,13 @@ int run_test(test_ctx *t)
     * half: a test should not start an unbounded wait it has reason to
     * believe cannot end, and it should say that it did not rather than
     * skipping in silence. */
-   if (!sc_device_alive(&fw, t, "the two-image sessions")) {
-      t_note(t, "NOT asking for an image with timeout = UINT64_MAX: the "
-                "device is already lost, so nothing can free a buffer and "
-                "this wait would only end because patch 0068 now stops it. "
-                "The infinite-timeout coverage did NOT run in this session");
+   if (!sc_device_alive(&fw, t, "the two-image sessions") ||
+       !control_returned_all) {
+      t_note(t, "NOT asking for an image with timeout = UINT64_MAX. Either "
+                "the device is lost or the control above did not hand every "
+                "image back, and in both cases nothing can free a buffer, so "
+                "this wait could only end by the driver refusing it. The "
+                "infinite-timeout coverage did NOT run in this session");
    } else {
       sc_stats st2_inf;
       sc_stats_init(&st2_inf, "2 images, FIFO, infinite acquire timeout");
