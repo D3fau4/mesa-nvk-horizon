@@ -165,6 +165,19 @@ else
             _stale=$((_stale + 1))
         fi
     done
+    # ITS OWN RULE, APPLIED TO ITS OWN COUNTER. This refuses outright
+    # when the nvk_tests list is empty, on the stated principle that a
+    # gate which checks nothing must not report success — and then
+    # printed "0 driver-linked artefact(s) checked" and exited 0, which
+    # is what happens whenever it falls back to the Makefile output in
+    # build/. Raised in review of PR #8.
+    if [ "$_checked" -eq 0 ]; then
+        echo "error: the NVK archives exist but none of the tests that" \
+             "link them ($_nvk_tests) is in $SRC, so this checked nothing." \
+             "Build the driver-linked tests and package again, or package" \
+             "a directory that has them." >&2
+        exit 1
+    fi
     echo "package-horizon: $_checked driver-linked artefact(s) checked" \
          "against $_newest_lib"
     if [ "$_stale" -gt 0 ]; then

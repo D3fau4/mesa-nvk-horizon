@@ -112,6 +112,21 @@ ms_defs=$(sed -n '/idep_mesa_core = declare_dependency(/,/^  )/p' meson.build |
           grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" | tokens)
 compare "defines" "Makefile:$mk_defs" "meson.build:$ms_defs"
 
+# AND THE NARROWING IS DECLARED, not silent. Review of PR #8 called this
+# "narrowed to silence a real difference", and the scope needs saying out
+# loud for that to be answerable: the two build paths do not build the
+# same set of tests. The Makefile builds the two that link Mesa's core
+# archives; meson also builds the NVK tests, which carry defines of their
+# own through idep_nvk_driver. Those are out of this gate's scope because
+# the Makefile has nothing to apply them to — but "out of scope" is a
+# claim, so it is printed and can be checked by eye.
+nvk_only=$(sed -n "/idep_nvk_driver = declare_dependency(/,/^  )/p" meson.build |
+           grep -o -- "'-D[A-Za-z_][A-Za-z0-9_]*'" | tokens)
+if [ -n "$nvk_only" ]; then
+    echo "check-mesa-test-parity: NOT compared — defines that reach only the" \
+         "NVK tests, which the Makefile path does not build: $nvk_only"
+fi
+
 # 4. Mesa's include paths.
 mk_incs=$(sed -n 's/^MESA_CFLAGS  *:*= *//p' Makefile |
           grep -o -- '-Imesa/[A-Za-z0-9_/]*' | sed 's/^-I//' | tokens)

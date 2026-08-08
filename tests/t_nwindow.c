@@ -446,12 +446,31 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
         if (!nw_dequeue_would_block(rc))
             return rc;
 
-        t0 = armGetSystemTick();
-        rc = nw_try_dequeue(p, true /* async=false: FIFO's own mode */, out);
-        p->last_sync_ns += armTicksToNs(armGetSystemTick() - t0);
-        p->last_sync_rc = rc;
-        if (!nw_dequeue_would_block(rc))
-            return rc;
+        /* THE SAME POLICY THE WSI USES, so this test measures what the
+         * driver does.
+         *
+         * Patch 0065 restricts async=false to an infinite timeout: it
+         * is the mode Android permits to block inside the server, and
+         * nothing can bound how long, so on a finite deadline it could
+         * overrun what vkAcquireNextImageKHR promised. That patch's
+         * message claimed this loop already worked that way. **It did
+         * not** — it asked both modes every round regardless of the
+         * budget, so the evidence cited supported the opposite of the
+         * change. Raised in review of PR #8, and correct.
+         *
+         * Now they agree, and a run measures one policy rather than
+         * two. Every caller here passes a finite budget, so async=false
+         * is not reached at all and what is being tested is whether
+         * async=true plus the sleep is enough on its own — the question
+         * 0065 leaves open. */
+        if (timeout_ns == UINT64_MAX) {
+            t0 = armGetSystemTick();
+            rc = nw_try_dequeue(p, true /* async=false */, out);
+            p->last_sync_ns += armTicksToNs(armGetSystemTick() - t0);
+            p->last_sync_rc = rc;
+            if (!nw_dequeue_would_block(rc))
+                return rc;
+        }
 
         const u64 spent_ns = armTicksToNs(armGetSystemTick() - start);
         if (spent_ns >= timeout_ns)

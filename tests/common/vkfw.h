@@ -177,7 +177,13 @@ struct vkfw_wsi_dispatch {
  * Enough for a test to ask whether the driver said a particular thing
  * without keeping a transcript. */
 #define VKFW_MESSAGE_SLOTS 16
-#define VKFW_MESSAGE_CHARS 192
+/* Long enough for the longest thing the driver says, with room. The
+ * decision line — "…wsi_horizon.c:1851]: wsi_horizon: zero-copy: the
+ * swapchain images are the scanout buffers (3 images, 1280x720, swap
+ * interval 1)" — was within about 35 characters of the old 192, and
+ * exit criterion 4 asserts on that string. A limit a checked message
+ * nearly reaches is a limit that will be crossed. */
+#define VKFW_MESSAGE_CHARS 384
 
 typedef struct vkfw {
    test_ctx *t;

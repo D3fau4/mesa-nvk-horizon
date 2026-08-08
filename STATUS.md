@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS DONE. All four exit criteria are met on hardware.** `t_nwindow` PASS 118/118 (run 11) and `t_vk_swapchain` PASS 117/117 (run 12). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Phase 7**, per `docs/milestones.md`. Nothing in Phase 6 is outstanding |
+| **Next concrete task** | **Run 13: `t_vk_swapchain` and `t_nwindow`**, both carrying patches 0065 and 0066 and the same dequeue policy. The open question is the one 0065 leaves: **is `async=true` plus the sleep enough on its own?** Every acquire in both tests uses a finite budget, so neither reaches `async=false` any more |
 | **Known failures** | **1.** `t_fault` still takes the console down on exit. **2.** `t_vk_texture`'s one unexplained occurrence stays on the record. Neither is Phase 6 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
@@ -23,8 +23,70 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What is still unverified** | **The copy fallback's layout.** The pattern frames — the only layout oracle this phase has — are presented on the zero-copy path alone; the fallback presents solid colours, which survive any stride or swizzle error unchanged, so its 90-of-90 is not evidence about layout either way. Costs one hardware run to close: present the pattern under `MESA_VK_WSI_HORIZON_FORCE_COPY` too. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
-| **Never verified on hardware** | The reverse staleness gate has been broken in both directions here but has not yet caught a real regression; `t_fault` as it stands |
+| **Never verified on hardware** | Patches **0065** and **0066**, and the `t_nwindow` policy change beside them; `t_fault` as it stands |
 
+
+---
+
+## The branch review — twenty-one findings, twenty-one real (2026-08-08)
+
+Every one was checked against the code before being accepted. None was
+noise. Fixed across `8e3d16a`, `6b5ee33`, patch **0065**, patch **0066**
+and the commit this section lands in.
+
+### The three that were about the record, not the code
+
+- **Exit criterion 2 was overstated** — its own section above.
+- **The two PASS logs are two different builds**, `5995c12` and
+  `d41e12a`, narrated as one body of evidence while
+  `scripts/package-horizon.sh` refuses exactly that pairing. Stated in
+  `docs/hw-logs/README.md`.
+- **Patch 0065's commit message cited `t_nwindow` as evidence for the
+  opposite of what it does.** It claimed a finite timeout gets
+  async=true and the sleep "which is what t_nwindow uses"; `nw_dequeue`
+  asked both modes every round regardless of the budget. The spec
+  argument for 0065 stands on its own — nothing can bound how long
+  async=false blocks — but the evidence cited did not support it, and
+  the regression risk to the two-image case is unmeasured. `t_nwindow`
+  now applies the same policy, so a run measures one policy in both.
+
+### Eleven in the driver (0066)
+
+`presentable` read without the lock that writes it; the acquire loop
+never re-checking it, so an evicted swapchain on an infinite timeout
+waited forever; `LibnxBinderError_NoInit` overloaded with no boundary —
+now bounded by ownership, since a producer that still owns its window
+and says NO_INIT is full and one that does not is gone; the
+`eventActive` guard left dead by 0064, failing valid windows with a
+false message; a TOCTOU between reading ownership and cancelling slots
+in teardown; no check that the row stride covers the width; IMMEDIATE
+still degrading to FIFO on the copy fallback, which 0065 fixed on one
+path only; the fallback narrowing rows silently; and `try_dequeue`
+reporting the cancel's failure instead of the fault, with a negative
+slot handed to `bqCancelBuffer`.
+
+Two are noted and not changed: `blocking` is the negation of the
+`async` argument it controls — a naming hazard in the function this
+series misdiagnosed across four patches — and `consumer_running_behind`
+is never updated since 0055, because the zero-copy path bypasses
+`nwindowQueueBuffer`. Renaming the parameter touches every call site in
+the file and is deliberately not mixed into a correctness patch.
+
+### Five in tests and tooling
+
+Exit criterion 4's check was inside `if (zc)`, so the case where the
+decision is most in doubt was the one case that could not fail it; it
+fails now. `vkfw`'s message buffer was documented as a ring and
+implemented as a truncating prefix, keeping the first sixteen — and exit
+criterion 4 asserts against it; it is a ring now, and
+`VKFW_MESSAGE_CHARS` went from 192 to 384 because the asserted message
+was within about 35 characters of the old limit.
+`scripts/package-horizon.sh` could check zero artefacts and exit 0,
+which is its own stated rule unapplied to its own counter; it fails, and
+was broken in both directions. `check-mesa-test-parity.sh`'s narrowing
+now prints what it does not compare and why. And the build stamp gained
+milliseconds, because two builds in the same second read identical and
+telling two builds apart is its whole job.
 
 ---
 

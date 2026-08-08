@@ -1226,16 +1226,23 @@ int run_test(test_ctx *t)
          sc_run(&fw, &sc_c, SC_FRAMES, 0, &st_copy);
          sc_report(t, &st_copy, SC_FRAMES);
 
-         if (zc) {
-            t_check(t, copied,
-                    "the same application got a different present path when "
-                    "it asked for one: zero-copy by default, the copy "
-                    "fallback when forced");
-         } else {
+         /* NOT `if (zc)`. This used to be gated on the default path
+          * having reached zero-copy, so the case where "the decision is
+          * observable" is most in doubt — a driver that never achieves
+          * zero-copy — was the one case that could not fail this
+          * check. Exit criterion 4 asks whether the same application
+          * gets a different path when it asks for one; if the two paths
+          * came out the same, that is the criterion failing and it says
+          * so. Raised in review of PR #8. */
+         t_check(t, copied && zc,
+                 "the same application got a different present path when it "
+                 "asked for one: zero-copy by default, the copy fallback "
+                 "when forced");
+         if (!zc) {
             t_note(t, "the default path was ALREADY the copy fallback, so "
-                      "forcing it changes nothing. The reason zero-copy was "
-                      "declined is in the message above, and it is the "
-                      "finding of this section");
+                      "forcing it changed nothing. The reason zero-copy was "
+                      "declined is in the message above, and it is why the "
+                      "check above failed rather than being skipped");
          }
 
          t_note(t, "record+submit cost per frame: %" PRIu64 " us on the "

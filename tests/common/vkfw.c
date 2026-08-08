@@ -86,10 +86,16 @@ vkfw_debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     * driver said rather than on a log a human has to read. Oldest
     * messages are kept and later ones dropped: the decisions worth
     * asserting on are made at creation. */
-   if (fw->message_count < VKFW_MESSAGE_SLOTS) {
-      snprintf(fw->messages[fw->message_count], VKFW_MESSAGE_CHARS,
-               "%s", text);
-   }
+   /* A REAL RING, which is what vkfw.h has always said this is.
+    *
+    * It kept the FIRST sixteen and dropped everything after, while the
+    * header promised "the last VKFW_MESSAGE_SLOTS messages, oldest
+    * first once it wraps". Exit criterion 4 asserts against this
+    * buffer, so a driver that says more than sixteen things before its
+    * decision would have had that decision silently discarded. Raised
+    * in review of PR #8. */
+   snprintf(fw->messages[fw->message_count % VKFW_MESSAGE_SLOTS],
+            VKFW_MESSAGE_CHARS, "%s", text);
    fw->message_count++;
 
    return VK_FALSE;

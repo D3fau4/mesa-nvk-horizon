@@ -36,7 +36,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Milliseconds, because seconds are not enough. Review of PR #8: two
+# builds within the same second over the same HEAD produce identical
+# stamps, and telling two builds apart is the whole job — the run-11
+# failure was exactly a binary that could not be told from another.
+stamp=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 
 # Short HEAD, when this is a git checkout and git is available. A tree
 # with local edits says so, because "the commit it was built from" is a
