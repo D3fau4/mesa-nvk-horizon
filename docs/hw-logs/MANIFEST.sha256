@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-ee11aa4a3dba1b5a08157412bbf9c95de055fee20bcbb09605b3ea24bd3eebc8  README.md
+124e32a1b06bb20b2e9273121dc4d213ceb10084b3e54b4814a0972c555e6fed  README.md
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
 718f0d37974da73d04a552c64d5d8024b9de3fdac638307779b35d1e615a3fa1  t_channel.log
@@ -26,6 +26,8 @@ a8de4548b80a77b7f9f082e6de5f5ad6ba9ef11e2c6ef02f55bdec31064e27af  t_init.log
 ae30978b2ffd0724dc35cbe6d2c43547342c144883beaeee887f79e74e3cf222  t_map.log
 a799bbdf5c326fc0c697dc642758448de6158478bf1ce6ba835c0d126486557b  t_nvmap.log
 cc7b2713b85fb9a7a267daa4c8498938a4b5ff253389f7853870aee46c2be615  t_nwindow-run1-phase6-FAIL.log
+647ebddf5a73f7743a5a40cd791869b0bc772bf34e0c193e5c570122c3a7c36d  t_nwindow-run10-applet-starving-the-compositor-FAIL.log
+181a2eee558881a583ef2250cff3fc121c95cc4065a9ff8af41b520870a1ef12  t_nwindow-run10-full-memory-identical-FAIL.log
 967e5c9873d58947672de16c27740feed760d765ad0c06d302803ef43c47d522  t_nwindow-run2-blocking-dequeue-FAIL.log
 0f3e9dc02285d1480b093cd523546e2fe702c0c2b41bdc6188ce5c76cbc20553  t_nwindow-run3-STALE-BINARIES.log
 fca60c8cd90a5ae2fd1974ec1a2cd4f33dff71995111ab53b799f08f4257f2f1  t_nwindow-run4-starves-at-two-FAIL.log

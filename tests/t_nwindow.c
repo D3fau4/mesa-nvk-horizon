@@ -133,6 +133,18 @@ const bool test_uses_display = true;
  * many times the release event fired, not only whether it fired. */
 #define NW_STARVE_SLICE_NS     UINT64_C(100000000)
 
+/* HOW LONG TO SLEEP BETWEEN DEQUEUE ATTEMPTS, AND WHY THERE HAS TO BE
+ * ONE. The release event is permanently signalled (run 6: 84327
+ * eventWait returns in five seconds), so waiting on it is not a wait —
+ * it returns at once and the retry loop has no idle in it at all.
+ * Measured in run 10: a failing dequeue made 8320 rounds in one second
+ * and spent 989 ms of that second inside bqDequeueBuffer, two binder
+ * calls per round, ~17000 transactions a second into the compositor's
+ * own service. An eighth of a refresh is short enough to cost nothing
+ * against a 16.7 ms frame and long enough to leave the compositor
+ * alone. */
+#define NW_POLL_SLEEP_NS       (NW_REFRESH_NS / 8)
+
 /* Frames per measured session. 90 at 60 Hz is a second and a half —
  * long enough that a mean is not noise, short enough that five sessions
  * plus teardown stay inside ten seconds of the operator's time. */
@@ -372,47 +384,40 @@ static bool nw_dequeue_would_block(Result rc)
                           LibnxBinderError_InvalidOperation);
 }
 
-/* BOTH MODES, EVERY ITERATION, AND THE BUDGET SPENT IN SLICES.
+/* BOTH MODES, AND A REAL SLEEP BETWEEN ROUNDS.
  *
- * THE MEASUREMENT THIS RESTS ON (run 7, 2026-08-05, on the window that
- * had just failed, twice in one run):
+ * WHAT RUN 10 MEASURED, and it refutes every reading before it. The
+ * failing dequeue reported itself for the first time:
  *
- *   2 buffers, interval 1: asked for 5000 ms — 78166 dequeue(s) in
- *   libnx's mode, release event fired 78165 time(s), last result
- *   0x0000115d
- *   2 buffers, interval 1: async=false returned 0x00000000 after 145 us
+ *   the failing dequeue made 8320 round(s); async=true 490818 us total,
+ *   last 0x0000115d; async=false 499026 us total, last 0x0000115d
  *
- * async=true answers NO_INIT for as long as you care to ask; async=false
- * hands over a buffer immediately, and does **not** block inside the
- * compositor — the one behaviour that could not be ruled out before it
- * was tried.
+ * Both modes were reached, both answered NO_INIT, and together they
+ * account for **989 ms of the 1000 ms budget**. The loop had no idle in
+ * it at all: the release event is a level, so eventWait returned at
+ * once, and what was left was ~17000 binder transactions a second into
+ * the compositor's own service.
  *
- * THE READING. Android's producer takes `async` to mean "this producer
- * is in asynchronous mode": queueBuffer never blocks and older frames
- * are dropped, which costs the queue one buffer held in reserve. A
- * two-buffer queue with both buffers out cannot spare it, so async=true
- * has nothing to give. FIFO presentation is synchronous by definition,
- * so async=false is the mode that actually describes it. Every
- * observation fits: three buffers usually have a free slot and answer
- * async=true fine; the reconstructed probe drops a frame, freeing a
- * slot, and answers async=true fine; and the concurrency count reports
- * WOULD_BLOCK when three slots are exhausted but NO_INIT when two are —
- * two different conditions, which is what "the count ran out" versus
- * "the reserve cannot be met" looks like.
+ * And then, three lines later in the same log:
  *
- * WHY THIS IS NOT PATCH 0061 AGAIN. 0061 had the right mode and used it
- * wrongly: async=false was tried *only* after an eventWait that had
- * already consumed the entire budget, and async=true was never asked
- * again. Here both modes are asked on every iteration, async=true first
- * because it is libnx's and the common case, and the wait between
- * rounds is sliced so no single call can eat the deadline.
+ *   THE TIME — a buffer came back after 146 us, in async=true
  *
- * The release event is still waited on, and it is worth being precise
- * about why it is nearly useless: run 6 measured 84327 returns in five
- * seconds, 59 us apiece. It is permanently signalled — a level, not an
- * edge — so the wait is really a yield. It stays because a yield
- * between rounds is the right thing to do and because a window without
- * one still has to work.
+ * async=true, first round, 146 us — immediately after failing 8320
+ * times in the second before. The only thing that happened in between
+ * was a t_note writing a line to the SD card. Run 9 has the same shape
+ * with a different pause: async=false blocked for 10 ms and then
+ * delivered. The slow lane closes it — a three-second budget makes no
+ * difference, 23192 rounds and the same NO_INIT, so more asking never
+ * helps and stopping always does.
+ *
+ * **We were starving the compositor.** A buffer appears within
+ * microseconds of the moment this process stops hammering the queue,
+ * and no amount of hammering brings one. Three buffers never showed it
+ * because a slot is nearly always free and the loop never spins.
+ *
+ * So the wait is a real sleep now. Not eventWait: that call cannot wait
+ * on this window, and dressing a spin up as a wait is what hid this for
+ * five runs.
  */
 static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
 {
@@ -442,17 +447,14 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
         if (!nw_dequeue_would_block(rc))
             return rc;
 
-        if (!eventActive(&p->win->event))
-            return rc;  /* nothing to wait on; report what was said */
-
         const u64 spent_ns = armTicksToNs(armGetSystemTick() - start);
         if (spent_ns >= timeout_ns)
             return MAKERESULT(Module_Libnx, LibnxError_Timeout);
 
         uint64_t slice = timeout_ns - spent_ns;
-        if (slice > NW_REFRESH_NS * 2)
-            slice = NW_REFRESH_NS * 2;
-        eventWait(&p->win->event, slice);
+        if (slice > NW_POLL_SLEEP_NS)
+            slice = NW_POLL_SLEEP_NS;
+        svcSleepThread(slice);
     }
 }
 

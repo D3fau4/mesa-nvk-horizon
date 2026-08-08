@@ -12,18 +12,84 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console nine times.** Run 9 turned the two-buffer failure into a rate: a two-buffer window delivers **about one buffer per second**, where three delivers one every 16 ms — and the recovery arm proves it repeats rather than being a startup transient. Three of four exit criteria are met. Runs 2 and 4 stand: 89 of 89 intervals inside 10% of a 60 Hz refresh, zero-copy chosen by the driver, the pattern confirmed by the operator, no leak and no exit crash |
+| **Phase** | **Phase 6 has been to the console ten times, and run 10 found the cause: we were starving the compositor.** The failing dequeue reported itself for the first time — 8320 rounds in one second, **989 ms of them inside `bqDequeueBuffer`**, ~17000 binder transactions a second — and a buffer arrived in 146 us on the first attempt after a pause. Fixed by sleeping between rounds, in `t_nwindow` and as patch **0064**; unrun. Three of four exit criteria are met |
 | **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 10: `t_nwindow`, the slow lane.** Ten frames on two buffers with a **three-second** budget per dequeue and every duration printed — every dequeue in the test is otherwise cut off at one second, which is exactly where the boundary sits. Plus the failing dequeue now reports its own rounds and per-mode times instead of leaving them to be inferred from a later probe |
-| **Known failures** | **1. A two-buffer window delivers about one buffer per second**, nine runs; three buffers deliver one every 16 ms. Two-buffer sessions carry **zero** release fences where three-buffer ones carry 87 of 90. **Ruled out:** the dequeue mode alone (0059, 0061, 0063), the release event (0062), session position (run 7's A/B), and a startup transient (run 9's recovery arm). **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Next concrete task** | **Run 11: `t_nwindow` and `t_vk_swapchain` with the sleep.** If the reading is right, the two-buffer sessions present 90 of 90 and the 2-vs-3 pacing comparison — the half of exit criterion 2 that has never run — finally runs |
+| **Known failures** | **1. A two-buffer window stops at the third frame** — ten runs, **cause found**: the retry loop spun on binder at ~17000 transactions a second and starved the compositor it was waiting for. Fixed in `t_nwindow` and as patch 0064; **unrun**. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether the ~1 s is where a buffer becomes free or where our budget cuts off. Whether `minImageCount = 2` is a promise this compositor can keep. Any display mode change. Anything multi-threaded |
+| **What is still unverified** | Whether the sleep makes a two-buffer session present. Whether `minImageCount = 2` is a promise this compositor can keep. Any display mode change. Anything multi-threaded |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Run 9 moved it much closer to yes — one buffer per second is not FIFO — but the slow lane decides it with a number rather than an inference |
-| **Never verified on hardware** | The slow lane and the instrumented `nw_dequeue`; `t_fault` as it stands |
+| **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Run 10 moved it back towards no — the two-buffer failure is ours, not the platform's. Decided by run 11 |
+| **Never verified on hardware** | Patch **0064** and the `t_nwindow` sleep beside it; `t_fault` as it stands |
+
+
+---
+
+## Run 10 — we were starving the compositor (2026-08-08)
+
+**Class: hardware (HW), twice.** `t_nwindow` 113/118 in applet mode and
+113/118 in title-takeover mode, build `2026-08-05T18:45:48Z b246f2d`.
+Logs in `docs/hw-logs/t_nwindow-run10-*`.
+
+### The failing dequeue reported itself, and it was the loop
+
+```
+  note 2 buffers, interval 1: the failing dequeue made 8320 round(s);
+       async=true 490818 us total, last 0x0000115d;
+       async=false 499026 us total, last 0x0000115d
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 146 us
+       (0 refresh(es)), in async=true
+```
+
+Both modes reached, both answering `NO_INIT`, and together **989 ms of
+the 1000 ms budget spent inside `bqDequeueBuffer`** — roughly 17000
+binder transactions a second into the compositor's own service. The loop
+had no idle in it at all, because the release event is a level and
+`eventWait` returns immediately.
+
+And then `async=true` returned a buffer in **146 us, first attempt**,
+after failing 8320 times in the second before it. The only thing between
+the two was a `t_note` writing a line to the SD card. Run 9 has the same
+shape with a different pause: `async=false` blocked 10 ms and delivered.
+
+The slow lane closes it: a **three-second** budget changes nothing —
+23192 rounds, same answer — and the two frames that did go through took
+171 us and 149 us. **More asking never helps; stopping always does.**
+
+So the producer was starving the consumer it was waiting for. Three
+buffers never showed it because a slot is nearly always free and the
+loop never spins; two buffers spin on every frame.
+
+### Every earlier reading, and what was wrong with it
+
+- **0059, 0061, 0063 — the dequeue mode.** Both modes are reached and
+  both fail. The mode was never it.
+- **0062 — slicing the wait.** It dressed a spin up as a wait, which is
+  what hid this for five runs. Superseded by 0064.
+- **Run 7's `async=false` in 145 us**, and run 9's 9996 us, and run 10's
+  146 us in `async=true`: all the same fact seen three ways. What
+  delivered the buffer was not the mode — it was the pause before it.
+- **Run 9's "one buffer per second".** Wrong. It is one buffer per
+  *pause*, and the second was our own budget.
+
+### Applet mode is not the variable
+
+The operator ran the same binary in applet mode and in title-takeover
+(full memory) mode. Identical to within noise: 8320 rounds against 8270,
+989 ms against 990 ms inside binder, 23192 against 23032 in the slow
+lane, 146 us against 138 us for the buffer that arrives once the asking
+stops. That was a live hypothesis and it is now closed.
+
+### The fix
+
+`svcSleepThread` for an eighth of a refresh between rounds, in
+`t_nwindow` and as **patch 0064** in the WSI. Nothing against a 16.7 ms
+frame, and enough to leave the compositor alone. The caller's deadline
+stays at the top of the loop, so `vkAcquireNextImageKHR(timeout = 0)`
+still answers `VK_NOT_READY` without ever reaching the sleep.
 
 
 ---

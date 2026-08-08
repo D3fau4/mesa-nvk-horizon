@@ -27,6 +27,48 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## We were starving the compositor
+
+### `t_nwindow-run10-applet-starving-the-compositor-FAIL.log`, `t_nwindow-run10-full-memory-identical-FAIL.log`
+
+The first log in which the failing dequeue reports itself instead of being
+inferred from a probe that runs afterwards on a window in a different state:
+
+```
+  note 2 buffers, interval 1: the failing dequeue made 8320 round(s);
+       async=true 490818 us total, last 0x0000115d;
+       async=false 499026 us total, last 0x0000115d
+  note 2 buffers, interval 1: THE TIME — a buffer came back after 146 us
+       (0 refresh(es)), in async=true
+```
+
+Both dequeue modes were reached, both answered `NO_INIT`, and together they
+account for **989 ms of the 1000 ms budget**. The loop had no idle in it: the
+release event is a level, `eventWait` returned at once, and what was left was
+~17000 binder transactions a second into the compositor's own service.
+
+Then, three lines later, `async=true` returned a buffer in **146 us on its
+first attempt** — after failing 8320 times in the second before. The only thing
+that happened in between was a `t_note` writing one line to the SD card. Run 9
+has the same shape with a different pause: `async=false` blocked for 10 ms and
+delivered.
+
+The slow lane closes it. A **three-second** budget changes nothing — 23192
+rounds, same `NO_INIT`, and the two frames that did go through took **171 us
+and 149 us**. More asking never helps; stopping always does.
+
+**The producer was starving the consumer it was waiting for.** Three buffers
+never showed it because a slot is nearly always free and the loop never spins.
+Two buffers spin on every frame. Fixed by sleeping an eighth of a refresh
+between rounds instead of calling `eventWait` on an event that cannot wait —
+in `t_nwindow`, and as patch 0064 in the WSI, which supersedes 0062's slicing.
+
+**Applet mode is not the variable.** The operator ran the same binary in applet
+mode and in title-takeover (full memory) mode. The numbers are the same to
+within noise: 8320 rounds against 8270, 989 ms against 990 ms in binder, 23192
+rounds against 23032 in the slow lane, 146 us against 138 us for the buffer
+that arrives once the asking stops.
+
 ## One buffer per second, not one per refresh
 
 ### `t_nwindow-run9-one-buffer-per-second-FAIL.log`
