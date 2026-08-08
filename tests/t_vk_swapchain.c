@@ -183,6 +183,11 @@ typedef struct sc_swapchain {
    sc_frame_res res[SC_MAX_IMAGES];
    VkFence acquire_fence;
    VkExtent2D extent;
+   /* What every acquire on this swapchain asks for. SC_WAIT_NS unless a
+    * section deliberately changes it: the driver's dequeue policy used
+    * to branch on finite-versus-infinite, and no test had ever taken
+    * the infinite side. */
+   uint64_t acquire_timeout_ns;
 } sc_swapchain;
 
 /* A visible colour that changes every frame: three phase-shifted ramps,
@@ -286,6 +291,7 @@ static bool sc_create(vkfw *fw, VkSurfaceKHR surface, uint32_t want_images,
    test_ctx *t = fw->t;
    memset(sc, 0, sizeof(*sc));
    sc->extent = extent;
+   sc->acquire_timeout_ns = SC_WAIT_NS;
 
    const VkSwapchainCreateInfoKHR ci = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -557,7 +563,8 @@ static uint32_t sc_show_pattern(vkfw *fw, sc_swapchain *sc, VkBuffer src,
    for (uint32_t frame = 0; frame < frames; frame++) {
       uint32_t index = 0;
       VkResult r = fw->wsi.vkAcquireNextImageKHR(fw->dev, sc->handle,
-                                                 SC_WAIT_NS, VK_NULL_HANDLE,
+                                                 sc->acquire_timeout_ns,
+                                                 VK_NULL_HANDLE,
                                                  sc->acquire_fence, &index);
       if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
          *fail_out = r;
@@ -614,7 +621,7 @@ static void sc_run(vkfw *fw, sc_swapchain *sc, uint32_t frames,
 
       uint32_t index = 0;
       VkResult r = fw->wsi.vkAcquireNextImageKHR(fw->dev, sc->handle,
-                                                 SC_WAIT_NS,
+                                                 sc->acquire_timeout_ns,
                                                  VK_NULL_HANDLE,
                                                  sc->acquire_fence, &index);
       if (r == VK_SUBOPTIMAL_KHR) {
@@ -1047,6 +1054,138 @@ int run_test(test_ctx *t)
    if (load_ns != 0) {
       sc_run(&fw, &sc2, SC_FRAMES, load_ns, &st2_load);
       ran2_load = sc_report(t, &st2_load, SC_FRAMES);
+   }
+
+   /* --- THE INFINITE TIMEOUT, WHICH NOTHING HAD EVER ASKED FOR -----
+    *
+    * `timeout == UINT64_MAX` is not an exotic value: it is what an
+    * application writes when it simply wants the next image, and it is
+    * what most engines pass. Every acquire in this file used a finite
+    * budget, so the branch the driver took on the infinite side had no
+    * coverage at all — and until patch 0067 that branch was a different
+    * dequeue mode, not a different deadline.
+    *
+    * Two images on purpose: this is the configuration where the
+    * producer must actually wait for the compositor, so an acquire that
+    * only works because a buffer happened to be free would not be
+    * measured here.
+    *
+    * If the dequeue policy is wrong this HANGS rather than failing —
+    * there is no deadline left to expire. That is the risk of covering
+    * this at all, and the driver logs "no buffer in 3000 ms and this
+    * swapchain still owns the window" while it is stuck, so a hang has
+    * a cause on screen rather than being a black rectangle. It is worth
+    * the risk while the same loop, at a finite budget, presents 90 of
+    * 90 three lines above: the two differ only in which deadline check
+    * fires. */
+   /* THE POSITIVE CONTROL, WITHOUT WHICH THE CHECK BELOW SAYS NOTHING.
+    *
+    * "No acquire returned VK_TIMEOUT" is worth exactly as much as this
+    * test's ability to see a VK_TIMEOUT at all. A backend that returned
+    * VK_SUCCESS with a garbage index, or one whose acquire could not
+    * fail, would pass it without ever having been asked a question.
+    *
+    * So both images are taken and held, which on a two-image swapchain
+    * means nothing is free, and the acquire is asked twice more: once
+    * with a millisecond, which must be VK_TIMEOUT, and once with zero,
+    * which must be VK_NOT_READY. Those are the two results the
+    * specification distinguishes and nothing here had ever produced.
+    * The images are handed back by presenting them — Vulkan has no
+    * un-acquire. */
+   {
+      const VkFenceCreateInfo fci = {
+         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+      };
+      VkFence held[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+      bool made = true;
+      for (uint32_t i = 0; i < 3; i++) {
+         if (fw.vk.vkCreateFence(fw.dev, &fci, NULL, &held[i]) != VK_SUCCESS)
+            made = false;
+      }
+
+      uint32_t idx[2] = { 0, 0 };
+      VkResult ar[2] = { VK_ERROR_UNKNOWN, VK_ERROR_UNKNOWN };
+      if (made) {
+         for (uint32_t i = 0; i < 2; i++)
+            ar[i] = fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle,
+                                                 SC_WAIT_NS, VK_NULL_HANDLE,
+                                                 held[i], &idx[i]);
+      }
+
+      if (made && ar[0] == VK_SUCCESS && ar[1] == VK_SUCCESS) {
+         uint32_t spare = 0;
+         const VkResult r_ms =
+            fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle,
+                                         UINT64_C(1000000) /* 1 ms */,
+                                         VK_NULL_HANDLE, held[2], &spare);
+         t_check(t, r_ms == VK_TIMEOUT,
+                 "with both images held, a 1 ms acquire times out -> %s",
+                 vkfw_result_str(r_ms));
+
+         const VkResult r_zero =
+            fw.wsi.vkAcquireNextImageKHR(fw.dev, sc2.handle, 0,
+                                         VK_NULL_HANDLE, held[2], &spare);
+         t_check(t, r_zero == VK_NOT_READY,
+                 "with both images held, a zero-timeout acquire is "
+                 "VK_NOT_READY rather than a timeout -> %s",
+                 vkfw_result_str(r_zero));
+
+         /* Give them back. Both fences are signalled by now or the
+          * acquires above would not have returned VK_SUCCESS, but the
+          * wait is what makes that true rather than assumed. */
+         if (fw.vk.vkWaitForFences(fw.dev, 2, held, VK_TRUE,
+                                   SC_WAIT_NS) == VK_SUCCESS) {
+            for (uint32_t i = 0; i < 2; i++) {
+               if (sc_record_and_submit(&fw, &sc2, idx[i], i) != VK_SUCCESS)
+                  break;
+               const VkPresentInfoKHR pi = {
+                  .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                  .waitSemaphoreCount = 1,
+                  .pWaitSemaphores = &sc2.res[idx[i]].render_done,
+                  .swapchainCount = 1,
+                  .pSwapchains = &sc2.handle,
+                  .pImageIndices = &idx[i],
+               };
+               if (fw.wsi.vkQueuePresentKHR(fw.queue, &pi) != VK_SUCCESS)
+                  break;
+            }
+         }
+      } else {
+         t_note(t, "the two images could not both be held (%s, %s), so the "
+                   "acquire's failure results were not exercised and the "
+                   "VK_TIMEOUT check below has no control behind it",
+                vkfw_result_str(ar[0]), vkfw_result_str(ar[1]));
+      }
+
+      for (uint32_t i = 0; i < 3; i++) {
+         if (held[i] != VK_NULL_HANDLE)
+            fw.vk.vkDestroyFence(fw.dev, held[i], NULL);
+      }
+   }
+
+   {
+      sc_stats st2_inf;
+      sc_stats_init(&st2_inf, "2 images, FIFO, infinite acquire timeout");
+      sc2.acquire_timeout_ns = UINT64_MAX;
+      t_note(t, "acquiring with timeout = UINT64_MAX for %" PRIu32 " frames. "
+                "If the driver's dequeue policy cannot get a buffer, this "
+                "hangs instead of failing, and the driver says so in the log "
+                "after three seconds", SC_SHORT_FRAMES);
+      sc_run(&fw, &sc2, SC_SHORT_FRAMES, 0, &st2_inf);
+      sc_report(t, &st2_inf, SC_SHORT_FRAMES);
+      sc2.acquire_timeout_ns = SC_WAIT_NS;
+
+      /* NOT gated on that run having worked, and not a second copy of
+       * its frame count either — sc_report already fails on the count.
+       * What this adds is the one result an infinite timeout makes
+       * impossible by definition: VK_TIMEOUT is what a deadline
+       * produces, and this acquire has no deadline. Writing it as
+       * `if (ran) t_check(...)` would skip it in precisely the case it
+       * exists for, which is the mistake exit criterion 4 was already
+       * caught making. */
+      t_check(t, !(st2_inf.failed && st2_inf.fail_result == VK_TIMEOUT),
+              "no acquire returned VK_TIMEOUT with timeout = UINT64_MAX, "
+              "which the specification does not permit");
    }
 
    if (ran3_load && ran2_load) {

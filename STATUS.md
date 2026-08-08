@@ -12,19 +12,86 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **PHASE 6 IS DONE. All four exit criteria are met on hardware.** `t_nwindow` PASS 118/118 (run 11) and `t_vk_swapchain` PASS 117/117 (run 12). A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **Phase** | **PHASE 6 IS DONE. All four exit criteria are met on hardware.** Run 13 (2026-08-08) is the first in which **both tests passed on the same build** — `2026-08-08T15:40:28.620Z b958bd0 mesa:587ac72`, `t_nwindow` PASS 118/118 and `t_vk_swapchain` PASS 120/120 — which closes the review finding that the previous pair of PASS logs were two different builds. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present |
-| **Next concrete task** | **Run 13: `t_vk_swapchain` and `t_nwindow` from batch 14** — batch 13 was packaged and never run, and is superseded, because `t_vk_swapchain` has changed since. The run answers two questions, not one. **(a)** The one 0065 leaves: *is `async=true` plus the sleep enough on its own?* Every acquire in both tests uses a finite budget, so neither reaches `async=false` any more. **(b)** *Is the copy fallback's memory layout right?* The pattern is now shown twice, once per present path, and the operator is asked twice |
+| **Next concrete task** | **Two things, one of which needs no console.** (a) **The operator's two answers from run 13** — the pattern was shown twice, once per present path, and both showings presented 120 of 120 frames, but *how they looked* has not been reported yet and that is the whole of the fallback's layout evidence. (b) **Run 14 from batch 15**: patch **0067** deletes the second dequeue mode, and both tests now exercise `timeout = UINT64_MAX`, which nothing in this tree had ever passed |
 | **Known failures** | **1.** `t_fault` still takes the console down on exit. **2.** `t_vk_texture`'s one unexplained occurrence stays on the record. Neither is Phase 6 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
-| **Exit criteria** | **1. Met** (89/89 intervals within 10% of 16666 us). **3. Met.** **4. Met**, though the check that proves it is gated on zero-copy succeeding. **2. OVERSTATED — see the correction below.** The structural half stands (3 concurrent slots against 2). The pacing half measured a 50% difference in *throughput*, not the burst absorption the test claims: under the same load, `over_1p5_refresh` is **45 with three images and 45 with two** |
+| **Exit criteria** | **1. Met** (89 of 89 intervals within 10% of 16666 us, run 13). **3. Met.** **4. Met**, and since run 13 the check that proves it is no longer gated on zero-copy succeeding. **2. Met as throughput, and only as throughput** — the structural half stands (3 concurrent slots against 2) and the pacing half is a 50% difference in throughput (25170 us against 16837 us, run 13), *not* the burst absorption the tests originally claimed: `over_1p5_refresh` is **45 with three images and 45 with two**, twice measured |
 | **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was |
-| **Never verified on hardware** | Patches **0065** and **0066**, and the `t_nwindow` policy change beside them; `t_fault` as it stands |
+| **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
+| **Never verified on hardware** | Patch **0067**; the `timeout = UINT64_MAX` coverage in both tests and the positive control beside it; `t_fault` as it stands. 0065 and 0066 are no longer on this list: run 13 carried both |
 
+
+---
+
+## Run 13 — the answer, and what it retired (2026-08-08)
+
+Build `2026-08-08T15:40:28.620Z b958bd0 mesa:587ac72`, both tests, one
+build. `t_nwindow` PASS 118/118, `t_vk_swapchain` PASS 120/120.
+Recorded as `docs/hw-logs/t_nwindow-run13-PASS.log` and
+`docs/hw-logs/t_vk_swapchain-run13-PASS.log`.
+
+### The question it was built to answer
+
+Patch 0065 restricted `async=false` to an infinite timeout, and since
+every acquire in both tests carries a finite budget, run 13 is the first
+run in which that mode could not be reached at all. What was left had to
+carry the two-buffer case on its own, and it did:
+
+| | 2 images / buffers | 3 |
+|---|---|---|
+| `t_vk_swapchain` FIFO | 90 of 90, **87 of 89** within 10% | 90 of 90, **89 of 89** |
+| acquire | mean 15719 us / max 21303 us | mean 15733 us / max 16075 us |
+| `t_nwindow` raw `bq*` | 90 of 90, **87 of 89** within 10% | 90 of 90, 86 of 89 |
+| dequeue | mean 2254 us / max 6581 us | mean 230 us / max 13202 us |
+
+So `async=true` plus a real sleep is sufficient by itself. **Patch 0067
+deletes the second mode**, and with it the `blocking` parameter that
+existed only to select it — which also settles the naming finding from
+the PR #8 review by deletion rather than by renaming.
+
+The 2026-08-05 measurement that had put `async=false` there in the first
+place — `async=true` answering NO_INIT 78166 times running while
+`async=false` produced a buffer in 145 us — was taken from a loop with
+no idle in it. It measured the spin, not the mode.
+
+### What run 13 also settled, without being asked
+
+- **Both PASS logs are from one build.** The review found the previous
+  pair were `5995c12` and `d41e12a` narrated as one body of evidence.
+  This pair is one stamp, and `scripts/package-horizon.sh` is what
+  makes that checkable rather than claimed.
+- **Exit criterion 4's check is no longer gated on zero-copy.** It ran
+  ungated and passed: `zero-copy by default, the copy fallback when
+  forced`, both named by the driver in one run.
+- **The eviction refusal**, added blind after the review: `a swapchain
+  over a window that already has one, with no oldSwapchain, is refused
+  with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`, and the incumbent still
+  acquired afterwards.
+- **Criterion 2 measured the same way a second time** — 45 and 45 over
+  1.5 refreshes, 25170 us against 16837 us. The corrected claim
+  reproduces; the original one would have failed again.
+
+### The NO_INIT overload, seen from outside
+
+`t_nwindow` line 64: the dequeue that ends the two-buffer count returns
+**`0x0000115d`** (`LibnxBinderError_NoInit`), while the three-buffer one
+returns **`0x00001d5d`** (`WouldBlock`). Same condition — no buffer free
+— reported two different ways depending on how full the queue is. That
+is the overload patch 0066 bounded by ownership rather than by result
+code, and this is the first log that shows both codes side by side in
+one run.
+
+### What run 13 did not answer
+
+**How the pattern looked.** Both showings presented 120 of 120 frames,
+which says they reached the compositor and nothing about their layout.
+The operator's two answers are still outstanding, and the second one is
+the entire layout evidence for the copy fallback.
 
 ---
 

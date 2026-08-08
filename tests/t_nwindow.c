@@ -447,30 +447,26 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
             return rc;
 
         /* THE SAME POLICY THE WSI USES, so this test measures what the
-         * driver does.
+         * driver does — and since patch 0067 that is one policy at
+         * every timeout rather than two.
          *
-         * Patch 0065 restricts async=false to an infinite timeout: it
-         * is the mode Android permits to block inside the server, and
-         * nothing can bound how long, so on a finite deadline it could
+         * The history is worth keeping because it is how the mistake
+         * was made. 0065 restricted async=false to an infinite timeout:
+         * it is the mode Android permits to block inside the server,
+         * nothing can bound how long, and on a finite deadline it could
          * overrun what vkAcquireNextImageKHR promised. That patch's
-         * message claimed this loop already worked that way. **It did
-         * not** — it asked both modes every round regardless of the
+         * message claimed this loop already worked that way; it did
+         * not, it asked both modes every round regardless of the
          * budget, so the evidence cited supported the opposite of the
          * change. Raised in review of PR #8, and correct.
          *
-         * Now they agree, and a run measures one policy rather than
-         * two. Every caller here passes a finite budget, so async=false
-         * is not reached at all and what is being tested is whether
-         * async=true plus the sleep is enough on its own — the question
-         * 0065 leaves open. */
-        if (timeout_ns == UINT64_MAX) {
-            t0 = armGetSystemTick();
-            rc = nw_try_dequeue(p, true /* async=false */, out);
-            p->last_sync_ns += armTicksToNs(armGetSystemTick() - t0);
-            p->last_sync_rc = rc;
-            if (!nw_dequeue_would_block(rc))
-                return rc;
-        }
+         * Run 13 then answered the question 0065 left open — two
+         * buffers presented 90 of 90 with 87 of 89 intervals inside 10%
+         * of a refresh, reaching async=false not once — so 0067 deleted
+         * the second mode from the driver, and it is gone from here
+         * too. `last_sync_ns` and `last_sync_rc` stay in the reporting
+         * struct: they now read as a permanent zero, which is what
+         * "this run never used a second mode" looks like. */
 
         const u64 spent_ns = armTicksToNs(armGetSystemTick() - start);
         if (spent_ns >= timeout_ns)
@@ -959,24 +955,42 @@ static void nw_probe_starvation(nw_session *s, const char *where)
 #define NW_SLOW_LANE_FRAMES  10u
 #define NW_SLOW_LANE_TIMEOUT_NS UINT64_C(3000000000)
 
-static void nw_measure_slow_lane(nw_session *s)
+/* AND THE SAME MEASUREMENT WITH NO DEADLINE AT ALL.
+ *
+ * `timeout == UINT64_MAX` is what an application writes when it simply
+ * wants the next buffer, and until patch 0067 it was the one value that
+ * selected a different dequeue mode in the driver — a branch no test in
+ * this tree had ever taken, because every caller here and in
+ * t_vk_swapchain passes a finite budget. 0067 deleted that branch on
+ * the evidence of run 13; this is the coverage that says the deletion
+ * is safe rather than merely tidy.
+ *
+ * Two buffers, because that is where the producer has to wait. If the
+ * policy is wrong this HANGS instead of failing: there is no deadline
+ * left to expire. That risk is taken deliberately and it is small — the
+ * identical loop at a finite budget presents 90 of 90 in the sessions
+ * above, and the only difference is which deadline check fires. */
+#define NW_INFINITE_FRAMES   20u
+
+static void nw_measure_dequeue(nw_session *s, const char *tag,
+                               uint64_t timeout_ns, uint32_t frames)
 {
     test_ctx *t = s->t;
     const uint32_t n = s->num_buffers;
     uint32_t presented = 0;
     uint64_t total_ns = 0, max_ns = 0, min_ns = UINT64_MAX;
 
-    for (uint32_t f = 0; f < NW_SLOW_LANE_FRAMES; f++) {
+    for (uint32_t f = 0; f < frames; f++) {
         const u64 t0 = armGetSystemTick();
         nw_slot got;
-        Result rc = nw_dequeue(&s->prod, NW_SLOW_LANE_TIMEOUT_NS, &got);
+        Result rc = nw_dequeue(&s->prod, timeout_ns, &got);
         const uint64_t deq_ns = armTicksToNs(armGetSystemTick() - t0);
 
         if (R_FAILED(rc)) {
-            t_note(t, "slow lane, %" PRIu32 " buffers: frame %" PRIu32
+            t_note(t, "%s, %" PRIu32 " buffers: frame %" PRIu32
                       " gave up after %" PRIu64 " us -> 0x%08x (%" PRIu32
                       " round(s); async=true last 0x%08x, async=false last "
-                      "0x%08x)", n, f, deq_ns / 1000, rc,
+                      "0x%08x)", tag, n, f, deq_ns / 1000, rc,
                    s->prod.last_rounds, s->prod.last_async_rc,
                    s->prod.last_sync_rc);
             break;
@@ -987,9 +1001,9 @@ static void nw_measure_slow_lane(nw_session *s)
             max_ns = deq_ns;
         if (deq_ns < min_ns)
             min_ns = deq_ns;
-        t_note(t, "slow lane, %" PRIu32 " buffers: frame %" PRIu32
+        t_note(t, "%s, %" PRIu32 " buffers: frame %" PRIu32
                   " dequeued in %" PRIu64 " us (%" PRIu32 " round(s))",
-               n, f, deq_ns / 1000, s->prod.last_rounds);
+               tag, n, f, deq_ns / 1000, s->prod.last_rounds);
 
         if (got.fence.num_fences > 0 &&
             R_FAILED(nvMultiFenceWait(&got.fence, 1000000)))
@@ -1011,16 +1025,16 @@ static void nw_measure_slow_lane(nw_session *s)
     }
 
     if (presented > 0)
-        t_note(t, "slow lane, %" PRIu32 " buffers: %" PRIu32 " of %u frames, "
-                  "dequeue mean %" PRIu64 " us, min %" PRIu64 " us, max "
-                  "%" PRIu64 " us — against a %" PRIu64 " us refresh",
-               n, presented, NW_SLOW_LANE_FRAMES, (total_ns / presented) / 1000,
+        t_note(t, "%s, %" PRIu32 " buffers: %" PRIu32 " of %" PRIu32
+                  " frames, dequeue mean %" PRIu64 " us, min %" PRIu64
+                  " us, max %" PRIu64 " us — against a %" PRIu64
+                  " us refresh",
+               tag, n, presented, frames, (total_ns / presented) / 1000,
                min_ns / 1000, max_ns / 1000, NW_REFRESH_NS / 1000);
 
-    t_check(t, presented == NW_SLOW_LANE_FRAMES,
-            "slow lane, %" PRIu32 " buffers: %u frames presented with a "
-            "three-second budget per dequeue (%" PRIu32 ")",
-            n, NW_SLOW_LANE_FRAMES, presented);
+    t_check(t, presented == frames,
+            "%s, %" PRIu32 " buffers: %" PRIu32 " frames presented (%" PRIu32
+            ")", tag, n, frames, presented);
 }
 
 static bool nw_run_probes(nw_session *s, const char *where)
@@ -1589,7 +1603,17 @@ int run_test(test_ctx *t)
         rv = 1;
         goto out_mem;
     }
-    nw_measure_slow_lane(&s);
+    nw_measure_dequeue(&s, "slow lane", NW_SLOW_LANE_TIMEOUT_NS,
+                       NW_SLOW_LANE_FRAMES);
+
+    /* And with no deadline at all, on the same registered buffers: the
+     * value the driver used to branch on and no test ever passed. */
+    t_note(t, "asking with timeout = UINT64_MAX for %u frames. If the "
+              "dequeue policy cannot get a buffer this hangs rather than "
+              "failing, because there is no deadline left to expire",
+           NW_INFINITE_FRAMES);
+    nw_measure_dequeue(&s, "no deadline", UINT64_MAX, NW_INFINITE_FRAMES);
+
     rc = nwindowReleaseBuffers(win);
     if (!t_check(t, R_SUCCEEDED(rc),
                  "slow lane: released back to the compositor -> 0x%08x", rc))
