@@ -23,8 +23,83 @@ long. This block is the state itself, and it is the part that must be true.*
 | **What is still unverified** | **The copy fallback's layout — the test now asks, the run has not answered.** Every frame the fallback had ever presented was a solid colour, which survives any stride or swizzle error unchanged, so its 90-of-90 said frames arrived and said nothing about what was in them. `t_vk_swapchain` now shows the pattern **twice**, once on each present path, and asks the operator twice; the fallback's answer is what closes this, and it does not exist yet. Also: any display mode change, anything multi-threaded (`vkAcquireNextImageKHR` requires the caller to synchronise the swapchain, so the fallback's acquire is deliberately lock-free), docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
-| **Never verified on hardware** | Patch **0067**; the `timeout = UINT64_MAX` coverage in both tests and the positive control beside it; `t_fault` as it stands. 0065 and 0066 are no longer on this list: run 13 carried both |
+| **Never verified on hardware** | Patch **0067**; the `timeout = UINT64_MAX` coverage in both tests and the positive control beside it; **the nxlink streaming in `testfw`**; `t_fault` as it stands. 0065 and 0066 are no longer on this list: run 13 carried both |
 
+
+---
+
+## The log, on the developer's machine, while it happens (2026-08-08)
+
+`testfw` now streams every line it writes to an nxlink host, and
+replays the whole log file down the same socket when the run ends.
+
+**Why it is not just convenience.** Two tests own the display and start
+no console, so their stdout goes nowhere and the SD card file is the
+entire record — readable only after the run, by taking the card out.
+Every hardware lesson in this project has come through that loop. And
+one of those tests can now *hang* rather than fail: the acquire session
+at `timeout = UINT64_MAX` has no deadline left to expire. A hang leaves
+an SD log that stops mid-run with no indication of where; a live stream
+shows the last line that made it out, which is the diagnosis.
+
+**Sent twice, on purpose.** Live lines are the test's own. The
+end-of-run replay carries what the live stream cannot: Mesa's
+diagnostics arrive on `stderr`, `stderr` is `dup2`'d onto the log file,
+and those are historically the lines that say *why* a run failed.
+
+**What is deliberately not done.** Neither `stdout` nor `stderr` is
+redirected to the socket — `nxlinkConnectToHost(false, false)`.
+Redirecting `stderr` would take Mesa's messages out of the artefact;
+redirecting `stdout` would blank the console on the tests that have
+one. Nothing that exists today loses anything.
+
+### Two things read out of machine code rather than assumed
+
+- **`nxlinkConnectToHost(false, false)` really does connect and hand
+  back the fd.** The header only promises a socket; the behaviour with
+  neither redirect requested is not documented. Disassembled from
+  libnx's own `nxlink_stdio.o`: the host check, `socket`, `connect` to
+  port 28771 and the return of the fd all happen before the two
+  `tbnz` tests that gate the `dup2` calls.
+- **The socket comes back blocking.** The same disassembly sets
+  `O_NONBLOCK` for the `connect` and masks it off again afterwards. A
+  host that stops reading would therefore stall a console inside
+  `write()`, and a test stuck writing a log line is indistinguishable
+  from a test stuck doing the thing it measures. Every write now
+  carries `SO_SNDTIMEO` of one second; a timeout closes the stream,
+  says so in the file, and the run continues without a network.
+- **A run not launched by nxlink pays nothing.** Verified in the
+  compiled object, not in the source: the guard folds to
+  `sub w0, w0, #1` / `cmn w0, #3` / `b.ls`, and `socketInitialize` is
+  only reachable through that branch. Every measurement in
+  `docs/hw-logs/` stays comparable with the ones taken after this.
+
+### The defect it uncovered
+
+`testfw`'s "the run is finished; press + to exit" note — added in the
+PR #7 review for the tests with no console — **has never appeared in
+any log**. It wrote to `t.log` *after* `fclose()`, three lines above,
+with the handle closed but the pointer not cleared, so its
+`t.log != NULL` guard was still true. Check any log in
+`docs/hw-logs/`: they all end at `RESULT`. Writing to a closed stream
+is undefined behaviour, not merely a lost line. The log is now closed
+once, at the end, after everything that writes to it. The same class —
+a handle closed while the pointer guarding its use stays live — does
+not occur anywhere else in the tree; the other two `fclose` calls are
+on locals that die immediately.
+
+### What this does not do
+
+It is not a measurement channel. A socket in the picture is a
+difference in what the timings were measured against, so every log now
+carries a `note nxlink:` line saying which kind of run it was, and
+**pacing evidence should be taken without nxlink**. Whether streaming
+perturbs the frame numbers has not been measured, and the tests print
+no lines inside their timed loops, which is a reason to expect little
+rather than evidence of none.
+
+Cross build green in both build paths (meson and the Makefile), under
+`-Wall -Wextra -Werror`. **No hardware behind any of it.**
 
 ---
 
