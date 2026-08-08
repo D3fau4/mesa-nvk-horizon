@@ -12,18 +12,72 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **Phase 6 has been to the console ten times, and run 10 found the cause: we were starving the compositor.** The failing dequeue reported itself for the first time — 8320 rounds in one second, **989 ms of them inside `bqDequeueBuffer`**, ~17000 binder transactions a second — and a buffer arrived in 146 us on the first attempt after a pause. Fixed by sleeping between rounds, in `t_nwindow` and as patch **0064**; unrun. Three of four exit criteria are met |
+| **Phase** | **`t_nwindow` PASSES 118/118 — the first PASS this phase — and exit criterion 2's numeric half has run at last: double buffering paces 24918 us against triple's 16793 us under the same load.** The cause was ours: the retry loop spun on binder at ~17000 transactions a second and starved the compositor it waited on; sleeping an eighth of a refresh between rounds fixes it. `t_vk_swapchain` still fails at two images **because the driver in it was three days old** — patch 0064 never reached the archive it linked. Rebuilt, and the packaging gate now catches that direction too |
 | **What runs on a Switch** | *Run 2, reproduced by runs 3 and 4.* **A VK_KHR_swapchain presenting through the zero-copy path**: `vkCreateViSurfaceNN` over the default window, 90 frames at **mean 16671 us with 89 of 89 intervals within 10% of a refresh**; 120 pattern frames whose four bars, border, diagonal and corner square the operator confirmed; two swapchains coexisting over one window, the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`, the survivor presenting 20/20 after the other is destroyed; and the same application taking either present path on request. `t_nwindow`: **3 of 3 registered buffers dequeued at once, and 2 of 2**. Run 1 also re-ran all thirteen Phase 5 tests against the changed submit path, all PASS |
-| **Next concrete task** | **Run 11: `t_nwindow` and `t_vk_swapchain` with the sleep.** If the reading is right, the two-buffer sessions present 90 of 90 and the 2-vs-3 pacing comparison — the half of exit criterion 2 that has never run — finally runs |
-| **Known failures** | **1. A two-buffer window stops at the third frame** — ten runs, **cause found**: the retry loop spun on binder at ~17000 transactions a second and starved the compositor it was waiting for. Fixed in `t_nwindow` and as patch 0064; **unrun**. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
+| **Next concrete task** | **Run 12: `t_vk_swapchain` with a driver that actually contains patch 0064.** It is the same fix `t_nwindow` just proved on the same window through raw `bq*`. If two images present 90 of 90, all four exit criteria are met and D18 closes at `minImageCount = 2` |
+| **Known failures** | **1. `t_vk_swapchain` fails at two images** — measured against a driver missing patch 0064, so **unmeasured** rather than failing. **2.** `t_fault` still takes the console down on exit. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
-| **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Half met, four times.** The structural half is measured — 3 concurrent slots against 2 — and the pacing comparison has still never run, because every two-buffer session dies at the third frame. That is the one open defect, and `nw_probe_starvation` is what asks why. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
-| **What is still unverified** | Whether the sleep makes a two-buffer session present. Whether `minImageCount = 2` is a promise this compositor can keep. Any display mode change. Anything multi-threaded |
+| **Exit criteria** | **1. Met.** 89/89 intervals within 10% of 16666 us. **2. Met in `t_nwindow`** — 24918 us on two buffers against 16793 us on three under the same bursty load, plus 3 concurrent slots against 2 — and unmeasured through Vulkan, pending run 12. **3. Met.** **4. Met**, both paths named by the driver through the debug-utils messenger in the same run |
+| **What is still unverified** | A two-image swapchain through Vulkan with patch 0064 in the driver. Any display mode change. Anything multi-threaded |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Run 10 moved it back towards no — the two-buffer failure is ours, not the platform's. Decided by run 11 |
-| **Never verified on hardware** | Patch **0064** and the `t_nwindow` sleep beside it; `t_fault` as it stands |
+| **Open decisions** | **D7**, and **D18: does `minImageCount` become 3?** Almost certainly no — `t_nwindow` presents 90 of 90 on two buffers. Closed by run 12 |
+| **Never verified on hardware** | Patch **0064** through Vulkan; the reverse staleness gate has been broken in both directions here but never shipped; `t_fault` as it stands |
+
+
+---
+
+## Run 11 — t_nwindow PASSES, and the Vulkan test measured a stale driver (2026-08-08)
+
+**Class: hardware (HW).** `t_nwindow` **PASS 118/118** — the first PASS
+this phase — and `t_vk_swapchain` 114/116. Build
+`2026-08-08T12:24:55Z 5995c12`. Logs in `docs/hw-logs/*run11*`.
+
+### The sleep is the fix
+
+```
+  ok   2 buffers, interval 1: 90 of 90 frames presented
+  ok   under the same bursty load two buffers pace at least 10% slower
+       than three (24918 us vs 16793 us)
+  ok   slow lane, 2 buffers: 10 frames presented with a three-second
+       budget per dequeue (10)
+```
+
+**Exit criterion 2's numeric half has run, at the eleventh attempt.**
+Double buffering paces 24918 us against triple's 16793 us under the same
+bursty load — a 48% difference, where the check needs 10%. The slow lane
+went from `frame 2 gave up after 3000094 us (23192 rounds)` to every
+frame in ~2.3 ms and two rounds each.
+
+Two-buffer dequeues now carry release fences — **88 of 90**, where every
+previous run recorded zero.
+
+### And the Vulkan test measured a driver from three days earlier
+
+`t_vk_swapchain` still fails at two images, and the reason is not the
+driver's: `build/mesa-nvk/src/vulkan/wsi/libvulkan_wsi.a` was dated 5
+August. **Patch 0064 never reached it.** The `.nro` was built minutes
+before shipping and linked against that archive.
+
+The NVK build that should have produced it failed — the Docker daemon
+was down — and said so. The command running it ended in an
+unconditional `echo "built"` after a filtered pipeline, so a failure was
+reported as a success. That is the second time this project has shipped
+an artefact that was not what it claimed, and the first one cost a run
+too.
+
+The packaging staleness gate could not catch it. It asks whether an
+artefact is older than the archives it links; here the artefact was
+*newer*. It now also asks whether any tracked source under `mesa/src` is
+newer than the archives, and refuses to package if one is. Broken in
+both directions before being believed: touching `wsi_horizon.c` fails it
+by name, rebuilding passes it again.
+
+What that log does still show is real — three images at 89 of 89
+intervals inside 10% of a refresh, both present paths, two coexisting
+swapchains, no leak, no exit crash. Only the two-image lines measured
+the wrong driver.
 
 
 ---

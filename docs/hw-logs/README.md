@@ -27,6 +27,49 @@ Both report `FAIL`, and both are the evidence for three separate results:
   BufferQueue. The release event never fires. Patches 0059 and 0061 both aimed
   at which dequeue mode to use, and no dequeue mode is ever reached.
 
+## The first PASS, and a second stale-artefact failure
+
+### `t_nwindow-run11-PASS.log`
+
+**118/118.** The sleep between dequeue rounds is the fix, and this is the log
+that says so:
+
+```
+  ok   2 buffers, interval 1: 90 of 90 frames presented
+  ok   under the same bursty load two buffers pace at least 10% slower than
+       three (24918 us vs 16793 us)
+  note slow lane, 2 buffers: frame 3 dequeued in 2324 us (2 round(s))
+  ok   slow lane, 2 buffers: 10 frames presented with a three-second budget
+       per dequeue (10)
+```
+
+The pacing comparison is Phase 6's second exit criterion in numbers, and it had
+never run in ten attempts. The slow lane went from `frame 2 gave up after
+3000094 us (23192 rounds)` to every frame in ~2.3 ms and two rounds.
+
+### `t_vk_swapchain-run11-STALE-DRIVER-FAIL.log`
+
+114/116, the same two-image failure — **because the driver inside it was three
+days old**. `build/mesa-nvk/src/vulkan/wsi/libvulkan_wsi.a` was dated 5 August;
+patch 0064 was written on the 8th and never reached it. The `.nro` was built
+minutes before shipping and linked against that archive.
+
+The build that should have produced it failed (the Docker daemon was down) and
+said so, but the command running it ended in an unconditional `echo "built"`
+after a filtered pipeline, so the failure was reported as a success.
+
+The packaging staleness gate could not catch it: it asks whether an artefact is
+older than the archives it links, and here the artefact was *newer*. It now
+also asks the other direction — whether any tracked source under `mesa/src` is
+newer than the archives — and refuses to package if one is. Broken in both
+directions before being believed: touching `wsi_horizon.c` fails the gate by
+name, rebuilding passes it again.
+
+The log is kept because what it does show is real: three images at 89 of 89
+intervals inside 10% of a refresh, both present paths, two coexisting
+swapchains, no leak, no exit crash. Only the two-image lines are a measurement
+of the wrong driver.
+
 ## We were starving the compositor
 
 ### `t_nwindow-run10-applet-starving-the-compositor-FAIL.log`, `t_nwindow-run10-full-memory-identical-FAIL.log`

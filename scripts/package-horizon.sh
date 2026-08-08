@@ -236,6 +236,40 @@ if [ -z "$_nvk_tests" ]; then
          "that checks nothing must not report success" >&2
     exit 1
 fi
+# AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN.
+#
+# The check below asks whether an artefact is older than the archives it
+# links. It cannot ask whether those archives are older than the source
+# they were built from — and on 2026-08-08 that is exactly what shipped:
+# a t_vk_swapchain.nro built minutes earlier, linked against a
+# libvulkan_wsi.a from three days before, missing the one patch the run
+# was meant to test. The .nro was newer than the archive, so the gate
+# below passed with nothing to say.
+#
+# The build had failed and said so; the command that ran it printed
+# "built" regardless, because an unconditional echo followed a filtered
+# pipeline. A gate is the answer to that, not more care.
+#
+# Compared by modification time against every tracked source under
+# mesa/src, which is where the patch series lands. A tree with no Mesa
+# checkout has nothing to compare and says so.
+if [ -d mesa/src ]; then
+    _newest_src=$(find mesa/src -type f \( -name '*.c' -o -name '*.h' \
+                       -o -name '*.rs' -o -name '*.build' \) \
+                  -newer "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a" \
+                  2>/dev/null | head -5)
+    if [ -n "$_newest_src" ]; then
+        echo "error: these Mesa sources are newer than" \
+             "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a:" >&2
+        echo "$_newest_src" | sed 's/^/         /' >&2
+        echo "       The archives do not contain them, so every" \
+             "driver-linked artefact here is built against source that" \
+             "is no longer what the tree says. Run" \
+             "scripts/build-mesa-nvk.sh and package again." >&2
+        exit 1
+    fi
+fi
+
 _newest_lib=""
 for _lib in "$_nvk_dir/src/nouveau/vulkan/libnvk.a" \
             "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"; do

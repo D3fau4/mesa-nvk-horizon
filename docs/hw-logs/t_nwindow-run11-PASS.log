@@ -1,0 +1,157 @@
+== t_nwindow ==
+  note horizon-build-id 2026-08-08T12:24:55Z 5995c12
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   horizon_gpu_device_create (status 0, nv 0x00000000)
+  ok   nwindowGetDefault() returned a valid window
+  ok   nwindowGetDimensions -> 0x00000000 (1280 x 720)
+  ok   the scanout geometry for 1280x720 is representable
+  note geometry: pitch 5120 B (stride 1280 px), height aligned to 768 rows, 3932160 B per buffer
+  ok   one NvMap of 15360 KiB for 4 buffers (status 0, nv 0x00000000)
+  ok   the NvMap has an id the compositor can look up (2172)
+  ok   the NvMap is mapped for the CPU
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   probe BEFORE, 3 buffers: buffer 1 of 3 dequeued -> 0x00000000
+  ok   probe BEFORE, 3 buffers: cache flush on buffer 1 (status 0)
+  ok   probe BEFORE, 3 buffers: buffer 1 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe BEFORE, 3 buffers: buffer 2 of 3 dequeued -> 0x00000000
+  ok   probe BEFORE, 3 buffers: cache flush on buffer 2 (status 0)
+  ok   probe BEFORE, 3 buffers: buffer 2 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe BEFORE, 3 buffers: buffer 3 of 3 dequeued -> 0x00000000
+  ok   probe BEFORE, 3 buffers: cache flush on buffer 3 (status 0)
+  ok   probe BEFORE, 3 buffers: buffer 3 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe BEFORE, 3 buffers: the compositor holds all 3 of them (3 queued)
+  note reconstructed probe BEFORE, 3 buffers: asked for 0 ms in BOTH modes — 1 round(s), release event fired 0 time(s); last async=true 0x00000000, last async=false 0x00000000
+  note reconstructed probe BEFORE, 3 buffers: THE TIME — a buffer came back after 94 us (0 refresh(es)), in async=true
+  ok   reconstructed probe BEFORE, 3 buffers: this sequence got a buffer back within 5000 ms — which says what this sequence does, not what the paced sessions above do
+  ok   reconstructed probe BEFORE, 3 buffers: the buffer went back -> 0x00000000
+  ok   probe BEFORE, 3 buffers: released back to the compositor -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   probe BEFORE, 2 buffers: buffer 1 of 2 dequeued -> 0x00000000
+  ok   probe BEFORE, 2 buffers: cache flush on buffer 1 (status 0)
+  ok   probe BEFORE, 2 buffers: buffer 1 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe BEFORE, 2 buffers: buffer 2 of 2 dequeued -> 0x00000000
+  ok   probe BEFORE, 2 buffers: cache flush on buffer 2 (status 0)
+  ok   probe BEFORE, 2 buffers: buffer 2 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe BEFORE, 2 buffers: the compositor holds all 2 of them (2 queued)
+  note reconstructed probe BEFORE, 2 buffers: asked for 0 ms in BOTH modes — 1 round(s), release event fired 0 time(s); last async=true 0x00000000, last async=false 0x00000000
+  note reconstructed probe BEFORE, 2 buffers: THE TIME — a buffer came back after 95 us (0 refresh(es)), in async=true
+  ok   reconstructed probe BEFORE, 2 buffers: this sequence got a buffer back within 5000 ms — which says what this sequence does, not what the paced sessions above do
+  ok   reconstructed probe BEFORE, 2 buffers: the buffer went back -> 0x00000000
+  ok   probe BEFORE, 2 buffers: released back to the compositor -> 0x00000000
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers: the dequeue that ended the count said no buffer was free rather than failing (0x00001d5d)
+  ok   3 buffers: the 3 concurrently dequeued slot(s) are all different (mask 0x7)
+  ok   3 buffers: slot 0 cancelled back to the compositor -> 0x00000000
+  ok   3 buffers: slot 1 cancelled back to the compositor -> 0x00000000
+  ok   3 buffers: slot 2 cancelled back to the compositor -> 0x00000000
+  note THE NUMBER: with 3 registered buffers, 3 slot(s) could be dequeued at once
+  ok   at least two slots can be held at once, which is what minImageCount = 2 on a 3-image swapchain requires
+  ok   3 buffers, interval 1: 90 of 90 frames presented
+  note 3 buffers, interval 1: 89 intervals, mean 16339 us, min 2374 us, max 16722 us; 87 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 3 buffers, interval 1: dequeue mean 80 us / max 122 us; fill+flush mean 2172 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers: released back to the compositor -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   2 buffers: the dequeue that ended the count said no buffer was free rather than failing (0x0000115d)
+  ok   2 buffers: the 2 concurrently dequeued slot(s) are all different (mask 0x3)
+  ok   2 buffers: slot 0 cancelled back to the compositor -> 0x00000000
+  ok   2 buffers: slot 1 cancelled back to the compositor -> 0x00000000
+  note with 2 registered buffers, 2 slot(s) could be dequeued at once
+  ok   2 buffers, interval 1: 90 of 90 frames presented
+  note 2 buffers, interval 1: 89 intervals, mean 16613 us, min 2360 us, max 26244 us; 87 within 10% of 16666 us; 1 longer than 1.5 refreshes
+  note 2 buffers, interval 1: dequeue mean 2335 us / max 9004 us; fill+flush mean 2170 us; largest pending-buffer count 1; 88 dequeue(s) carried a release fence
+  ok   2 buffers: released back to the compositor -> 0x00000000
+  note a frame's unavoidable cost (fill + flush) measured 2172 us; the bursty load puts 20655 us more on every odd frame, for a mean of 12499 us against a 16666 us refresh
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers, interval 1, bursty load: 90 of 90 frames presented
+  note 3 buffers, interval 1, bursty load: 89 intervals, mean 16793 us, min 2370 us, max 35763 us; 0 within 10% of 16666 us; 44 longer than 1.5 refreshes
+  note 3 buffers, interval 1, bursty load: dequeue mean 82 us / max 163 us; fill+flush mean 2172 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers (loaded): released -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   2 buffers, interval 1, bursty load: 90 of 90 frames presented
+  note 2 buffers, interval 1, bursty load: 89 intervals, mean 24918 us, min 7303 us, max 37374 us; 0 within 10% of 16666 us; 44 longer than 1.5 refreshes
+  note 2 buffers, interval 1, bursty load: dequeue mean 2269 us / max 2386 us; fill+flush mean 2170 us; largest pending-buffer count 1; 88 dequeue(s) carried a release fence
+  ok   2 buffers (loaded): released -> 0x00000000
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   3 buffers, interval 0: 90 of 90 frames presented
+  note 3 buffers, interval 0: 89 intervals, mean 8171 us, min 2366 us, max 14348 us; 0 within 10% of 16666 us; 0 longer than 1.5 refreshes
+  note 3 buffers, interval 0: dequeue mean 80 us / max 257 us; fill+flush mean 2170 us; largest pending-buffer count 1; 87 dequeue(s) carried a release fence
+  ok   3 buffers (interval 0): released back to the compositor -> 0x00000000
+  ok   the compositor handed back a release fence: 87 of 90 dequeues carried one, the first on syncpoint 103
+  ok   3 buffers, interval 1: 87 of 89 intervals are within 10% of 16666 us (>= 90% needed)
+  ok   2 buffers, interval 1: 87 of 89 intervals are within 10% of 16666 us (>= 90% needed)
+  ok   three buffers let the producer hold more slots than two (3 vs 2)
+  note bursty load: mean interval 16793 us with 3 buffers, 24918 us with 2; intervals longer than 1.5 refreshes: 44 with 3, 44 with 2
+  ok   under the same bursty load two buffers pace at least 10% slower than three (24918 us vs 16793 us)
+  note 3 buffers at interval 0: mean 8171 us against 16339 us at interval 1 — the swap interval is the knob, and this is what it moved
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  note slow lane, 2 buffers: frame 0 dequeued in 176 us (1 round(s))
+  note slow lane, 2 buffers: frame 1 dequeued in 156 us (1 round(s))
+  note slow lane, 2 buffers: frame 2 dequeued in 9050 us (5 round(s))
+  note slow lane, 2 buffers: frame 3 dequeued in 2324 us (2 round(s))
+  note slow lane, 2 buffers: frame 4 dequeued in 2329 us (2 round(s))
+  note slow lane, 2 buffers: frame 5 dequeued in 2358 us (2 round(s))
+  note slow lane, 2 buffers: frame 6 dequeued in 2328 us (2 round(s))
+  note slow lane, 2 buffers: frame 7 dequeued in 2336 us (2 round(s))
+  note slow lane, 2 buffers: frame 8 dequeued in 2363 us (2 round(s))
+  note slow lane, 2 buffers: frame 9 dequeued in 2327 us (2 round(s))
+  note slow lane, 2 buffers: 10 of 10 frames, dequeue mean 2575 us, min 156 us, max 9050 us — against a 16666 us refresh
+  ok   slow lane, 2 buffers: 10 frames presented with a three-second budget per dequeue (10)
+  ok   slow lane: released back to the compositor -> 0x00000000
+  ok   3 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   3 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   3 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   3 buffers: slot 2 registered at offset 0x780000 -> 0x00000000
+  ok   probe AFTER, 3 buffers: buffer 1 of 3 dequeued -> 0x00000000
+  ok   probe AFTER, 3 buffers: cache flush on buffer 1 (status 0)
+  ok   probe AFTER, 3 buffers: buffer 1 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe AFTER, 3 buffers: buffer 2 of 3 dequeued -> 0x00000000
+  ok   probe AFTER, 3 buffers: cache flush on buffer 2 (status 0)
+  ok   probe AFTER, 3 buffers: buffer 2 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe AFTER, 3 buffers: buffer 3 of 3 dequeued -> 0x00000000
+  ok   probe AFTER, 3 buffers: the release fence on buffer 3 -> 0x00000000
+  ok   probe AFTER, 3 buffers: cache flush on buffer 3 (status 0)
+  ok   probe AFTER, 3 buffers: buffer 3 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe AFTER, 3 buffers: the compositor holds all 3 of them (3 queued)
+  note reconstructed probe AFTER, 3 buffers: asked for 0 ms in BOTH modes — 1 round(s), release event fired 0 time(s); last async=true 0x00000000, last async=false 0x00000000
+  note reconstructed probe AFTER, 3 buffers: THE TIME — a buffer came back after 101 us (0 refresh(es)), in async=true
+  ok   reconstructed probe AFTER, 3 buffers: this sequence got a buffer back within 5000 ms — which says what this sequence does, not what the paced sessions above do
+  ok   reconstructed probe AFTER, 3 buffers: the buffer went back -> 0x00000000
+  ok   probe AFTER, 3 buffers: released back to the compositor -> 0x00000000
+  ok   2 buffers: nwindowSetDimensions(1280, 720) -> 0x00000000
+  ok   2 buffers: slot 0 registered at offset 0x0 -> 0x00000000
+  ok   2 buffers: slot 1 registered at offset 0x3c0000 -> 0x00000000
+  ok   probe AFTER, 2 buffers: buffer 1 of 2 dequeued -> 0x00000000
+  ok   probe AFTER, 2 buffers: cache flush on buffer 1 (status 0)
+  ok   probe AFTER, 2 buffers: buffer 1 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe AFTER, 2 buffers: buffer 2 of 2 dequeued -> 0x00000000
+  ok   probe AFTER, 2 buffers: cache flush on buffer 2 (status 0)
+  ok   probe AFTER, 2 buffers: buffer 2 queued -> 0x00000000 (the queue then reported 1 pending)
+  ok   probe AFTER, 2 buffers: the compositor holds all 2 of them (2 queued)
+  note reconstructed probe AFTER, 2 buffers: asked for 0 ms in BOTH modes — 1 round(s), release event fired 0 time(s); last async=true 0x00000000, last async=false 0x00000000
+  note reconstructed probe AFTER, 2 buffers: THE TIME — a buffer came back after 105 us (0 refresh(es)), in async=true
+  ok   reconstructed probe AFTER, 2 buffers: this sequence got a buffer back within 5000 ms — which says what this sequence does, not what the paced sessions above do
+  ok   reconstructed probe AFTER, 2 buffers: the buffer went back -> 0x00000000
+  ok   probe AFTER, 2 buffers: released back to the compositor -> 0x00000000
+  ok   the scanout NvMap is destroyed (status 0)
+  ok   the device tears down after presenting (status 0)
+RESULT: PASS (118/118)
