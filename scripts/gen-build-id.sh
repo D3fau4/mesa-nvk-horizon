@@ -41,12 +41,42 @@ stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Short HEAD, when this is a git checkout and git is available. A tree
 # with local edits says so, because "the commit it was built from" is a
 # different claim from "the tree it was built from".
-head="nogit"
-if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
-    head=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-        head="$head-dirty"
+# mesa/.gitkeep belongs to *this* repository — it is what keeps the
+# directory in git while its contents are ignored — so it is always
+# untracked inside the Mesa checkout and is not a modification of Mesa.
+# Filtered here for the same reason fetch-mesa.sh, apply-mesa-patches.sh
+# and fetch-mesa-subprojects.sh filter it: a dirty marker that is always
+# on is not a marker.
+_describe() { # dir -> "<short-head>[-dirty]" or "nogit"
+    if command -v git >/dev/null 2>&1 &&
+       git -C "$1" rev-parse --git-dir >/dev/null 2>&1; then
+        _h=$(git -C "$1" rev-parse --short HEAD 2>/dev/null || echo unknown)
+        if [ -n "$(git -C "$1" status --porcelain 2>/dev/null |
+                   grep -v '^?? \.gitkeep$' || true)" ]; then
+            _h="$_h-dirty"
+        fi
+        echo "$_h"
+    else
+        echo "nogit"
     fi
+}
+
+head=$(_describe .)
+
+# AND MESA'S, BECAUSE MESA IS WHAT THE DRIVER IS BUILT FROM.
+#
+# mesa/ is a separate checkout, gitignored by this repository, holding
+# the NVK and WSI sources every driver-linked test actually links. The
+# outer HEAD says nothing about it: an edit under mesa/src — which is
+# where every patch in mesa-patches/ lands — leaves this repository
+# clean, and a stamp built only from the outer tree would attribute a
+# hardware result to sources that were not the ones compiled.
+#
+# That is not hypothetical here. On 2026-08-08 a batch shipped with a
+# libvulkan_wsi.a three days older than the patch it was meant to carry,
+# and nothing in the stamp could have said so.
+if [ -d mesa ]; then
+    head="$head mesa:$(_describe mesa)"
 fi
 
 emit() {

@@ -134,4 +134,19 @@ done
 # in their new form. The second run is a no-op when nothing changed.
 scripts/build-horizon.sh
 
+# THE SUCCESS STAMP, and it is the only honest answer to "are these
+# archives current?".
+#
+# `set -e` is in force, so reaching this line means every step above
+# succeeded. Nothing else in the tree can say that: the archives'
+# modification times cannot, because Ninja does not touch an archive
+# whose inputs did not change — edit only NVK and libvulkan_wsi.a stays
+# exactly as it was, correctly. A gate comparing sources against one
+# archive therefore reads a perfectly good incremental build as stale,
+# which is what the first version of the check in
+# scripts/package-horizon.sh did.
+#
+# Written last, after the tests are relinked, so it also covers them.
+touch "$MESA_NVK_BUILD_DIR/.horizon-build-ok"
+
 echo "build-mesa-nvk: $MESA_NVK_BUILD_DIR"
