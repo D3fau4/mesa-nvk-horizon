@@ -314,6 +314,18 @@ horizon_run() {
         # The image keeps rustup outside the default PATH; Mesa's build
         # needs rustc for NAK/NIL, so add it here rather than making
         # every caller know where it lives.
+        #
+        # MSYS_NO_PATHCONV=1 is what makes the mount above work under Git
+        # Bash on Windows. MSYS rewrites anything that looks like an
+        # absolute Unix path in an argument to a native binary, so
+        # `-w /c/Users/...` reached docker.exe as `-w C:/Users/...` and
+        # the daemon rejected it:
+        #   docker: Error response from daemon: the working directory
+        #   'C:/Users/...' is invalid, it needs to be an absolute path
+        # The variable is meaningless everywhere else, and the container
+        # still sees the tree at the same path the host calls it, which
+        # is the property the paragraph above depends on.
+        MSYS_NO_PATHCONV=1 \
         docker run --rm \
             -e DEVKITPRO="$HORIZON_DEVKITPRO" \
             -e "PATH=${_hz_bins}:${HORIZON_IMAGE_RUST_TOOLS_BIN}:${RUST_CARGO_HOME_IN_IMAGE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
