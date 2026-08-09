@@ -377,6 +377,11 @@ nvk_tests = [
   # no console and reports through its log alone — and every one of the
   # phase's four exit criteria is a section of it.
   't_vk_swapchain',
+  # Phase 6, the part t_vk_swapchain does not reach: the swapchain while
+  # something else legitimately happens at the same time, and over a
+  # length that a slot leaked once per generation would show up in.
+  # STATUS.md listed "anything multi-threaded" as never verified.
+  't_vk_wsi_mt',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -422,6 +427,8 @@ nvk_test_shaders = {
   # None: a presented frame here is a vkCmdClearColorImage, so nothing
   # about the swapchain depends on a shader compiling.
   't_vk_swapchain' : [],
+  # None, for the same reason.
+  't_vk_wsi_mt' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

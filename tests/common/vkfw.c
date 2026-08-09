@@ -38,6 +38,15 @@ const char *vkfw_result_str(VkResult r)
    case VK_ERROR_FRAGMENTED_POOL:          return "FRAGMENTED_POOL";
    case VK_ERROR_OUT_OF_POOL_MEMORY:       return "OUT_OF_POOL_MEMORY";
    case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
+   /* The window-system results. They were missing, and they are the
+    * ones the swapchain tests print most: every recreation check reads
+    * "-> VkResult -1000001004" where it means OUT_OF_DATE_KHR. The
+    * fallback below is honest but a reader should not have to decode a
+    * number the driver returns on purpose. */
+   case VK_SUBOPTIMAL_KHR:                 return "VK_SUBOPTIMAL_KHR";
+   case VK_ERROR_OUT_OF_DATE_KHR:          return "OUT_OF_DATE_KHR";
+   case VK_ERROR_SURFACE_LOST_KHR:         return "SURFACE_LOST_KHR";
+   case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "NATIVE_WINDOW_IN_USE_KHR";
    default:                                break;
    }
 
