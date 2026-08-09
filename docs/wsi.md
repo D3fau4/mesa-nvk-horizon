@@ -527,3 +527,33 @@ height from after, which makes a later `vkCreateSwapchainKHR` fail with
 on a structure this backend does not own. Measured instead: run 17 made
 11678 such queries from a second thread beside a present loop with no
 failure.
+
+### 7.5 One bookkeeping inconsistency left standing, and it is not a race
+
+Found in the same audit, recorded rather than fixed, because a patch
+nobody can point a hardware run at is worse than a paragraph.
+
+`wsi_common_queue_present` clears `wsi_image::acquired` **before** it
+calls the backend's `queue_present`, unconditionally. So when a present
+fails, Mesa considers the image released and this backend may not.
+
+- **On the zero-copy path that is correct**, and deliberately so: if
+  `bqQueueBuffer` failed, the producer really does still hold the slot,
+  so leaving it `ACQUIRED` is the truth, and teardown's
+  `bqCancelBuffer` is what gives it back.
+- **On the copy fallback it is a small leak.** The staging image is
+  ours and nothing external holds it, but a present that fails before
+  `wsi_horizon_present_fallback` reaches its last line — a
+  `framebufferBegin` that returns nothing, a `WaitForFences` that does
+  not succeed — leaves the slot `ACQUIRED` for good. An application
+  that ignores `VK_ERROR_OUT_OF_DATE_KHR` and keeps going loses one
+  image per failure until the acquire reports that every image is held.
+
+Not fixed for two reasons. The reachable case is a swapchain that has
+already been retired, where every call fails anyway and the application
+is required to recreate; and the specification requires recreation on
+`VK_ERROR_OUT_OF_DATE_KHR`, so the loss is bounded by an application
+already outside its contract. If a case is ever found where a
+*presentable* fallback swapchain fails a present transiently, this
+becomes a real defect and the fix is one line — mark the staging image
+`FREE` on the failure paths that own it.
