@@ -86,9 +86,10 @@ dest_abs="$(cd "$DEST" && pwd)"
 
 # BOTH SIDES OF THE COMPARISONS BELOW GO THROUGH `cd ... && pwd`, and that
 # is portability rather than style. Git for Windows answers rev-parse in
-# its own spelling of an absolute path (C:/Users/...) while the shell's
-# pwd answers in the MSYS one (/c/Users/...). The two name the same
-# directory and compare unequal as strings, so the assertions fired on a
+# a drive-letter spelling of an absolute path while the shell's pwd
+# answers in the MSYS one, with the drive as a leading path component.
+# The two name the same directory and compare unequal as strings, so the
+# assertions fired on a
 # tree that was perfectly correct. Canonicalising git's answer the same
 # way the expectation was built compares directories instead of spellings,
 # and keeps the guard exactly as strict as it was: mesa/.git and nothing
