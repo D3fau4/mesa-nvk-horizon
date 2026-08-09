@@ -211,6 +211,30 @@ pairing under test.
 
 Kept as `docs/hw-logs/t_vk_wsi_mt-run20-review-fixes-PASS.log`.
 
+**Run 20 was not built against run 19's Mesa, and the comparison above
+is qualified by that.** The build id says `mesa:ebf2e31`; run 19's said
+`mesa:85638f8`. `85638f8` is patch 0070 and is an ancestor, so the fix
+under test was present — but the checkout carries **one commit that
+`mesa-patches/` does not**: `ebf2e31`, "vulkan/wsi: Horizon, report the
+layout that was registered", which adds the geometry of the registered
+image to the INFO line and records `scanout_size_B` at registration. Its
+effect is visible in the log as 50 `layout: stride 5120 B …` notes that
+runs 17 and 19 do not contain at all.
+
+That commit is **untracked work sitting in an ignored directory**:
+`mesa-patches/` holds 70 patches, the checkout holds 71 commits, and
+`tests/t_vk_mode.c` — the test whose hardware run that commit's message
+cites as `PASS 56/56` — **does not exist in this tree**. A clean
+checkout rebuilt from `mesa-patches/` therefore does not reproduce the
+binary run 20 measured. Nothing here has been exported or reconstructed:
+it is somebody's unfinished change and this entry records the
+discrepancy rather than resolving it. **Pending decision.**
+
+What it does not put in doubt: the extra commit adds a log line and a
+recorded field, it is nowhere near teardown, ownership or the surface
+lock, and every check run 20 makes is a check runs 17 and 19 also made
+and passed.
+
 ### Also in this change
 
 - `vkfw_result_str` now names the window-system results. Every
@@ -2478,6 +2502,7 @@ other change shows up as a failing gate.
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 | D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **closed: block (patch 0044), verified on hardware — `vkWaitForFences(200 ms)` on a never-submitted fence returned `VK_TIMEOUT` after 200 ms, where the old code answered in microseconds (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`, PASS 60/60)** — owner said address it now. A `mtx_t` and `cnd_t` in `nvk_horizon_sync`, broadcast from `signal()`, `set_fence()` and `move()` — the three transitions that can release a waiter — and deliberately not from `reset()`, which makes the object *less* reachable. The condvar wait is chunked at 100 ms rather than handed the caller's deadline, because `cnd_timedwait` takes an absolute `TIME_UTC` deadline and D8 measured that clock to be the real-time clock: chunking bounds how far a date change can move a wait, and costs no wake-up latency because a broadcast ends the chunk immediately. `move()` needed care of its own — it copies the payload struct, which would have copied the destination's live mutex and condvar over with the source's, including one held on that line. Primitives verified on console rather than assumed (`t_threads`, 67/67, exercises `cnd_wait`/`signal`/`broadcast`/`timedwait`). `t_vulkan` gained the check that discriminates the fix from the bug. **Not yet run on hardware.** Was: — open, raised with the owner (Codex P1, PR #6) — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
 | D17 | Split this file: state in `STATUS.md`, narrative in `docs/history/` | **CLOSED 2026-08-04.** `scripts/split-status.py` cut the file at section boundaries into contiguous chunks, **verified that the chunks reassemble into the original byte for byte before writing anything**, and wrote `docs/history/` plus `MANIFEST.sha256`. 7749 lines became 171 here and nine files there. That answers "what guarantees nothing is edited in transit". For afterwards, `scripts/check-history-intact.sh` compares every history file against its digest — broken three ways to confirm it fails: an undeclared edit, an undeclared file, a declared file gone. History may still be appended to; the manifest update in the same commit is what declares it, and puts old and new digests side by side in the diff |
+| D18 | The Mesa commit `ebf2e31` that `mesa-patches/` does not carry | **open, raised with the owner.** The `mesa/` checkout is at `ebf2e31` ("vulkan/wsi: Horizon, report the layout that was registered"); `mesa-patches/` holds 70 patches and `85638f8` (patch 0070) is its parent. So the checkout has 71 commits against 70 tracked patches, and `mesa/` is ignored by this repository, which is why nothing in `git status` shows it. The commit's own message cites `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — and **`tests/t_vk_mode.c` does not exist in this tree**, nor does a log for it under `docs/hw-logs/`. A clean checkout rebuilt from `mesa-patches/` does not reproduce the binary run 20 was measured on, which is the rule in CLAUDE.md this breaks. Three ways out: export it as patch 0071 and restore the test and its log, drop it from the checkout and re-run, or keep it and say so at every run. Not chosen here — it is unfinished work belonging to whoever wrote it, and reconstructing a file that was deleted is not something to do on a guess |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **CLOSED 2026-08-04: no, and here is the number.** The ramp diagnoses a ring-size fault by kicking synthetic push buffers of increasing size at every channel creation, CPU-waiting each rung. The entry *count* was already bounded by construction — `horizon_gpu_submit` refuses what will not fit `GPFIFO_QUEUE_SIZE` — so the open question was the *size of one entry*, which was checked only for being non-zero. `t_pbsize` walked it on hardware: **every rung from 32 up to 524288 dwords (2 MiB) executed to its last dword**, each verified by a semaphore release at the END of the entry rather than by the submit being accepted. There is no limit to bound in that range, so nothing is added to `horizon_gpu_submit` and nothing is paid at channel creation. Should a limit ever appear it is a number to enforce, not a ramp to run |
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
