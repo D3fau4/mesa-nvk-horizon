@@ -196,9 +196,22 @@ typedef struct vkfw {
     * is only written to a log is not observable by the application that
     * it was made for. The Horizon WSI reports its zero-copy decision as
     * an INFO message precisely so a test can assert on it, and this is
-    * where the test finds it. */
+    * where the test finds it.
+    *
+    * WRITTEN FROM WHICHEVER THREAD PRODUCED THE MESSAGE. Mesa calls a
+    * debug-utils messenger on the calling thread, so a worker that does
+    * nothing but vkCreateImage or vkDestroySwapchainKHR appends here
+    * without the test ever mentioning it, while the main thread reads
+    * the same array through vkfw_saw_message. `message_count` was a
+    * plain non-atomic increment shared across those threads, and the
+    * ring write raced the read. msg_lock covers both. */
    char messages[VKFW_MESSAGE_SLOTS][VKFW_MESSAGE_CHARS];
    uint32_t message_count;
+   pthread_mutex_t msg_lock;
+   bool msg_lock_ready;
+   /* Where vkfw_saw_message copies a match to, so what it hands back
+    * outlives the lock it found it under. */
+   char message_match[VKFW_MESSAGE_CHARS];
 
    VkInstance instance;
    VkDebugUtilsMessengerEXT messenger;
@@ -276,8 +289,14 @@ bool vkfw_wsi_load(vkfw *fw);
 /* True when some debug-utils message since init contained `needle`.
  * The match is a plain substring search over the remembered messages
  * (VKFW_MESSAGE_SLOTS of them), and `out` — when non-NULL — receives
- * the first matching message. */
-bool vkfw_saw_message(const vkfw *fw, const char *needle, const char **out);
+ * the first matching message.
+ *
+ * Takes the fixture's message lock, so it is not const: the ring it
+ * searches is appended to by whatever thread the driver logged from.
+ * What `out` receives is a copy owned by the fixture, valid until the
+ * next call that matches — not a pointer into the ring, which a worker
+ * could overwrite between this returning and the caller printing it. */
+bool vkfw_saw_message(vkfw *fw, const char *needle, const char **out);
 
 /* Forgets every remembered message. A test that measures two
  * configurations in a row calls this between them so the second

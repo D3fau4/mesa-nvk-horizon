@@ -17,6 +17,7 @@
 #ifndef HORIZON_TESTFW_H
 #define HORIZON_TESTFW_H
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,30 @@ typedef struct test_ctx {
     int fail;
     FILE *log; /* sdmc log file; may be NULL */
     char log_path[128];
+
+    /* REPORTING IS NOT SINGLE-THREADED, AND CANNOT BE.
+     *
+     * It was documented as if it were: a test would state that only the
+     * main thread calls t_check and t_note, and reason from there that
+     * the shared FILE and the shared counters need no protection. The
+     * reasoning was sound and the premise was false. vkfw installs a
+     * VK_EXT_debug_utils messenger, and Mesa calls it on whichever
+     * thread produced the message — so a worker doing nothing but
+     * vkCreateImage, vkDestroySwapchainKHR or vkQueuePresentKHR reaches
+     * t_note through the driver, without the test ever naming it. Two
+     * such calls interleaved on one FILE, and `pass`/`fail` are plain
+     * non-atomic increments.
+     *
+     * That is undefined behaviour in the reporting path of a suite whose
+     * entire value is that undefined behaviour it observes belongs to
+     * the driver. So the framework serialises its own output instead of
+     * asking every test to promise something it cannot keep.
+     *
+     * Guarded by `out_lock_ready` because t_note is called before main()
+     * has finished setting the context up, and a test that fails early
+     * must still be able to say so. */
+    pthread_mutex_t out_lock;
+    bool out_lock_ready;
 } test_ctx;
 
 /* Record one check. Returns `cond` so callers can bail out on failure. */
@@ -60,9 +85,13 @@ void t_note(test_ctx *t, const char *fmt, ...);
  * second handle to a file that is already open for writing, and that
  * is what the earlier version tripped over.
  *
- * `needle` must be shorter than 128 bytes. Not thread-safe against
- * anything else writing to stderr, because it moves the shared file
- * offset and puts it back.
+ * `needle` must be shorter than 128 bytes. It rewinds the shared handle
+ * and puts it back, so it holds test_ctx::out_lock for the whole scan —
+ * a line written in between would land at the rewound offset and
+ * overwrite the log instead of extending it. This used to be documented
+ * as "not thread-safe against anything else writing to stderr", which
+ * stopped being something a caller could act on once the debug-utils
+ * messenger made any thread a possible writer.
  */
 bool t_log_scan(test_ctx *t, const char *needle, bool *found_out);
 
