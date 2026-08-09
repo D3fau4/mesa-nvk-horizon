@@ -13,7 +13,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | | |
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
-| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the PR 9 review*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory |
+| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
 | **Next concrete task** | **Nothing is blocked.** The layout answer arrived and the phase's last open question with it. What remains is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), never had a test (display mode change, docked resolution, `VK_SUBOPTIMAL_KHR`, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes next is a decision, not a task |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
@@ -23,8 +23,8 @@ long. This block is the state itself, and it is the part that must be true.*
 | **THE LAYOUT IS CONFIRMED** | **The operator reports the pattern renders correctly on the console, every time it has been shown** (2026-08-08). Four coloured bars, the 16px border, the black diagonal corner to corner, the yellow square — the appearance a wrong stride, a wrong block height or a wrong GOB sector ordering would each destroy in a way that is not subtle. This is the only evidence in the phase that is about *what was in* the frames rather than that they arrived, and it is human by necessity: nothing can read a presented frame back, and a GPU readback would write and read with the same layout and agree with itself. **The zero-copy path is closed** — showing 1 ran in runs 14, 15 and 16. Showing 2, on the copy fallback, has only existed since run 16, so whether "every time" covers it is worth one word from the operator |
 | **What is still unverified** | Any display mode change, docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
-| **Open decisions** | **D7 only.** D18 closed: `minImageCount` stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it |
-| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
+| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **Patches 0072 and 0073**, and the `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review: cross build only, no console run yet, and the next run is what confirms them. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
 
 ---
@@ -234,6 +234,82 @@ What it does not put in doubt: the extra commit adds a log line and a
 recorded field, it is nowhere near teardown, ownership or the surface
 lock, and every check run 20 makes is a check runs 17 and 19 also made
 and passed.
+
+**CLOSED the same day, as D20** (it was opened as a second D18; see the
+collision note beneath the decisions table). The commit is exported as
+patch **0071** and the series now applies 73 of 73 with nothing pending,
+so the tree run 20 measured is reproducible from this repository. Its
+`Evidence` header could not be carried across as written — it cited
+`t_vk_mode ... PASS 56/56`, a test and a log that do not exist here — so
+it now cites the run 20 log, which contains the same measurement and has
+a recorded digest. `tests/t_vk_mode.c` stays deleted: reconstructing
+somebody's removed work on a guess is worse than recording that it
+went.
+
+### The PR 9 review, and what it changed (2026-08-09)
+
+The branch was reviewed after run 20. The defect and the two-directional
+evidence held up; almost everything around them did not. Three classes,
+and the third is the one worth keeping:
+
+**1. The invariant was documented rather than enforced.**
+`wsi_horizon_close_framebuffer`'s comment named two callers and there
+were three. The third, on `vkCreateSwapchainKHR`'s failure path, held no
+lock and tested no ownership — the exact shape of the defect 0070 had
+just fixed, under a comment asserting it could not happen. It was
+unreachable (`fb_created` was set on `init_fallback`'s last line, so no
+failure path saw it true), which made it a trap for the next `goto`
+rather than a live bug. The same function called `framebufferClose` raw
+on two of its own error paths. Patch **0072** gives the close one home —
+`wsi_horizon_release_window`, which already locked and already tested —
+and replaces the comment's claim with an `assert`. Patch **0073** stops
+the four INFO messages naming a swapchain that is not a handle yet,
+which is what produced **188** `vk_log*() called with client-invisible
+object` lines in run 20's own log.
+
+**2. `t_vk_wsi_mt`'s central claim was untrue.** Its header said
+reporting was single-threaded and no worker called `t_note`. `vkfw`
+installs a debug-utils messenger, Mesa calls a messenger on whichever
+thread produced the message, and the callback calls `t_note` and
+increments a shared counter — so four of the file's five worker kinds
+reached it through the driver. That is a data race in the reporting path
+of the one file whose argument is that any undefined behaviour it
+observes is the driver's. Fixed in the framework, where it belongs:
+`testfw` serialises its own output and `vkfw` its message ring. The test
+also left the acquire fence with a signal pending on two paths and then
+destroyed it, and its deliberate leak-on-quiesce-failure was justified
+by "the process is about to print a failure and exit" — which it did
+not, running three more sections and then destroying the surface out
+from under a live swapchain. Sections C and E turned out never to have
+run on the copy fallback at all.
+
+**3. The record did not match the branch.** `docs/hw-logs/README.md`,
+whose stated job is to describe the logs "because a reader opens the
+log, not `STATUS.md`", had no entry for any of the five runs this branch
+rests on — including the crash log and the `qlaunch` fatal report. The
+manifest passed the whole time, and could not have caught it: it
+compares digests of files that exist and is blind to an undescribed one.
+`docs/wsi.md` §7.1 stated an invariant §7.3 contradicted two paragraphs
+later. And this file called D18 both closed and open, three thousand
+lines apart, about two different decisions.
+
+**None of it has run on hardware.** Run 20 remains the newest evidence
+for this backend and predates every patch and every test change above.
+Its PASS 52/52 is not the number the corrected test will report — C and
+E now run twice and every section gained a path check — and its 188
+client-invisible warnings are the measurement 0073 exists to take to
+zero. The verification behind these changes is a cross build and nothing
+more: every touched translation unit compiled with `aarch64-none-elf-gcc`
+from `ghcr.io/d3fau4/nx-dev`, using meson's own recorded command line
+with `-fsyntax-only`, with no diagnostics.
+
+Three Windows portability defects in this repository's own tooling were
+found in the course of running those gates, and fixed:
+`apply-mesa-patches.sh` compared a POSIX path spelling against git's
+native one and refused every tree; `toolchain-env.sh` lost its container
+mount to MSYS path conversion; and `split-status.py` wrote CRLF, so
+regenerating `MANIFEST.sha256` rewrote all 170 lines and destroyed the
+one property that file exists for.
 
 ### Also in this change
 
@@ -2502,8 +2578,29 @@ other change shows up as a failing gate.
 | D13 | Where the single `#[global_allocator]` and `#[panic_handler]` live | **closed by measurement (step 4)** — they cannot live in both NAK and NIL: two `no_std` Rust staticlibs fail to link with `multiple definition of `__rust_alloc`` and four more. NAK and NIL become rlibs; one new staticlib links both and carries the pair |
 | D16 | `vk_sync_wait` on a sync that was never submitted: return `VK_TIMEOUT` at once, or block until the deadline | **closed: block (patch 0044), verified on hardware — `vkWaitForFences(200 ms)` on a never-submitted fence returned `VK_TIMEOUT` after 200 ms, where the old code answered in microseconds (`docs/hw-logs/t_vulkan-run6-D16-PASS.log`, PASS 60/60)** — owner said address it now. A `mtx_t` and `cnd_t` in `nvk_horizon_sync`, broadcast from `signal()`, `set_fence()` and `move()` — the three transitions that can release a waiter — and deliberately not from `reset()`, which makes the object *less* reachable. The condvar wait is chunked at 100 ms rather than handed the caller's deadline, because `cnd_timedwait` takes an absolute `TIME_UTC` deadline and D8 measured that clock to be the real-time clock: chunking bounds how far a date change can move a wait, and costs no wake-up latency because a broadcast ends the chunk immediately. `move()` needed care of its own — it copies the payload struct, which would have copied the destination's live mutex and condvar over with the source's, including one held on that line. Primitives verified on console rather than assumed (`t_threads`, 67/67, exercises `cnd_wait`/`signal`/`broadcast`/`timedwait`). `t_vulkan` gained the check that discriminates the fix from the bug. **Not yet run on hardware.** Was: — open, raised with the owner (Codex P1, PR #6) — `nvk_horizon_sync_wait` returns `VK_TIMEOUT` immediately when the state is not PENDING, including for `OS_TIMEOUT_INFINITE`. The finding is correct: the sync type advertises CPU wait *and* CPU signal, so another thread is permitted to submit or signal while this one waits, and Vulkan allows waiting on a fence no queue has touched yet — it must block, not report a timeout that has not happened. Fixing it properly means a mutex and condition variable inside `nvk_horizon_sync`, signalled from both the signal path and the submit path: a change to the sync object's shape and the first threading primitive in `nvkmd_horizon`, which is why it is a decision and not a commit. Nothing exercises it today (every test is single-threaded and submits before it waits), but Phase 5 item 9 — several submits in flight — is where it starts to matter |
 | D17 | Split this file: state in `STATUS.md`, narrative in `docs/history/` | **CLOSED 2026-08-04.** `scripts/split-status.py` cut the file at section boundaries into contiguous chunks, **verified that the chunks reassemble into the original byte for byte before writing anything**, and wrote `docs/history/` plus `MANIFEST.sha256`. 7749 lines became 171 here and nine files there. That answers "what guarantees nothing is edited in transit". For afterwards, `scripts/check-history-intact.sh` compares every history file against its digest — broken three ways to confirm it fails: an undeclared edit, an undeclared file, a declared file gone. History may still be appended to; the manifest update in the same commit is what declares it, and puts old and new digests side by side in the diff |
-| D18 | The Mesa commit `ebf2e31` that `mesa-patches/` does not carry | **open, raised with the owner.** The `mesa/` checkout is at `ebf2e31` ("vulkan/wsi: Horizon, report the layout that was registered"); `mesa-patches/` holds 70 patches and `85638f8` (patch 0070) is its parent. So the checkout has 71 commits against 70 tracked patches, and `mesa/` is ignored by this repository, which is why nothing in `git status` shows it. The commit's own message cites `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — and **`tests/t_vk_mode.c` does not exist in this tree**, nor does a log for it under `docs/hw-logs/`. A clean checkout rebuilt from `mesa-patches/` does not reproduce the binary run 20 was measured on, which is the rule in CLAUDE.md this breaks. Three ways out: export it as patch 0071 and restore the test and its log, drop it from the checkout and re-run, or keep it and say so at every run. Not chosen here — it is unfinished work belonging to whoever wrote it, and reconstructing a file that was deleted is not something to do on a guess |
+| D20 | The Mesa commit `ebf2e31` that `mesa-patches/` did not carry (was numbered D18 — see the collision note below) | **CLOSED 2026-08-09 by exporting it as patch 0071.** The commit is now tracked, `scripts/apply-mesa-patches.sh --list` reports **73 applied, 0 pending, 73 in `mesa-patches/`**, and a clean checkout rebuilt from the series reproduces the tree run 20 was measured on. Two things about it were not fit to track and were fixed in the export rather than carried: it had none of the four header fields `mesa-patches/README.md` requires, and its `Evidence` line cited `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — **a test and a log that do not exist in this tree**, so the one field this project treats as non-optional pointed at nothing. The citation was replaced with `docs/hw-logs/t_vk_wsi_mt-run20-review-fixes-PASS.log`, which carries the identical measurement (stride 5120 B, block height 32 GOBs log2 5, kind 0xfe, allocation 3932160 B) and has its digest in `MANIFEST.sha256`. **`tests/t_vk_mode.c` was not reconstructed** — it is somebody's deleted work and rebuilding it on a guess would be worse than recording that it went. Was: **open, raised with the owner.** The `mesa/` checkout is at `ebf2e31` ("vulkan/wsi: Horizon, report the layout that was registered"); `mesa-patches/` holds 70 patches and `85638f8` (patch 0070) is its parent. So the checkout has 71 commits against 70 tracked patches, and `mesa/` is ignored by this repository, which is why nothing in `git status` shows it. The commit's own message cites `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — and **`tests/t_vk_mode.c` does not exist in this tree**, nor does a log for it under `docs/hw-logs/`. A clean checkout rebuilt from `mesa-patches/` does not reproduce the binary run 20 was measured on, which is the rule in CLAUDE.md this breaks. Three ways out: export it as patch 0071 and restore the test and its log, drop it from the checkout and re-run, or keep it and say so at every run. Not chosen here — it is unfinished work belonging to whoever wrote it, and reconstructing a file that was deleted is not something to do on a guess |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **CLOSED 2026-08-04: no, and here is the number.** The ramp diagnoses a ring-size fault by kicking synthetic push buffers of increasing size at every channel creation, CPU-waiting each rung. The entry *count* was already bounded by construction — `horizon_gpu_submit` refuses what will not fit `GPFIFO_QUEUE_SIZE` — so the open question was the *size of one entry*, which was checked only for being non-zero. `t_pbsize` walked it on hardware: **every rung from 32 up to 524288 dwords (2 MiB) executed to its last dword**, each verified by a semaphore release at the END of the entry rather than by the submit being accepted. There is no limit to bound in that range, so nothing is added to `horizon_gpu_submit` and nothing is paid at channel creation. Should a limit ever appear it is a number to enforce, not a ramp to run |
+
+### Note on the D18 collision (found in the PR 9 review, 2026-08-09)
+
+Two decisions were given the number **D18**. The first, from Phase 6, is
+`minImageCount` staying at 2; it was closed by run 13 and the summary block at the
+top of this file has said so since. The second was opened on 2026-08-09 for the
+Mesa commit `ebf2e31` that `mesa-patches/` did not carry.
+
+So the file said both "**Open decisions: D7 only.** D18 closed" at the top and
+"D18 | ... **open, raised with the owner**" in the table, about different
+decisions, three thousand lines apart. Either row read alone was true.
+
+Resolved the way the D9 collision was: the older claimant keeps the number. D18
+is `minImageCount`, which is cited by that name in the run 13 record and in
+`docs/wsi.md`. The Mesa commit becomes **D20** — not D19, which is
+`async=false` — and is cited nowhere else, so renumbering it changes no other
+file and loses no history.
+
+Worth naming rather than quietly renumbering, because this is the second time.
+The number is assigned wherever the decision is first written down, and the two
+places that happens — the summary block and the table — do not check each other.
 
 ### Note on the D9 collision (merge of `main` into the Phase 4 branch, 2026-08-04)
 
