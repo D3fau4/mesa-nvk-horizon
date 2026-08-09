@@ -71,9 +71,22 @@
  * two on different cores race. Only the second finds the memory
  * ordering bugs, and whether it happened is not something to assume.
  *
- * REPORTING IS SINGLE-THREADED. testfw's t_check and t_note write to a
- * shared FILE and shared counters; no worker calls either. Workers fill
- * in a result struct and the main thread reads it after the join.
+ * VERDICTS ARE SINGLE-THREADED; REPORTING IS NOT, AND CANNOT BE. No
+ * worker calls t_check: workers fill in a result struct and the main
+ * thread reads it after the join, so the order of the checks in the log
+ * is the order this file is written in.
+ *
+ * That is a rule about verdicts, and it used to be written here as a
+ * rule about output — "no worker calls either", with the shared FILE and
+ * the shared counters said to need no protection as a result. That was
+ * false the day it was written. vkfw installs a debug-utils messenger,
+ * Mesa calls a messenger on whichever thread produced the message, and
+ * vkfw_debug_cb calls t_note. The reaper's vkDestroySwapchainKHR, the
+ * churn thread's vkCreateImage, the presenter's vkQueuePresentKHR — all
+ * of them reach t_note through the driver without appearing to. testfw
+ * now serialises its own output for that reason (test_ctx::out_lock),
+ * and vkfw serialises its message ring. The claim this comment makes is
+ * the one the framework enforces, not one this file promises.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -195,6 +208,12 @@ typedef struct mt_sc {
     * merely useless. */
    bool live;
 
+   /* True between vkAcquireNextImageKHR taking acquire_fence and this
+    * thread getting it back unsignalled. Only the acquiring thread
+    * writes it, and teardown reads it after that thread has been
+    * joined. See mt_acquire and mt_sc_quiesce. */
+   bool acquire_pending;
+
    bool zero_copy;   /* what the driver's decision message said */
 } mt_sc;
 
@@ -269,7 +288,17 @@ static void mt_record_quiesce_failure(mt_ctx *c, VkResult r)
  * and that does briefly stall a thread presenting on a different
  * swapchain. It does not weaken sections B, D and F — the destroy itself
  * still lands against the survivor's acquire and present, which is the
- * unsynchronised pairing under test. */
+ * unsynchronised pairing under test.
+ *
+ * THREE WAITS, AND THE THIRD IS THE ACQUIRE FENCE. The list above used
+ * to enumerate what must be quiet and omit it, which was wrong in a way
+ * vkQueueWaitIdle cannot cover: a swapchain acquire is signalled by the
+ * presentation engine, not by a queue submission, so no amount of queue
+ * idling says anything about it. mt_acquire now gives the fence back
+ * unsignalled on every path it can, and this is the backstop for the
+ * paths it could not — a wait that timed out leaves the signal pending,
+ * and vkDestroyFence on a fence with a pending signal is exactly the
+ * undefined behaviour this function exists to keep out of teardown. */
 static VkResult mt_sc_quiesce(mt_ctx *c, mt_sc *sc)
 {
    vkfw *fw = c->fw;
@@ -281,6 +310,15 @@ static VkResult mt_sc_quiesce(mt_ctx *c, mt_sc *sc)
       const VkResult r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->in_flight[i],
                                                 VK_TRUE, MT_WAIT_NS);
       if (r != VK_SUCCESS && first == VK_SUCCESS)
+         first = r;
+   }
+
+   if (sc->acquire_pending && sc->acquire_fence != VK_NULL_HANDLE) {
+      const VkResult r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->acquire_fence,
+                                                VK_TRUE, MT_WAIT_NS);
+      if (r == VK_SUCCESS)
+         sc->acquire_pending = false;
+      else if (first == VK_SUCCESS)
          first = r;
    }
 
@@ -313,7 +351,21 @@ static void mt_sc_destroy(mt_ctx *c, mt_sc *sc)
     * likely to produce a readable verdict. A timeout at this point is
     * precisely the stall the two-second waits in this file exist to
     * catch, so it is recorded and reported and the handles are leaked on
-    * purpose: the process is about to print a failure and exit. */
+    * purpose.
+    *
+    * THE LEAK IS ONLY SAFE IF THE RUN ACTUALLY STOPS, and for a while it
+    * did not. This comment used to end "the process is about to print a
+    * failure and exit"; the process did nothing of the sort. The result
+    * was latched into ctx.quiesce_error and read once, after every
+    * remaining section had run — so a leak in section A was followed by
+    * B through F on top of it, and then by a vkDestroySurfaceKHR with a
+    * live swapchain still registered as the surface's owner, which is
+    * the assert(surface->owner == NULL) in wsi_horizon_surface_destroy
+    * and a use-after-free in a release build. run_test now checks after
+    * every section and stops, and skips the surface and device teardown
+    * on that path — leaking a whole context at process exit is correct
+    * here, and destroying objects the device may still be using is
+    * not. */
    const VkResult q = mt_sc_quiesce(c, sc);
    if (q != VK_SUCCESS) {
       mt_record_quiesce_failure(c, q);
@@ -358,6 +410,18 @@ static bool mt_sc_create(mt_ctx *c, uint32_t want_images, VkPresentModeKHR mode,
       .oldSwapchain = old,
    };
 
+   /* THE RING IS CLEARED HERE, not by the sections. sc->zero_copy is
+    * read back out of the debug-utils messages below, and the messages
+    * are cumulative: only section A ever called vkfw_forget_messages,
+    * so every swapchain created after it matched an *earlier*
+    * generation's decision line and reported zero_copy = true whatever
+    * path it actually took. That was harmless only because the single
+    * reader of the field happened to be inside section A. With every
+    * section now checking which path it got, the field has to be about
+    * this swapchain, and this is the only place that knows when one is
+    * about to be created. */
+   vkfw_forget_messages(fw);
+
    VkResult r = fw->wsi.vkCreateSwapchainKHR(fw->dev, &ci, NULL, &sc->handle);
    if (r != VK_SUCCESS) {
       *err_out = r;
@@ -367,8 +431,29 @@ static bool mt_sc_create(mt_ctx *c, uint32_t want_images, VkPresentModeKHR mode,
 
    uint32_t count = 0;
    r = fw->wsi.vkGetSwapchainImagesKHR(fw->dev, sc->handle, &count, NULL);
-   if (r != VK_SUCCESS || count < 2 || count > MT_MAX_IMAGES) {
-      *err_out = (r == VK_SUCCESS) ? VK_ERROR_UNKNOWN : r;
+   if (r != VK_SUCCESS) {
+      *err_out = r;
+      goto fail;
+   }
+   /* THREE CONDITIONS, THREE ANSWERS. These used to be one test
+    * returning a fabricated VK_ERROR_UNKNOWN, so a query that failed, a
+    * swapchain with too few images, and a conformant driver handing
+    * back more images than this fixture's arrays hold all printed the
+    * same line - and the last of those is a limit of the test being
+    * reported as a fault of the driver. MT_MAX_IMAGES is 4 because the
+    * per-image arrays above are that size; a driver returning 5 is
+    * within its rights and this file simply cannot hold it. */
+   if (count > MT_MAX_IMAGES) {
+      t_note(c->fw->t, "the driver returned %" PRIu32 " swapchain images and "
+                       "this fixture holds %u; raise MT_MAX_IMAGES",
+             count, MT_MAX_IMAGES);
+      *err_out = VK_ERROR_UNKNOWN;
+      goto fail;
+   }
+   if (count < 2) {
+      t_note(c->fw->t, "the driver returned %" PRIu32 " swapchain image(s); "
+                       "every section here needs at least two", count);
+      *err_out = VK_ERROR_UNKNOWN;
       goto fail;
    }
    r = fw->wsi.vkGetSwapchainImagesKHR(fw->dev, sc->handle, &count, sc->images);
@@ -434,7 +519,22 @@ fail:
 }
 
 /* One acquire, taking the swapchain's mutex for exactly the call the
- * specification says needs it, and the acquire fence's wait outside it. */
+ * specification says needs it, and the acquire fence's wait outside it.
+ *
+ * EVERY EXIT LEAVES THE FENCE UNSIGNALLED, and that is the whole shape
+ * of this function. Once vkAcquireNextImageKHR has returned VK_SUCCESS
+ * or VK_SUBOPTIMAL_KHR it has taken a reference to acquire_fence and
+ * that fence *will* be signalled, whatever this function decides to do
+ * next. Two paths used to return before dealing with it — the index
+ * sanity check, and a vkWaitForFences that timed out, which by
+ * definition means the signal is still pending — and teardown then
+ * reached vkDestroyFence with a signal operation outstanding. That is
+ * undefined behaviour, and it is the exact class of it mt_sc_quiesce
+ * exists to prevent, sitting in the one file that must not have any.
+ *
+ * So the failure paths go through `drain` and give the fence back
+ * unsignalled or say why they could not. sc->acquire_pending is what
+ * teardown reads when even that fails. */
 static VkResult mt_acquire(mt_ctx *c, mt_sc *sc, uint32_t *index_out)
 {
    vkfw *fw = c->fw;
@@ -447,20 +547,34 @@ static VkResult mt_acquire(mt_ctx *c, mt_sc *sc, uint32_t *index_out)
 
    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
       return r;
+
+   /* From here the fence has been handed to the presentation engine. */
+   sc->acquire_pending = true;
+
+   VkResult fail = VK_SUCCESS;
    if (*index_out >= sc->image_count)
-      return VK_ERROR_UNKNOWN;
+      fail = VK_ERROR_UNKNOWN;
 
    /* vkWaitForFences is not externally synchronised; vkResetFences is,
     * and only the acquiring thread touches this fence. */
    VkResult wr = fw->vk.vkWaitForFences(fw->dev, 1, &sc->acquire_fence,
                                         VK_TRUE, MT_WAIT_NS);
-   if (wr != VK_SUCCESS)
-      return wr;
-   wr = fw->vk.vkResetFences(fw->dev, 1, &sc->acquire_fence);
-   if (wr != VK_SUCCESS)
-      return wr;
+   if (wr != VK_SUCCESS) {
+      /* Still pending: nothing may destroy this fence. */
+      return fail != VK_SUCCESS ? fail : wr;
+   }
 
-   return r;
+   wr = fw->vk.vkResetFences(fw->dev, 1, &sc->acquire_fence);
+   if (wr != VK_SUCCESS) {
+      /* Signalled but not reset. Not a hazard for vkDestroyFence, which
+       * accepts a signalled fence — only for the next acquire, which
+       * needs it unsignalled — so the flag stays set and teardown will
+       * try again. */
+      return fail != VK_SUCCESS ? fail : wr;
+   }
+
+   sc->acquire_pending = false;
+   return fail != VK_SUCCESS ? fail : r;
 }
 
 /* Records a clear into the acquired image and submits it. The command
@@ -652,6 +766,24 @@ typedef struct mt_churn_job {
     * in C11 whatever it happens to compile to. t_threads.c and t_ostime.c
     * in this same suite already use atomics for exactly this. */
    atomic_bool stop;
+
+   /* THE HANDSHAKE THAT MAKES setenv SAFE. Section F flips the present
+    * path at every generation boundary while this thread is running,
+    * and setenv may reallocate environ while the driver is inside
+    * getenv - it reads MESA_VK_WSI_HORIZON_FORCE_COPY uncached on every
+    * vkCreateSwapchainKHR. POSIX does not make setenv safe against a
+    * concurrent getenv, so the two are kept apart instead of hoped
+    * about.
+    *
+    * `pause_req` is set by the main thread; the worker acknowledges with
+    * `paused` at the top of its loop, outside every Vulkan call. The
+    * main thread waits for the acknowledgement, does the setenv, and
+    * clears the request. The worker is parked for microseconds at 14
+    * boundaries in a 3000-frame section, so "a device-work thread
+    * running throughout" is still what the section measures. */
+   atomic_bool pause_req;
+   atomic_bool paused;
+
    int core;
    int core_got;
 
@@ -671,6 +803,16 @@ static void *mt_churn_thread(void *arg)
    job->first_error = VK_SUCCESS;
 
    while (!atomic_load(&job->stop)) {
+      /* Parked here, between iterations, so the main thread's setenv
+       * never overlaps a getenv inside the driver. */
+      if (atomic_load(&job->pause_req)) {
+         atomic_store(&job->paused, true);
+         while (atomic_load(&job->pause_req) && !atomic_load(&job->stop))
+            svcSleepThread(UINT64_C(100000));   /* 100 us */
+         atomic_store(&job->paused, false);
+         continue;
+      }
+
       /* A buffer with memory bound and freed again. vkCreateBuffer,
        * vkAllocateMemory, vkFreeMemory and vkDestroyBuffer are all
        * internally synchronised.
@@ -976,9 +1118,80 @@ static void *mt_presenter_thread(void *arg)
 /* The test                                                            */
 /* ------------------------------------------------------------------ */
 
+/* The operator's own value, captured once before anything overwrites
+ * it, and put back at the end. NULL means it was not set. */
+static char *mt_force_copy_saved;
+static bool mt_force_copy_saved_valid;
+
+static void mt_force_copy_save(test_ctx *t)
+{
+   const char *cur = getenv("MESA_VK_WSI_HORIZON_FORCE_COPY");
+   mt_force_copy_saved_valid = true;
+   if (cur == NULL) {
+      mt_force_copy_saved = NULL;
+      return;
+   }
+   mt_force_copy_saved = strdup(cur);
+   /* SAID OUT LOUD, because this test drives that variable from end to
+    * end and an operator who exported it to force one path gets none of
+    * what they asked for. vkfw does the same for HORIZON_GPU_LOG, on
+    * the grounds that a silent override wastes somebody's afternoon;
+    * this one cannot defer to the existing value - alternating the
+    * paths is the measurement - so it says so and restores it. */
+   t_note(t, "MESA_VK_WSI_HORIZON_FORCE_COPY was %s in the environment; this "
+             "test drives it and will put it back at the end", cur);
+}
+
+static void mt_force_copy_restore(void)
+{
+   if (!mt_force_copy_saved_valid)
+      return;
+   if (mt_force_copy_saved != NULL) {
+      setenv("MESA_VK_WSI_HORIZON_FORCE_COPY", mt_force_copy_saved, 1);
+      free(mt_force_copy_saved);
+      mt_force_copy_saved = NULL;
+   } else {
+      unsetenv("MESA_VK_WSI_HORIZON_FORCE_COPY");
+   }
+   mt_force_copy_saved_valid = false;
+}
+
+/* NOT SAFE BESIDE A THREAD IN THE DRIVER, and section F is the only
+ * caller that has one. setenv may reallocate environ, and the driver
+ * reads this option through debug_get_bool_option -> getenv on every
+ * vkCreateSwapchainKHR - uncached, by design, which is what makes
+ * alternating the path mid-run work at all. Any caller with a worker
+ * running must park it first; see mt_churn_pause. */
 static void mt_force_copy(bool on)
 {
    setenv("MESA_VK_WSI_HORIZON_FORCE_COPY", on ? "1" : "0", 1);
+}
+
+/* Flips the present path with the churn thread parked. Returns false if
+ * the worker never acknowledged, which is reported rather than ignored:
+ * carrying on would mean doing the very setenv this exists to make
+ * safe. */
+static bool mt_churn_force_copy(mt_churn_job *job, bool on)
+{
+   atomic_store(&job->pause_req, true);
+
+   /* Bounded, because a worker that has already stopped or failed to
+    * start must not hang the section. 2 s at 100 us is the same order
+    * as MT_WAIT_NS. */
+   bool parked = false;
+   for (uint32_t i = 0; i < 20000u; i++) {
+      if (atomic_load(&job->paused) || atomic_load(&job->stop)) {
+         parked = true;
+         break;
+      }
+      svcSleepThread(UINT64_C(100000));
+   }
+
+   if (parked)
+      mt_force_copy(on);
+
+   atomic_store(&job->pause_req, false);
+   return parked;
 }
 
 /* Section A, run once per present path.
@@ -996,11 +1209,12 @@ static void mt_section_a(mt_ctx *c, bool force_copy, const char *what)
    VkResult err = VK_SUCCESS;
 
    mt_force_copy(force_copy);
-   vkfw_forget_messages(c->fw);
 
-   /* Every exit from here on restores the override. Sections C and E
-    * never set it themselves, so whatever this one leaves behind is what
-    * they would run under. */
+   /* Every exit from here on restores the override to "0". Every section
+    * now sets what it needs on entry rather than inheriting, so this is
+    * tidiness and no longer load-bearing - C and E used to depend on it
+    * and silently ran zero-copy twice as a result. The operator's
+    * original value is restored once, in run_test. */
    if (!t_check(t, mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR,
                                 VK_NULL_HANDLE, &s1, &err),
                 "A/%s: the first swapchain was created -> %s", what,
@@ -1021,7 +1235,6 @@ static void mt_section_a(mt_ctx *c, bool force_copy, const char *what)
 
    /* The recreate, the way Vulkan describes it: the new swapchain names
     * the old one and is created before it is destroyed. */
-   vkfw_forget_messages(c->fw);
    if (!t_check(t, mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR, s1.handle,
                                 &s2, &err),
                 "A/%s: the second swapchain was created with the first as "
@@ -1083,6 +1296,10 @@ static void mt_section_b(mt_ctx *c, bool force_copy, const char *what)
       return;
    }
 
+   t_check(t, cur->zero_copy != force_copy,
+           "B/%s: it took the %s path", what,
+           force_copy ? "copy" : "zero-copy");
+
    for (uint32_t gen = 0; gen < MT_B_GENS; gen++) {
       mt_sc *next = calloc(1, sizeof(*next));
       if (next == NULL) {
@@ -1143,8 +1360,13 @@ static void mt_section_b(mt_ctx *c, bool force_copy, const char *what)
    mt_force_copy(false);
 
    t_check(t, generations_ok == MT_B_GENS && first_error == VK_SUCCESS,
+           /* NOT "each". Both numbers are run totals - frames_ok is
+            * accumulated across generations and the bound is
+            * MT_B_GENS * MT_B_FRAMES - so the word turned 400 presented
+            * frames into a claim of 8000, and the committed logs say
+            * "20 of 20 generations presented 400 of 400 frames each". */
            "B/%s: %" PRIu32 " of %u generations presented %" PRIu32 " of %u "
-           "frames each while the retired swapchain was destroyed on "
+           "frames in total while the retired swapchain was destroyed on "
            "another thread -> %s", what, generations_ok, MT_B_GENS,
            frames_ok, MT_B_GENS * MT_B_FRAMES, vkfw_result_str(first_error));
    if (reaper_pinned)
@@ -1155,22 +1377,51 @@ static void mt_section_b(mt_ctx *c, bool force_copy, const char *what)
                 "a core with the presenting one", what);
 }
 
-/* Section C: a render thread and a present thread on one swapchain. */
-static void mt_section_c(mt_ctx *c)
+/* Section C: a render thread and a present thread on one swapchain.
+ *
+ * RUN ON BOTH PRESENT PATHS, which it was not. It set no override and
+ * inherited whatever the previous section left behind - always "0" - so
+ * the render/present split was only ever exercised on zero-copy, the
+ * path that never had the defect this file was written for. */
+static void mt_section_c(mt_ctx *c, bool force_copy, const char *what)
 {
    test_ctx *t = c->fw->t;
    mt_sc sc;
    VkResult err = VK_SUCCESS;
 
+   mt_force_copy(force_copy);
+
    if (!t_check(t, mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE,
                                 &sc, &err),
-                "C: the swapchain -> %s", vkfw_result_str(err)))
+                "C/%s: the swapchain -> %s", what, vkfw_result_str(err))) {
+      mt_force_copy(false);
       return;
+   }
 
-   /* minImageCount is 2, so the application may hold imageCount - 1
-    * images at once. The ring is that, and it is what keeps the render
-    * thread inside valid usage rather than discovering the acquire's
-    * deadlock detector. */
+   t_check(t, sc.zero_copy != force_copy,
+           "C/%s: it took the %s path", what,
+           force_copy ? "copy" : "zero-copy");
+
+   /* HOW MANY IMAGES THE RENDER THREAD MAY HOLD, and this comment used
+    * to get it wrong twice. It said "minImageCount is 2, so the
+    * application may hold imageCount - 1 images at once. The ring is
+    * that", and called exceeding it invalid usage.
+    *
+    * Neither half held. The peak this pipeline holds is capacity + 2,
+    * not capacity + 1: the ring, plus the image the render thread is
+    * working on, plus the one the presenter has popped and not yet
+    * presented. And exceeding the bound is not invalid usage at all -
+    * it is a liveness bound. An application may acquire more images
+    * than are guaranteed available; what it may not do is assume the
+    * acquire returns promptly. This one passes a finite MT_WAIT_NS
+    * rather than UINT64_MAX, so over-acquiring surfaces as a reported
+    * VK_TIMEOUT and never as a hang.
+    *
+    * The capacity is deliberately unchanged, because changing it would
+    * change what this section measures and there is no hardware run
+    * behind a new value. What changed is that the claim now matches the
+    * code, and that minImageCount is checked rather than asserted in
+    * prose - see run_test. */
    mt_pipe pipe;
    mt_pipe_init(&pipe, sc.image_count - 1u);
 
@@ -1198,48 +1449,65 @@ static void mt_section_c(mt_ctx *c)
    const uint64_t elapsed_ns = armTicksToNs(armGetSystemTick() - start);
 
    if (!t_check(t, started_r && started_p,
-                "C: a render thread and a present thread were started")) {
+                "C/%s: a render thread and a present thread were started",
+                what)) {
       mt_pipe_finish(&pipe);
       mt_sc_destroy(c, &sc);
+      mt_force_copy(false);
       return;
    }
 
    t_check(t, render.first_error == VK_SUCCESS &&
            render.done == MT_C_FRAMES,
-           "C: the render thread acquired and submitted %" PRIu32 " of %u "
-           "frames -> %s%s%s", render.done, MT_C_FRAMES,
+           "C/%s: the render thread acquired and submitted %" PRIu32 " of %u "
+           "frames -> %s%s%s", what, render.done, MT_C_FRAMES,
            vkfw_result_str(render.first_error),
            render.first_error_what ? " at " : "",
            render.first_error_what ? render.first_error_what : "");
 
    t_check(t, present.first_error == VK_SUCCESS &&
            present.done == MT_C_FRAMES,
-           "C: the present thread presented %" PRIu32 " of %u frames -> %s",
-           present.done, MT_C_FRAMES, vkfw_result_str(present.first_error));
+           "C/%s: the present thread presented %" PRIu32 " of %u frames -> %s",
+           what, present.done, MT_C_FRAMES,
+           vkfw_result_str(present.first_error));
 
    if (present.done > 1) {
       const uint64_t mean_ns = elapsed_ns / present.done;
-      t_note(t, "C: %" PRIu32 " frames in %" PRIu64 " us, mean %" PRIu64
+      t_note(t, "C/%s: %" PRIu32 " frames in %" PRIu64 " us, mean %" PRIu64
                 " us per frame (a refresh is %" PRIu64 " us)",
-             present.done, elapsed_ns / 1000u, mean_ns / 1000u,
+             what, present.done, elapsed_ns / 1000u, mean_ns / 1000u,
              MT_REFRESH_NS / 1000u);
       /* Two threads must not be slower than one: the pipeline exists to
        * overlap the render with the present, and a mean far over a
-       * refresh would mean they are serialising on something. Generous,
-       * because this is a correctness test and the console is doing
-       * other things. */
-      t_check(t, mean_ns < 3u * MT_REFRESH_NS,
-              "C: the split-thread pipeline keeps up with the display "
+       * refresh would mean they are serialising on something.
+       *
+       * ONE AND A HALF REFRESHES, NOT THREE. The bound was 3x, which
+       * passes at a mean of 2.9 refreshes - a sustained two-thirds frame
+       * drop - while reporting that the pipeline "keeps up with the
+       * display". Runs 17 through 20 all measured this section within
+       * 1% of one refresh, so 1.5x is still generous against whatever
+       * else the console is doing and now fails the case the sentence
+       * describes. */
+      t_check(t, mean_ns < (3u * MT_REFRESH_NS) / 2u,
+              "C/%s: the split-thread pipeline keeps up with the display "
               "(mean %" PRIu64 " us against a %" PRIu64 " us refresh)",
-              mean_ns / 1000u, MT_REFRESH_NS / 1000u);
+              what, mean_ns / 1000u, MT_REFRESH_NS / 1000u);
+   } else {
+      /* Reported rather than skipped. A section that presented nothing
+       * fell through this check silently, leaving a log that looks like
+       * the pacing was measured and passed. */
+      t_check(t, false,
+              "C/%s: enough frames were presented to measure pacing "
+              "(%" PRIu32 " presented)", what, present.done);
    }
 
-   t_note(t, "C: render thread on core %d, present thread on core %d "
+   t_note(t, "C/%s: render thread on core %d, present thread on core %d "
              "(-1 means it could not be pinned and shares main's)",
-          render.core_got, present.core_got);
+          what, render.core_got, present.core_got);
 
    mt_pipe_finish(&pipe);
    mt_sc_destroy(c, &sc);
+   mt_force_copy(false);
 }
 
 /* Section D: recreation churn, generation n destroyed by a reaper while
@@ -1252,20 +1520,34 @@ static void mt_section_d(mt_ctx *c)
    VkResult first_error = VK_SUCCESS;
    const char *first_what = NULL;
 
+   /* Generation 0 on a known path rather than on whatever the previous
+    * section left behind: the loop's own alternation starts at
+    * generation 0 and this is what it starts from. */
+   mt_force_copy(false);
+
    mt_sc *cur = calloc(1, sizeof(*cur));
    VkResult err = VK_SUCCESS;
    if (!t_check(t, cur != NULL && mt_sc_create(c, 2, VK_PRESENT_MODE_FIFO_KHR,
                                                VK_NULL_HANDLE, cur, &err),
                 "D: the first generation -> %s", vkfw_result_str(err))) {
       free(cur);
+      mt_force_copy(false);
       return;
    }
+
+   /* Counted rather than checked per generation: 30 extra check lines
+    * would bury the section, and one line saying every generation got
+    * the path it asked for is the same statement. */
+   uint32_t path_wrong = 0;
+   if (!cur->zero_copy)   /* generation 0 asked for zero-copy */
+      path_wrong++;
 
    for (uint32_t gen = 0; gen < MT_D_GENS; gen++) {
       /* Alternating between two and three images, and between the two
        * present paths, so the churn covers both registrations. */
       const uint32_t want = (gen & 1u) ? 3u : 2u;
-      mt_force_copy((gen % 4u) >= 2u);
+      const bool want_copy = (gen % 4u) >= 2u;
+      mt_force_copy(want_copy);
 
       mt_sc *next = calloc(1, sizeof(*next));
       if (next == NULL) {
@@ -1291,6 +1573,9 @@ static void mt_section_d(mt_ctx *c)
          free(next);
          break;
       }
+
+      if (next->zero_copy == want_copy)
+         path_wrong++;
 
       mt_run run;
       mt_run_frames(c, next, MT_D_FRAMES, gen * 37u, &run);
@@ -1318,19 +1603,34 @@ static void mt_section_d(mt_ctx *c)
            "it presented -> %s%s%s", generations_ok, MT_D_GENS, frames,
            vkfw_result_str(first_error), first_what ? " at " : "",
            first_what ? first_what : "");
+   t_check(t, path_wrong == 0,
+           "D: every generation took the present path it asked for "
+           "(%" PRIu32 " did not)", path_wrong);
 }
 
-/* Section E: a present loop with unrelated device work beside it. */
-static void mt_section_e(mt_ctx *c)
+/* Section E: a present loop with unrelated device work beside it.
+ *
+ * On both present paths, for the reason section C is: it set no
+ * override and inherited "0" from whatever ran before it, so the
+ * device-work-beside-present case only ever ran on zero-copy. */
+static void mt_section_e(mt_ctx *c, bool force_copy, const char *what)
 {
    test_ctx *t = c->fw->t;
    mt_sc sc;
    VkResult err = VK_SUCCESS;
 
+   mt_force_copy(force_copy);
+
    if (!t_check(t, mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE,
                                 &sc, &err),
-                "E: the swapchain -> %s", vkfw_result_str(err)))
+                "E/%s: the swapchain -> %s", what, vkfw_result_str(err))) {
+      mt_force_copy(false);
       return;
+   }
+
+   t_check(t, sc.zero_copy != force_copy,
+           "E/%s: it took the %s path", what,
+           force_copy ? "copy" : "zero-copy");
 
    mt_churn_job churn = { .c = c, .stop = false, .core = 2, .core_got = -1 };
    pthread_t th;
@@ -1343,20 +1643,21 @@ static void mt_section_e(mt_ctx *c)
    if (started)
       pthread_join(th, NULL);
 
-   t_check(t, started, "E: the device-work thread was started");
+   t_check(t, started, "E/%s: the device-work thread was started", what);
    t_check(t, run.presented == MT_E_FRAMES,
-           "E: %" PRIu32 " of %u frames presented while another thread "
-           "allocated, created and queried -> %s", run.presented,
+           "E/%s: %" PRIu32 " of %u frames presented while another thread "
+           "allocated, created and queried -> %s", what, run.presented,
            MT_E_FRAMES, vkfw_result_str(run.first_error));
    t_check(t, churn.first_error == VK_SUCCESS,
-           "E: the device-work thread did %" PRIu32 " buffers, %" PRIu32
+           "E/%s: the device-work thread did %" PRIu32 " buffers, %" PRIu32
            " images and %" PRIu32 " surface queries -> %s%s%s",
-           churn.buffers, churn.images, churn.queries,
+           what, churn.buffers, churn.images, churn.queries,
            vkfw_result_str(churn.first_error),
            churn.first_error_what ? " at " : "",
            churn.first_error_what ? churn.first_error_what : "");
 
    mt_sc_destroy(c, &sc);
+   mt_force_copy(false);
 }
 
 /* Section F: length. Everything above, kept running. */
@@ -1367,11 +1668,22 @@ static void mt_section_f(mt_ctx *c)
    uint32_t generations = 0;
    VkResult first_error = VK_SUCCESS;
    uint32_t error_at = 0;
+   bool have_error_at = false;
+   uint32_t flips_missed = 0;
+   uint32_t path_wrong = 0;
 
    mt_churn_job churn = { .c = c, .stop = false, .core = 3, .core_got = -1 };
    pthread_t churn_th;
    const bool churn_started = mt_thread_start(&churn_th, mt_churn_thread,
                                               &churn);
+
+   /* GENERATION 0 IS ZERO-COPY BY CHOICE, not by inheritance. The loop
+    * below only flips the path at a boundary, and the first boundary is
+    * frame MT_F_GEN_EVERY - so the first swapchain used to take
+    * whatever the previous section happened to leave in the
+    * environment. Said here so the alternation starts from a known
+    * end. */
+   mt_force_copy(false);
 
    mt_sc *cur = calloc(1, sizeof(*cur));
    VkResult err = VK_SUCCESS;
@@ -1393,22 +1705,36 @@ static void mt_section_f(mt_ctx *c)
    for (uint32_t frame = 0; frame < MT_F_FRAMES; frame++) {
       if (frame != 0 && (frame % MT_F_GEN_EVERY) == 0) {
          /* A generation boundary: create the next, hand the old one to
-          * a reaper, keep going. Both paths, in turn. */
-         mt_force_copy(((frame / MT_F_GEN_EVERY) & 1u) != 0u);
+          * a reaper, keep going. Both paths, in turn.
+          *
+          * Through the handshake, because the churn thread is live and
+          * calling into the driver, which reads this variable with
+          * getenv on every swapchain creation. A flip that could not
+          * park the worker is counted and skipped rather than done
+          * unsafely - the generation still happens, on the path the
+          * previous one used. */
+         if (!mt_churn_force_copy(&churn,
+                                  ((frame / MT_F_GEN_EVERY) & 1u) != 0u))
+            flips_missed++;
 
          mt_sc *next = calloc(1, sizeof(*next));
          if (next == NULL) {
             first_error = VK_ERROR_OUT_OF_HOST_MEMORY;
             error_at = frame;
+            have_error_at = true;
             break;
          }
          if (!mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR, cur->handle, next,
                            &err)) {
             first_error = err;
             error_at = frame;
+            have_error_at = true;
             free(next);
             break;
          }
+
+         if (next->zero_copy == (((frame / MT_F_GEN_EVERY) & 1u) != 0u))
+            path_wrong++;
 
          mt_reaper_job reap = { .c = c, .sc = cur, .delay_ns = 0,
                                 .core = 2, .core_got = -1 };
@@ -1423,6 +1749,7 @@ static void mt_section_f(mt_ctx *c)
             if (one.presented != 1) {
                first_error = one.first_error;
                error_at = frame;
+               have_error_at = true;
                free(cur);
                cur = next;
                break;
@@ -1451,6 +1778,7 @@ static void mt_section_f(mt_ctx *c)
       if (r != VK_SUCCESS) {
          first_error = r;
          error_at = frame;
+         have_error_at = true;
          break;
       }
       presented++;
@@ -1466,11 +1794,30 @@ static void mt_section_f(mt_ctx *c)
    free(cur);
    mt_force_copy(false);
 
-   t_check(t, presented == MT_F_FRAMES && first_error == VK_SUCCESS,
-           "F: %" PRIu32 " of %u frames over %" PRIu32 " swapchain "
-           "generations, with a device-work thread running throughout "
-           "-> %s (frame %" PRIu32 ")", presented, MT_F_FRAMES,
-           generations, vkfw_result_str(first_error), error_at);
+   /* The frame number only when there is a frame to name. It was
+    * printed unconditionally from an error_at initialised to 0, so a
+    * clean 3000-frame soak signed off as
+    *   "3000 of 3000 frames ... -> VK_SUCCESS (frame 0)"
+    * which reads as a contradiction. Section D already guards its
+    * equivalent field this way. */
+   {
+      char at[32];
+      at[0] = '\0';
+      if (have_error_at)
+         snprintf(at, sizeof(at), " (frame %" PRIu32 ")", error_at);
+      t_check(t, presented == MT_F_FRAMES && first_error == VK_SUCCESS,
+              "F: %" PRIu32 " of %u frames over %" PRIu32 " swapchain "
+              "generations, with a device-work thread running throughout "
+              "-> %s%s", presented, MT_F_FRAMES,
+              generations, vkfw_result_str(first_error), at);
+   }
+   t_check(t, flips_missed == 0,
+           "F: every generation boundary parked the device-work thread "
+           "before changing the present path (%" PRIu32 " could not)",
+           flips_missed);
+   t_check(t, path_wrong == 0,
+           "F: every generation took the present path it asked for "
+           "(%" PRIu32 " did not)", path_wrong);
    if (presented > 1) {
       t_note(t, "F: %" PRIu64 " us total, mean %" PRIu64 " us per frame, "
                 "shortest interval %" PRIu64 " us, longest %" PRIu64 " us",
@@ -1569,42 +1916,90 @@ int run_test(test_ctx *t)
              " images", ctx.extent.width, ctx.extent.height,
           caps.minImageCount, caps.maxImageCount);
 
+   /* CHECKED, NOT ASSUMED. Section C sizes its hand-off ring from a
+    * stated "minImageCount is 2 here", and this value was read, printed
+    * and then never used - so a driver reporting 3 would have left that
+    * sizing silently wrong with nothing to catch it. The premise the
+    * comment rests on is now a check that fails if it stops holding. */
+   t_check(t, caps.minImageCount == 2,
+           "the surface asks for a minimum of 2 images, which is what "
+           "section C's ring is sized from (got %" PRIu32 ")",
+           caps.minImageCount);
+
+   /* Captured before anything overwrites it, restored on every exit
+    * below. */
+   mt_force_copy_save(t);
+
+   /* AFTER EVERY SECTION, BECAUSE A LEAKED SWAPCHAIN POISONS THE REST.
+    * mt_sc_destroy leaks deliberately when it cannot get the device
+    * quiet, on the grounds that destroying objects still in use is
+    * worse. That is only true if the run stops: a leaked swapchain is
+    * still registered as the surface's owner, so every later section
+    * builds on a window somebody else holds and the teardown below
+    * trips the WSI's own assert. This used to be read once, at the end,
+    * after all six sections had run on top of the failure. */
+#define MT_SECTION(call)                                                    do {                                                                        call;                                                                    if ((VkResult)atomic_load(&ctx.quiesce_error) != VK_SUCCESS)                 goto out_quiesce_failed;                                           } while (0)
+
    /* --- A: recreate then destroy the old one, both paths ----------- */
-   mt_section_a(&ctx, false, "zero-copy");
-   mt_section_a(&ctx, true,  "copy");
+   MT_SECTION(mt_section_a(&ctx, false, "zero-copy"));
+   MT_SECTION(mt_section_a(&ctx, true,  "copy"));
 
    /* --- B: the same, with the destroy on another thread ------------ */
-   mt_section_b(&ctx, false, "zero-copy");
-   mt_section_b(&ctx, true,  "copy");
+   MT_SECTION(mt_section_b(&ctx, false, "zero-copy"));
+   MT_SECTION(mt_section_b(&ctx, true,  "copy"));
 
    /* --- C: a render thread and a present thread -------------------- */
-   mt_section_c(&ctx);
+   MT_SECTION(mt_section_c(&ctx, false, "zero-copy"));
+   MT_SECTION(mt_section_c(&ctx, true,  "copy"));
 
    /* --- D: recreation churn with a reaper -------------------------- */
-   mt_section_d(&ctx);
+   MT_SECTION(mt_section_d(&ctx));
 
    /* --- E: unrelated device work beside a present loop ------------- */
-   mt_section_e(&ctx);
+   MT_SECTION(mt_section_e(&ctx, false, "zero-copy"));
+   MT_SECTION(mt_section_e(&ctx, true,  "copy"));
 
    /* --- F: length --------------------------------------------------- */
-   mt_section_f(&ctx);
+   MT_SECTION(mt_section_f(&ctx));
+
+#undef MT_SECTION
 
    /* Every teardown in the run had to get the device quiet before it
     * destroyed anything, and any that could not skipped the destruction
     * and left its result here. One check, because the failure is fatal
     * to the whole file rather than to one section. */
-   {
-      const VkResult q = (VkResult)atomic_load(&ctx.quiesce_error);
-      t_check(t, q == VK_SUCCESS,
-              "every swapchain teardown got the device quiet first -> %s",
-              vkfw_result_str(q));
-   }
+   t_check(t, true,
+           "every swapchain teardown got the device quiet first -> %s",
+           vkfw_result_str(VK_SUCCESS));
 
    /* Nothing may be left holding the window: the surface is about to go
     * and the WSI asserts that no swapchain still owns it. */
    fw.vk.vkDeviceWaitIdle(fw.dev);
+   goto out_surface;
+
+out_quiesce_failed:
+   mt_force_copy_restore();
+   /* THE ONE PATH THAT DESTROYS NOTHING. A swapchain is still live and
+    * still owns the window, so vkDestroySurfaceKHR would hit
+    * assert(surface->owner == NULL) and vkDestroyDevice would run with a
+    * live swapchain on it. Both are worse than leaking at process exit,
+    * which is where this is going anyway. Reported first, because the
+    * whole point of surviving this far is to say what happened. */
+   {
+      const VkResult q = (VkResult)atomic_load(&ctx.quiesce_error);
+      t_check(t, false,
+              "every swapchain teardown got the device quiet first -> %s",
+              vkfw_result_str(q));
+      t_note(t, "the run stopped here: a swapchain could not be destroyed "
+                "safely, so it, the surface and the device are left alone "
+                "rather than torn down out from under the device");
+   }
+   rv = 1;
+   pthread_mutex_destroy(&ctx.queue_lock);
+   return rv;
 
 out_surface:
+   mt_force_copy_restore();
    if (ctx.surface != VK_NULL_HANDLE)
       fw.wsi.vkDestroySurfaceKHR(fw.instance, ctx.surface, NULL);
 out_lock:
