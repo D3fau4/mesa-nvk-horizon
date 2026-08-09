@@ -1,0 +1,447 @@
+== t_vk_wsi_mt ==
+  note horizon-build-id 2026-08-09T18:29:27.522Z e7870a0-dirty mesa:ebf2e31
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   instance extension list fits (3 asked for)
+  ok   instance extension list fits (3 asked for)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x49477b72a0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x49477b72a0: up, syncpt=26 initial=77390 zcull=off
+[horizon_gpu:I] channel 0x4947808010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x4947808010: up, syncpt=27 initial=12153 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   every window-system entry point resolved
+  note the process may run on core mask 0x7 (3 core(s))
+  ok   nwindowGetDefault() returned a valid window
+  ok   vkCreateViSurfaceNN over the default window -> VK_SUCCESS
+  ok   surface capabilities -> VK_SUCCESS
+  note surface: 1280x720, 2 to 4 images
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   A/zero-copy: the first swapchain was created -> VK_SUCCESS
+  ok   A/zero-copy: it took the zero-copy path, which is the one this case is about
+  ok   A/zero-copy: the first swapchain presented 30 of 30 frames -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x4947ff1300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947ff1300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   A/zero-copy: the second swapchain was created with the first as oldSwapchain -> VK_SUCCESS
+  ok   A/zero-copy: an acquire on the retired swapchain -> OUT_OF_DATE_KHR (expected VK_ERROR_OUT_OF_DATE_KHR)
+  ok   A/zero-copy: after the retired swapchain was destroyed the survivor presented 30 of 30 frames -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+  ok   A/copy: the first swapchain was created -> VK_SUCCESS
+  ok   A/copy: it took the copy path, which is the one this case is about
+  ok   A/copy: the first swapchain presented 30 of 30 frames -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x4948b31300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948b31300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+  ok   A/copy: the second swapchain was created with the first as oldSwapchain -> VK_SUCCESS
+  ok   A/copy: an acquire on the retired swapchain -> OUT_OF_DATE_KHR (expected VK_ERROR_OUT_OF_DATE_KHR)
+  ok   A/copy: after the retired swapchain was destroyed the survivor presented 30 of 30 frames -> VK_SUCCESS
+  ok   B/zero-copy: allocation
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   B/zero-copy: the first swapchain -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x494782be20 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494782be20 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49483d13a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49483d13a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49478ac3a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49478ac3a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49487fe4a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487fe4a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49478963a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49478963a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x494849e400 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494849e400 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947c9c3a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c9c3a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49480723a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49480723a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49484943a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484943a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948c513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948c513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4949032340 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949032340 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947cf43a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947cf43a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947c803a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c803a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49480d53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49480d53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49488923a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49488923a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947cc93a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947cc93a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49484923a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484923a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948c513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948c513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947c763a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c763a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49480b63a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49480b63a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   B/zero-copy: 20 of 20 generations presented 400 of 400 frames each while the retired swapchain was destroyed on another thread -> VK_SUCCESS
+  note B/zero-copy: the destroying thread ran on core 2
+  ok   B/copy: allocation
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+  ok   B/copy: the first swapchain -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x4947bfcde0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947bfcde0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49496b12e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49496b12e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487e73a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487e73a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487b5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487b5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487b68a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487b68a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948ff5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948ff5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487643a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487643a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948fd5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948fd5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948f75300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948f75300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49487623a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487623a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948362300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948362300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49497553a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49497553a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4949726300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949726300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948f223a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948f223a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4949f69300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949f69300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x494aab43a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494aab43a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4949ec9300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949ec9300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x494aa943a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494aa943a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49496b5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49496b5300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+  ok   B/copy: 20 of 20 generations presented 400 of 400 frames each while the retired swapchain was destroyed on another thread -> VK_SUCCESS
+  note B/copy: the destroying thread ran on core 2
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   C: the swapchain -> VK_SUCCESS
+  ok   C: a render thread and a present thread were started
+  ok   C: the render thread acquired and submitted 600 of 600 frames -> VK_SUCCESS
+  ok   C: the present thread presented 600 of 600 frames -> VK_SUCCESS
+  note C: 600 frames in 9964378 us, mean 16607 us per frame (a refresh is 16666 us)
+  ok   C: the split-thread pipeline keeps up with the display (mean 16607 us against a 16666 us refresh)
+  note C: render thread on core 1, present thread on core 2 (-1 means it could not be pinned and shares main's)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   D: the first generation -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x4947828460 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947828460 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947ff1300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947ff1300 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947c86320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c86320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4947c442a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c442a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49493553a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49493553a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49484272e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484272e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4949040320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949040320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4947c102e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c102e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49484153a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484153a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948fd33e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948fd33e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948c40360 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948c40360 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49484242e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484242e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49493d33a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49493d33a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x494840b2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494840b2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x494900f4a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494900f4a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49484042e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484042e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49483f53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49483f53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948fc42e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948fc42e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948c20320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948c20320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49484042e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484042e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948c083a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948c083a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4949787960 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949787960 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948440360 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948440360 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x494842f1e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494842f1e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49483f53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49483f53a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x494888b2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494888b2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4947c12320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947c12320 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49488842e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49488842e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4949b513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (2 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4949b513a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49487eb2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49487eb2e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   D: 30 of 30 swapchain generations, 900 frames, each generation's predecessor destroyed on another thread while it presented -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c0e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   E: the swapchain -> VK_SUCCESS
+  ok   E: the device-work thread was started
+  ok   E: 300 of 300 frames presented while another thread allocated, created and queried -> VK_SUCCESS
+  ok   E: the device-work thread did 1047 buffers, 1047 images and 1047 surface queries -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x494780c1e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494780c1e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   F: the first swapchain -> VK_SUCCESS
+MESA: warning: vk_log*() called with client-invisible object 0x4947890620 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947890620 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49479113a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49479113a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49478a00e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49478a00e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4947cf13a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4947cf13a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x494a0b1560 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x494a0b1560 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49495200e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49495200e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49479003c0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49479003c0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49478963a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49478963a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948d200e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948d200e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49491c23a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49491c23a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x49479002a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49479002a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x4948ce00e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948ce00e0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+MESA: warning: vk_log*() called with client-invisible object 0x4948511560 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: copy fallback: the rendered image is copied into a framebuffer the compositor owns (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x4948511560 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2188]: wsi_horizon: zero-copy was declined because MESA_VK_WSI_HORIZON_FORCE_COPY asked for it
+MESA: warning: vk_log*() called with client-invisible object 0x49484b63a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2183]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+MESA: warning: vk_log*() called with client-invisible object 0x49484b63a0 of type VK_OBJECT_TYPE_SWAPCHAIN_KHR
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2210]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   F: 3000 of 3000 frames over 14 swapchain generations, with a device-work thread running throughout -> VK_SUCCESS (frame 0)
+  note F: 50647800 us total, mean 16882 us per frame, shortest interval 649 us, longest 28821 us
+  ok   F: the device-work thread was started
+  ok   F: the device-work thread survived the soak (10458 buffers, 10458 images, 10458 queries) -> VK_SUCCESS
+  ok   every swapchain teardown got the device quiet first -> VK_SUCCESS
+RESULT: PASS (52/52)
+  note the run is finished; press + to exit (there is no console to show this)

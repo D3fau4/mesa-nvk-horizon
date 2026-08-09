@@ -13,7 +13,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | | |
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
-| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers |
+| **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the PR 9 review*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory |
 | **Next concrete task** | **Nothing is blocked.** The layout answer arrived and the phase's last open question with it. What remains is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), never had a test (display mode change, docked resolution, `VK_SUBOPTIMAL_KHR`, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes next is a decision, not a task |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
@@ -31,7 +31,8 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ## Multi-threaded WSI, and the one real defect it found (2026-08-09)
 
-`t_vk_wsi_mt` is new and **PASS 50/50** on hardware (run 17). It exists
+`t_vk_wsi_mt` is new and **PASS 50/50** on hardware (run 17), and
+**PASS 52/52** after the review below (run 20). It exists
 because "anything multi-threaded" had been on the *unverified* list
 since the phase began, while the WSI's own comments reasoned at length
 about concurrent creation, eviction and teardown — reasoning nothing
@@ -160,6 +161,55 @@ of the result:
   fixed, because the fix would be a lock on a structure this backend
   does not own. Run 17 did 11678 of these queries beside presents with
   no failure.
+
+### What the PR 9 review changed, and run 20
+
+An automated review of PR 9 raised five points, **all of them about the
+test and none about patch 0070 or the defect**. Four were real and are
+fixed here; the fifth was a real code defect whose stated consequence was
+not reachable, and is fixed anyway because it was two lines.
+
+- **Teardown destroyed objects the device might still be using.**
+  `mt_sc_destroy` waited on each in-flight fence and *threw the result
+  away*, then destroyed the fences, the command pool and the swapchain
+  regardless. A `VK_TIMEOUT` there is exactly the GPU stall this file's
+  two-second waits exist to catch, and the response to it was undefined
+  behaviour — on this platform, a console that stops answering instead of
+  a legible verdict. Teardown now quiesces first and destroys nothing if
+  it cannot: the result is recorded and reported by the main thread as
+  its own check.
+- **The render fence was the wrong proof for the present semaphores.**
+  It says the render submission retired; it says nothing about the
+  `vkQueuePresentKHR` still waiting on `render_done[i]`, which
+  `vkDestroySemaphore` requires to have completed. The same quiesce now
+  adds a `vkQueueWaitIdle` under the queue lock, which is the only thing
+  on a queue that says so. `t_vk_swapchain` had been doing this since it
+  was written; this file was the outlier.
+- **The churn worker's stop flag was `volatile bool`,** written by one
+  thread and read by another — a data race in C11 whatever it compiles
+  to. Now `atomic_bool`, which is what `t_threads.c` and `t_ostime.c` in
+  this same suite already use.
+- **Section F never checked that its worker started.** A failed
+  `pthread_create` left `first_error` at `VK_SUCCESS` and the section
+  passed on a soak that had quietly been single-threaded. Section E had
+  the check; F now does too.
+- **Section A's two early returns leaked
+  `MESA_VK_WSI_HORIZON_FORCE_COPY`.** Not reachable today — every later
+  section that depends on the override sets it on entry — but sections C
+  and E do not, so it was a trap waiting for a reordering.
+
+**Run 20**, full memory, `2026-08-09T18:29:27.522Z e7870a0-dirty
+mesa:ebf2e31`: **PASS 52/52**, the two extra checks being the ones added
+above. It agrees with run 19 everywhere the change does not touch —
+section C at **16607 us** against 16613 — and differs where it does:
+section F's mean moved from 16731 us to **16882 us**, which is the added
+`vkQueueWaitIdle` at each of the 14 generation boundaries, about 32 ms
+each, spread over 3000 frames. The stall is real, it is at teardown only,
+and it does not weaken sections B, D and F: the destroy itself still runs
+against the survivor's acquire and present, which is the unsynchronised
+pairing under test.
+
+Kept as `docs/hw-logs/t_vk_wsi_mt-run20-review-fixes-PASS.log`.
 
 ### Also in this change
 
