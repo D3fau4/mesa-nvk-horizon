@@ -1947,7 +1947,13 @@ int run_test(test_ctx *t)
     * builds on a window somebody else holds and the teardown below
     * trips the WSI's own assert. This used to be read once, at the end,
     * after all six sections had run on top of the failure. */
-#define MT_SECTION(call)                                                    do {                                                                        call;                                                                    if ((VkResult)atomic_load(&ctx.quiesce_error) != VK_SUCCESS)                 goto out_quiesce_failed;                                           } while (0)
+
+#define MT_SECTION(call)                                                 \
+   do {                                                                  \
+      call;                                                              \
+      if ((VkResult)atomic_load(&ctx.quiesce_error) != VK_SUCCESS)       \
+         goto out_quiesce_failed;                                        \
+   } while (0)
 
    /* --- A: recreate then destroy the old one, both paths ----------- */
    MT_SECTION(mt_section_a(&ctx, false, "zero-copy"));
@@ -1977,9 +1983,12 @@ int run_test(test_ctx *t)
     * destroyed anything, and any that could not skipped the destruction
     * and left its result here. One check, because the failure is fatal
     * to the whole file rather than to one section. */
-   t_check(t, true,
-           "every swapchain teardown got the device quiet first -> %s",
-           vkfw_result_str(VK_SUCCESS));
+   {
+      const VkResult q = (VkResult)atomic_load(&ctx.quiesce_error);
+      t_check(t, q == VK_SUCCESS,
+              "every swapchain teardown got the device quiet first -> %s",
+              vkfw_result_str(q));
+   }
 
    /* Nothing may be left holding the window: the surface is about to go
     * and the WSI asserts that no swapchain still owns it. */
