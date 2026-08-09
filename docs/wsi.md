@@ -439,3 +439,91 @@ the reference calls it on every swapchain creation and never calls `nvFenceExit`
 
 Surface support (`vkGetPhysicalDeviceSurfaceSupportKHR`) reports the queue families that
 can actually present, not unconditional `true`.
+
+---
+
+## 7. Threads
+
+Written on 2026-08-09, after `t_vk_wsi_mt` ran on hardware. Until then
+"anything multi-threaded" was on `STATUS.md`'s *unverified* list while
+the code reasoned about concurrent creation and eviction in its
+comments, which is the worst combination: an argument nobody had
+executed.
+
+### 7.1 What the application owes, and what the backend owes
+
+Vulkan externally synchronises a **swapchain** in
+`vkAcquireNextImageKHR`, `vkQueuePresentKHR`,
+`vkReleaseSwapchainImagesEXT` and `vkDestroySwapchainKHR`; a **surface**
+in `vkCreateSwapchainKHR`; and a **queue** in `vkQueueSubmit` and
+`vkQueuePresentKHR`. Everything a swapchain keeps to itself — slot
+states, `next_image`, `reported`, `slots_requested`, the release fences
+— is therefore the application's to protect, and this backend takes no
+lock for any of it. That is not laziness; a lock there would be a lock
+the specification already paid for.
+
+**What is left is the state two swapchains share, and that is the
+surface.** `surface->lock` covers `surface->owner` and every
+swapchain's `presentable` flag, because those are the one thing an
+application cannot synchronise: it does not know that creating S2
+retires S1.
+
+The rule the lock enforces, stated once: **only the swapchain that owns
+the window's registration may touch the window.** Three operations
+touch it — cancelling slots, `nwindowReleaseBuffers`, and closing the
+copy fallback's `Framebuffer` — and all three run under the lock, after
+an ownership test.
+
+### 7.2 The pairing that is legal and unsynchronised, and where it bit
+
+`vkDestroySwapchainKHR(old)` beside `vkAcquireNextImageKHR(new)` names
+two different objects, so the specification requires no synchronisation
+between them and an application may do it. So may the single-threaded
+version of the same thing, which is just the ordinary recreation order:
+create the new swapchain naming the old, then destroy the old.
+
+**That is where the one real defect was.** `framebufferClose` is a
+window operation wearing a private name: libnx's implementation calls
+`nwindowReleaseBuffers(fb->win)` unconditionally, which disconnects the
+producer and frees every slot the BufferQueue believes it holds,
+whoever registered them. Teardown called it outside the lock with no
+ownership test, so destroying a superseded copy-fallback swapchain
+disconnected the swapchain that had replaced it. On hardware the
+console took a system fatal — `0x290 (2144-0001)` in `qlaunch` — rather
+than merely losing the survivor's presents. Patch **0070** moves the
+close to the two moments a swapchain stops owning the window, both
+under the lock.
+
+The zero-copy path never had it: it registers through
+`nwindowConfigureBuffer` and releases through
+`wsi_horizon_release_window`, which has tested ownership since 0053.
+`t_vk_swapchain`'s section D runs the identical sequence on that path
+and has always passed, which is exactly why this was not found earlier.
+
+### 7.3 Two things that look wrong and are not
+
+Recorded because the next reader will look at them too.
+
+- **`wsi_horizon_swapchain_release_images` cancels slots with no
+  ownership test.** Reachable only on a swapchain that still owns the
+  window: eviction sets every slot of an evicted swapchain to `FREE`
+  before releasing it, so a retired swapchain has nothing to cancel.
+  Fragile rather than wrong, and left alone.
+- **The `presentable` check in `queue_present` is a TOCTOU.** It is
+  read under the lock, the lock is dropped, and then `bqQueueBuffer`
+  runs. Only a `vkCreateSwapchainKHR` naming this swapchain as
+  `oldSwapchain` can clear the flag, and that call externally
+  synchronises `oldSwapchain` — so a conforming application cannot be
+  presenting on it at the time. Unreachable, not absent.
+
+### 7.4 The one genuine race left, and why it stays
+
+`vkGetPhysicalDeviceSurfaceCapabilitiesKHR` requires no external
+synchronisation and reads `NWindow::default_width` / `default_height`,
+which a concurrent present writes. Two aligned 32-bit fields: the worst
+outcome is a width from before a display mode change paired with a
+height from after, which makes a later `vkCreateSwapchainKHR` fail with
+`VK_ERROR_INITIALIZATION_FAILED`. Closing it would mean taking a lock
+on a structure this backend does not own. Measured instead: run 17 made
+11678 such queries from a second thread beside a present loop with no
+failure.
