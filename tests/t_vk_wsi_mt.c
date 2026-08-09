@@ -708,7 +708,6 @@ typedef struct mt_run {
    uint32_t presented;
    VkResult first_error;
    uint32_t error_frame;
-   uint64_t total_ns;
 } mt_run;
 
 static void mt_run_frames(mt_ctx *c, mt_sc *sc, uint32_t frames, uint32_t seed,
@@ -717,7 +716,6 @@ static void mt_run_frames(mt_ctx *c, mt_sc *sc, uint32_t frames, uint32_t seed,
    memset(out, 0, sizeof(*out));
    out->first_error = VK_SUCCESS;
 
-   const u64 start = armGetSystemTick();
    for (uint32_t i = 0; i < frames; i++) {
       VkResult r = mt_frame(c, sc, seed + i);
       if (r != VK_SUCCESS) {
@@ -727,7 +725,6 @@ static void mt_run_frames(mt_ctx *c, mt_sc *sc, uint32_t frames, uint32_t seed,
       }
       out->presented++;
    }
-   out->total_ns = armTicksToNs(armGetSystemTick() - start);
 }
 
 /* ------------------------------------------------------------------ */
@@ -742,7 +739,6 @@ typedef struct mt_reaper_job {
    uint64_t delay_ns;
    int core;
    int core_got;
-   bool done;
 } mt_reaper_job;
 
 static void *mt_reaper_thread(void *arg)
@@ -752,7 +748,6 @@ static void *mt_reaper_thread(void *arg)
    if (job->delay_ns)
       svcSleepThread(job->delay_ns);
    mt_sc_destroy(job->c, job->sc);
-   job->done = true;
    return NULL;
 }
 
@@ -1427,8 +1422,10 @@ static void mt_section_c(mt_ctx *c, bool force_copy, const char *what)
 
    mt_cd_job render = { .c = c, .sc = &sc, .pipe = &pipe,
                         .frames = MT_C_FRAMES, .core = 1, .core_got = -1 };
+   /* No .frames: the presenter loops until the pipe closes, and only
+    * mt_render_thread reads that field. */
    mt_cd_job present = { .c = c, .sc = &sc, .pipe = &pipe,
-                         .frames = MT_C_FRAMES, .core = 2, .core_got = -1 };
+                         .core = 2, .core_got = -1 };
 
    const u64 start = armGetSystemTick();
 
@@ -1457,19 +1454,31 @@ static void mt_section_c(mt_ctx *c, bool force_copy, const char *what)
       return;
    }
 
+   /* The frame each thread stopped at, which both of them recorded and
+    * neither reported. Only on a failure: on a clean run there is no
+    * frame to name, and printing one anyway is what made section F sign
+    * off with "(frame 0)". */
+   char render_at[32], present_at[32];
+   snprintf(render_at, sizeof(render_at), " (frame %" PRIu32 ")",
+            render.error_frame);
+   snprintf(present_at, sizeof(present_at), " (frame %" PRIu32 ")",
+            present.error_frame);
+
    t_check(t, render.first_error == VK_SUCCESS &&
            render.done == MT_C_FRAMES,
            "C/%s: the render thread acquired and submitted %" PRIu32 " of %u "
-           "frames -> %s%s%s", what, render.done, MT_C_FRAMES,
+           "frames -> %s%s%s%s", what, render.done, MT_C_FRAMES,
            vkfw_result_str(render.first_error),
            render.first_error_what ? " at " : "",
-           render.first_error_what ? render.first_error_what : "");
+           render.first_error_what ? render.first_error_what : "",
+           render.first_error == VK_SUCCESS ? "" : render_at);
 
    t_check(t, present.first_error == VK_SUCCESS &&
            present.done == MT_C_FRAMES,
-           "C/%s: the present thread presented %" PRIu32 " of %u frames -> %s",
-           what, present.done, MT_C_FRAMES,
-           vkfw_result_str(present.first_error));
+           "C/%s: the present thread presented %" PRIu32 " of %u frames "
+           "-> %s%s", what, present.done, MT_C_FRAMES,
+           vkfw_result_str(present.first_error),
+           present.first_error == VK_SUCCESS ? "" : present_at);
 
    if (present.done > 1) {
       const uint64_t mean_ns = elapsed_ns / present.done;
