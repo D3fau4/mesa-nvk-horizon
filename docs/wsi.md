@@ -450,6 +450,14 @@ the code reasoned about concurrent creation and eviction in its
 comments, which is the worst combination: an argument nobody had
 executed.
 
+Revised the same day after the PR 9 review, which found the same
+failure mode one level up: §7.1 stated an invariant the code did not
+hold, and §7.3 contradicted it two paragraphs later. Patches **0072**
+and **0073** are the result. **Neither has run on hardware** — the
+newest run for this backend is run 20, which predates both — so where
+this section describes what the code now does, that is a claim about
+the source and not about a console.
+
 ### 7.1 What the application owes, and what the backend owes
 
 Vulkan externally synchronises a **swapchain** in
@@ -470,9 +478,28 @@ retires S1.
 
 The rule the lock enforces, stated once: **only the swapchain that owns
 the window's registration may touch the window.** Three operations
-touch it — cancelling slots, `nwindowReleaseBuffers`, and closing the
-copy fallback's `Framebuffer` — and all three run under the lock, after
-an ownership test.
+touch it: cancelling slots, `nwindowReleaseBuffers`, and closing the
+copy fallback's `Framebuffer`.
+
+Two of them are enforced. Releasing the buffers and closing the
+framebuffer happen in one place each —
+`wsi_horizon_release_window` for a swapchain giving up its own window,
+`wsi_horizon_claim_window` for a swapchain taking one from somebody
+else — both under the lock, and
+`wsi_horizon_close_framebuffer` asserts both the lock and the ownership
+rather than describing them.
+
+The third, cancelling slots, is not, and §7.3 says why it is
+nevertheless safe.
+
+**This paragraph used to claim all three, and §7.3 contradicted it two
+paragraphs later.** It was written from the design rather than from the
+code, at a moment when `wsi_horizon_close_framebuffer` had a third
+caller its own comment did not mention — on `vkCreateSwapchainKHR`'s
+failure path, holding no lock and testing nothing. Patch **0072** is
+what made the claim true for the two operations it now covers, by
+moving the close inside the release that already held the lock and
+already tested ownership, and by asserting what the comment asserts.
 
 ### 7.2 The pairing that is legal and unsynchronised, and where it bit
 
@@ -500,15 +527,41 @@ The zero-copy path never had it: it registers through
 `t_vk_swapchain`'s section D runs the identical sequence on that path
 and has always passed, which is exactly why this was not found earlier.
 
+**Patch 0072 finished what 0070 started**, after the PR 9 review. 0070
+put the close in the right two places and wrote the rule in a comment;
+it left a third caller the comment did not mention — on
+`vkCreateSwapchainKHR`'s failure path, holding no lock and testing
+nothing — and `wsi_horizon_init_fallback` still called
+`framebufferClose` raw on two of its own error paths, then returned
+into a teardown that released a window the close had already
+disconnected. The third caller was unreachable: `fb_created` was set on
+`init_fallback`'s last line, so no failure path ever saw it true. That
+made it a trap for the next `goto fail_no_chain` rather than a defect,
+under a comment asserting it could not happen. 0072 gives the close one
+home — `wsi_horizon_release_window`, which already took the lock and
+already tested ownership — and makes the assertion an `assert`.
+
 ### 7.3 Two things that look wrong and are not
 
 Recorded because the next reader will look at them too.
 
 - **`wsi_horizon_swapchain_release_images` cancels slots with no
-  ownership test.** Reachable only on a swapchain that still owns the
-  window: eviction sets every slot of an evicted swapchain to `FREE`
-  before releasing it, so a retired swapchain has nothing to cancel.
-  Fragile rather than wrong, and left alone.
+  ownership test.** This is the third of §7.1's three operations, and
+  the one that is argued rather than checked. Reachable only on a
+  swapchain that still owns the window: eviction sets every slot of an
+  evicted swapchain to `FREE` before releasing it, so a retired
+  swapchain has nothing to cancel. Fragile rather than wrong, and left
+  alone — deliberately, because the fix has no hardware run behind it
+  and §7.1's other two now do the checking in code.
+
+  One qualification patch **0072** adds: that `FREE` reset is now
+  zero-copy only. On the copy fallback the slots are the driver's own
+  staging images, which the BufferQueue never held, so there was
+  nothing for the disconnect to have taken and marking them `FREE`
+  offered the next acquire an image the application might still own.
+  The reachability argument above is unchanged — `release_images`
+  early-returns on the fallback anyway — but the two now agree about
+  which path has BufferQueue slots.
 - **The `presentable` check in `queue_present` is a TOCTOU.** It is
   read under the lock, the lock is dropped, and then `bqQueueBuffer`
   runs. Only a `vkCreateSwapchainKHR` naming this swapchain as
@@ -532,6 +585,14 @@ failure.
 
 Found in the same audit, recorded rather than fixed, because a patch
 nobody can point a hardware run at is worse than a paragraph.
+
+**Not the same as the eviction one in §7.3**, and the two are easy to
+conflate because both are about a slot state disagreeing with
+`wsi_image::acquired`. They point opposite ways. There, the backend
+marked a slot `FREE` while Mesa still believed the application held the
+image; here, Mesa marks the image released while the backend still has
+the slot `ACQUIRED`. The first was a swapchain being retired and is
+fixed in 0072; this one is a present that failed, and stands.
 
 `wsi_common_queue_present` clears `wsi_image::acquired` **before** it
 calls the backend's `queue_present`, unconditionally. So when a present
