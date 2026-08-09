@@ -80,6 +80,7 @@
  */
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -156,6 +157,11 @@ typedef struct mt_ctx {
    /* VkQueue is externally synchronised in vkQueueSubmit and
     * vkQueuePresentKHR, and this device has one queue. */
    pthread_mutex_t queue_lock;
+
+   /* The first teardown that could not get the device quiet again, from
+    * whichever thread hit it. VK_SUCCESS until it is not, and read once
+    * by the main thread at the end — a worker may not call t_check. */
+   atomic_int quiesce_error;
 } mt_ctx;
 
 typedef struct mt_sc {
@@ -239,6 +245,54 @@ static void mt_sc_destroy_locked(mt_ctx *c, mt_sc *sc)
    sc->acquire_fence = VK_NULL_HANDLE;
 }
 
+/* Keeps the first quiesce failure of the run, whoever hit it. */
+static void mt_record_quiesce_failure(mt_ctx *c, VkResult r)
+{
+   int expected = (int)VK_SUCCESS;
+   atomic_compare_exchange_strong(&c->quiesce_error, &expected, (int)r);
+}
+
+/* Everything the device might still be doing with this swapchain,
+ * finished — before a single one of its objects is destroyed.
+ *
+ * TWO WAITS AND NOT ONE. The per-image fence says the render submission
+ * retired. It says nothing about the vkQueuePresentKHR that waits on
+ * render_done[i], because a fence signalled by an earlier submission is
+ * no proof that a later queue operation has consumed the semaphore it
+ * was waiting on. vkDestroySemaphore requires every batch referring to
+ * the semaphore to have completed, so the present has to be waited for
+ * too, and on a queue vkQueueWaitIdle is the only thing that says so.
+ *
+ * The fence waits stay unlocked and per image: they cost nobody else
+ * anything and they name which image is stuck. The queue wait takes the
+ * queue lock, because vkQueueWaitIdle externally synchronises the queue,
+ * and that does briefly stall a thread presenting on a different
+ * swapchain. It does not weaken sections B, D and F — the destroy itself
+ * still lands against the survivor's acquire and present, which is the
+ * unsynchronised pairing under test. */
+static VkResult mt_sc_quiesce(mt_ctx *c, mt_sc *sc)
+{
+   vkfw *fw = c->fw;
+   VkResult first = VK_SUCCESS;
+
+   for (uint32_t i = 0; i < sc->image_count; i++) {
+      if (!sc->in_flight_valid[i])
+         continue;
+      const VkResult r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->in_flight[i],
+                                                VK_TRUE, MT_WAIT_NS);
+      if (r != VK_SUCCESS && first == VK_SUCCESS)
+         first = r;
+   }
+
+   mt_lock_q(c);
+   const VkResult r = fw->vk.vkQueueWaitIdle(fw->queue);
+   mt_unlock_q(c);
+   if (r != VK_SUCCESS && first == VK_SUCCESS)
+      first = r;
+
+   return first;
+}
+
 /* Destroys a swapchain the way an application does: holding the
  * swapchain's own mutex, and nothing else's. */
 static void mt_sc_destroy(mt_ctx *c, mt_sc *sc)
@@ -252,16 +306,18 @@ static void mt_sc_destroy(mt_ctx *c, mt_sc *sc)
       return;
    }
 
-   /* The GPU must be finished with the images before they are freed,
-    * and the fence per image is what says so. Done before the lock, so
-    * a wait cannot hold up another thread's present on a different
-    * swapchain. */
-   vkfw *fw = c->fw;
-   for (uint32_t i = 0; i < sc->image_count; i++) {
-      if (sc->in_flight_valid[i]) {
-         fw->vk.vkWaitForFences(fw->dev, 1, &sc->in_flight[i], VK_TRUE,
-                                MT_WAIT_NS);
-      }
+   /* IF THE DEVICE DID NOT GO QUIET, NOTHING BELOW HAPPENS. A
+    * vkDestroyFence, vkDestroyCommandPool or vkDestroySwapchainKHR with
+    * work still referring to them is undefined behaviour, and undefined
+    * behaviour here is a console that stops answering — the state least
+    * likely to produce a readable verdict. A timeout at this point is
+    * precisely the stall the two-second waits in this file exist to
+    * catch, so it is recorded and reported and the handles are leaked on
+    * purpose: the process is about to print a failure and exit. */
+   const VkResult q = mt_sc_quiesce(c, sc);
+   if (q != VK_SUCCESS) {
+      mt_record_quiesce_failure(c, q);
+      return;
    }
 
    mt_lock_sc(sc);
@@ -590,7 +646,12 @@ static void *mt_reaper_thread(void *arg)
  * which Vulkan externally synchronises against a present. */
 typedef struct mt_churn_job {
    mt_ctx *c;
-   volatile bool stop;
+   /* Written by the main thread, read by the worker, so it is atomic and
+    * not volatile: volatile orders nothing and makes nothing indivisible,
+    * which leaves a plain volatile flag shared across threads a data race
+    * in C11 whatever it happens to compile to. t_threads.c and t_ostime.c
+    * in this same suite already use atomics for exactly this. */
+   atomic_bool stop;
    int core;
    int core_got;
 
@@ -609,7 +670,7 @@ static void *mt_churn_thread(void *arg)
    job->core_got = mt_pin_self(job->core);
    job->first_error = VK_SUCCESS;
 
-   while (!job->stop) {
+   while (!atomic_load(&job->stop)) {
       /* A buffer with memory bound and freed again. vkCreateBuffer,
        * vkAllocateMemory, vkFreeMemory and vkDestroyBuffer are all
        * internally synchronised.
@@ -937,11 +998,16 @@ static void mt_section_a(mt_ctx *c, bool force_copy, const char *what)
    mt_force_copy(force_copy);
    vkfw_forget_messages(c->fw);
 
+   /* Every exit from here on restores the override. Sections C and E
+    * never set it themselves, so whatever this one leaves behind is what
+    * they would run under. */
    if (!t_check(t, mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR,
                                 VK_NULL_HANDLE, &s1, &err),
                 "A/%s: the first swapchain was created -> %s", what,
-                vkfw_result_str(err)))
+                vkfw_result_str(err))) {
+      mt_force_copy(false);
       return;
+   }
    t_check(t, s1.zero_copy != force_copy,
            "A/%s: it took the %s path, which is the one this case is "
            "about", what, force_copy ? "copy" : "zero-copy");
@@ -961,6 +1027,7 @@ static void mt_section_a(mt_ctx *c, bool force_copy, const char *what)
                 "A/%s: the second swapchain was created with the first as "
                 "oldSwapchain -> %s", what, vkfw_result_str(err))) {
       mt_sc_destroy(c, &s1);
+      mt_force_copy(false);
       return;
    }
 
@@ -1272,7 +1339,7 @@ static void mt_section_e(mt_ctx *c)
    mt_run run;
    mt_run_frames(c, &sc, MT_E_FRAMES, 0, &run);
 
-   churn.stop = true;
+   atomic_store(&churn.stop, true);
    if (started)
       pthread_join(th, NULL);
 
@@ -1311,7 +1378,7 @@ static void mt_section_f(mt_ctx *c)
    if (!t_check(t, cur != NULL && mt_sc_create(c, 3, VK_PRESENT_MODE_FIFO_KHR,
                                                VK_NULL_HANDLE, cur, &err),
                 "F: the first swapchain -> %s", vkfw_result_str(err))) {
-      churn.stop = true;
+      atomic_store(&churn.stop, true);
       if (churn_started)
          pthread_join(churn_th, NULL);
       free(cur);
@@ -1391,7 +1458,7 @@ static void mt_section_f(mt_ctx *c)
 
    const uint64_t elapsed_ns = armTicksToNs(armGetSystemTick() - start);
 
-   churn.stop = true;
+   atomic_store(&churn.stop, true);
    if (churn_started)
       pthread_join(churn_th, NULL);
 
@@ -1410,6 +1477,10 @@ static void mt_section_f(mt_ctx *c)
              elapsed_ns / 1000u, (elapsed_ns / presented) / 1000u,
              min_ns == UINT64_MAX ? 0 : min_ns / 1000u, max_ns / 1000u);
    }
+   /* Checked, and not merely used to guard the join: without it a
+    * pthread_create that failed leaves first_error at VK_SUCCESS and the
+    * check below passes on a soak that was quietly single-threaded. */
+   t_check(t, churn_started, "F: the device-work thread was started");
    t_check(t, churn.first_error == VK_SUCCESS,
            "F: the device-work thread survived the soak (%" PRIu32 " buffers, "
            "%" PRIu32 " images, %" PRIu32 " queries) -> %s", churn.buffers,
@@ -1443,6 +1514,7 @@ int run_test(test_ctx *t)
 
    ctx.fw = &fw;
    pthread_mutex_init(&ctx.queue_lock, NULL);
+   atomic_init(&ctx.quiesce_error, (int)VK_SUCCESS);
 
    /* What the kernel will let this process do with cores, reported
     * rather than assumed: it decides whether the sections below are
@@ -1516,6 +1588,17 @@ int run_test(test_ctx *t)
 
    /* --- F: length --------------------------------------------------- */
    mt_section_f(&ctx);
+
+   /* Every teardown in the run had to get the device quiet before it
+    * destroyed anything, and any that could not skipped the destruction
+    * and left its result here. One check, because the failure is fatal
+    * to the whole file rather than to one section. */
+   {
+      const VkResult q = (VkResult)atomic_load(&ctx.quiesce_error);
+      t_check(t, q == VK_SUCCESS,
+              "every swapchain teardown got the device quiet first -> %s",
+              vkfw_result_str(q));
+   }
 
    /* Nothing may be left holding the window: the surface is about to go
     * and the WSI asserts that no swapchain still owns it. */
