@@ -203,7 +203,14 @@ def do_record_logs():
                       errors="surrogateescape") as f:
                 lines.append("%s  %s" % (sha(f.read()), rel))
             count += 1
-    with open(HWLOGS_MANIFEST, "w", encoding="utf-8") as f:
+    # newline="\n" on every write below, and it is the manifest's whole
+    # point that this is here. Python translates "\n" to the platform's
+    # line ending on write, so regenerating on Windows rewrote all 170
+    # lines as CRLF — a diff in which every digest looks changed, in the
+    # one file whose value is that a CHANGED line is visible. The
+    # digests themselves are unaffected: sha() hashes text read with
+    # universal newlines, so both sides already agree.
+    with open(HWLOGS_MANIFEST, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
     print("split-status: recorded %d hardware log(s)" % count)
     return 0
@@ -268,19 +275,20 @@ def do_split():
                 "# Pre-split STATUS.md: sha256 %s" % sha(original)]
     for dest in order:
         text = "".join(by_dest[dest])
-        with open(os.path.join(HISTORY, dest), "w", encoding="utf-8") as f:
+        with open(os.path.join(HISTORY, dest), "w", encoding="utf-8",
+                  newline="\n") as f:
             f.write(text)
         manifest.append("%s  %s" % (sha(text), dest))
         print("split-status: %-28s %6d lines" % (dest, text.count("\n")))
 
-    with open(MANIFEST, "w", encoding="utf-8") as f:
+    with open(MANIFEST, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(manifest) + "\n")
 
     # STATUS.md: the chunks that stay, with the index inserted after the
     # header and the Current state block.
     kept = [c for c, d in chunks if d == STAY]
     new_status = kept[0] + kept[1] + INDEX + "".join(kept[2:])
-    with open(STATUS, "w", encoding="utf-8") as f:
+    with open(STATUS, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_status)
     print("split-status: STATUS.md %6d lines (was %d)"
           % (new_status.count("\n"), len(lines) - 1))
