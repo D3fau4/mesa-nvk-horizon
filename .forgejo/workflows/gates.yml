@@ -80,16 +80,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: the runner can drive docker
-        run: |
-          set -eu
-          command -v docker >/dev/null || {
-              echo "error: no docker CLI on this runner." >&2
-              echo "       These jobs drive containers; they do not run" >&2
-              echo "       inside one. Install the client and mount" >&2
-              echo "       /var/run/docker.sock into the runner." >&2
-              exit 1
-          }
-          docker info >/dev/null
+        run: scripts/ci-require-docker.sh
 
       - name: the .nro build
         run: scripts/build-switch.sh -j"$(nproc)"
@@ -125,13 +116,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: the runner can drive docker
-        run: |
-          set -eu
-          command -v docker >/dev/null || {
-              echo "error: no docker CLI on this runner." >&2
-              exit 1
-          }
-          docker info >/dev/null
+        run: scripts/ci-require-docker.sh
 
       - name: every archive the tests link
         run: scripts/ci-build-archives.sh

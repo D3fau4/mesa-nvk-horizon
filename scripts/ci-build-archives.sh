@@ -65,13 +65,7 @@ retry() { # description, command...
 if [ -n "${DEVKITPRO:-}" ]; then
     echo "ci-build-archives: using the local devkitA64 at \$DEVKITPRO" >&2
 else
-    docker info >/dev/null 2>&1 || {
-        echo "error: \$DEVKITPRO is not set and the docker daemon is not" >&2
-        echo "       reachable. This job drives containers itself — it does" >&2
-        echo "       not run inside one — so the runner needs the docker" >&2
-        echo "       CLI and a usable /var/run/docker.sock." >&2
-        exit 1
-    }
+    scripts/ci-require-docker.sh
     echo "ci-build-archives: container mode, base image $HORIZON_BASE_IMAGE" >&2
 fi
 
@@ -181,9 +175,9 @@ fi
 
 # --- 6. the two gates that were manual only for want of artefacts -----
 #
-# .github/workflows/gates.yml used to say these "stay manual until
-# somebody decides that cost is worth paying", because they read a
-# linked Horizon ELF and devkitA64 objects and CI had neither. This job
+# The gates workflow used to say these "stay manual until somebody
+# decides that cost is worth paying", because they read a linked Horizon
+# ELF and devkitA64 objects and CI had neither. This job
 # has just produced both, so the cost is already paid and running them
 # here is free. Naming a gap was the right thing to do while it was
 # one; leaving it named after it closed would not be.
