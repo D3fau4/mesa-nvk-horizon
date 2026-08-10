@@ -1,10 +1,16 @@
 # Licensing
 
+The licence *text* is `/LICENSE` at the repository root, where GitHub and packaging
+tools look for it; `MIT.txt` here is a byte-identical copy kept so this directory reads
+on its own. This file is the licence *policy* — what is covered, what is external, and
+what may never be copied in.
+
 ## This repository
 
 All original code in `horizon/`, `compat/`, `mesa-patches/`, `toolchain/`, `scripts/`,
 `tests/` and `examples/` is **MIT** (`MIT.txt`), chosen to stay compatible with Mesa/NVK
-and to keep an upstreaming path open.
+and to keep an upstreaming path open. Every source file carries
+`SPDX-License-Identifier: MIT`.
 
 ## Third-party components
 
