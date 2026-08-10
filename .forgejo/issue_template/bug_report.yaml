@@ -1,0 +1,101 @@
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: Bug report
+about: Something is wrong in the driver, the build, or the tooling
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: `STATUS.md` lists what is already known broken and what has
+        never been verified, and `docs/known-risks.md` lists the open risks. A bug
+        already recorded there does not need a new issue — though a *new occurrence*
+        of one, with its log, is genuinely useful.
+
+        **If this can crash or brick a console, do not open a public issue.** Contact
+        the maintainer directly first; see `SECURITY.md`.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      options:
+        - "horizon/ — the GPU abstraction"
+        - "nvkmd_horizon / the Mesa patches"
+        - "WSI / swapchain / presentation"
+        - "Build, toolchain or scripts"
+        - "Documentation"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: evidence-class
+    attributes:
+      label: What kind of evidence do you have
+      description: >
+        This project never collapses these three. A build failing is not a driver bug,
+        and a `.nro` that compiles is not a `.nro` that runs.
+      options:
+        - "H — it happens on my own machine (host build or host tests)"
+        - "X — it happens when cross-compiling; nothing ran"
+        - "HW — it happens on a real console, and I have the log"
+        - "Emulator only"
+    validations:
+      required: true
+
+  - type: input
+    id: build-id
+    attributes:
+      label: Build id or commit
+      description: >
+        For a console run, the `note horizon-build-id …` line the test prints. For a
+        build failure, the commit you built.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The exact commands, in order. For a console issue, which `.nro` and what you
+        did in it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output, verbatim
+      description: >
+        The compiler error, the console log, or the fatal report — whichever applies.
+        Attach the file if it is long; do not summarise it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        For a build issue: OS, whether you used `$DEVKITPRO` or the container, and the
+        image tag if the latter. For a console issue: CFW version, applet vs full
+        memory, docked or handheld.
+      value: |
+        - Build path: devkitA64 / container (ghcr.io/d3fau4/nx-dev:latest)
+        - Host OS:
+        - Console firmware / CFW:
+        - Memory mode: applet / full
+    validations:
+      required: true

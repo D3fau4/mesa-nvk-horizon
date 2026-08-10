@@ -34,10 +34,21 @@ scripts/build-compat.sh
 # horizon_run names, so reading the environment from meson.build would
 # see nothing there. Tests 12 and 13 link the archives in that directory
 # and are skipped when it holds none.
+#
+# -Dnvk_build_dir is the same thing for the NVK archives, and it was
+# missing. meson.options declared the option and defaulted it to
+# build/mesa-nvk; scripts/toolchain-env.sh, configure-mesa-nvk.sh and
+# build-mesa-nvk.sh all honour $MESA_NVK_BUILD_DIR — so a caller who set
+# it built the driver in one directory while meson.build looked in
+# another, fs.exists() found no archives, and all twelve t_vk_* tests
+# were skipped with nothing but a configure-time message() to say so.
+# That is the failure toolchain-env.sh:125-132 describes for the very
+# same variable, one layer down, and it was still live here.
 set -- \
     --cross-file "$HORIZON_CROSS_CONST_FILE" \
     --cross-file "$HORIZON_CROSS_FILE" \
     -Dmesa_build_dir="$MESA_BUILD_DIR" \
+    -Dnvk_build_dir="$MESA_NVK_BUILD_DIR" \
     "$@"
 
 # meson.options is part of this directory's identity as well: a -D for an

@@ -1,7 +1,7 @@
 # STATUS
 
 **Last updated:** 2026-08-10
-**Branch:** `main`
+**Branch:** `claude/repo-publication-prep-q96kty`
 
 ---
 
@@ -15,6 +15,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
 | **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); CI now cross-builds, and a tag publishes a package. **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
@@ -26,6 +27,72 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## CI switched off, and what is kept instead (2026-08-10)
+
+At the project owner's direction. `.forgejo/workflows/` is gone, so
+nothing runs on a push and nothing can fail on a push.
+
+**The two workflows are kept, commented, in
+`.forgejo/workflows-disabled/`** — every line, plus a header on each
+saying what it did and what its runs on the real instance taught, since
+that is the part worth more than the YAML:
+
+- task 1267: the five gates and six host suites, green in six seconds.
+- task 1272: `cargo: command not found` after fifty seconds of useful
+  work, retried three times for a binary that was never going to appear.
+- task 1274: a bind mount from a containerised job resolves against the
+  *host*, so `-v "$PWD":"$PWD"` mounted an empty directory and bindgen
+  reported a missing header that was right there.
+- tasks 1275 and 1276: plain-HTTP instance, and docker refuses a
+  non-HTTPS registry, on push and on pull alike.
+
+Each of those is a defect this tree fixed rather than worked around, and
+each fix is still in place. What is gone is only the thing that ran them.
+
+**Nothing else was removed.** `scripts/ci-build-archives.sh` is the
+whole chain in one command and still works — it is now the only thing
+that will tell you a patch in `mesa-patches/` broke the build. The two
+preflights, the release script, the image identity, the in-image
+attribution: all still there, all still exercised by running that
+script.
+
+`CONTRIBUTING.md`, `docs/BUILDING.md` and `docs/RELEASING.md` stopped
+saying CI runs anything, because it does not. `RELEASING.md` now shows
+the `ci-forgejo-release.sh` invocation to publish a release by hand
+instead of pointing at a workflow that no longer exists.
+
+Host-level change only. No console, and no claim about one.
+
+---
+
+## Merging main again: a fourteenth Vulkan test, and nothing to change for it (2026-08-10)
+
+`main` gained run 25, `t_vk_immediate` and patch 0075 while this branch
+was being written. Only `STATUS.md` conflicted, both sides having
+prepended to the working record; all sections are kept, main's first.
+
+**The count moved and no code did.** There are now 34 `.nro` instead of
+33, and `scripts/ci-build-archives.sh` did not need touching, because
+the merge before this one stopped it hard-coding the number and made it
+read `meson.build`'s own three test lists. That was the point of the
+change and this is the first time it paid.
+
+What did need touching is prose. `VK_PRESENT_MODE_IMMEDIATE_KHR` came
+off *never verified on hardware* in `README.md`, `docs/USAGE.md` and
+`docs/RELEASING.md` — run 25 put `t_vk_immediate` at **PASS 442/442** —
+and `tests/README.md` gained its row. Counts corrected against the tree
+rather than adjusted by hand: 75 patches, 34 tests, 14 `t_vk_*`, 167
+hardware logs, 36 scripts.
+
+`docs/RELEASING.md` also still described the release workflow as driving
+the image from the runner. It has run *inside* it since the Forgejo
+runner proved the other way impossible; the paragraph now says so.
+
+No console was involved in any of this. Runs 24 and 25 are somebody
+else's measurements.
 
 ---
 
@@ -178,6 +245,153 @@ after `fflush()`, and whatever TCP had not yet put on the wire went with
 it. It now shuts the write side down and lets it drain, and prints a
 trailing `===== END ... (n bytes) =====` marker so a truncated read is
 visible instead of looking like a hang. **Check for that marker.**
+## CI runs inside the toolchain image now, and three defects fell out of it (2026-08-10)
+
+The first `archives` and `toolchain-image` runs on the real Forgejo both
+failed, and the second failure was structural rather than a missing
+package.
+
+### The bind mount cannot work, and it was never going to
+
+`scripts/build-toolchain-image.sh` proved its image afterwards with
+
+    docker run --rm -v "$PWD":"$PWD" -w "$PWD" ... bindgen probe.h
+
+act_runner puts the job in a container, so `$PWD` is
+`/workspace/D3fau4/mesa-nvk-horizon` — a path that exists **in the job**
+and not on the host, where the daemon resolves the bind. Docker created
+it empty, and bindgen reported `No such file or directory (os error 2)`
+about a header sitting right beside it (task 1274).
+
+That is not a probe problem. `horizon_run` bind-mounts `$PWD` for every
+meson and ninja invocation, so the whole build would have failed the
+same way a few minutes later. Driving the image from outside — which is
+what the release workflow was rewritten to do, to keep a registry digest
+in the manifest — is incompatible with a runner that containerises jobs.
+
+**The jobs now run inside the image.** `$DEVKITPRO` is set there, so
+`toolchain-env.sh` takes the local path: no nested docker, no mounts,
+and cargo, bindgen, cbindgen, LLVM and the Rust sysroot are already
+present, which also retires the rustup step. The two probes moved into
+`toolchain/Dockerfile` as `RUN` steps, where they need no mount and a
+failure means no image at all.
+
+**Attribution survives, differently.** The image records the identity it
+was built under in `/etc/mesa-nvk-horizon-toolchain`, and
+`horizon_image_digest` reads it in local mode — so the manifest reads
+
+    image      : in-image:ghcr.io/d3fau4/nx-dev:latest#ba00bebc…
+
+instead of `local`. That says how the toolchain was built rather than
+where it was pushed, which is the more useful half of what the PR 10
+review asked for.
+
+### Two defects in the build-id extraction, both from the same change
+
+`a42e7de` replaced `strings` with `grep -a -o` because Git Bash ships no
+binutils. Both replacements are wrong, and packaging from inside the
+image found them:
+
+**1. It reports "no build id" in any UTF-8 locale.** A range expression
+is read by collation order, not code point, so `[!-~]` matched *nothing*
+after the marker. The image sets `LANG=en_US.UTF-8`, so this fired on
+all 33 artefacts — the one thing that code's own comment says it must
+never report wrongly, for the second time and from the other direction.
+`LC_ALL=C` fixes it.
+
+**2. It truncated the stamp at the first space.** `[!-~]` excludes the
+space, and the stamp is three fields:
+
+    2026-08-10T15:26:39.381Z a228127-dirty mesa:7abd4c2
+
+so everything from the repository commit onwards was dropped — exactly
+the fields `gen-build-id.sh` exists to carry, and the ones the earlier
+`mesa:nogit` fix was about. `[ -~]` is printable ASCII including the
+space, and the stamp is NUL-terminated, so the NUL ends the match.
+
+Verified against the embedded stamp in both locales: what comes out now
+equals what `strings` shows.
+
+### And one in the Dockerfile, caught by reading rather than assuming
+
+`ARG BASE_IMAGE` is declared before the first `FROM`, so it is out of
+scope after it, and the first version of the identity file wrote an
+empty `base=`. Found by reading the file the image had just written.
+
+### And the image's own sysroot was being ignored
+
+Inside the image `$DEVKITPRO` is set, so `toolchain-env.sh` took the
+local path — and the local path builds a Rust sysroot into the
+workspace, because on a developer's machine there is no image to have
+baked one in. Inside the image there is: `/opt/rust-sysroot`, built when
+the image was. Every CI run would have spent minutes rebuilding core and
+alloc to produce what was already mounted a directory away.
+
+Both `toolchain-env.sh` and `ci-build-archives.sh` now ask the same
+question the packaging step asks — is `/etc/mesa-nvk-horizon-toolchain`
+there — and take the image's sysroot when it is. Checked in both
+directions: outside, the workspace path and "local devkitA64"; inside,
+`/opt/rust-sysroot` and "the toolchain image itself", with no sysroot
+built in the tree.
+
+### Measured
+
+The whole chain, run **inside** the derived image exactly as CI will:
+**33 `.nro`, green, 2 m 20 s.** Packaging from in there: 33 artefacts,
+both licence files, full three-field build id, and a manifest that
+identifies its toolchain. Host side: four gates and six suites pass.
+
+One trap worth writing down: do not use a **login** shell in that
+container. `/etc/profile` rewrites `PATH` and drops `/opt/cargo/bin`, so
+the preflight reports cargo missing on an image that has it — which is
+how this was first mis-diagnosed here.
+
+Still a cross build. No console, and run 21 remains the newest hardware
+evidence.
+
+---
+
+## Merging main into the publication branch, and the count that moved (2026-08-10)
+
+`main` had gained run 21 and `t_vk_suboptimal` while this branch was
+being written, and GitHub reported the pull request as conflicted. Only
+`STATUS.md` conflicted textually — both sides had prepended entries to
+the working record, and all four are kept. `build-toolchain-image.sh`
+and `package-horizon.sh` merged clean: the changes were in different
+parts of each file.
+
+**What the merge invalidated, which is the point of writing this down.**
+A thirty-third test landed, and with it:
+
+- `mesa-patches/` is 74, not 73;
+- there are 33 on-device tests and 13 `t_vk_*`, not 32 and 12;
+- `docs/hw-logs/` holds 165 logs, not 164;
+- and `scripts/ci-build-archives.sh` **asserted exactly 32 `.nro`**, so
+  the first honest build after the merge would have failed on a correct
+  tree.
+
+That last one is not fixed by writing 33. The number is now **read out
+of `meson.build`'s own three test lists** — the same way
+`package-horizon.sh` already reads `nvk_tests` rather than guessing from
+a name prefix. A constant there would have failed the next new test too,
+and taught whoever hit it that this check is a thing to edit rather than
+to believe. Measured on the merged tree: `meson.build` names 33, 33 were
+built, chain green in 57 s.
+
+**And what it invalidated in the documentation.** The README listed
+`VK_SUBOPTIMAL_KHR` under *never verified on hardware*. That is now
+wrong in a specific and interesting way: run 21 is **PASS 273/273** and
+measured the rule around it over 2303 frames with zero false positives,
+but section D never executed — nothing in the process can resize a VI
+layer — so `VK_SUBOPTIMAL_KHR` has still never been *returned* on a
+console. README, `USAGE.md` and `RELEASING.md` now say exactly that
+rather than either of the two easy wrong versions. `USAGE.md` also
+names it as the single most valuable run a reader with a dock can send,
+which is what the *Next concrete task* row above asks for.
+
+No console was involved in any of this. Run 21 is now the newest
+hardware evidence, and it is somebody else's measurement, not this
+branch's.
 
 ---
 
@@ -391,6 +605,328 @@ the three the PR 9 review found, and all of them blocking:
   touched. Worth recording because it means **the artefacts behind runs
   17 to 20 are not on this machine any more** and the next hardware run
   starts from a full rebuild.
+## CI on Forgejo, for real this time — and three defects it found (2026-08-10)
+
+The YAML stopped being theoretical: it ran on the project's own Forgejo
+(`act_runner v12.7.1`, `ghcr.io/catthehacker/ubuntu:runner-latest`,
+`runs-on: ubuntu-latest`). What it found is worth more than the green
+tick.
+
+### What the first two runs settled
+
+**Run 1 (`gates`) passed.** Five gates and six host suites, same numbers
+as here, in six seconds. `actions/checkout@v5` resolves from
+`data.forgejo.org` without help.
+
+**Run 2 (`archives`) failed, usefully.** It got fifty seconds in — Mesa
+cloned, 73 patches applied, 29 Rust wraps downloaded — and died on
+
+    scripts/fetch-rust-tools.sh: line 125: cargo: command not found
+
+The runner image ships no Rust. **And the retry loop tried three more
+times over thirty seconds**, for a binary that was never going to
+appear. A retry is for a flaky network; a missing tool is a fact about
+the machine. `scripts/ci-require-host-tools.sh` now asks about those
+facts first — git, python3, curl, tar, sha256sum, cargo — before the
+loop can see them.
+
+One worry was disproved: `ci-require-docker.sh` reported
+`Docker version 29.7.2-1, uid 1001`. act_runner's non-root job user can
+reach the socket after all.
+
+### Two defects in the toolchain image, found while wiring up the registry
+
+**1. The identity was never re-checked after fetching.**
+`build-toolchain-image.sh` compares the existing image's identity label
+against what it wants, at the top — before the fetches that the identity
+partly depends on. On any tree without the fetched material, which is
+every CI checkout, that first answer cannot match, and there was no
+second check. So a machine holding exactly the right image rebuilt it
+anyway: **nine minutes for an answer available the moment the fetches
+finished.** Measured after the fix: fresh closure state → 15 s of
+fetching → `is current (identity confirmed after fetching)`, no build.
+
+**2. `clc-closure` in that identity was always empty.** It hashed
+`build/toolchain/clc-deps/closure.txt`, and nothing has ever written
+that file — `fetch-clc-deps.sh` produces `debs/` and an `installed.txt`
+listing what the base image already had. `sha256sum` failed silently on
+every run since the function was written, so **a change in the resolved
+LLVM closure could not have rebuilt the image**: exactly the drift that
+field exists to catch, undetected by the line meant to catch it. It now
+hashes the sorted list of the 42 `.deb` names, which carry their
+versions. One rebuild to re-label, then `is current`.
+
+### The registry, and why there is none
+
+The derived image (11 min, 7.3 GB) was going to be published to the
+instance's own registry so runners could pull it rather than build it.
+That is dead: **the instance speaks plain HTTP and docker refuses a
+registry that is not HTTPS** —
+
+    Get "https://git.not-d3fau4.com:3000/v2/":
+        http: server gave HTTP response to HTTPS client
+
+on the push (task 1276) and on the pull (task 1275). Making it work
+means an `insecure-registries` entry in the runner's daemon
+configuration, which is a lot of ceremony for an image that never leaves
+that machine.
+
+**It does not need to leave.** The image is built by the runner's own
+daemon and stays in it, so each workflow opens with a `toolchain` job
+that runs `build-toolchain-image.sh` — seconds when the identity still
+matches — and the job that does the work names the image and finds it
+locally. No registry, no credentials, no token scope, nothing to
+configure. What the identity check was already doing is what makes it
+safe: a Dockerfile or pin that moves rebuilds the image rather than
+reusing a stale one.
+
+### Also
+
+CI is one workflow now, at the owner's direction: `gates` and `cross`
+are gone and their five cheap checks are the opening steps of
+`archives`, where they still answer in six seconds. `cross` was
+redundant — `archives` builds those eighteen `.nro` and twelve more.
+
+`check-no-abs-paths.sh` rejected the new preflight twice, for a
+letter-colon-backslash sequence inside an escaped `PATH` example and
+then inside the comment explaining it. The gate was right both times.
+
+### Unverified
+
+The three workflow files have not run in their current form. The scripts
+under them have: `ci-build-archives.sh` end to end several times,
+`ci-require-host-tools.sh` and `ci-require-docker.sh` down every branch,
+`ci-forgejo-release.sh` against a local imitation of the Forgejo API.
+Still a **cross build** throughout — no console, and run 20 is still the
+newest hardware evidence.
+
+---
+
+## CI moved to Forgejo, and it now builds every archive (2026-08-10)
+
+Two changes asked for after the entry below, and one of them closes a
+gap this file has carried since CI existed.
+
+### CI compiles all of it now, not a corner of it
+
+`scripts/ci-build-archives.sh` builds the whole chain — the pinned Mesa
+checkout, the 73-patch series, the derived toolchain image, `mesa_clc`,
+Mesa's core and NVK — and then checks that **every** archive the tests
+link is there: `$HORIZON_MESA_TEST_LIBS` and `$HORIZON_NVK_TEST_LIBS`
+read from `toolchain-env.sh`, not a fourth copy of the list.
+
+**Presence is not enough, and this is why the job does not stop there.**
+Meson writes *thin* archives. Measured: `libnvk.a` is 96 KiB, opens with
+`!<thin>` and names 179 members it does not contain — so every
+`fs.exists()` in `meson.build`, and every check of the kind above, is
+satisfied by a file whose objects could all be missing. Linking is what
+cannot be faked, so the job ends by rebuilding and asserting **32
+`.nro`** (18 + 2 + 12). `t_vk_swapchain.nro` comes out at 14 MiB against
+`t_init.nro`'s 237 KiB, which is the driver actually being in there.
+
+**And the two gates that were manual are not manual any more.**
+`check-dispatch-complete.sh` and `check-tls-relocs.sh` were excluded
+from CI with the honest reason that they need a linked Horizon ELF and
+devkitA64 objects, which CI did not have. This job produces both, so it
+runs them. First time either has run anywhere but by hand: **825 entry
+points named, 234 core, 1 allowed absence**, and **3 objects using TLS,
+all with relocations, out of 351 scanned**.
+
+### Measured here, end to end, twice
+
+| Step | Time |
+|---|---|
+| `fetch-mesa.sh` (503 MB) | 23 s |
+| `apply-mesa-patches.sh` (73 patches) | 11 s |
+| the three other fetches | ~50 s |
+| `build-toolchain-image.sh` (7.34 GB image) | **11 min 04 s** |
+| `mesa_clc` + Mesa core + NVK + 32 `.nro` | **7 min 54 s** |
+| the whole script again, everything current | **53 s** |
+
+The image is the long pole and it is a first-run cost: it is skipped by
+identity label, so a runner that keeps its docker daemon between jobs
+pays it once. That is also why these jobs *drive* containers instead of
+running inside one.
+
+### Two review findings from PR #10, both real
+
+**The licence did not travel with the binaries.** `package-horizon.sh`
+built a directory of `.nro` and a manifest, and that directory is what
+gets tarred into a release and copied to an SD card. MIT requires its
+notice to accompany copies of the software; a distribution of built
+artefacts is a copy. It now copies `LICENSE` and `LICENSES/README.md`
+into every package and refuses to build one without them — so a package
+made by hand is no different. `LICENSES/README.md` goes too because our
+MIT text is not the whole picture: every `.nro` links libnx, which is
+ISC. libnx ships no licence file under `$DEVKITPRO/libnx` — checked
+inside the image — so that file points at the component rather than
+inventing the text of a licence.
+
+**The manifest would have said `image: local`.** The first release
+workflow ran its steps *inside* `ghcr.io/d3fau4/nx-dev:latest`, which
+sets `$DEVKITPRO`, which puts `toolchain-env.sh` into local mode — and
+`package-horizon.sh` then records no image digest at all, against a
+mutable `:latest` tag. Attribution is that manifest's whole purpose.
+Fixed by construction: the steps drive the image from outside, which is
+the path that was verified here. There is also a guard that refuses to
+publish a package whose manifest carries no `@sha256:`, checked in both
+directions against a real manifest and against a `local` one.
+
+Verified in this run: `image: mesa-nvk-horizon/nx-dev-mesa@sha256:73e07527…`,
+`LICENSE` and `LICENSES.md` byte-identical to the sources, 32 `.nro`
+packaged, staleness gate checking 12 driver-linked artefacts.
+
+### And the build id proved itself in the other direction
+
+The fix below made `mesa:` say `nogit` on a tree with no Mesa checkout.
+With `mesa/` populated it now reads `mesa:ea85b2b` — which is what
+`apply-mesa-patches.sh` reports for the pinned commit plus 73 patches,
+and is not this repository's commit. Both directions of that fix are
+now measured.
+
+### The move itself
+
+`.github/` is gone; `.forgejo/` replaces it — two workflows, the issue
+templates in Gitea's schema, and the pull-request template.
+`ci-forgejo-release.sh` creates releases through the Forgejo API using
+`python3`, which this build already requires, rather than `jq` or a
+third-party action whose resolution on a given instance cannot be
+assumed.
+
+`SECURITY.md` no longer promises GitHub Security Advisories, because
+Forgejo has no such thing; it asks for direct private contact and says
+what to do when there is no private channel. The code of conduct's
+enforcement contact moved for the same reason.
+
+### What is NOT verified
+
+**The Forgejo YAML has never run.** There is no instance here to run it
+on. That is exactly why the logic lives in
+`scripts/ci-build-archives.sh` and `scripts/ci-forgejo-release.sh`,
+which were both executed: the first end to end, twice; the second
+against a local server imitating the Forgejo release API, where it
+created a release, reused it on a 409, and uploaded 5000 bytes of binary
+intact. The YAML is a wrapper around tested scripts, and it is still a
+wrapper nobody has executed.
+
+**The runner needs the docker CLI and `/var/run/docker.sock`.** Every
+build job checks for it first and fails with that sentence rather than
+halfway through a build.
+
+Still a **cross build**. No console has run any of it, and run 20
+remains the newest hardware evidence.
+
+---
+
+## Preparing the repository to be published and used (2026-08-10)
+
+No driver code changed. This is the front door: the repository was
+private, had no release, and its `README.md` still opened with
+
+    **Phase 0 — audit of the existing reference ports. Complete.**
+    Nothing here builds or runs yet.
+
+which has been false since Phase 1 and is now false by six phases. It
+also had no build instructions, no usage instructions, no `LICENSE` at
+the root, and **236 of its 659 tracked files were vendored agent skills**.
+
+### Two defects found while doing it, and they are the reason this entry is not just documentation
+
+**1. `scripts/configure-horizon.sh` never passed `-Dnvk_build_dir`.**
+`meson.options` declares the option, and `toolchain-env.sh`,
+`configure-mesa-nvk.sh` and `build-mesa-nvk.sh` all honour
+`$MESA_NVK_BUILD_DIR` — nothing connected the two. A caller who set it
+built the driver in one directory while `meson.build` ran `fs.exists()`
+against another, found no archives, and **skipped all twelve `t_vk_*`
+tests** with one configure-time `message()` as the only trace. The
+build then succeeded and produced 20 `.nro` instead of 32.
+
+`toolchain-env.sh:125-132` describes this exact failure for this exact
+variable one layer down, and fixed it there. It was still live in the
+script that passes the options. Source-level fix; the configure path was
+not executed here.
+
+**2. `scripts/gen-build-id.sh` attributed artefacts to a Mesa commit that
+was ours.** `_describe mesa` asked git whether it could find a
+repository at `mesa/` and took the answer — but `git -C mesa` walks *up*
+when `mesa/` is not itself a repository, which is what it is on any tree
+where `fetch-mesa.sh` has not run. The stamp came out as
+
+    2026-08-10T12:27:40.224Z 9053687-dirty mesa:9053687-dirty
+
+`mesa:9053687` is a claim that Mesa is at a commit which is this
+repository's commit. That is the failure this stamp exists to prevent,
+aimed at itself, and it would have reached every published package,
+since the new release workflow builds without Mesa. Fixed with the guard
+`apply-mesa-patches.sh:110-120` already uses on the same directory.
+Measured before and after: `mesa:9053687-dirty` → `mesa:nogit`, with a
+genuine repository still described by its own HEAD.
+
+### What was verified, and in which class
+
+**Host (H).** The four static gates and the host suites pass on this
+tree — `check-layering`, `check-no-abs-paths`, `check-history-intact`
+(9 history files, 166 manifest entries), `check-mesa-test-parity`. All
+relative Markdown links in the new and changed files resolve, checked
+by walking them. Every count that went into the documentation was read
+out of the tree rather than from memory, and three were wrong on the
+first pass: 32 scripts and not 33; 164 logs plus one fatal report and
+not 165 logs; the ten Phase 1 run-14 results are 258 checks across
+varying counts, not 32/32 each.
+
+**Cross (X).** `scripts/build-switch.sh -j4` in
+`ghcr.io/d3fau4/nx-dev:latest` → **18 `.nro`**, and
+`scripts/package-horizon.sh build/pkg` wrote a manifest carrying the
+image digest `sha256:61a38fe4…`, the resolved devkitA64 r29.2-1 /
+libnx 4.12.0-1 versions, and the build id read back out of the
+binaries. That is the whole release pipeline, run end to end.
+
+**Hardware (HW).** *Nothing.* No console was involved in any part of
+this, and no claim here is about one. Run 20 remains the newest
+hardware evidence, and the tree has moved further past it.
+
+### What changed
+
+- `README.md` rewritten: a *what runs on a console* table where every
+  row links the log behind it, followed immediately by **what is not
+  done** — no installable driver, the never-verified list, the three
+  known failures. A status block that lists only successes is the
+  failure mode runs 2 through 20 were spent avoiding.
+- `docs/BUILDING.md`, `docs/USAGE.md`, `docs/RELEASING.md`,
+  `docs/README.md` — none of which existed. `USAGE.md` opens by saying
+  there is no installable ICD, because that is the first wrong
+  assumption a reader would otherwise make.
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and
+  pull-request templates. The hardware-run template makes the build id
+  a required field.
+- `LICENSE` at the root — the project has been MIT since its first
+  commit with SPDX on all 105 sources, and GitHub showed no licence at
+  all.
+- `.gitattributes`, and its exceptions are the point: `*.patch`,
+  `docs/hw-logs/**` and `docs/history/**` are `-text`, because their
+  bytes are checked by `patch-id` and by `MANIFEST.sha256`. Without
+  that, a Windows clone fails `check-history-intact.sh` on a tree
+  nobody edited, and the failure reads as evidence having been altered.
+- A release workflow, and a `cross` job beside the gates. CI had never
+  compiled anything for the console, so a broken cross build left all
+  five gates green. *(Written for GitHub Actions first; moved to Forgejo
+  the same day — see the entry above.)*
+- `.claude/` and `_bmad/` untracked: 659 → 408 files. `_bmad/config.user.toml`
+  held one developer's name and language preference.
+- `tests/README.md` said "Thirteen standalone `.nro`" and listed
+  thirteen. There are thirty-two.
+
+### Still open, and deliberately not done here
+
+- **The repository is still private, with no description and no topics.**
+  Changing visibility is not something this work can do.
+- No release has been cut. The workflow exists and its steps were run
+  locally; no tag was pushed.
+- `examples/` and `horizon/surface/` are still empty. Documented as
+  empty rather than filled with invented content.
+- The Meson cross build and the twelve `t_vk_*` are still uncovered by
+  CI — named in the `cross` job's comment rather than left looking
+  complete.
 
 ---
 

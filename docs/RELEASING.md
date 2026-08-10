@@ -1,0 +1,130 @@
+# Releasing
+
+There are two kinds of release here, and the difference between them is the difference
+this project is organised around: **what compiled** versus **what ran on a console**.
+
+## The automatic one — cross-built, unverified
+
+**There is no automatic release any more.** CI is off; the workflow that did this is
+kept commented in
+[`.forgejo/workflows-disabled/release.yml`](../.forgejo/workflows-disabled/release.yml),
+and what follows describes what it did — because the same steps are what you run by hand,
+and `scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API.
+
+It builds the Makefile path **inside** the toolchain image. Driving the image from the
+runner instead is impossible here — a containerised job's bind mount is resolved by the
+host daemon against a path that only exists inside the job — and running inside costs
+nothing, because the image records the identity it was built under and
+`scripts/toolchain-env.sh` reads it. The workflow refuses to publish a package whose
+manifest identifies no toolchain at all.
+
+Then `scripts/package-horizon.sh`, and it publishes:
+
+- `mesa-nvk-horizon-<tag>-nro.tar.gz` — the 18 `horizon_gpu` test `.nro`, `LICENSE`,
+  `LICENSES.md` and `MANIFEST.txt`,
+- its `.sha256`,
+- release notes carrying the build id and the caveats below.
+
+The licence files are in there because MIT requires its notice to accompany copies of
+the software, and a tarball of built artefacts is a copy. `package-horizon.sh` puts them
+in, so a package built by hand is no different.
+
+**What it is not.** Nothing in that package has run on a console. The notes say so, in
+the release body, because a reader who skips `STATUS.md` should still not come away
+thinking otherwise. A `.nro` that compiles is not a `.nro` that works.
+
+**What it leaves out, and why.** The fourteen `t_vk_*` tests and the NVK driver itself are
+absent. They need the derived toolchain image — libclang, `bindgen`, `cbindgen`, a Rust
+sysroot for the Switch target, an LLVM-15 `libclc` closure — plus a full Mesa build, with
+material fetched outside the container because containers here have no network. That is
+tens of minutes and several GB, and it is not something a tag push should quietly start.
+The gap is named in the workflow header and in the release notes rather than left to look
+like completeness.
+
+`workflow_dispatch` runs the build and packaging **without publishing**, which is the way
+to check the pipeline without cutting anything: it builds, packages, proves the manifest
+identifies its toolchain, and attaches the tarball to the run as an artefact. Publishing
+is guarded on the ref being a `v*` tag, because on a manual run `$GITHUB_REF_NAME` is the
+branch — without that guard, a dispatch from `main` would publish a release called
+`main`.
+
+`scripts/ci-build-archives.sh` is the other half, and worth re-running rather than
+debugging on the first failure: it fetches from four external services, so a red run is
+as likely to be somebody else's CDN as a broken tree. Its network steps already retry
+three times for that reason.
+
+## The manual one — with hardware behind it
+
+This is the release worth making, and it cannot be automated: no CI runner has a Nintendo
+Switch attached.
+
+1. **Build everything**, including NVK — [`BUILDING.md`](BUILDING.md) §4. Up to 34
+   `.nro`.
+2. **Package it**, and let the manifest do its job:
+
+   ```sh
+   scripts/package-horizon.sh build/pkg
+   ```
+
+   It refuses a package holding more than one build id, or an artefact carrying none.
+   Both refusals were provoked and observed before the gate was believed; do not work
+   around them.
+3. **Note the build id** from `build/pkg/MANIFEST.txt`. Everything below is a claim about
+   that stamp and nothing else.
+4. **Run the tests on a console**, in the order in [`../tests/README.md`](../tests/README.md).
+5. **Commit the logs** to `docs/hw-logs/`, verbatim, with their digests recorded:
+
+   ```sh
+   scripts/split-status.py --record-logs
+   scripts/check-history-intact.sh
+   ```
+
+   Failing logs go in too. They are evidence, and a directory holding only successes is
+   not a record.
+6. **Update `STATUS.md`** — what ran, what passed, what did not, on which build id.
+7. **Tag, and publish it yourself.** Nothing does it for you:
+
+   ```sh
+   git tag -a v0.1.0 -m "…"
+   git push origin v0.1.0
+   GITHUB_API_URL=<instance>/api/v1 GITHUB_REPOSITORY=<owner>/<repo> \
+   FORGEJO_TOKEN=<token with write:repository> \
+       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+   ```
+
+   Say in the notes which tests ran on hardware, on which firmware, and in which memory
+   mode, and link the logs.
+
+## What a release may claim
+
+Use these words and no stronger ones:
+
+| Wording | Means |
+|---|---|
+| *built* | It compiled. Nothing else. |
+| *cross-built* | It compiled for `aarch64` Horizon and a `.nro` exists. |
+| *verified on hardware* | It ran on a real console and the log is in `docs/hw-logs/`. |
+
+Never write "supported", "stable" or "works" without saying which of the three it is and
+pointing at the evidence. `STATUS.md`'s *Current state* block is the model: every claim
+in it carries its number and the run that produced it.
+
+Also state, in any release notes:
+
+- the build id, which is the only thing that makes a bug report attributable;
+- what has never been verified — currently docked resolution, two surfaces over two
+  `NWindow`s, and `VK_SUBOPTIMAL_KHR` ever being *returned* (run 21 measured the rule
+  around it over 2303 frames, but its section D needs a hand on the dock and has never
+  executed);
+- the known failures from `STATUS.md`, not a summary of them;
+- that this is pre-1.0 software driving a GPU through system services, and that it has
+  taken a console down before.
+
+## Versioning
+
+`meson.build` declares `version : '0.1.0'`. There has been no release yet, so nothing is
+pinned to that number by anyone else; keep the tag and that field in step.
+
+Pre-1.0 means the interfaces in `horizon/include/horizon_gpu/` may change. When they do,
+say so in the notes — `nvkmd_horizon` in `mesa-patches/` is the only consumer, and it is
+in this repository, but it will not stay that way forever.

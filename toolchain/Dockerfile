@@ -152,6 +152,68 @@ RUN cmake -S /tmp/horizon-ctx/spirv-src/SPIRV-Tools \
  && ldconfig \
  && rm -rf /tmp/horizon-ctx/spirv-src /tmp/horizon-ctx/spirv-build
 
+# --- 4b. prove the image can do the work, here rather than after ------
+#
+# These two probes used to run after the build, as `docker run -v
+# "$PWD":"$PWD"`. That cannot work when the job itself is inside a
+# container: $PWD is the job container's path, the daemon resolves the
+# bind against the *host*, finds nothing, and mounts an empty directory
+# — so bindgen reported `No such file or directory (os error 2)` about a
+# header that was right there. Measured on Forgejo's act_runner, task
+# 1274.
+#
+# As RUN steps they need no mount at all, and a failure means no image
+# rather than an image that has to be un-tagged afterwards.
+COPY probe/ /tmp/horizon-ctx/probe/
+
+# bindgen with a real header. `bindgen --version` proves nothing:
+# clang-sys loads libclang lazily, so the version prints happily on an
+# image with no libclang at all — which is exactly how the first attempt
+# at this passed while being broken.
+RUN PATH=/opt/rust-tools/bin:/opt/cargo/bin:$PATH \
+    bindgen /tmp/horizon-ctx/probe/probe.h -o /tmp/horizon-ctx/probe/probe.rs \
+ && grep -q 'struct probe_s' /tmp/horizon-ctx/probe/probe.rs \
+ && PATH=/opt/rust-tools/bin:/opt/cargo/bin:$PATH cbindgen --version
+
+# And that the sysroot is usable by a bare rustc, which is how Meson
+# drives it — Meson never calls cargo. A *staticlib*, because that is
+# what Mesa builds NAK and NIL as (rust_abi : 'c'), and a staticlib is
+# where the two items only a whole program can supply become mandatory:
+#   error: no global memory allocator found but one is required
+#   error: `#[panic_handler]` function required, but not found
+# Both were emitted by the first version of this check, which had
+# neither. Supplying them in probe/s.rs keeps the check about the
+# sysroot.
+RUN PATH=/opt/cargo/bin:$PATH \
+    rustc --target "${RUST_TARGET}" --sysroot /opt/rust-sysroot \
+          --crate-type staticlib --edition 2021 \
+          -o /tmp/horizon-ctx/probe/s.a /tmp/horizon-ctx/probe/s.rs \
+ && test -s /tmp/horizon-ctx/probe/s.a
+
+# --- 4c. the image says what it is ------------------------------------
+#
+# WHY A FILE AND NOT ONLY A LABEL. Inside a job running *in* this image
+# there is no docker to ask, and scripts/toolchain-env.sh is then in
+# local mode — where scripts/package-horizon.sh used to record
+# `image: local` and lose every trace of what produced the binaries.
+# Attribution is that manifest's entire purpose, so the image carries
+# the answer with it.
+#
+# The identity, not a registry digest: a digest says where an image was
+# pushed, this says how it was built — the base image and ID, the pinned
+# bindgen/cbindgen/LLVM versions, the resolved .deb closure and this
+# Dockerfile's own hash. It is the same string the label carries and
+# what build-toolchain-image.sh compares to decide on a rebuild.
+ARG IMAGE_IDENTITY=unknown
+# Re-declared: an ARG before the first FROM is in scope for FROM and
+# nothing after it, so the first version of this wrote an empty `base=`.
+# Caught by reading the file the image had just written rather than by
+# assuming it said what it was told to.
+ARG BASE_IMAGE
+RUN printf 'identity=%s\nbase=%s\ntarget=%s\n' \
+        "${IMAGE_IDENTITY}" "${BASE_IMAGE}" "${RUST_TARGET}" \
+        > /etc/mesa-nvk-horizon-toolchain
+
 # --- 5. leave nothing behind ------------------------------------------
 RUN rm -rf /tmp/horizon-ctx
 

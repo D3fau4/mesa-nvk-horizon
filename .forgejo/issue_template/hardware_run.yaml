@@ -1,0 +1,118 @@
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: Hardware run report
+about: Report the result of running a .nro on a real console — pass or fail
+title: "run: <test name> on <build id>"
+labels: ["hardware-run"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the most useful thing you can file here.** Nobody working on this
+        project is guaranteed to have a console in front of them (`docs/known-risks.md`
+        R2), so a run somebody else did is often the only way a change gets verified.
+
+        A passing run is worth reporting too. Please attach the log file rather than
+        retyping it — the exact text is the evidence.
+
+  - type: input
+    id: build-id
+    attributes:
+      label: Build id
+      description: >
+        The `note horizon-build-id …` line, which every test prints as the second line
+        of its log. Without it the result cannot be attributed to a build, and an
+        unattributable result has already cost this project an afternoon.
+      placeholder: "note horizon-build-id 2026-08-10T12:27:40.224Z 9053687 mesa:597ea0a"
+    validations:
+      required: true
+
+  - type: input
+    id: test
+    attributes:
+      label: Which .nro
+      placeholder: "t_vk_swapchain.nro"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: verdict
+    attributes:
+      label: Verdict
+      description: The `RESULT:` line the test printed, or what happened instead.
+      options:
+        - PASS
+        - FAIL
+        - Crashed / console fatal
+        - Hung — no RESULT line
+        - Did not launch
+    validations:
+      required: true
+
+  - type: input
+    id: result-line
+    attributes:
+      label: The RESULT line, verbatim
+      placeholder: "RESULT: PASS (52/52)"
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: Where it ran
+      options:
+        - Real hardware
+        - Emulator
+    validations:
+      required: true
+
+  - type: dropdown
+    id: memory-mode
+    attributes:
+      label: Memory mode
+      description: >
+        Applet mode is what you get launching from the album; full memory needs a
+        game-card or forwarder launch. The two differ by 237 MiB against 3155 MiB and
+        have produced different behaviour here before.
+      options:
+        - Applet mode
+        - Full memory
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Console firmware and CFW version
+      placeholder: "Atmosphère 1.9.2, HOS 20.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: docked
+    attributes:
+      label: Docked or handheld
+      options:
+        - Handheld
+        - Docked
+        - Both, and it differed
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The log
+      description: >
+        Attach `sdmc:/horizon_gpu_tests/<name>.log`. If the console produced a fatal
+        report, attach that from `sdmc:/atmosphere/fatal_reports/` too. Paste inline
+        only if the file is short.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: >
+        What you did before the run, whether it reproduced, whether the console
+        returned to the homebrew menu afterwards.

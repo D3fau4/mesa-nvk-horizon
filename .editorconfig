@@ -1,0 +1,45 @@
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{c,h}]
+indent_size = 4
+max_line_width = 79
+
+[*.{sh,py}]
+indent_size = 4
+
+[{meson.build,meson.options,*.cross}]
+indent_size = 2
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+# Two trailing spaces are a line break in Markdown, so trimming them
+# silently rewrites the text.
+[*.md]
+trim_trailing_whitespace = false
+
+# Byte-exact by contract; see .gitattributes for which gate checks each.
+[*.patch]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+[docs/hw-logs/**]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+[docs/history/**]
+trim_trailing_whitespace = false
+insert_final_newline = false

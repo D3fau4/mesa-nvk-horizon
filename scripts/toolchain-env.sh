@@ -177,9 +177,25 @@ if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
     HORIZON_TOOLCHAIN_DESC="local devkitA64 at \$DEVKITPRO"
-    # Built in the tree by scripts/build-rust-sysroot.sh: there is no
-    # image to bake it into in this mode.
+    # Built in the tree by scripts/build-rust-sysroot.sh: on a
+    # developer's machine there is no image to have baked one in.
     HORIZON_RUST_SYSROOT="$PWD/$HORIZON_RUST_SYSROOT_REL"
+
+    # UNLESS THIS *IS* THE IMAGE. A CI job whose container is the
+    # toolchain has $DEVKITPRO set and lands here — correctly, there is
+    # nothing to drive — but the image already carries a sysroot for
+    # $RUST_TARGET, built when it was. Ignoring it means every run
+    # rebuilds core and alloc into the workspace: minutes, for a
+    # directory sitting at $HORIZON_IMAGE_RUST_SYSROOT.
+    #
+    # /etc/mesa-nvk-horizon-toolchain is the same marker
+    # horizon_image_digest reads, so "we are inside the image" is asked
+    # once and answered the same way everywhere.
+    if [ -r /etc/mesa-nvk-horizon-toolchain ] &&
+       [ -d "$HORIZON_IMAGE_RUST_SYSROOT" ]; then
+        HORIZON_RUST_SYSROOT="$HORIZON_IMAGE_RUST_SYSROOT"
+        HORIZON_TOOLCHAIN_DESC="the toolchain image itself (\$DEVKITPRO set inside it)"
+    fi
 else
     command -v docker >/dev/null 2>&1 || {
         echo "error: \$DEVKITPRO is not set and docker is unavailable." >&2
@@ -515,6 +531,34 @@ horizon_ensure_python_deps() {
 #   unknown                  docker could not describe it at all
 horizon_image_digest() {
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
+        # RUNNING *INSIDE* THE DERIVED IMAGE IS NOT THE SAME AS RUNNING
+        # ON A DEVELOPER'S MACHINE, and until this existed both were
+        # reported as "local".
+        #
+        # A CI job whose container *is* the toolchain has $DEVKITPRO set,
+        # so everything above puts it in local mode — correctly, there is
+        # no container to drive. But then package-horizon.sh recorded
+        # `image: local` and every trace of what produced the binaries
+        # was gone, which is the one thing that manifest exists to carry.
+        # There is no docker inside such a job to ask, so the image
+        # answers for itself: toolchain/Dockerfile writes this file with
+        # the identity it was built under.
+        #
+        # The identity rather than a registry digest, deliberately. A
+        # digest says where an image was pushed; this says how it was
+        # built — base image and ID, the pinned bindgen/cbindgen/LLVM
+        # versions, the resolved .deb closure, the Dockerfile's own hash
+        # — which is what somebody reproducing a hardware result needs.
+        if [ -r /etc/mesa-nvk-horizon-toolchain ]; then
+            _hz_id=$(sed -n 's/^identity=//p' /etc/mesa-nvk-horizon-toolchain)
+            _hz_base=$(sed -n 's/^base=//p' /etc/mesa-nvk-horizon-toolchain)
+            if [ -n "$_hz_id" ] && [ "$_hz_id" != unknown ]; then
+                echo "in-image:${_hz_base:-unknown}#${_hz_id}"
+                unset _hz_id _hz_base
+                return 0
+            fi
+            unset _hz_id _hz_base
+        fi
         echo "local"
         return 0
     fi

@@ -1,0 +1,60 @@
+# Line endings, and the three places where normalising them would be a bug.
+#
+# WHY THIS EXISTS. `scripts/split-status.py` wrote CRLF on Windows and
+# the fix was commit cd5aa35 — a byte-level difference in a file whose
+# bytes are checked. Without this file the same class of damage arrives
+# from git itself, on the first clone, before anyone has run anything.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+
+# Everything text is LF in the repository and LF in the working tree.
+# Not `core.autocrlf`-dependent: the build runs inside a Linux container
+# even when the developer is on Windows, and a CRLF shebang line is a
+# `bad interpreter` error there.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.md   text eol=lf
+*.build text eol=lf
+*.cross text eol=lf
+
+# --- The exceptions, and each one is a gate. -------------------------
+#
+# 1. The patch series. `scripts/apply-mesa-patches.sh` identifies a
+#    patch by its subject *and* its `git patch-id`, so that an edited
+#    diff under an unchanged subject is caught rather than reported as
+#    already applied. Rewriting line endings changes the diff and
+#    therefore the identity of every patch in the series.
+*.patch -text
+
+# 2. The hardware logs. They are evidence: verbatim console output whose
+#    sha256 is recorded in docs/hw-logs/MANIFEST.sha256 and checked by
+#    scripts/check-history-intact.sh. All 165 files there (164 logs and
+#    one console fatal report) are LF today, which is the point — a
+#    checkout that converted them, in either direction, would
+#    fail that check on a tree nobody had edited, and the failure would
+#    say the evidence had been altered.
+docs/hw-logs/** -text
+
+# 3. The working record moved out of STATUS.md, under the same manifest
+#    and the same check (decision D17).
+docs/history/** -text
+
+# --- Binaries --------------------------------------------------------
+*.nro binary
+*.nso binary
+*.nacp binary
+*.a   binary
+*.o   binary
+*.spv binary
+
+# GitHub's language statistics: docs/hw-logs/ is 166 console logs and
+# docs/history/ is the working record. Neither is source, and together
+# they are most of the repository by file count.
+docs/hw-logs/** linguist-documentation
+docs/history/** linguist-documentation
+mesa-patches/*.patch linguist-vendored

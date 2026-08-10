@@ -51,8 +51,22 @@ image_identity() {
     echo "cbindgen=$CBINDGEN_VERSION"
     echo "libclang=$DEBIAN_LIBCLANG_DEB"
     echo "libllvm=$DEBIAN_LIBLLVM_DEB"
-    echo "clc-closure=$(sha256sum build/toolchain/clc-deps/closure.txt \
-                           2>/dev/null | cut -d' ' -f1)"
+    # THE RESOLVED CLOSURE, WHICH IS THE .deb FILES THEMSELVES.
+    #
+    # This read build/toolchain/clc-deps/closure.txt, and nothing has
+    # ever written that file — scripts/fetch-clc-deps.sh produces
+    # `debs/` and an `installed.txt` that lists what the base image
+    # already had. So `sha256sum` failed silently on every run since
+    # this function was written, the field was always empty, and a
+    # change in the resolved closure could not have rebuilt the image:
+    # exactly the drift this line exists to catch, undetected by the
+    # line meant to catch it.
+    #
+    # The names carry the versions, so the sorted list of them is the
+    # closure's identity; hashing 42 .deb payloads would say the same
+    # thing far more slowly.
+    echo "clc-closure=$(ls build/toolchain/clc-deps/debs 2>/dev/null |
+                            sort | sha256sum | cut -d' ' -f1)"
     echo "spirv-tools=$SPIRV_TOOLS_COMMIT"
     echo "target=$RUST_TARGET"
     echo "dockerfile=$(sha256sum toolchain/Dockerfile | cut -d' ' -f1)"
@@ -88,6 +102,24 @@ scripts/fetch-clc-deps.sh
 # image is labelled with an identity no later run can reproduce, and it
 # rebuilds itself every time.
 want=$(image_identity | sha256sum | cut -d' ' -f1)
+
+# AND ASK AGAIN, because the first answer was given without the closure.
+#
+# On a tree where the resolved .deb closure is not there yet — every
+# fresh clone, and therefore every CI checkout — the check at the top
+# computes an identity that no image can match, so it always falls
+# through to here. Before this, that meant a full rebuild even when the
+# image on this machine was already exactly the wanted one. Nine minutes,
+# for an answer that was available as soon as the fetches finished.
+#
+# It is what makes pulling the image from a registry worth anything: the
+# pull lands under $HORIZON_DERIVED_IMAGE, and this is the line that
+# recognises it rather than building over it.
+if [ "$FORCE" -eq 0 ] && [ "$(built_identity)" = "$want" ]; then
+    echo "build-toolchain-image: $HORIZON_DERIVED_IMAGE is current" \
+         "(identity confirmed after fetching)"
+    exit 0
+fi
 
 # --- 2. the build context ---------------------------------------------
 #
@@ -156,79 +188,14 @@ cat > "$CTX/sysroot-driver/src/lib.rs" <<'EOF'
 extern crate alloc;
 EOF
 
-# --- 3. build ----------------------------------------------------------
-#
-# --network=none is not an optimisation. dockerd here runs with
-# --bridge=none, and without this flag every RUN step fails with
-# "network bridge not found" before it executes anything. Measured.
-#
-# It is built under a staging tag and only named $HORIZON_DERIVED_IMAGE
-# once the checks below pass. Otherwise a build that succeeds and a
-# toolchain that works are the same claim — and they are not: the first
-# run of this script produced an image whose sysroot check failed, and
-# because the identity label was already baked in under the final name,
-# the next run reported it "current" and skipped the check entirely. A
-# gate that a failure can switch off is not a gate.
-STAGING="$HORIZON_NX_DERIVED_REPO:staging"
-echo "build-toolchain-image: building $HORIZON_DERIVED_IMAGE"
-docker build --network=none \
-    -f toolchain/Dockerfile \
-    -t "$STAGING" \
-    --build-arg "BASE_IMAGE=$HORIZON_BASE_IMAGE" \
-    --build-arg "RUST_TARGET=$RUST_TARGET" \
-    --build-arg "BINDGEN_CLI_VERSION=$BINDGEN_CLI_VERSION" \
-    --build-arg "CBINDGEN_VERSION=$CBINDGEN_VERSION" \
-    --label "org.mesa-nvk-horizon.identity=$want" \
-    "$CTX"
-
-rm -rf "$CTX"
-
-# --- 4. prove it works before claiming success ------------------------
-#
-# A built image is not a working toolchain. `bindgen --version` in
-# particular proves nothing: clang-sys loads libclang lazily, so the
-# version string prints happily on an image with no libclang at all —
-# which is exactly how the first attempt here passed while being
-# broken. Generating bindings from a real header is the check that
-# fails when it should.
-echo "build-toolchain-image: checking the image can actually do the work"
-probe=build/toolchain/image-probe
-mkdir -p "$probe"
-printf 'struct probe_s { int a; unsigned long b; };\n' > "$probe/probe.h"
-# MSYS_NO_PATHCONV=1 for the same reason horizon_run carries it: under
-# Git Bash on Windows, MSYS rewrites anything that looks like an
-# absolute Unix path in an argument to a native binary, so -w reached
-# docker.exe in the drive-letter spelling and the daemon refused it with
-#   docker: Error response from daemon: the working directory
-#   '<drive-letter path>' is invalid, it needs to be an absolute path
-# — after a fifteen-minute image build, on the step whose whole job is
-# to prove the image works. The variable is meaningless everywhere else.
-MSYS_NO_PATHCONV=1 \
-docker run --rm -v "$PWD":"$PWD" -w "$PWD" \
-    -e "PATH=$HORIZON_IMAGE_RUST_TOOLS_BIN:$RUST_CARGO_HOME_IN_IMAGE/bin:/usr/local/bin:/usr/bin:/bin" \
-    "$STAGING" \
-    sh -c "bindgen $probe/probe.h -o $probe/probe.rs && cbindgen --version"
-grep -q 'struct probe_s' "$probe/probe.rs" || {
-    echo "error: bindgen ran but produced no bindings for probe_s." >&2
-    exit 1
-}
-
-# And that the sysroot in the image is usable by a bare rustc, which is
-# how Meson drives it — Meson never calls cargo.
-#
-# The probe is a *staticlib*, because that is what Mesa builds NAK and
-# NIL as (rust_abi : 'c'), and a staticlib is where the two items only
-# a whole program can supply become mandatory:
-#
-#   error: no global memory allocator found but one is required
-#   error: `#[panic_handler]` function required, but not found
-#
-# Both were emitted by the first version of this check, which had
-# neither. They are not a sysroot fault — they are the reason
-# mesa-patches/ has to decide where those two items live once NAK and
-# NIL are no_std. Supplying them here keeps the check about the
-# sysroot.
-cat > "$probe/s.rs" <<'EOF'
+# The two probes toolchain/Dockerfile § 4b runs. They live in the
+# context because a RUN step can only see what was COPYed in — which is
+# the whole point: no bind mount, so this works from inside a job
+# container as well as from a developer's shell.
+mkdir -p "$CTX/probe"
+printf 'struct probe_s { int a; unsigned long b; };\n' > "$CTX/probe/probe.h"
+cat > "$CTX/probe/s.rs" <<'EOF'
+// GENERATED by scripts/build-toolchain-image.sh — do not edit.
 #![no_std]
 extern crate alloc;
 use core::alloc::{GlobalAlloc, Layout};
@@ -254,19 +221,53 @@ pub extern "C" fn horizon_sysroot_probe(n: u32) -> u32 {
     v.iter().sum()
 }
 EOF
-MSYS_NO_PATHCONV=1 \
-docker run --rm -v "$PWD":"$PWD" -w "$PWD" \
-    -e "PATH=$RUST_CARGO_HOME_IN_IMAGE/bin:/usr/local/bin:/usr/bin:/bin" \
-    "$STAGING" \
-    rustc --target "$RUST_TARGET" --sysroot "$HORIZON_IMAGE_RUST_SYSROOT" \
-          --crate-type staticlib --edition 2021 \
-          -o "$probe/s.a" "$probe/s.rs"
-[ -s "$probe/s.a" ] || {
-    echo "error: rustc --sysroot $HORIZON_IMAGE_RUST_SYSROOT produced" >&2
-    echo "       nothing. The sysroot in the image is not usable." >&2
-    exit 1
-}
-rm -rf "$probe"
+
+# --- 3. build ----------------------------------------------------------
+#
+# --network=none is not an optimisation. dockerd here runs with
+# --bridge=none, and without this flag every RUN step fails with
+# "network bridge not found" before it executes anything. Measured.
+#
+# It is built under a staging tag and only named $HORIZON_DERIVED_IMAGE
+# once the checks below pass. Otherwise a build that succeeds and a
+# toolchain that works are the same claim — and they are not: the first
+# run of this script produced an image whose sysroot check failed, and
+# because the identity label was already baked in under the final name,
+# the next run reported it "current" and skipped the check entirely. A
+# gate that a failure can switch off is not a gate.
+STAGING="$HORIZON_NX_DERIVED_REPO:staging"
+echo "build-toolchain-image: building $HORIZON_DERIVED_IMAGE"
+docker build --network=none \
+    -f toolchain/Dockerfile \
+    -t "$STAGING" \
+    --build-arg "BASE_IMAGE=$HORIZON_BASE_IMAGE" \
+    --build-arg "RUST_TARGET=$RUST_TARGET" \
+    --build-arg "BINDGEN_CLI_VERSION=$BINDGEN_CLI_VERSION" \
+    --build-arg "CBINDGEN_VERSION=$CBINDGEN_VERSION" \
+    --build-arg "IMAGE_IDENTITY=$want" \
+    --label "org.mesa-nvk-horizon.identity=$want" \
+    "$CTX"
+
+rm -rf "$CTX"
+
+# --- 4. prove it works before claiming success ------------------------
+#
+# A built image is not a working toolchain. `bindgen --version` in
+# particular proves nothing: clang-sys loads libclang lazily, so the
+# version string prints happily on an image with no libclang at all —
+# which is exactly how the first attempt here passed while being
+# broken. Generating bindings from a real header is the check that
+# fails when it should.
+# The probes now run inside `docker build` (toolchain/Dockerfile § 4b),
+# because `docker run -v "$PWD":"$PWD"` cannot work when this script is
+# itself inside a container: $PWD is the job container's path, the
+# daemon resolves the bind against the host, finds nothing, and mounts
+# an empty directory. bindgen then reported `No such file or directory`
+# about a header that was right there — Forgejo task 1274.
+#
+# A probe that is a build step also cannot leave a broken image behind
+# to be un-tagged afterwards: the build simply fails.
+echo "build-toolchain-image: probes ran inside the build; image is good"
 
 # Only now does the image get the name everything else looks for.
 docker tag "$STAGING" "$HORIZON_DERIVED_IMAGE"

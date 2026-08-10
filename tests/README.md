@@ -1,12 +1,23 @@
 # Tests — running them on a Nintendo Switch
 
-Thirteen standalone `.nro` homebrew apps: ten for the Phase 1 milestone
-items (`docs/milestones.md`), plus three that measure Phase 3 work —
-`t_sysinfo` for `compat/sysconf.c`, and `t_threads` / `t_ostime` for the
-Mesa code this port depends on. Each prints one line per check and a final
+Thirty-four standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
+
+They come in three groups, and **which of them you get depends on what you built**:
+
+| Group | Count | Needs | Built by |
+|---|---|---|---|
+| `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
+| Mesa's own code, measured on hardware | 2 | Mesa's core built | both build paths |
+| Vulkan, through NVK | 14 | the full NVK driver built | **the Meson path only** |
+
+So the Makefile produces at most 20 and the Meson path at most 34 — see
+[`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
+
+There are also six host-side suites that need no console at all; they are at the bottom
+of this file.
 
 ## Building
 
@@ -32,9 +43,10 @@ scripts/configure-mesa.sh && scripts/build-mesa.sh
 ```
 
 Without that, both build paths skip those two with a message and produce
-the other eleven — and the Makefile path also deletes any `.nro` a
+the other eighteen — and the Makefile path also deletes any `.nro` a
 previous build with Mesa present had left, so `build/` never mixes
-artefacts from two builds. Nothing else here needs Mesa.
+artefacts from two builds. Nothing else in this group needs Mesa; the
+fourteen Vulkan tests need all of it, and NVK besides.
 
 `$MESA_BUILD_DIR` selects where Mesa was built (default `build/mesa-probe`)
 and is honoured by all four of `scripts/{configure,build}-mesa.sh`, the
@@ -44,14 +56,14 @@ build alike. How the path is spelled does not matter —
 same directory to every consumer, including `make clean`.
 
 `make clean` leaves that directory alone, so `make clean && make` still
-produces all thirteen. It also leaves `build/toolchain` alone, since the
+produces all twenty. It also leaves `build/toolchain` alone, since the
 pinned Meson and Mesa's Python dependencies are installed there over the
 network. Everything else under `build/`, including the Meson build
 directory, is removed.
 
 Building Mesa *after* configuring the Meson build directory is fine:
 `scripts/build-horizon.sh` notices that the archives have appeared and
-reconfigures, so it does not keep producing eleven.
+reconfigures, so it does not keep producing eighteen.
 
 `scripts/check-mesa-test-parity.sh` checks that the Makefile and the
 Meson build still agree on which tests these two are, which archives
@@ -79,9 +91,44 @@ after touching either build system.
    | 11 | `t_sysinfo` | `compat/sysconf.c`: page size bounded from both sides, process memory, `_SC_NPROCESSORS_*` |
    | 12 | `t_threads` | Mesa's C11 threads shim: `mtx_timedlock` and `cnd_timedwait` expiry (both-sided timing on the calls that must expire; an upper bound only on the ones that must not wait), mutual exclusion, condvars, TSS, and the CPU count |
    | 13 | `t_ostime` | Mesa's `os_time.c`: monotonicity, resolution, rate against the ARM counter, `os_time_sleep` accuracy |
+   | 14 | `t_gpuwrite` | does a GPU write become visible to the CPU — the question nothing below `t_vulkan` had asked |
+   | 15 | `t_uncached` | the UNCACHED cache policy (decision D14) on real memory |
+   | 16 | `t_pbsize` | how large a single GPFIFO entry this hardware will execute (decision D15) |
+   | 17 | `t_va_window` | what the address-space allocator does around the shader local/shared memory window |
+   | 18 | `t_fault` | a deliberate MMU fault, and the fence that must not lie about it |
 
-   Tests 11-13 use no `horizon_gpu` and need no nv services, so they are
+   Tests 11–13 use no `horizon_gpu` and need no nv services, so they are
    also the cheapest to run first when triaging a console.
+
+   `t_fault` provokes a fault on purpose and is best run **last**: whether the console
+   survives it on exit is one of the open items in `STATUS.md`.
+
+   Then the display, which needs the console's own framebuffers out of the way:
+
+   | # | Test | Verifies |
+   |---|------|----------|
+   | 19 | `t_display` | owning the display and drawing nothing — the `nwindow` the console configured |
+   | 20 | `t_nwindow` | the VI compositor through raw `bq*`, with no Vulkan in the way |
+
+   Finally the Vulkan tests, which exist only if you built NVK. Run them in this order:
+   each reads its result back through machinery the previous one proved.
+
+   | # | Test | Verifies |
+   |---|------|----------|
+   | 21 | `t_vulkan` | the mandatory Phase 4 sequence, ending in a CPU readback that validates |
+   | 22 | `t_vk_transfer` | buffer↔buffer and buffer↔image copies — every later test reads back through one |
+   | 23 | `t_vk_compute` | compute dispatch: the first shader this project runs, and therefore NAK and NIL |
+   | 24 | `t_vk_image` | off-screen images and clears |
+   | 25 | `t_vk_triangle` | the first draw call |
+   | 26 | `t_vk_texture` | textures: upload, read back, and sample three ways |
+   | 27 | `t_vk_depth` | depth, four draws in one render pass differing only in push constants |
+   | 28 | `t_vk_format` | format coverage — everything before this proved one format |
+   | 29 | `t_vk_submits` | two or more submits in flight with no CPU wait between them |
+   | 30 | `t_vk_caps` | what the driver claims, measured against what the backend can do |
+   | 31 | `t_vk_swapchain` | a `VK_KHR_swapchain` on the compositor: pacing, buffering, recreation, errors |
+   | 32 | `t_vk_wsi_mt` | the same swapchain under concurrency and under length |
+   | 33 | `t_vk_suboptimal` | `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR`, and the line between them. Its section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed |
+   | 34 | `t_vk_immediate` | whether `VK_PRESENT_MODE_IMMEDIATE_KHR` does anything through Vulkan: FIFO, then IMMEDIATE, then FIFO again, 240 frames each, so the reference is shown to be stable rather than assumed |
 
 3. Each test ends with "Press + to exit". The verdict is on screen and in
    `sdmc:/horizon_gpu_tests/<name>.log`.
@@ -135,6 +182,13 @@ one run being diagnosed as a driver hang that had not happened.
 scripts/run-host-tests.sh
 ```
 
-builds the pure-logic modules (alignment/overflow, VA interval set,
-wrap-safe syncpoint math, command emitters) with the host compiler and
-sanitizers. These run anywhere and are also what CI should run.
+builds six suites over the pure-logic modules (alignment/overflow, VA interval set,
+wrap-safe syncpoint math, command emitters, status strings, logging) with the host
+compiler and sanitizers. These run anywhere, and CI runs them on every push and pull
+request.
+
+---
+
+For what the logs mean, the runtime environment variables, applet mode against full
+memory, and what to include when reporting a run, see
+[`../docs/USAGE.md`](../docs/USAGE.md).
