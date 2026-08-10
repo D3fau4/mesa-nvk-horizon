@@ -223,13 +223,33 @@ fi
 # `grep -a -o` reads the same bytes with a tool POSIX requires. The
 # marker is anchored the same way it was — it is the token the log line
 # starts with, so what this reads and what the operator reads stay the
-# same bytes — and the trailing class stops at the first byte that
-# cannot be in a stamp, which is what `strings` was doing implicitly.
+# same bytes.
+#
+# LC_ALL=C IS NOT TIDINESS, AND THE CLASS IS NOT `[!-~]`. Both were
+# found by packaging from inside the toolchain image, which sets
+# LANG=en_US.UTF-8:
+#
+#   - In a UTF-8 locale a range expression is read by collation order,
+#     not by code point, so `[!-~]` matched *nothing* after the marker
+#     and this printed "no build id in:" over all 33 artefacts — the one
+#     thing the comment above says it must never report wrongly, for the
+#     second time and from the other direction.
+#
+#   - `[!-~]` excludes the space, so even where it worked it stopped at
+#     the first one. The stamp is three fields:
+#         2026-08-10T15:26:39.381Z a228127-dirty mesa:7abd4c2
+#     and everything from the repository commit onwards was being
+#     dropped — exactly the fields scripts/gen-build-id.sh exists to
+#     carry. `[ -~]` is printable ASCII including the space, and the
+#     stamp is a NUL-terminated C string, so the NUL ends the match.
+#
+# Verified against the embedded stamp: what comes out equals what
+# `strings` shows, in both locales.
 _pkg_ids=""
 _pkg_unstamped=""
 for nro in "$SRC"/*.nro; do
     [ -e "$nro" ] || continue
-    _id=$(grep -a -o 'horizon-build-id [!-~]*' "$nro" 2>/dev/null |
+    _id=$(LC_ALL=C grep -a -o 'horizon-build-id [ -~]*' "$nro" 2>/dev/null |
               head -1 | sed 's/^horizon-build-id //')
     if [ -z "$_id" ]; then
         _pkg_unstamped="$_pkg_unstamped $(basename "$nro")"
@@ -363,6 +383,21 @@ _pkg_img=$(horizon_image_digest)
         echo "#    no image reference to reproduce it. The versions below are"
         echo "#    the whole record — a devkitPro install that has since been"
         echo "#    updated cannot be recovered from here.)"
+        ;;
+    in-image:*)
+        # Built by a job whose container was the toolchain itself. There
+        # is no docker in there to ask for a digest, so the image was
+        # asked instead: toolchain/Dockerfile records the identity it was
+        # built under, and that is what this carries. It says how the
+        # toolchain was built rather than where it was pushed, which is
+        # the more useful of the two for reproducing a hardware result.
+        _pkg_in=${_pkg_img#in-image:}
+        echo "#   (built inside the toolchain image, derived from"
+        echo "#    ${_pkg_in%%#*}."
+        echo "#    Its build identity is ${_pkg_in#*#}."
+        echo "#    Rebuild that image with scripts/build-toolchain-image.sh;"
+        echo "#    it is current when its identity matches this string.)"
+        unset _pkg_in
         ;;
     local-image-id:*)
         echo "#   (built in ${HORIZON_IMAGE}, an image built here and never"
