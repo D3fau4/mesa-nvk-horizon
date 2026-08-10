@@ -50,20 +50,38 @@ permissions:
   contents: read
   packages: write
 
-env:
-  # Override with the TOOLCHAIN_IMAGE repository variable to point at an
-  # image built somewhere else — same override docs/BUILDING.md already
-  # documents for scripts/ci-build-archives.sh's own HORIZON_NX_DERIVED_IMAGE.
-  TOOLCHAIN_IMAGE: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
-
 jobs:
   # Not inside a container: this one produces the image the other job
   # runs in.
   toolchain:
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      # A ghcr.io repository name has to be all-lowercase, and GitHub
+      # Actions expressions have no lower() function to enforce that on
+      # ${{ github.repository_owner }} inline — measured: the first run
+      # of this workflow failed docker pull outright with "invalid
+      # reference format: repository name (D3fau4/nx-dev-mesa) must be
+      # lowercase" because the account is D3fau4, not d3fau4. Lowercasing
+      # in a shell step, once, and threading the result through
+      # $GITHUB_ENV (rest of this job) and $GITHUB_OUTPUT (the other job,
+      # via needs.toolchain.outputs.image) is what fixes it everywhere at
+      # once instead of at every place the image name is spelled out.
+      - name: resolve the toolchain image name
+        id: image
+        run: |
+          set -eu
+          image="${{ vars.TOOLCHAIN_IMAGE }}"
+          if [ -z "$image" ]; then
+              owner_lower=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+              image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: the runner can drive docker
         run: scripts/ci-require-docker.sh
@@ -129,7 +147,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-latest
     container:
-      image: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
+      image: ${{ needs.toolchain.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

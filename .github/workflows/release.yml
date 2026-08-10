@@ -44,20 +44,30 @@ permissions:
   contents: write
   packages: write
 
-env:
-  # Override with the TOOLCHAIN_IMAGE repository variable to point at an
-  # image built somewhere else — same override docs/BUILDING.md already
-  # documents for scripts/ci-build-archives.sh's own HORIZON_NX_DERIVED_IMAGE.
-  TOOLCHAIN_IMAGE: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
-
 jobs:
   # Identical to ci.yml's toolchain job — see it for the full mechanism
-  # and rationale.
+  # and rationale, including why the image name is resolved in a shell
+  # step rather than inline (ghcr.io needs it lowercase; GitHub Actions
+  # expressions have no lower() to enforce that on github.repository_owner).
   toolchain:
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: resolve the toolchain image name
+        id: image
+        run: |
+          set -eu
+          image="${{ vars.TOOLCHAIN_IMAGE }}"
+          if [ -z "$image" ]; then
+              owner_lower=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+              image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: the runner can drive docker
         run: scripts/ci-require-docker.sh
@@ -109,7 +119,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-latest
     container:
-      image: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
+      image: ${{ needs.toolchain.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
