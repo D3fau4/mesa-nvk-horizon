@@ -5,6 +5,78 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The framebuffer defect, proved in both directions
+
+Five files, and they are the strongest evidence in this directory: the same
+test and the same tree, one patch apart, failing and passing on demand.
+
+### `t_vk_wsi_mt-run17-PASS.log`, `t_vk_wsi_mt-run18-fix-reverted-CRASH.log`, `t_vk_wsi_mt-run18-qlaunch-fatal-0x290.txt`
+
+`t_vk_wsi_mt` is the multi-threaded swapchain test. Run 17 is it passing with
+patch 0070 applied; run 18 is the **same binary with only that patch reverted**,
+and it took the console down.
+
+Run 17, `mesa:597ea0a`, applet mode:
+
+```
+RESULT: PASS (50/50)
+```
+
+Run 18, `mesa:3fe711d` — the revert — ends at line 53 with 29 checks and no
+`RESULT` line at all:
+
+```
+  ok   A/copy: an acquire on the retired swapchain -> OUT_OF_DATE_KHR (expected VK_ERROR_OUT_OF_DATE_KHR)
+```
+
+**The absence of anything after that line is the finding.** The next statement
+in the test is the `vkDestroySwapchainKHR` on the retired copy-fallback
+swapchain — the call that, without 0070, reaches into a window a *different*
+swapchain owns by then and disconnects it.
+
+What happened next is not in that log, because the process did not survive to
+write it. `t_vk_wsi_mt-run18-qlaunch-fatal-0x290.txt` is Atmosphère's own fatal
+report:
+
+```
+Result:                          0x290 (2144-0001)
+Program ID:                      0100000000001000
+Process Name:                    qlaunch
+Firmware:                        22.5.0 (Atmosphère 1.11.2-master-5388824be)
+```
+
+`qlaunch` is the system's home menu, **not this process**. Reading the source
+predicted that the survivor would merely stop presenting — a dequeue on a
+disconnected BufferQueue answers `NO_INIT`, which the acquire loop reads as
+"come back later". The console's own side of the disconnect is what turned that
+into a system fatal, and no amount of source reading would have said so.
+
+### `t_vk_wsi_mt-run19-full-memory-PASS.log`
+
+Run 17 repeated in full-memory mode (3155 MiB against applet mode's 237 MiB),
+`mesa:85638f8`, which is patch 0070's own commit. `RESULT: PASS (50/50)`, and it
+agrees with run 17 where it should: section C at **16613 us** against 16608, the
+soak at 16731 us against 16747. So nothing in the finding depends on which
+memory ceiling the homebrew was launched under.
+
+### `t_vk_wsi_mt-run20-review-fixes-PASS.log`
+
+`RESULT: PASS (52/52)`, full memory, `mesa:ebf2e31`. The two extra checks are
+the ones the PR 9 review added to the test's own teardown. Section C at
+**16607 us**; section F's mean moved from 16731 to 16882 us, which is the added
+`vkQueueWaitIdle` at each of the 14 generation boundaries spread over 3000
+frames.
+
+**Two things this log is not.** It was built from a `mesa/` checkout carrying
+one commit `mesa-patches/` did not have at the time — recorded as D18 in
+`STATUS.md` and since closed by exporting it as patch 0071 — so the tree that
+produced it was not reproducible from this repository when it was taken. And it
+is the newest hardware evidence for this backend, which means it **predates
+patches 0072 and 0073 and the t_vk_wsi_mt corrections from the same review**.
+Its 188 `vk_log*() called with client-invisible object` lines are the
+measurement 0073 exists to take to zero; its 52 checks are not the number the
+corrected test will report.
+
 ## The two logs Phase 6 rests on
 
 `t_nwindow-run11-PASS.log` (118/118) and `t_vk_swapchain-run12-PASS.log`

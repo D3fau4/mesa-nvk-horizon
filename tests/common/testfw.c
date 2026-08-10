@@ -16,8 +16,28 @@
 
 #include <switch.h>
 
+/* Serialises everything that reaches the log: both writes and the
+ * offset games t_log_scan plays with the shared handle. See the comment
+ * on test_ctx::out_lock for why a test framework needs a lock at all.
+ *
+ * The public entry points take it; t_sink and t_vemit below assume it is
+ * held. Formatting happens into stack buffers, so only the emit itself
+ * is inside the lock and a slow SD-card flush never serialises anything
+ * but other writers. */
+static void t_lock(test_ctx *t)
+{
+    if (t->out_lock_ready)
+        pthread_mutex_lock(&t->out_lock);
+}
+
+static void t_unlock(test_ctx *t)
+{
+    if (t->out_lock_ready)
+        pthread_mutex_unlock(&t->out_lock);
+}
+
 /* One place that knows where a line goes: the console (or nowhere, on a
- * test that owns the display) and the log file. */
+ * test that owns the display) and the log file. Call with the lock. */
 static void t_sink(test_ctx *t, const char *line, size_t len)
 {
     fwrite(line, 1, len, stdout);
@@ -43,14 +63,22 @@ static void t_vemit(test_ctx *t, const char *prefix, const char *fmt,
 
 bool t_check(test_ctx *t, bool cond, const char *fmt, ...)
 {
+    va_list ap;
+    va_start(ap, fmt);
+
+    /* The counters are inside the lock with the line they belong to, so
+     * a count can never disagree with the number of lines that produced
+     * it. Tests still keep t_check on the main thread — a worker has no
+     * way to report a verdict in order — but "the counter is safe" is
+     * now a property of this function rather than of every caller. */
+    t_lock(t);
     if (cond)
         t->pass++;
     else
         t->fail++;
-
-    va_list ap;
-    va_start(ap, fmt);
     t_vemit(t, cond ? "  ok   " : "  FAIL ", fmt, ap);
+    t_unlock(t);
+
     va_end(ap);
     return cond;
 }
@@ -59,7 +87,9 @@ void t_note(test_ctx *t, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
+    t_lock(t);
     t_vemit(t, "  note ", fmt, ap);
+    t_unlock(t);
     va_end(ap);
 }
 
@@ -73,6 +103,14 @@ int main(void)
     padInitializeDefault(&pad);
 
     test_ctx t = { .pass = 0, .fail = 0, .log = NULL };
+
+    /* Before the log is opened and long before any test starts a thread,
+     * so every line this file can emit is already covered. A failure
+     * here leaves out_lock_ready false, which costs the serialisation
+     * and keeps the reporting: a test that cannot lock must still be
+     * able to say what went wrong. */
+    if (pthread_mutex_init(&t.out_lock, NULL) == 0)
+        t.out_lock_ready = true;
 
     mkdir("sdmc:/horizon_gpu_tests", 0777);
     char path[128];
@@ -116,9 +154,12 @@ int main(void)
 
     char head[160];
     int head_len = snprintf(head, sizeof(head), "== %s ==\n", test_name);
-    if (head_len > 0)
+    if (head_len > 0) {
+        t_lock(&t);
         t_sink(&t, head, (size_t)head_len < sizeof(head) ? (size_t)head_len
                                                          : sizeof(head) - 1);
+        t_unlock(&t);
+    }
     if (!t.log)
         printf("  note (sdmc log unavailable: %s)\n", path);
 
@@ -159,9 +200,12 @@ int main(void)
     int tail_len = snprintf(tail, sizeof(tail), "RESULT: %s (%d/%d)%s\n",
                             verdict, t.pass, total,
                             aborted ? " [aborted early]" : "");
-    if (tail_len > 0)
+    if (tail_len > 0) {
+        t_lock(&t);
         t_sink(&t, tail, (size_t)tail_len < sizeof(tail) ? (size_t)tail_len
                                                          : sizeof(tail) - 1);
+        t_unlock(&t);
+    }
 
     printf("\nLog: %s\nPress + to exit.\n", path);
     /* With no console there is no screen to read that on, so the log —
@@ -184,6 +228,16 @@ int main(void)
     if (t.log) {
         fclose(t.log);
         t.log = NULL;
+    }
+
+    /* After the last writer, and after the log is closed. Clearing the
+     * flag first means anything that still tries to report — a stray
+     * driver message on a thread a test failed to join, which is exactly
+     * the situation worth surviving — falls back to the unlocked path
+     * instead of touching a destroyed mutex. */
+    if (t.out_lock_ready) {
+        t.out_lock_ready = false;
+        pthread_mutex_destroy(&t.out_lock);
     }
 
     while (appletMainLoop()) {
@@ -224,16 +278,29 @@ bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
     if (needle_len == 0 || needle_len > T_LOG_SCAN_OVERLAP)
         return false;
 
+    /* HELD ACROSS THE WHOLE SCAN, not just the reads. This rewinds the
+     * shared handle and puts it back, so a line written by another
+     * thread in between would land at the wrong offset and overwrite the
+     * log rather than extend it. The header used to say this was "not
+     * thread-safe against anything else writing to stderr" and leave it
+     * there; with the debug messenger able to emit from any thread, that
+     * is not a caveat a caller can act on. */
+    t_lock(t);
+
     /* Both writers, because stderr was dup2'd onto this file and the
      * lines that matter most are usually the driver's. */
     fflush(t->log);
     fflush(stderr);
 
     const long resume = ftell(t->log);
-    if (resume < 0)
+    if (resume < 0) {
+        t_unlock(t);
         return false;
-    if (fseek(t->log, 0, SEEK_SET) != 0)
+    }
+    if (fseek(t->log, 0, SEEK_SET) != 0) {
+        t_unlock(t);
         return false;
+    }
 
     char buf[T_LOG_SCAN_OVERLAP + T_LOG_SCAN_CHUNK + 1];
     size_t carry = 0;
@@ -262,8 +329,12 @@ bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
     /* Back where the writers left it, before anything else writes. A
      * failure here would put every later line in the wrong place, so it
      * is reported as a scan that did not happen. */
-    if (fseek(t->log, resume, SEEK_SET) != 0)
+    if (fseek(t->log, resume, SEEK_SET) != 0) {
+        t_unlock(t);
         return false;
+    }
+
+    t_unlock(t);
 
     *found_out = found;
     return true;

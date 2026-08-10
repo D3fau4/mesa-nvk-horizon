@@ -84,8 +84,23 @@ die() { # message...
 
 dest_abs="$(cd "$DEST" && pwd)"
 
+# BOTH SIDES OF THE COMPARISONS BELOW GO THROUGH `cd ... && pwd`, and that
+# is portability rather than style. Git for Windows answers rev-parse in
+# a drive-letter spelling of an absolute path while the shell's pwd
+# answers in the MSYS one, with the drive as a leading path component.
+# The two name the same directory and compare unequal as strings, so the
+# assertions fired on a
+# tree that was perfectly correct. Canonicalising git's answer the same
+# way the expectation was built compares directories instead of spellings,
+# and keeps the guard exactly as strict as it was: mesa/.git and nothing
+# else. A path git names but the shell cannot enter falls through
+# unchanged and still fails the test.
+canon() {
+    [ -n "$1" ] && (cd "$1" 2>/dev/null && pwd) || printf '%s' "$1"
+}
+
 gitdir=$(git -C "$DEST" rev-parse --absolute-git-dir 2>/dev/null || true)
-[ "$gitdir" = "$dest_abs/.git" ] || die \
+[ "$(canon "$gitdir")" = "$dest_abs/.git" ] || die \
     "error: $DEST is not its own git repository." \
     "       git reports its git-dir as: ${gitdir:-<none>}" \
     "       expected: $dest_abs/.git" \
@@ -98,7 +113,7 @@ gitdir=$(git -C "$DEST" rev-parse --absolute-git-dir 2>/dev/null || true)
 # clearing the environment does not cover this. Ask git where it would
 # actually write.
 toplevel=$(git -C "$DEST" rev-parse --show-toplevel 2>/dev/null || true)
-[ "$toplevel" = "$dest_abs" ] || die \
+[ "$(canon "$toplevel")" = "$dest_abs" ] || die \
     "error: $DEST's git repository has a different working tree." \
     "       git reports its top level as: ${toplevel:-<none>}" \
     "       expected: $dest_abs" \

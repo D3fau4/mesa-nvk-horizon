@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-16eaba0db52570769b3a07eb9955363b8a2f0c3070962299eaade0ef79c58d27  README.md
+c4d00fa5f8186fb4373219d6744d59450f1af38b4ab6b57ec8287fcb9b68ae99  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
@@ -141,6 +141,11 @@ ba8144e01411dd4fc7f8e026b36c70b20d1aeeeb00b78af92875e1d484e864c2  t_vk_transfer-
 e308c34c31bd15918c6a7dbe3295ab70c78c493435690044c41d26744e31bb78  t_vk_triangle-run14-PASS.log
 fb5b97fd16ad2e2f6437c10910f1481e4008c0da88374c5e7d338c695b442920  t_vk_triangle-run5-batch5-PASS.log
 e456ef2843820518c4f427345059b3cf7500e82e94cc32ca528df7583d376fdd  t_vk_triangle-run6-pr7-rerun-PASS.log
+c8ccb799910df011907a081110782682dc7d451d5fa462768985f6679525cda1  t_vk_wsi_mt-run17-PASS.log
+72b2b0978bbed1b0dfb4a4d5416f0f187ec2d4f2f83ffe3c85eb8948dca053f7  t_vk_wsi_mt-run18-fix-reverted-CRASH.log
+fc35fe01e5f84a3f037476cdcf6d64cbfebba8d1b5a6d7c108e2a2668ce9287d  t_vk_wsi_mt-run18-qlaunch-fatal-0x290.txt
+b167e84ea9e7a7abc6f5e1726731604d6f9134115d293f258e1cc883394a3a2c  t_vk_wsi_mt-run19-full-memory-PASS.log
+d916dd02c2b1854280c75e20ad71da732d0bd888e5be12f483d1493bc672a0a7  t_vk_wsi_mt-run20-review-fixes-PASS.log
 7da29793730f5fa6a040626118932eafc6821f29989ab7a449796859d71f173e  t_vulkan-PASS-20260804.log
 f44252a65572b6f67217a6a1ce0a12d8d4131aef0c26af7dba9f4d20f38141d0  t_vulkan-emu-pushdump.log
 8c1f38370c4938973b451ea7e4c6f70c8a72f5c8eaa915d492626429bd6c0559  t_vulkan-emu-run1.log

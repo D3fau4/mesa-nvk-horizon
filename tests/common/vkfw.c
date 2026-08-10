@@ -5,11 +5,29 @@
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
+#include <stdatomic.h>
 #include <stdio.h>    /* snprintf */
 #include <stdlib.h>   /* setenv, getenv */
 #include <string.h>
 
 #include "common/vkfw.h"
+
+/* The message ring is appended to by the debug-utils callback, which
+ * Mesa runs on whichever thread produced the message, and read by the
+ * main thread. Guarded by a flag for the same reason testfw's output
+ * lock is: a message can arrive before vkfw_init_full has finished, and
+ * losing the serialisation is better than losing the message. */
+static void vkfw_msg_lock(vkfw *fw)
+{
+   if (fw->msg_lock_ready)
+      pthread_mutex_lock(&fw->msg_lock);
+}
+
+static void vkfw_msg_unlock(vkfw *fw)
+{
+   if (fw->msg_lock_ready)
+      pthread_mutex_unlock(&fw->msg_lock);
+}
 
 /* The one symbol the driver exports for a loader to find. Declared
  * rather than included: vk_icd.h is the loader's header and this is not
@@ -38,6 +56,15 @@ const char *vkfw_result_str(VkResult r)
    case VK_ERROR_FRAGMENTED_POOL:          return "FRAGMENTED_POOL";
    case VK_ERROR_OUT_OF_POOL_MEMORY:       return "OUT_OF_POOL_MEMORY";
    case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
+   /* The window-system results. They were missing, and they are the
+    * ones the swapchain tests print most: every recreation check reads
+    * "-> VkResult -1000001004" where it means OUT_OF_DATE_KHR. The
+    * fallback below is honest but a reader should not have to decode a
+    * number the driver returns on purpose. */
+   case VK_SUBOPTIMAL_KHR:                 return "VK_SUBOPTIMAL_KHR";
+   case VK_ERROR_OUT_OF_DATE_KHR:          return "OUT_OF_DATE_KHR";
+   case VK_ERROR_SURFACE_LOST_KHR:         return "SURFACE_LOST_KHR";
+   case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "NATIVE_WINDOW_IN_USE_KHR";
    default:                                break;
    }
 
@@ -50,10 +77,25 @@ const char *vkfw_result_str(VkResult r)
     * in review of PR #7.
     *
     * A small rotation of buffers, because a check line can name two
-    * results in one printf. */
+    * results in one printf.
+    *
+    * THE COUNTER IS ATOMIC BECAUSE THE CALLER MIGHT NOT BE THE MAIN
+    * THREAD. `next++` on a plain uint32_t shared between threads is a
+    * data race in C11 terms whatever it compiles to, and this function
+    * is reachable from anything that formats a result. Every caller in
+    * this suite is in fact the main thread, which is why nothing has
+    * gone wrong; the atomic makes that a property of the code rather
+    * than of the current set of callers.
+    *
+    * What the atomic does NOT buy: two threads far enough apart in the
+    * rotation still get distinct buffers, but four calls from one thread
+    * interleaved with four from another can hand back a buffer the other
+    * is still printing. The contract is unchanged and is what it always
+    * was - the string is valid until this thread's next four calls - and
+    * a caller needing more than that should copy it. */
    static char buf[4][24];
-   static uint32_t next;
-   char *out = buf[next++ % 4];
+   static atomic_uint next;
+   char *out = buf[atomic_fetch_add(&next, 1u) % 4];
    snprintf(out, sizeof(buf[0]), "VkResult %d", (int)r);
    return out;
 }
@@ -94,9 +136,16 @@ vkfw_debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     * buffer, so a driver that says more than sixteen things before its
     * decision would have had that decision silently discarded. Raised
     * in review of PR #8. */
+   /* Under the lock: this callback runs on whichever thread produced the
+    * message, and vkfw_saw_message reads the same array from the main
+    * thread. t_note above takes testfw's lock and has already released
+    * it, so the two are never nested and there is no order to get
+    * wrong. */
+   vkfw_msg_lock(fw);
    snprintf(fw->messages[fw->message_count % VKFW_MESSAGE_SLOTS],
             VKFW_MESSAGE_CHARS, "%s", text);
    fw->message_count++;
+   vkfw_msg_unlock(fw);
 
    return VK_FALSE;
 }
@@ -115,23 +164,41 @@ bool vkfw_init_ext(vkfw *fw, test_ctx *t, const void *features2,
 
 void vkfw_forget_messages(vkfw *fw)
 {
+   vkfw_msg_lock(fw);
    fw->message_count = 0;
    memset(fw->messages, 0, sizeof(fw->messages));
+   vkfw_msg_unlock(fw);
 }
 
-bool vkfw_saw_message(const vkfw *fw, const char *needle, const char **out)
+bool vkfw_saw_message(vkfw *fw, const char *needle, const char **out)
 {
+   bool found = false;
+
+   vkfw_msg_lock(fw);
+
    const uint32_t n = fw->message_count < VKFW_MESSAGE_SLOTS ?
       fw->message_count : VKFW_MESSAGE_SLOTS;
 
    for (uint32_t i = 0; i < n; i++) {
       if (strstr(fw->messages[i], needle) != NULL) {
-         if (out != NULL)
-            *out = fw->messages[i];
-         return true;
+         /* COPIED OUT, NOT POINTED AT. This used to hand back
+          * fw->messages[i] itself, which a worker thread's next message
+          * can overwrite the instant the lock is dropped - and the
+          * caller is typically about to print it. The copy is stable
+          * until this fixture's next matching call, which is the
+          * single-consumer use every caller already makes of it. */
+         if (out != NULL) {
+            snprintf(fw->message_match, sizeof(fw->message_match), "%s",
+                     fw->messages[i]);
+            *out = fw->message_match;
+         }
+         found = true;
+         break;
       }
    }
-   return false;
+
+   vkfw_msg_unlock(fw);
+   return found;
 }
 
 bool vkfw_wsi_load(vkfw *fw)
@@ -158,6 +225,11 @@ bool vkfw_init_full(vkfw *fw, test_ctx *t, const void *features2,
 {
    memset(fw, 0, sizeof(*fw));
    fw->t = t;
+
+   /* Before vkCreateInstance, because the messenger is installed during
+    * it and can be called back before this function returns. */
+   if (pthread_mutex_init(&fw->msg_lock, NULL) == 0)
+      fw->msg_lock_ready = true;
 
    /* Opting in to an unconformant driver, before vkCreateInstance
     * because the flag is read while the physical device is created.
@@ -398,6 +470,15 @@ void vkfw_finish(vkfw *fw)
       if (fw->vk.vkDestroyInstance != NULL)
          fw->vk.vkDestroyInstance(fw->instance, NULL);
    }
+
+   /* After the messenger is destroyed, so nothing can still be calling
+    * back into the ring, and before the memset that would otherwise
+    * leave a destroyed mutex looking initialised. */
+   if (fw->msg_lock_ready) {
+      fw->msg_lock_ready = false;
+      pthread_mutex_destroy(&fw->msg_lock);
+   }
+
    memset(fw, 0, sizeof(*fw));
 }
 
