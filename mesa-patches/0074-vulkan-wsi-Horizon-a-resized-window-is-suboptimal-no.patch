@@ -1,0 +1,323 @@
+From c5e9e666fca3ded3444ae5346b1736b4bdbf51c6 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <noreply@invalid>
+Date: Mon, 10 Aug 2026 15:21:06 +0200
+Subject: [PATCH] vulkan/wsi: Horizon, a resized window is suboptimal, not out
+ of date
+
+mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
+Why: a display mode change - docking the console, which takes the layer
+ to 1920x1080 - was reported as VK_ERROR_OUT_OF_DATE_KHR at the next
+ acquire, and that result promises something this backend does not do.
+ The specification's words are "further presentation requests using the
+ swapchain will fail". They do not fail.
+ .
+ Nothing on the producer's side of the BufferQueue changes when the
+ consumer resizes. The dequeue asks for NWindow::width/height, which
+ this backend set at registration and nobody has touched, so every
+ preallocated slot still matches and bqDequeueBuffer keeps handing them
+ over; bqQueueBuffer validates the crop against the *buffer* rather than
+ against the layer, so it keeps succeeding; and the layer's scaling mode
+ is what puts the smaller image on the larger display. The frames still
+ arrive, scaled rather than native - a swapchain that no longer matches
+ the surface exactly and still presents, which is the definition of
+ VK_SUBOPTIMAL_KHR.
+ .
+ It was wrong in both directions. An application that recreates on
+ OUT_OF_DATE lost every frame between the mode change and the new
+ swapchain; one that ignores the result - legal for SUBOPTIMAL and not
+ for OUT_OF_DATE - stalled outright, because the acquire refused to hand
+ over an image it could have handed over.
+ .
+ AND THE RECOVERY WAS A LOOP WITH NO EXIT ON THE DEFAULT PATH, which is
+ the second half of this patch. NWindow::default_* is where libnx keeps
+ the consumer's answer, and it maintains it in _nwindowUpdate from every
+ nwindowQueueBuffer. The zero-copy path drives the producer directly
+ through bqQueueBuffer - deliberately, for the reasons in this file's
+ opening comment - so libnx never saw the queue's output and that field
+ stayed at whatever bqConnect reported at start-up. wsi_horizon_get_
+ extent reads exactly that field, so VkSurfaceCapabilitiesKHR::
+ currentExtent would have kept reporting the pre-dock size: an
+ application told its swapchain was suboptimal would have asked the
+ surface what to build instead, been handed the size it already had, and
+ built the same suboptimal swapchain again. The copy fallback never had
+ it, because framebufferEnd goes through nwindowQueueBuffer.
+ .
+ Everything else this backend refuses stays VK_ERROR_OUT_OF_DATE_KHR,
+ because in each of those cases the next present really cannot happen:
+ another swapchain has taken the window, the queue answered something
+ that is not a retry, the compositor handed back a slot we already hold,
+ the copy fallback has no framebuffer, or the application holds every
+ image and is blocking for one only it can free. The full table is in
+ docs/wsi.md 5.1 and in the comment above wsi_horizon_extent_changed().
+Evidence: CROSS BUILD ONLY - no console has run this, and the condition
+ it exists for cannot be provoked from inside a process, so this patch
+ is written from the specification and from the code paths rather than
+ from a measurement. Both are stated here so a reader can check them.
+ .
+ The specification, on the two results: VK_SUBOPTIMAL_KHR is "a
+ swapchain no longer matches the surface properties exactly, but can
+ still be used to present to the surface successfully";
+ VK_ERROR_OUT_OF_DATE_KHR is "a surface has changed in such a way that
+ it is no longer compatible with the swapchain, and further presentation
+ requests using the swapchain will fail". VK_SUBOPTIMAL_KHR is a success
+ code: the image is acquired and *pImageIndex is valid, which is why the
+ check runs after the acquire here and only when one came back.
+ .
+ Mesa already carries it from both hooks and needed no change:
+ wsi_common.c:1966 admits VK_SUBOPTIMAL_KHR beside VK_SUCCESS before
+ marking the image acquired and signalling the caller's semaphore and
+ fence, and wsi_common.c:2549 does the same after queue_present, with
+ the final result taken as the first non-VK_SUCCESS one.
+ .
+ The stale-field half is read out of libnx's compiled library rather
+ than assumed. bqQueueBuffer's signature settles one direction on its
+ own - "Result bqQueueBuffer(Binder *b, s32 buf, const BqBufferInput
+ *input, BqBufferOutput *output)" (buffer_producer.h:44) takes a Binder
+ and no NWindow, so it structurally cannot maintain NWindow fields.
+ The other direction is in native_window.o, disassembled from
+ libnx.a: after "bl bqQueueBuffer" nwindowQueueBuffer stores -1 to
+ [x19, #64] (cur_slot), copies eight bytes of the QueueBufferOutput
+ from the stack to [x19, #112] as one d-register store, and sets
+ [x19, #126] from numPendingBuffers > 1. Against the NWindow layout in
+ native_window.h those offsets are cur_slot, the default_width /
+ default_height pair, and consumer_running_behind. So libnx maintains
+ exactly the two fields this patch writes, in exactly the place it
+ writes them, and only on the path this backend does not take.
+ .
+ Why the resize cannot be provoked in software, which is why there is no
+ hardware number here: the consumer's default buffer size belongs to VI.
+ An IGraphicBufferProducer can read it - bqQueueBuffer returns it in
+ BqBufferOutput, which is where this file gets it - and has no call that
+ sets it. viSetLayerSize is a manager service a homebrew does not have,
+ and libnx keeps the default window's ViLayer private in any case.
+ .
+ The build: aarch64-none-elf-gcc from the pinned toolchain image,
+ scripts/build-mesa-nvk.sh, clean tree, no diagnostics.
+ tests/t_vk_suboptimal.c is the test; its sections A, B, C and E check
+ the rule in both directions on both present paths and run unattended,
+ and its section D is the mode change and records in its own log when
+ the coverage did not run.
+Upstream: no - this file is the Horizon backend itself.
+---
+ src/vulkan/wsi/wsi_horizon.c | 157 +++++++++++++++++++++++++++++++----
+ 1 file changed, 139 insertions(+), 18 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 2f41ef6..484571f 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -347,9 +347,11 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+    /* A fixed extent, and it is not a simplification: every buffer
+     * registered on an NWindow must have the window's dimensions, and
+     * nwindowSetDimensions refuses to change them while any buffer is
+-    * registered. An application that wants a different size has to
+-    * change the window, which this backend then reports as
+-    * VK_ERROR_OUT_OF_DATE_KHR at the next acquire. */
++    * registered. When the *consumer* changes it — docking the console —
++    * this stops matching the live swapchain's extent, which is reported
++    * as VK_SUBOPTIMAL_KHR and not as an error: see
++    * wsi_horizon_extent_changed for why that swapchain keeps
++    * presenting. */
+    caps->currentExtent = extent;
+    caps->minImageExtent = extent;
+    caps->maxImageExtent = extent;
+@@ -577,8 +579,8 @@ struct wsi_horizon_swapchain {
+ 
+    VkExtent2D extent;
+    /* The size the consumer last said this window is. Updated from every
+-    * queue; a change is what turns the next acquire into
+-    * VK_ERROR_OUT_OF_DATE_KHR. */
++    * queue; a difference from `extent` is what makes this swapchain
++    * suboptimal — see wsi_horizon_extent_changed. */
+    VkExtent2D reported;
+    const struct wsi_horizon_format *format;
+    uint32_t swap_interval;
+@@ -1195,9 +1197,56 @@ wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain)
+ 
+ /* ---- acquire ----------------------------------------------------- */
+ 
+-/* True when the compositor has changed the window's size under the
+- * swapchain. Checked at every acquire, which is where Vulkan expects to
+- * hear about it.
++/* THE ONE CONDITION THAT IS SUBOPTIMAL RATHER THAN OUT OF DATE.
++ *
++ * Vulkan draws the line by whether the swapchain can still present:
++ *
++ *   VK_SUBOPTIMAL_KHR         the swapchain no longer matches the
++ *                             surface's properties exactly and can
++ *                             still be used to present successfully;
++ *   VK_ERROR_OUT_OF_DATE_KHR  the surface has changed so that the
++ *                             swapchain is no longer compatible with
++ *                             it, and further presentation requests
++ *                             *will fail*.
++ *
++ * On this backend exactly one condition lands on the first side, and it
++ * is this one: the VI consumer reporting a layer size other than the
++ * one this swapchain registered its buffers at. Docking the console —
++ * which takes the display to 1920x1080 — is what produces it.
++ *
++ * WHY THAT KEEPS PRESENTING, WHICH IS THE WHOLE ARGUMENT. Nothing about
++ * the producer's side of the BufferQueue changes when the consumer
++ * resizes. The dequeue asks for NWindow::width/height, which this
++ * backend set at registration and nobody has touched, so every
++ * preallocated slot still matches and bqDequeueBuffer keeps handing
++ * them over; bqQueueBuffer validates the crop against the buffer and
++ * not against the layer, so it keeps succeeding; and the layer's
++ * scaling mode is what puts the smaller image on the larger display.
++ * The frames still arrive — scaled rather than native, which is
++ * precisely "usable but not matching".
++ *
++ * So this used to be VK_ERROR_OUT_OF_DATE_KHR at the next acquire, and
++ * that was wrong in both directions. It promised that presentation
++ * would fail, when it does not; and it refused the application an image
++ * it could have rendered and presented, so an application that recreates
++ * on OUT_OF_DATE lost every frame between the mode change and the new
++ * swapchain, while one that ignores the result — which is legal for
++ * SUBOPTIMAL and not for OUT_OF_DATE — stalled outright.
++ *
++ * IT DEGRADES INTO THE OTHER RESULT ON ITS OWN. If the resize ever does
++ * make the queue refuse a buffer, that refusal is reported where it
++ * happens: bqQueueBuffer failing is VK_ERROR_OUT_OF_DATE_KHR in
++ * wsi_horizon_present_zero_copy, and a dequeue failing for anything but
++ * "come back later" is the same in the acquire. Nothing here has to
++ * predict which it will be.
++ *
++ * EVERYTHING ELSE THIS BACKEND REFUSES STAYS OUT OF DATE, because in
++ * every one of those cases the next present really cannot happen:
++ * another swapchain has taken the window (`presentable` is false), the
++ * queue answered something that is not a retry, the compositor handed
++ * back a slot we already hold, the copy fallback has no framebuffer or
++ * no mapping, or the application holds every image and is blocking for
++ * one that only it can free.
+  *
+  * `reported` is the consumer's own answer, not ours: every queue comes
+  * back with the size the BufferQueue believes the window is, and this
+@@ -1205,6 +1254,15 @@ wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain)
+  * instead would compare the swapchain's extent with the value this
+  * backend itself wrote into the window at creation, which can never
+  * differ — a resize check that cannot fire.
++ *
++ * NO STATE AND NO STICKY FLAG. This is a comparison of two values that
++ * are both current, so it answers "suboptimal *now*". It stays true for
++ * as long as the console stays docked, which is what makes the result
++ * repeat on every acquire and every present until the application
++ * recreates; and it stops being true by itself if the console is
++ * undocked again, which is correct — the swapchain matches the surface
++ * once more, and saying otherwise would send an application off to
++ * recreate a swapchain that was already right.
+  */
+ static bool
+ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+@@ -1543,13 +1601,28 @@ wsi_horizon_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+       return VK_ERROR_OUT_OF_DATE_KHR;
+    }
+ 
+-   if (wsi_horizon_extent_changed(chain))
+-      return VK_ERROR_OUT_OF_DATE_KHR;
++   const VkResult result =
++      chain->zero_copy
++         ? wsi_horizon_acquire_zero_copy(chain, info->timeout, image_index)
++         : wsi_horizon_acquire_fallback(chain, info->timeout, image_index);
+ 
+-   if (chain->zero_copy)
+-      return wsi_horizon_acquire_zero_copy(chain, info->timeout, image_index);
++   /* SUBOPTIMAL ONLY WHERE AN IMAGE ACTUALLY CAME BACK, and that is why
++    * the check moved below the acquire instead of staying above it.
++    *
++    * VK_SUBOPTIMAL_KHR is a success code: the specification says the
++    * image was acquired and *pImageIndex is valid, and
++    * wsi_common_acquire_next_image2 duly marks the image acquired and
++    * signals the caller's semaphore and fence on it. Returning it in
++    * place of an acquire would hand the application an index it never
++    * got and a semaphore nothing will ever signal.
++    *
++    * So VK_TIMEOUT, VK_NOT_READY and every error go back untouched —
++    * none of them acquired anything, and a caller that asked with a
++    * zero timeout still gets the answer it asked for. */
++   if (result == VK_SUCCESS && wsi_horizon_extent_changed(chain))
++      return VK_SUBOPTIMAL_KHR;
+ 
+-   return wsi_horizon_acquire_fallback(chain, info->timeout, image_index);
++   return result;
+ }
+ 
+ static VkResult
+@@ -1687,11 +1760,41 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+    /* The size the consumer believes this window is, straight from the
+     * queue that just happened. It is the only place a producer hears
+     * about a display mode change — docking the console makes it
+-    * 1920x1080 — and the next acquire turns a change into
+-    * VK_ERROR_OUT_OF_DATE_KHR. */
++    * 1920x1080 — and a change makes this swapchain suboptimal from this
++    * present onwards (wsi_horizon_extent_changed). */
+    if (out.width != 0 && out.height != 0) {
+       chain->reported.width = out.width;
+       chain->reported.height = out.height;
++
++      /* AND LIBNX'S OWN COPY OF IT, because this path is the reason it
++       * would otherwise be wrong.
++       *
++       * NWindow::default_* is where libnx keeps the consumer's answer,
++       * and it maintains it in _nwindowUpdate from every
++       * nwindowQueueBuffer. This path does not go through
++       * nwindowQueueBuffer — it drives the producer directly, for the
++       * reasons in this file's opening comment — so after a display
++       * mode change libnx's copy stayed at whatever bqConnect said at
++       * start-up, forever.
++       *
++       * That is not cosmetic. wsi_horizon_get_extent reads exactly this
++       * field, so VkSurfaceCapabilitiesKHR::currentExtent kept
++       * reporting the pre-dock size: an application told its swapchain
++       * was suboptimal would have asked the surface what to build
++       * instead, been handed the size it already had, and recreated the
++       * same suboptimal swapchain — a loop with no exit, on the path
++       * that is the default on working hardware. The copy fallback
++       * never had the problem, because framebufferEnd goes through
++       * nwindowQueueBuffer and libnx updates the field itself.
++       *
++       * Two aligned u32s, written where libnx writes them and read
++       * where libnx reads them. It is the same unsynchronised pair
++       * vkGetPhysicalDeviceSurfaceCapabilitiesKHR already reads beside
++       * a concurrent present on the fallback path (docs/wsi.md § 7),
++       * so this adds no hazard that was not already there and is not
++       * this backend's to fix: the structure belongs to libnx. */
++      chain->window->default_width = out.width;
++      chain->window->default_height = out.height;
+    }
+ 
+    return VK_SUCCESS;
+@@ -1798,10 +1901,28 @@ wsi_horizon_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+       return VK_ERROR_OUT_OF_DATE_KHR;
+    }
+ 
+-   if (chain->zero_copy)
+-      return wsi_horizon_present_zero_copy(chain, image_index);
++   const VkResult result = chain->zero_copy
++      ? wsi_horizon_present_zero_copy(chain, image_index)
++      : wsi_horizon_present_fallback(chain, image_index);
+ 
+-   return wsi_horizon_present_fallback(chain, image_index);
++   /* AND THIS IS WHERE THE NEWS ARRIVES, so it is where the application
++    * hears it first.
++    *
++    * The present that just happened is the call that reads the
++    * consumer's size — BqBufferOutput on the zero-copy path, the
++    * NWindow's own default_* on the fallback — so a mode change becomes
++    * visible to this backend inside the two functions above and nowhere
++    * else. Checking here reports it one frame earlier than the next
++    * acquire would, on the very present that learned about it, and
++    * VK_SUBOPTIMAL_KHR is the result Vulkan has for a present that
++    * succeeded against a surface the swapchain no longer matches.
++    *
++    * Only when the present succeeded: a failure is the more specific
++    * answer and must not be overwritten by this one. */
++   if (result == VK_SUCCESS && wsi_horizon_extent_changed(chain))
++      return VK_SUBOPTIMAL_KHR;
++
++   return result;
+ }
+ 
+ static VkResult
+-- 
+2.55.0.windows.2
+

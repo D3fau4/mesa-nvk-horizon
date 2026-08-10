@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-09
-**Branch:** `multihilo-wsi`
+**Last updated:** 2026-08-10
+**Branch:** `main`
 
 ---
 
@@ -14,18 +14,181 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Nothing is blocked.** The layout answer arrived and the phase's last open question with it. What remains is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), never had a test (display mode change, docked resolution, `VK_SUBOPTIMAL_KHR`, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes next is a decision, not a task |
+| **Next concrete task** | **Run `t_vk_suboptimal` on a console.** It is new, it is cross-build verified only, and it is the test for patch **0074** — `VK_SUBOPTIMAL_KHR`, which until 2026-08-10 this backend never returned at all. Sections A, B, C and E run unattended; section D needs somebody to dock or undock the console while it presents, because **nothing in the process can provoke the condition** and the test says so in its log rather than passing. What remains besides it is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met** (89 of 89 intervals within 10% of 16666 us, run 13). **3. Met.** **4. Met**, and since run 13 the check that proves it is no longer gated on zero-copy succeeding. **2. Met as throughput, and only as throughput** — the structural half stands (3 concurrent slots against 2) and the pacing half is a 50% difference in throughput (25170 us against 16837 us, run 13), *not* the burst absorption the tests originally claimed: `over_1p5_refresh` is **45 with three images and 45 with two**, twice measured |
 | **THE LAYOUT IS CONFIRMED** | **The operator reports the pattern renders correctly on the console, every time it has been shown** (2026-08-08). Four coloured bars, the 16px border, the black diagonal corner to corner, the yellow square — the appearance a wrong stride, a wrong block height or a wrong GOB sector ordering would each destroy in a way that is not subtle. This is the only evidence in the phase that is about *what was in* the frames rather than that they arrived, and it is human by necessity: nothing can read a presented frame back, and a GPU readback would write and read with the same layout and agree with itself. **The zero-copy path is closed** — showing 1 ran in runs 14, 15 and 16. Showing 2, on the copy fallback, has only existed since run 16, so whether "every time" covers it is worth one word from the operator |
-| **What is still unverified** | Any display mode change, docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those |
+| **What is still unverified** | Any display mode change, docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** now returns and no console has yet produced. The *rule* around it is testable without one and `t_vk_suboptimal` sections A, B, C and E test it; the transition is not. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
-| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **Patches 0072 and 0073**, and the `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review: cross build only, no console run yet, and the next run is what confirms them. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **Patch 0074 and `t_vk_suboptimal`** (2026-08-10): cross build only, and the one condition 0074 exists for cannot be provoked from the process at all — it needs a hand on a physical console. **Patches 0072 and 0073**, and the `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review: cross build only, no console run yet, and the next run is what confirms them. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## `VK_SUBOPTIMAL_KHR`, and the result it was hiding behind (2026-08-10)
+
+**Class: cross build only. No hardware.** Patch **0074** and a new test,
+`t_vk_suboptimal`. The condition the patch exists for cannot be
+provoked from inside the process, so the part of the test that would
+prove it needs a hand on a console and has not run.
+
+### What was wrong
+
+This backend never returned `VK_SUBOPTIMAL_KHR` at all. A display mode
+change — docking the console, which takes the layer to 1920x1080 — was
+reported as `VK_ERROR_OUT_OF_DATE_KHR` at the next acquire, and that
+result **promises something this backend does not do**: the
+specification's words are "further presentation requests using the
+swapchain will fail". They do not fail.
+
+Nothing on the producer's side of the BufferQueue changes when the
+consumer resizes. The dequeue asks for `NWindow::width/height`, which
+this backend set at registration and nobody has touched, so every
+preallocated slot still matches and `bqDequeueBuffer` keeps handing them
+over; `bqQueueBuffer` validates the crop against the *buffer* rather
+than against the layer, so it keeps succeeding; and the layer's scaling
+mode is what puts the smaller image on the larger display. The frames
+still arrive, scaled rather than native — which is the definition of
+`VK_SUBOPTIMAL_KHR` and not of the result that was being returned.
+
+It was wrong in both directions. An application that recreates on
+`OUT_OF_DATE` lost every frame between the mode change and the new
+swapchain; one that ignores the result — legal for `SUBOPTIMAL`, not for
+`OUT_OF_DATE` — stalled outright, because the acquire refused to hand
+over an image it could have handed over.
+
+### And the recovery was a loop with no exit, on the default path
+
+Found while writing the test, and it is the more serious half.
+
+`NWindow::default_*` is where libnx keeps the consumer's answer, and it
+maintains it in `_nwindowUpdate` from every `nwindowQueueBuffer`. The
+zero-copy path drives the producer directly through `bqQueueBuffer` —
+deliberately, for the reasons in `wsi_horizon.c`'s opening comment — so
+**libnx never saw the queue's output** and that field stayed at whatever
+`bqConnect` reported at start-up, forever.
+
+`wsi_horizon_get_extent` reads exactly that field. So
+`VkSurfaceCapabilitiesKHR::currentExtent` would have kept reporting the
+pre-dock size: an application told its swapchain was suboptimal would
+have asked the surface what to build instead, been handed the size it
+already had, and built the same suboptimal swapchain again. The copy
+fallback never had it, because `framebufferEnd` goes through
+`nwindowQueueBuffer` and libnx updates the field itself.
+
+0074 writes the two `u32`s where libnx writes them, from the queue
+output the zero-copy present already reads.
+
+**Read out of the compiled library, not assumed.** `bqQueueBuffer`'s
+signature settles one direction by itself — `Result bqQueueBuffer(Binder
+*b, s32 buf, const BqBufferInput *input, BqBufferOutput *output)`
+(`buffer_producer.h:44`) takes a `Binder` and no `NWindow`, so it
+structurally cannot maintain `NWindow` fields. The other direction is in
+`native_window.o`, disassembled out of the image's `libnx.a`: after
+`bl bqQueueBuffer`, `nwindowQueueBuffer` stores `-1` to `[x19, #64]`,
+copies eight bytes of the `QueueBufferOutput` from the stack to
+`[x19, #112]` as one `d`-register store, and sets `[x19, #126]` from
+`numPendingBuffers > 1`. Against the `NWindow` layout in
+`native_window.h` those offsets are `cur_slot`, the
+`default_width`/`default_height` pair, and `consumer_running_behind`. So
+libnx maintains exactly the two fields 0074 writes, in exactly the place
+it writes them, and only on the path this backend does not take.
+
+### The line, stated once and in one place
+
+`docs/wsi.md` § 5.1 now carries the full table, and the same list is in
+the comment above `wsi_horizon_extent_changed()` so the two cannot
+drift. In short: **exactly one condition is suboptimal** — the VI
+consumer reporting a layer size other than the one the swapchain
+registered its buffers at — and every other refusal this backend makes
+is `VK_ERROR_OUT_OF_DATE_KHR`, because in each of those the next present
+really cannot happen: another swapchain has taken the window, the queue
+answered something that is not a retry, the compositor handed back a
+slot we already hold, the fallback has no framebuffer, or the
+application holds every image and is blocking for one only it can free.
+
+Two details that are easy to get wrong and are stated in the code:
+
+- **`VK_SUBOPTIMAL_KHR` is a success code**, so the check runs *after*
+  the acquire and only when an image came back. `wsi_common_acquire_
+  next_image2` marks the image acquired and signals the caller's
+  semaphore and fence on it (`wsi_common.c:1966`), so returning it in
+  place of an acquire would hand the application an index it never got.
+  `VK_TIMEOUT`, `VK_NOT_READY` and every error go back untouched.
+- **No sticky flag.** It is a comparison of two current values, so it
+  answers "suboptimal now": true while the console stays docked, which
+  is what repeats the result until the application recreates, and false
+  again by itself if the console is undocked, which is correct.
+
+### What the test can and cannot do, and it says so in its own log
+
+`tests/t_vk_suboptimal.c`. The oracle is the surface, not a flag in the
+driver: every check is written against
+`VkSurfaceCapabilitiesKHR::currentExtent`, which is the property the
+specification's definition of `VK_SUBOPTIMAL_KHR` refers to. The
+invariant asserted per frame, in **both** directions, is
+
+> `SUBOPTIMAL` ⟺ `currentExtent` ≠ the swapchain's `imageExtent`
+
+which is what makes "section A saw no `SUBOPTIMAL`" mean something: it
+saw none *and* the surface it was measured against matched, so the
+absence is a result rather than a check that cannot fire. A driver that
+returned the code on a whim fails the forward direction; one that never
+returns it fails the reverse the moment the console is docked.
+
+| | |
+|---|---|
+| A | normal operation on whichever path the driver picks, 120 frames, every acquire and present exactly `VK_SUCCESS` |
+| B | the same on the forced copy fallback, because the two paths learn the consumer's size through different calls |
+| C | the results stay distinct: a superseded swapchain is `OUT_OF_DATE` from both acquire and present *while the surface's extent is unchanged*, so that result cannot be coming from the resize check; and an acquire that cannot be satisfied is `VK_TIMEOUT`, not a success code. Both paths |
+| D | the mode change itself, with the operator, bounded and skippable |
+| E | eight recreation generations alternating present path, then a swapchain created after every one of them was destroyed — a retained slot or an unreleased window shows up as a later generation failing to acquire — then the log read back for anything the driver said it could not tear down |
+
+**Section D is the one that matters and the one that has not run.** The
+producer side of a BufferQueue can read the consumer's default buffer
+size and cannot set it: it belongs to VI. `viSetLayerSize` is a manager
+service a homebrew does not have, and libnx keeps the default window's
+`ViLayer` private in any case. So no sequence of calls available to this
+process resizes the layer, and **nothing was invented to pretend
+otherwise** — no debug hook, no injected extent, no environment
+variable that makes the driver act as if the window had changed. The
+section asks the operator, waits up to 30 s while presenting, and on a
+run where nobody docks writes
+
+> `D: no mode change happened (…), so SUBOPTIMAL was never provoked and
+> THIS COVERAGE DID NOT RUN.`
+
+rather than emitting a check that passes.
+
+### Also in this change: three more Windows defects in our own tooling
+
+Found by running the build gates on this machine, all the same class as
+the three the PR 9 review found, and all of them blocking:
+
+- **`fetch-rust-crates.sh` could not satisfy its own checksum gate.**
+  Its Python heredoc wrote `packages.txt` in text mode, so on Windows
+  the file is CRLF and the shell's `read -r` leaves the `\r` on the
+  checksum. Every crate then "did not match the lockfile checksum" and
+  failed with the two hashes printed *identically*:
+  `addr2line-0.27.0.crate hashes to efe1709…, but the lockfile says
+  efe1709…`. `newline='\n'`, as `split-status.py` already does.
+- **`build-toolchain-image.sh`'s two verification steps lacked
+  `MSYS_NO_PATHCONV=1`**, which `horizon_run` has carried since it was
+  written. MSYS rewrote `-w /c/Users/…` into the drive-letter spelling
+  and the daemon refused it — after a fifteen-minute image build, on the
+  step whose whole job is to prove the image works.
+- **Every Meson build directory in `build/` was configured against a
+  container mount path that no longer exists** (`/run/desktop/mnt/host/c/…`
+  against today's `/c/…`), so ninja regenerated on every invocation and
+  the regeneration could not run. `build/meson`, `build/mesa-nvk` and
+  `build/mesa-clc` were removed and reconfigured; nothing tracked was
+  touched. Worth recording because it means **the artefacts behind runs
+  17 to 20 are not on this machine any more** and the next hardware run
+  starts from a full rebuild.
 
 ---
 

@@ -382,6 +382,10 @@ nvk_tests = [
   # length that a slot leaked once per generation would show up in.
   # STATUS.md listed "anything multi-threaded" as never verified.
   't_vk_wsi_mt',
+  # Phase 6: VK_SUBOPTIMAL_KHR, and the line between it and
+  # VK_ERROR_OUT_OF_DATE_KHR. STATUS.md listed it as one of the things
+  # that "never had a test".
+  't_vk_suboptimal',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -429,6 +433,8 @@ nvk_test_shaders = {
   't_vk_swapchain' : [],
   # None, for the same reason.
   't_vk_wsi_mt' : [],
+  # None, for the same reason.
+  't_vk_suboptimal' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
