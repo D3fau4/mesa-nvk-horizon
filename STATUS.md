@@ -30,6 +30,96 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ---
 
+## CI runs inside the toolchain image now, and three defects fell out of it (2026-08-10)
+
+The first `archives` and `toolchain-image` runs on the real Forgejo both
+failed, and the second failure was structural rather than a missing
+package.
+
+### The bind mount cannot work, and it was never going to
+
+`scripts/build-toolchain-image.sh` proved its image afterwards with
+
+    docker run --rm -v "$PWD":"$PWD" -w "$PWD" ... bindgen probe.h
+
+act_runner puts the job in a container, so `$PWD` is
+`/workspace/D3fau4/mesa-nvk-horizon` — a path that exists **in the job**
+and not on the host, where the daemon resolves the bind. Docker created
+it empty, and bindgen reported `No such file or directory (os error 2)`
+about a header sitting right beside it (task 1274).
+
+That is not a probe problem. `horizon_run` bind-mounts `$PWD` for every
+meson and ninja invocation, so the whole build would have failed the
+same way a few minutes later. Driving the image from outside — which is
+what the release workflow was rewritten to do, to keep a registry digest
+in the manifest — is incompatible with a runner that containerises jobs.
+
+**The jobs now run inside the image.** `$DEVKITPRO` is set there, so
+`toolchain-env.sh` takes the local path: no nested docker, no mounts,
+and cargo, bindgen, cbindgen, LLVM and the Rust sysroot are already
+present, which also retires the rustup step. The two probes moved into
+`toolchain/Dockerfile` as `RUN` steps, where they need no mount and a
+failure means no image at all.
+
+**Attribution survives, differently.** The image records the identity it
+was built under in `/etc/mesa-nvk-horizon-toolchain`, and
+`horizon_image_digest` reads it in local mode — so the manifest reads
+
+    image      : in-image:ghcr.io/d3fau4/nx-dev:latest#ba00bebc…
+
+instead of `local`. That says how the toolchain was built rather than
+where it was pushed, which is the more useful half of what the PR 10
+review asked for.
+
+### Two defects in the build-id extraction, both from the same change
+
+`a42e7de` replaced `strings` with `grep -a -o` because Git Bash ships no
+binutils. Both replacements are wrong, and packaging from inside the
+image found them:
+
+**1. It reports "no build id" in any UTF-8 locale.** A range expression
+is read by collation order, not code point, so `[!-~]` matched *nothing*
+after the marker. The image sets `LANG=en_US.UTF-8`, so this fired on
+all 33 artefacts — the one thing that code's own comment says it must
+never report wrongly, for the second time and from the other direction.
+`LC_ALL=C` fixes it.
+
+**2. It truncated the stamp at the first space.** `[!-~]` excludes the
+space, and the stamp is three fields:
+
+    2026-08-10T15:26:39.381Z a228127-dirty mesa:7abd4c2
+
+so everything from the repository commit onwards was dropped — exactly
+the fields `gen-build-id.sh` exists to carry, and the ones the earlier
+`mesa:nogit` fix was about. `[ -~]` is printable ASCII including the
+space, and the stamp is NUL-terminated, so the NUL ends the match.
+
+Verified against the embedded stamp in both locales: what comes out now
+equals what `strings` shows.
+
+### And one in the Dockerfile, caught by reading rather than assuming
+
+`ARG BASE_IMAGE` is declared before the first `FROM`, so it is out of
+scope after it, and the first version of the identity file wrote an
+empty `base=`. Found by reading the file the image had just written.
+
+### Measured
+
+The whole chain, run **inside** the derived image exactly as CI will:
+**33 `.nro`, green, 2 m 20 s.** Packaging from in there: 33 artefacts,
+both licence files, full three-field build id, and a manifest that
+identifies its toolchain. Host side: four gates and six suites pass.
+
+One trap worth writing down: do not use a **login** shell in that
+container. `/etc/profile` rewrites `PATH` and drops `/opt/cargo/bin`, so
+the preflight reports cargo missing on an image that has it — which is
+how this was first mis-diagnosed here.
+
+Still a cross build. No console, and run 21 remains the newest hardware
+evidence.
+
+---
+
 ## Merging main into the publication branch, and the count that moved (2026-08-10)
 
 `main` had gained run 21 and `t_vk_suboptimal` while this branch was
