@@ -1,7 +1,7 @@
-From fa8be843b617cc0c7a3a122d4f396f320507f746 Mon Sep 17 00:00:00 2001
+From 42e07d507fc6ce79aa163e217db32d3338d1b143 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 13:29:39 +0000
-Subject: [PATCH 60/61] nouveau/vk: nvkmd_horizon, do not reference a memory
+Subject: [PATCH 60/79] nouveau/vk: nvkmd_horizon, do not reference a memory
  object from its own VA
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From c95e136a945d9858f0a71d1467328f19b8ddd031 Mon Sep 17 00:00:00 2001
+From 46709a545561734eb7d6a693354f6ba6323628b8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 16:01:19 +0000
-Subject: [PATCH 32/61] nouveau/vk: nvkmd_horizon, check all three ways a push
+Subject: [PATCH 32/79] nouveau/vk: nvkmd_horizon, check all three ways a push
  truncates
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,8 +1,8 @@
-From d5dca4289ae1ef2dc16444f53954884cae0a65d0 Mon Sep 17 00:00:00 2001
+From a69a8169c94cf6806eab80332e9f47a18c04d426 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 5 Aug 2026 18:29:20 +0000
-Subject: [PATCH] vulkan/wsi: Horizon, fall back to the synchronous dequeue
- mode
+Subject: [PATCH 63/79] vulkan/wsi: Horizon, fall back to the synchronous
+ dequeue mode
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

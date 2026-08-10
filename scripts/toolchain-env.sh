@@ -89,7 +89,7 @@ esac
 # the Makefile and meson.build carry their own copies, because each
 # build system stays readable on its own, and
 # scripts/check-mesa-test-parity.sh is what keeps the three in step.
-HORIZON_MESA_TEST_LIBS="src/c11/impl/libmesa_util_c11.a src/util/libmesa_util.a"
+HORIZON_MESA_TEST_LIBS="src/c11/impl/libmesa_util_c11.a src/util/libmesa_util.a src/util/blake3/libblake3.a"
 
 # Where scripts/build-compat.sh archives libhorizon_compat.a. It sits
 # with the other provisioned inputs rather than in a build directory,

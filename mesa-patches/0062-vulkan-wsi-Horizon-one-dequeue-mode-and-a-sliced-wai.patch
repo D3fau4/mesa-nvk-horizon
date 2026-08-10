@@ -1,7 +1,7 @@
-From 55ff0127d1aa6306e054a67b98a2a245a7b0aee6 Mon Sep 17 00:00:00 2001
+From 7234c2c784bb71110c07ae28e8f96cbf9ec842b6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 5 Aug 2026 18:09:07 +0000
-Subject: [PATCH] vulkan/wsi: Horizon, one dequeue mode and a sliced wait
+Subject: [PATCH 62/79] vulkan/wsi: Horizon, one dequeue mode and a sliced wait
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

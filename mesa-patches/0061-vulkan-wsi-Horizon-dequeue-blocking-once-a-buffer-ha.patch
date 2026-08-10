@@ -1,7 +1,7 @@
-From 27b3d38f2be7240633348e685cf8a38cae1b981a Mon Sep 17 00:00:00 2001
+From 062eb1a3b011de9a2fee4beba32e3c7c5a58ee2d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 13:29:40 +0000
-Subject: [PATCH 61/61] vulkan/wsi: Horizon, dequeue blocking once a buffer has
+Subject: [PATCH 61/79] vulkan/wsi: Horizon, dequeue blocking once a buffer has
  been released
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -48,19 +48,69 @@ scripts/gen-cross-file.sh
 # defines that symbol on this platform.
 scripts/build-compat.sh
 
+# --- horizon_gpu, staged as a prefix ---------------------------------
+#
+# src/util/disk_cache_horizon.c stores entries through horizon_gpu's blob
+# cache, so even this driverless build needs the layer's headers and
+# archive. Same staging as scripts/configure-mesa-nvk.sh, and the same
+# reason for copying rather than symlinking: the Meson build runs inside
+# a container that mounts $PWD, where a symlink out of the mount resolves
+# to nothing.
+HORIZON_GPU_PREFIX=build/toolchain/horizon-gpu
+
+if [ ! -f "$HORIZON_BUILD_DIR/libhorizon_gpu.a" ]; then
+    echo "configure-mesa: building horizon_gpu first"
+    scripts/build-horizon.sh
+fi
+
+rm -rf "$HORIZON_GPU_PREFIX"
+mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
+cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
+cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
+echo "configure-mesa: horizon_gpu staged in $HORIZON_GPU_PREFIX"
+
+# The identity the shader cache keys on. See scripts/gen-driver-id.sh for
+# why it is a digest of sources and not the build stamp.
+HORIZON_DRIVER_ID=$(scripts/gen-driver-id.sh)
+echo "configure-mesa: driver id $HORIZON_DRIVER_ID"
+
 # --buildtype=plain for the same reason the horizon build uses it: the
 # cross file states every flag explicitly, and Meson must not add -O/-g
 # of its own on top.
 #
-# -Dshader-cache=disabled is a decision, not a workaround, and is
-# recorded as one in STATUS.md. disk_cache.c and disk_cache_os.c are
-# entirely inside #ifdef ENABLE_SHADER_CACHE and open with
-# `#include <sys/mman.h>`, which newlib does not have; the feature also
-# needs flock, posix_fallocate and memfd_create, all measured absent,
-# and a writable cache directory this project has not designed. It is
-# an optional on-disk cache, not part of the non-driver core, so it is
-# turned off rather than patched into a shape nothing has tested. Making
-# it work on Horizon is its own piece of work, for a later phase.
+# -Dshader-cache=enabled, and the four years of "later phase" this line
+# used to promise are over. What it said before, and it was true when it
+# was written: disk_cache.c and disk_cache_os.c are entirely inside
+# #ifdef ENABLE_SHADER_CACHE and open with `#include <sys/mman.h>`, which
+# newlib does not have; the feature also needs flock, posix_fallocate and
+# memfd_create, all measured absent, and a writable cache directory this
+# project had not designed. That was recorded as a decision rather than
+# hidden, and the pagaré was written down in what is now
+# docs/history/phase-4.md: "If a later phase enables the shader cache ...
+# flock comes back and needs an answer then."
+#
+# The answer is four patches and a module, and none of it makes newlib
+# pretend to have anything:
+#
+#   0076  disk_cache.c's <ftw.h>/<sys/mman.h>/<sys/file.h>/<fcntl.h>/
+#         <dirent.h> are removed — the file uses none of them, so the
+#         generic half needed nothing but honesty about its includes.
+#   0077  mesa_cache_db.c is gated on HAVE_FLOCK, exactly the way
+#         fossilize_db.c beside it already was.
+#   0078  the driver identity stops being Mesa's version alone, because a
+#         disk cache keyed on an identity that does not change when this
+#         port changes serves last build's binaries to this build.
+#   0079  disk_cache_os.c is replaced on Horizon by disk_cache_horizon.c,
+#         which stores entries through horizon/cache/'s append-only,
+#         CRC-validated blob store. No mmap, no flock, no rename.
+#
+# The cache directory that "had not been designed" is sdmc:/mesa_shader_cache.
+#
+# This build has no driver, so nothing in it will ever call the cache —
+# but it compiles and links src/util, which is where every one of those
+# patches lands, and it does so in minutes rather than the hour the full
+# NVK build takes. That is what makes it worth enabling here: it is the
+# cheap way to find out that this still builds.
 #
 # "$@" comes last so a caller can override any of these, and so the
 # options a given measurement was taken with are visible on the command
@@ -104,7 +154,9 @@ set -- \
     -Dplatforms= \
     -Dopengl=false \
     -Dllvm=disabled \
-    -Dshader-cache=disabled \
+    -Dshader-cache=enabled \
+    -Dhorizon-gpu-dir="$PWD/$HORIZON_GPU_PREFIX" \
+    -Dhorizon-driver-id="$HORIZON_DRIVER_ID" \
     "$@"
 
 horizon_setup_mode "$MESA_BUILD_DIR"

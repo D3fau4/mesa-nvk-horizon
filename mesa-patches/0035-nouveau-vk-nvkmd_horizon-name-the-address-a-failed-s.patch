@@ -1,7 +1,7 @@
-From a2592a9db5b2313a4ce9a9c28f339210fd59d69b Mon Sep 17 00:00:00 2001
+From 7d0b77cd073642912b45b9afe6c9dd396a59aa51 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:10:56 +0000
-Subject: [PATCH 35/61] nouveau/vk: nvkmd_horizon, name the address a failed
+Subject: [PATCH 35/79] nouveau/vk: nvkmd_horizon, name the address a failed
  submit handed the GPU
 
 An MMU fault is the one GPU failure that says nothing on its own here.

@@ -1,8 +1,8 @@
-From a2ec08a4bfcfbca2b367faa989c312bea53778bd Mon Sep 17 00:00:00 2001
+From 3e49f16664f024f8e2cdee31a33bda437eba92fe Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 17:58:09 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, say when IMMEDIATE is a mode the copy
- fallback cannot deliver
+Subject: [PATCH 75/79] vulkan/wsi: Horizon, say when IMMEDIATE is a mode the
+ copy fallback cannot deliver
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: VK_PRESENT_MODE_IMMEDIATE_KHR is registered as swap interval 0 on
@@ -86,5 +86,5 @@ index 484571f..d22f198 100644
      *
      * Every check in wsi_horizon_fill_graphic_buffer is a predicate: it
 -- 
-2.55.0.windows.2
+2.43.0
 

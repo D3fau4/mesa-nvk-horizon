@@ -1,8 +1,8 @@
-From 79e5acb305ed09cba51176d8798936df65817ae9 Mon Sep 17 00:00:00 2001
+From 562c0b892a6b3507aae1fc1529324a5bea87f2a2 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Sun, 9 Aug 2026 22:03:57 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, the swapchain decision is logged against
- the device
+Subject: [PATCH 73/79] vulkan/wsi: Horizon, the swapchain decision is logged
+ against the device
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: the four INFO messages that report the present path and the
@@ -126,5 +126,5 @@ index 2c033e9..2f41ef6 100644
                      PRIu32 " B, block height log2 %" PRIu32 ", kind 0x%02x, "
                      "offset %" PRIu64 " B, allocation %" PRIu64 " B",
 -- 
-2.55.0.windows.2
+2.43.0
 

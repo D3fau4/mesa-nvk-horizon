@@ -1,7 +1,7 @@
-From 3b66ffaca478c46ee13ff451ad5bc270a7bf2ad1 Mon Sep 17 00:00:00 2001
+From 7d81a54865041562eb54c0d673d76cf83ac19397 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:05:09 +0000
-Subject: [PATCH 46/61] nouveau/vk: extensions whose entry points need a kmd
+Subject: [PATCH 46/79] nouveau/vk: extensions whose entry points need a kmd
  operation follow it
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)

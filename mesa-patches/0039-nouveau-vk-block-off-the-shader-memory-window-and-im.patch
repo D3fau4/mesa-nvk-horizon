@@ -1,7 +1,7 @@
-From 880444854d82a1bab25c39a9c1d3d9219e93c6a9 Mon Sep 17 00:00:00 2001
+From 3fdb895ea7afb3eabc36dfb571f69dc3cf6958c5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:25:27 +0000
-Subject: [PATCH 39/61] nouveau/vk: block off the shader memory window, and
+Subject: [PATCH 39/79] nouveau/vk: block off the shader memory window, and
  implement fixed VA (extension 5)
 
 An earlier note in this backend said NVGPU_AS_IOCTL_ALLOC_SPACE had no

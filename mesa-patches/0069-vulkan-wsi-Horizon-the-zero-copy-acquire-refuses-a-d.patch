@@ -1,8 +1,8 @@
-From 57e85ae979cacb1675389731e1a16ea949ff81bc Mon Sep 17 00:00:00 2001
+From 3cc4c5914e034d22a51379abf19f36d8f4808543 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 20:43:53 +0000
-Subject: [PATCH] vulkan/wsi: Horizon, the zero-copy acquire refuses a deadlock
- too
+Subject: [PATCH 69/79] vulkan/wsi: Horizon, the zero-copy acquire refuses a
+ deadlock too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -91,3 +91,6 @@ index d340d5b..9bd603a 100644
        /* An infinite wait is what the caller asked for and is not
         * shortened here. It is made observable instead: a swapchain that
         * has owned its window for this long without the compositor
+-- 
+2.43.0
+

@@ -235,8 +235,9 @@ test_nros = []
 # Phase 3 items 4 (threads) and 5 (timers/clocks). They link the archives
 # Mesa's build produced, not sources recompiled with flags of our own:
 # the object under test has to be the object Mesa builds, or the
-# measurement describes a different build. -DHAVE_PTHREAD and
-# -DHAVE_STRUCT_TIMESPEC are Mesa's own configure results here, copied so
+# measurement describes a different build. -DHAVE_PTHREAD,
+# -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are Mesa's own
+# configure results here, copied so
 # its headers declare the same types; both appear in
 # build/mesa-probe/build.ninja.
 #
@@ -259,11 +260,17 @@ fs = import('fs')
 # value through (see meson.options for why it is an option and not an
 # environment variable).
 mesa_build_dir = get_option('mesa_build_dir')
+# libmesa_util.a reaches blake3 through mesa-blake3.h's inline wrappers —
+# disk_cache_compute_key() is one — so libblake3.a has to be on the link
+# line of anything that calls into the shader cache. It was not needed
+# while t_threads and t_ostime were the only two tests here, because
+# neither of them hashes anything.
 mesa_test_libs = [
   mesa_build_dir / 'src/c11/impl/libmesa_util_c11.a',
   mesa_build_dir / 'src/util/libmesa_util.a',
+  mesa_build_dir / 'src/util/blake3/libblake3.a',
 ]
-mesa_tests = ['t_threads', 't_ostime']
+mesa_tests = ['t_threads', 't_ostime', 't_shader_cache']
 
 # ---------------------------------------------------------------------
 # Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
@@ -485,7 +492,18 @@ if mesa_libs_present
   # documented on the path where it is guaranteed and nowhere on the
   # path where it is not obvious.
   idep_mesa_core = declare_dependency(
-    compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC'],
+    compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC',
+                    '-DENABLE_SHADER_CACHE'],
+    # libmesa_util.a gained two outward dependencies when the shader
+    # cache was enabled: disk_cache_horizon.c calls into horizon_gpu, and
+    # compress.c calls into devkitPro's zstd and zlib (Mesa's own
+    # configure found them through portlibs' pkg-config). The Makefile
+    # names the same three on its link line and says why there.
+    link_args : [
+      '-L' + meson.get_external_property('devkitpro_prefix') /
+             'portlibs/switch/lib',
+      '-lzstd', '-lz',
+    ],
     include_directories : include_directories('mesa/src', 'mesa/include'),
     link_args : mesa_test_lib_paths,
   )

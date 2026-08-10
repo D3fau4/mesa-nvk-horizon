@@ -1,7 +1,7 @@
-From ace9a4f69dda3b29852e2500055e5557a0005252 Mon Sep 17 00:00:00 2001
+From d739c0c42f70f7c50f6e2b10c898b660f1639989 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:37:42 +0000
-Subject: [PATCH 36/61] nouveau/vk: nvkmd_horizon, the sync type nvk_mem_stream
+Subject: [PATCH 36/79] nouveau/vk: nvkmd_horizon, the sync type nvk_mem_stream
  uses needs get_value
 
 nvk_mem_stream_init creates its stream sync on sync_types[0] with
