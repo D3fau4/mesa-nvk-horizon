@@ -30,10 +30,17 @@ Then `scripts/package-horizon.sh`, and `release.yml` publishes:
     against,
   - `include/horizon_gpu/` — the public headers those libraries are compiled against; pre-1.0,
     both are versioned together and neither is meaningful without the other,
+  - `lib/nvk/` — the seventeen archives Mesa's own build produces for the NVK Vulkan driver
+    (`libnvk.a`, `libvulkan_wsi.a`, and the rest of `$HORIZON_NVK_TEST_LIBS`), under their own
+    path so the same-named-but-different `libmesa_util.a`/`libmesa_util_c11.a` this build also
+    produces for tests 12/13 cannot collide with it. Present only when this build actually
+    configured NVK — the Makefile-only path never does (`docs/BUILDING.md` §4) — and linked
+    exactly the way `meson.build`'s `nvk_whole_libs`/`nvk_test_libs` and the `t_vk_*` tests
+    already link them; nothing here documents a link line beyond pointing at those,
   - every `horizon_gpu` test `.nro` the tree currently names in `meson.build` (around 34,
     fourteen of them `t_vk_*` exercising NVK) — this project's own tests, not something a
-    consumer embeds, kept in the package because they are the evidence the library in the same
-    tarball actually works,
+    consumer embeds, kept in the package because they are the evidence the libraries in the
+    same tarball actually work,
   - `LICENSE`, `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
 - release notes carrying the build id and the caveats below.

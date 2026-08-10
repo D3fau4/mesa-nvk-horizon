@@ -234,6 +234,7 @@ jobs:
           build_id=$(sed -n 's/^build id  *: //p' build/pkg/MANIFEST.txt)
           count=$(find build/pkg -name '*.nro' | wc -l)
           vk_count=$(find build/pkg -name 't_vk_*.nro' | wc -l)
+          nvk_lib_count=$(find build/pkg/lib/nvk -name '*.a' 2>/dev/null | wc -l)
 
           # The specific items this section names are the ones
           # docs/RELEASING.md's "What a release may claim" requires
@@ -248,14 +249,20 @@ jobs:
             echo
             echo "\`lib/libhorizon_gpu.a\` and \`lib/libhorizon_compat.a\`, the"
             echo "\`include/horizon_gpu/\` public headers they are compiled"
-            echo "against, the full \`horizon_gpu\` test suite as standalone"
-            echo "\`.nro\` homebrew — including the NVK/Vulkan driver tests, not"
-            echo "just the driver-free subset — the licence they are"
-            echo "distributed under, and a manifest tying every one of them to"
-            echo "a single build and toolchain."
+            echo "against, the NVK driver's own archives under \`lib/nvk/\`, the"
+            echo "full \`horizon_gpu\` test suite as standalone \`.nro\` homebrew"
+            echo "— including the NVK/Vulkan driver tests, not just the"
+            echo "driver-free subset — the licence they are distributed under,"
+            echo "and a manifest tying every one of them to a single build and"
+            echo "toolchain."
             echo
             echo "- **\`lib/libhorizon_gpu.a\` + \`lib/libhorizon_compat.a\` +"
             echo "  \`include/horizon_gpu/\`**"
+            echo "- **\`lib/nvk/\`: ${nvk_lib_count} Mesa/NVK driver archive(s)**"
+            echo "  — linked exactly as \`meson.build\`'s \`nvk_whole_libs\`/"
+            echo "  \`nvk_test_libs\` and the \`t_vk_*\` tests already do; see"
+            echo "  those for the link order (\`--start-group\`/\`--end-group\`"
+            echo "  is load-bearing)."
             echo "- **${count} \`.nro\`, ${vk_count} of them \`t_vk_*\` (NVK/Vulkan)**"
             echo "- **Build id:** \`${build_id}\`"
             echo

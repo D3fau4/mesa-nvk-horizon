@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# Collects the built .nro files, libhorizon_gpu.a, libhorizon_compat.a
-# and the horizon_gpu public headers into one directory with a manifest
-# that ties each artefact to the toolchain that produced it.
+# Collects the built .nro files, libhorizon_gpu.a, libhorizon_compat.a,
+# the horizon_gpu public headers and, when this build has one, the
+# seventeen NVK driver archives, into one directory with a manifest that
+# ties each artefact to the toolchain that produced it.
 #
 #   scripts/package-horizon.sh [outdir]     # default: build/pkg
 #
-# The libraries and headers are what a project consuming horizon_gpu
-# actually links against — the .nro are this tree's own tests, not
-# something another project embeds. Both travel in the same package
-# because they are one build: a .a pulled from a different run than the
-# headers it was compiled against is exactly the kind of mismatch the
+# The libraries and headers are what a project consuming horizon_gpu (or
+# the NVK driver itself) actually links against — the .nro are this
+# tree's own tests, not something another project embeds. All of it
+# travels in the same package because it is one build: a .a pulled from
+# a different run than the headers it was compiled against, or than the
+# other archives it links against, is exactly the kind of mismatch the
 # build id and the manifest exist to make detectable rather than silent.
+#
+# libhorizon_gpu.a and libhorizon_compat.a are on every build this
+# script will accept at all (both build paths produce them before a
+# single test); the NVK archives are not (docs/BUILDING.md §4) and are
+# included only when $MESA_NVK_BUILD_DIR actually holds them.
 #
 # The point of the manifest is the Phase 2 goal itself: when a .nro is
 # copied to an SD card and run on console, the result recorded in
@@ -365,6 +372,57 @@ rm -rf "$OUT/include"
 mkdir -p "$OUT/include"
 cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 
+# THE NVK DRIVER ITSELF, WHEN THIS BUILD ACTUALLY HAS ONE.
+#
+# Unlike libhorizon_gpu.a, this is not on every build: the Makefile-only
+# path never configures Mesa at all, and even the Meson path can be
+# configured without NVK (docs/BUILDING.md §4). $_newest_lib, set by the
+# staleness gate above, is already this script's own answer to "does
+# $_nvk_dir hold a real build" — asked again here would be a second
+# place that question could drift from the first.
+#
+# $HORIZON_NVK_TEST_LIBS is the same list scripts/ci-build-archives.sh
+# and scripts/check-mesa-test-parity.sh already read out of
+# scripts/toolchain-env.sh — the seventeen archives meson.build's own
+# nvk_whole_libs/nvk_test_libs link the t_vk_* tests against. Copied
+# under their own relative path, not flattened to a bare basename:
+# src/util/libmesa_util.a exists in BOTH $MESA_BUILD_DIR (the minimal
+# probe build tests 12/13 link) and here — a different file built by a
+# different configure — and flattening the two would silently let one
+# overwrite the other.
+#
+# ALL SEVENTEEN OR NONE. A build that produced some of them and not
+# others is not a build this refuses elsewhere to trust (the staleness
+# gate above already requires both libnvk.a and libvulkan_wsi.a before
+# $_newest_lib is set at all) — but asking again here, over the full
+# list rather than the two representative archives that gate checks, is
+# what stops a package from shipping twelve of seventeen and calling it
+# the driver.
+if [ -n "$_newest_lib" ]; then
+    _nvk_missing=""
+    for _lib in $HORIZON_NVK_TEST_LIBS; do
+        [ -f "$_nvk_dir/$_lib" ] || _nvk_missing="$_nvk_missing $_lib"
+    done
+    if [ -n "$_nvk_missing" ]; then
+        echo "error: NVK archives exist but these named in" \
+             "\$HORIZON_NVK_TEST_LIBS are missing from $_nvk_dir:" \
+             "$_nvk_missing" >&2
+        exit 1
+    fi
+    rm -rf "$OUT/lib/nvk"
+    mkdir -p "$OUT/lib/nvk"
+    for _lib in $HORIZON_NVK_TEST_LIBS; do
+        mkdir -p "$OUT/lib/nvk/$(dirname "$_lib")"
+        cp "$_nvk_dir/$_lib" "$OUT/lib/nvk/$_lib"
+    done
+    echo "package-horizon: $(printf '%s\n' $HORIZON_NVK_TEST_LIBS | wc -l)" \
+         "NVK driver archive(s) staged under $OUT/lib/nvk/"
+else
+    rm -rf "$OUT/lib/nvk"
+    echo "package-horizon: no NVK build in $_nvk_dir; lib/nvk/ omitted" \
+         "(the .nro-only package is still complete for horizon_gpu itself)"
+fi
+
 # THE LICENCE TRAVELS WITH THE BINARIES.
 #
 # This directory is what gets tarred into a release and copied onto an
@@ -477,6 +535,14 @@ _pkg_img=$(horizon_image_digest)
     echo "# Library (sha256) — link against this and include/horizon_gpu/"
     (cd "$OUT" && sha256sum ./lib/*.a | sort -k2)
     echo
+    if [ -d "$OUT/lib/nvk" ]; then
+        echo "# NVK driver archives (sha256) — Mesa's own build products, linked"
+        echo "# exactly as meson.build's nvk_whole_libs/nvk_test_libs and the"
+        echo "# t_vk_* tests already do; see those for the link order and group"
+        echo "# semantics (--start-group/--end-group is load-bearing here)."
+        (cd "$OUT" && find lib/nvk -name '*.a' -exec sha256sum {} + | sort -k2)
+        echo
+    fi
     echo "# Test artefacts (sha256)"
     # Sorted so the manifest is stable across runs and diffable.
     (cd "$OUT" && sha256sum ./*.nro | sort -k2)

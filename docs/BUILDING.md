@@ -162,6 +162,12 @@ binaries** — not out of the source tree. It refuses a package holding more tha
 id, or a `.nro` carrying none; the library and headers are what a project consuming
 `horizon_gpu` actually links against, so it also refuses to package `.nro` without them.
 
+When this build also configured NVK (§4), the seventeen archives Mesa's own build
+produces for the driver — `libnvk.a`, `libvulkan_wsi.a` and the rest of
+`$HORIZON_NVK_TEST_LIBS` — are staged under `lib/nvk/` too, all seventeen or none. A
+Makefile-only build never has them, and packaging one still succeeds — `lib/nvk/` is
+simply omitted, not an error.
+
 That refusal exists because a `.nro` on an SD card looks exactly like the one it
 replaced, and an afternoon was once spent measuring a three-day-old build.
 
