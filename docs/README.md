@@ -11,7 +11,7 @@ If you are here for one thing, it is probably [`../STATUS.md`](../STATUS.md) —
 
 | Document | What it answers |
 |---|---|
-| [`BUILDING.md`](BUILDING.md) | How to build: host tests, the two cross-build paths, the full Mesa/NVK chain, the pins, the gates, and what all 36 scripts do. |
+| [`BUILDING.md`](BUILDING.md) | How to build: host tests, the two cross-build paths, the full Mesa/NVK chain, the pins, the gates, and what all 37 scripts do. |
 | [`USAGE.md`](USAGE.md) | How to run the result on a console, what the logs mean, which environment variables exist, and how to report a run. |
 | [`RELEASING.md`](RELEASING.md) | What a release contains, what it claims, and how to cut one that is actually hardware-verified. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The layer rules, the rejected designs, the evidence discipline, and what to run before opening a pull request. |

@@ -147,6 +147,18 @@ scripts/build-horizon.sh
 # scripts/package-horizon.sh did.
 #
 # Written last, after the tests are relinked, so it also covers them.
-touch "$MESA_NVK_BUILD_DIR/.horizon-build-ok"
+#
+# Through horizon_run, not a bare `touch`: in container mode
+# $MESA_NVK_BUILD_DIR was created by `meson setup` running *inside* the
+# toolchain image (horizon_meson, dispatched through horizon_run), which
+# runs as the image's own user — root, absent a USER in
+# toolchain/Dockerfile — so the directory is root-owned on the host side
+# of the bind mount. A host-level `touch` into it fails with "Permission
+# denied": creating a file needs write access to the *directory*, which
+# the host user does not have, even though every archive inside it is
+# perfectly readable. Measured on the first real GitHub Actions run —
+# every other write in this script already goes through horizon_meson or
+# horizon_ninja and never hit this; this was the one bare exception.
+horizon_run touch "$MESA_NVK_BUILD_DIR/.horizon-build-ok"
 
 echo "build-mesa-nvk: $MESA_NVK_BUILD_DIR"

@@ -154,11 +154,19 @@ themselves.
 scripts/package-horizon.sh [outdir]      # default build/pkg
 ```
 
-Collects the `.nro` into one directory with a `MANIFEST.txt` that ties each artefact to
-the toolchain that produced it: a sha256 per file, the resolved image digest, the live
-devkitA64/libnx package versions, and the **build id read back out of the binaries** —
-not out of the source tree. It refuses a package holding more than one build id, or an
-artefact carrying none.
+Collects `lib/libhorizon_gpu.a`, `lib/libhorizon_compat.a`, the `include/horizon_gpu/`
+public headers and the `.nro` into one directory with a `MANIFEST.txt` that ties each
+artefact to the toolchain that produced it: a sha256 per file, the resolved image digest,
+the live devkitA64/libnx package versions, and the **build id read back out of the
+binaries** — not out of the source tree. It refuses a package holding more than one build
+id, or a `.nro` carrying none; the library and headers are what a project consuming
+`horizon_gpu` actually links against, so it also refuses to package `.nro` without them.
+
+When this build also configured NVK (§4), the seventeen archives Mesa's own build
+produces for the driver — `libnvk.a`, `libvulkan_wsi.a` and the rest of
+`$HORIZON_NVK_TEST_LIBS` — are staged under `lib/nvk/` too, all seventeen or none. A
+Makefile-only build never has them, and packaging one still succeeds — `lib/nvk/` is
+simply omitted, not an error.
 
 That refusal exists because a `.nro` on an SD card looks exactly like the one it
 replaced, and an afternoon was once spent measuring a three-day-old build.
@@ -184,10 +192,13 @@ read-only.
 
 ## 7. The gates
 
-Five cost seconds and need nothing but bash, python and a C compiler. **Nothing runs
-them automatically** — CI is off, and the workflows that used to are kept commented in
-[`.forgejo/workflows-disabled/`](../.forgejo/workflows-disabled/). Run them yourself, or
-let `scripts/ci-build-archives.sh` do it:
+Five cost seconds and need nothing but bash, python and a C compiler. **GitHub Actions
+runs them automatically** on every push and pull request
+([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). The Forgejo instance's own
+workflows are still off, kept commented in
+[`.forgejo/workflows-disabled/`](../.forgejo/workflows-disabled/). Run the gates yourself
+before you push regardless — CI is not the fast path — or let `scripts/ci-build-archives.sh`
+do it:
 
 | Gate | What it refuses |
 |---|---|
@@ -212,7 +223,7 @@ and needs a nightly toolchain.
 
 ## 8. The scripts, in one table
 
-All 36 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
+All 37 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
 themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 
 **Fetch** (host-side, because containers have no network)
@@ -243,7 +254,8 @@ resolves local-vs-container mode and is what every other script agrees through)
 network steps, ending in a check that every archive exists and that every `.nro` meson.build names links
 them. Run it by hand to reproduce what CI does · `ci-require-host-tools.sh` and
 `ci-require-docker.sh` — the two preflights it starts with ·
-`ci-forgejo-release.sh` — creates a release and uploads assets through the Forgejo API
+`ci-forgejo-release.sh` — creates a release and uploads assets through the Forgejo API ·
+`ci-github-release.sh` — the same, through `gh`, for the GitHub workflows
 
 ### What has to be on the machine itself
 
@@ -283,14 +295,20 @@ That is paid once per machine — the script recognises an image it has already 
 an identity label covering the base image's ID, the pinned bindgen/cbindgen/LLVM
 versions, the resolved `.deb` closure and the Dockerfile's own digest.
 
-**CI does not publish it anywhere.** The first job of each workflow builds it on the
-runner, where it stays in that machine's docker daemon; the job that does the work then
-names it and finds it locally. Publishing was tried and abandoned: the instance speaks
+**GitHub Actions publishes it, to `ghcr.io`.** The first job of each workflow
+(`.github/workflows/ci.yml`, `.github/workflows/release.yml`) pulls whatever is already
+there, runs this script against that pulled image so the identity check above decides
+whether anything needs rebuilding, and pushes only when it rebuilt. The job that does the
+work then pulls the same tag through its own `container:`. This works because `ghcr.io` is
+HTTPS — the Forgejo instance's own workflow could not do this and still cannot: it speaks
 plain HTTP, docker refuses a registry that is not HTTPS, and configuring an exception on
-the daemon is a lot of ceremony for an image that never leaves the machine. If a job
-cannot resolve the image, the job that builds it is the log to read.
+the daemon was a lot of ceremony for an image that would still never leave that machine, so
+its `toolchain` job builds the image and leaves it in the runner's own docker daemon
+instead, where the job that does the work finds it locally. If a job cannot resolve the
+image, the job that builds (or publishes) it is the log to read.
 
-Point somewhere else with the `TOOLCHAIN_IMAGE` repository variable, or by hand:
+Point somewhere else with the `TOOLCHAIN_IMAGE` repository variable — read by both the
+GitHub workflows above and, for a local reproduction, by hand:
 
 ```sh
 HORIZON_NX_DERIVED_IMAGE=<some-other>/nx-dev-mesa:latest \

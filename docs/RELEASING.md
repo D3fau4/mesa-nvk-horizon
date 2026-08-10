@@ -5,23 +5,43 @@ this project is organised around: **what compiled** versus **what ran on a conso
 
 ## The automatic one — cross-built, unverified
 
-**There is no automatic release any more.** CI is off; the workflow that did this is
-kept commented in
-[`.forgejo/workflows-disabled/release.yml`](../.forgejo/workflows-disabled/release.yml),
-and what follows describes what it did — because the same steps are what you run by hand,
-and `scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API.
+CI runs on GitHub Actions now: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on
+every push, pull request and manual dispatch, and
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) on a `v*` tag or manual
+dispatch. The Forgejo instance's own workflows are kept, commented, in
+[`.forgejo/workflows-disabled/`](../.forgejo/workflows-disabled/) — this project is developed
+against both forges, and re-enabling CI there is a separate decision from enabling it here.
+`scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API for that
+instance; `scripts/ci-github-release.sh` does the GitHub equivalent through `gh`.
 
-It builds the Makefile path **inside** the toolchain image. Driving the image from the
-runner instead is impossible here — a containerised job's bind mount is resolved by the
-host daemon against a path that only exists inside the job — and running inside costs
-nothing, because the image records the identity it was built under and
-`scripts/toolchain-env.sh` reads it. The workflow refuses to publish a package whose
-manifest identifies no toolchain at all.
+Both workflows build **on the runner itself**, not inside a `container:` — the toolchain image
+is built or pulled once, then driven per-command through `scripts/toolchain-env.sh`'s own
+`horizon_run` (unset `$DEVKITPRO` is what turns this on; it is the same split
+`scripts/build-switch.sh` already uses for the Makefile path). The image still comes from
+`ghcr.io/<owner>/nx-dev-mesa` — HTTPS, unlike the Forgejo instance (see `STATUS.md`, "CI
+switched off, and what is kept instead") — pushed there once per Dockerfile/pin change and
+pulled on every run after. `scripts/build-toolchain-image.sh` needed no change for any of this —
+pointing `$HORIZON_NX_DERIVED_IMAGE` at the pulled tag is the whole mechanism.
 
-Then `scripts/package-horizon.sh`, and it publishes:
+Then `scripts/package-horizon.sh`, and `release.yml` publishes:
 
-- `mesa-nvk-horizon-<tag>-nro.tar.gz` — the 18 `horizon_gpu` test `.nro`, `LICENSE`,
-  `LICENSES.md` and `MANIFEST.txt`,
+- `mesa-nvk-horizon-<tag>-nro.tar.gz`, containing:
+  - `lib/libhorizon_gpu.a` and `lib/libhorizon_compat.a` — what another project actually links
+    against,
+  - `include/horizon_gpu/` — the public headers those libraries are compiled against; pre-1.0,
+    both are versioned together and neither is meaningful without the other,
+  - `lib/nvk/` — the seventeen archives Mesa's own build produces for the NVK Vulkan driver
+    (`libnvk.a`, `libvulkan_wsi.a`, and the rest of `$HORIZON_NVK_TEST_LIBS`), under their own
+    path so the same-named-but-different `libmesa_util.a`/`libmesa_util_c11.a` this build also
+    produces for tests 12/13 cannot collide with it. Present only when this build actually
+    configured NVK — the Makefile-only path never does (`docs/BUILDING.md` §4) — and linked
+    exactly the way `meson.build`'s `nvk_whole_libs`/`nvk_test_libs` and the `t_vk_*` tests
+    already link them; nothing here documents a link line beyond pointing at those,
+  - every `horizon_gpu` test `.nro` the tree currently names in `meson.build` (around 34,
+    fourteen of them `t_vk_*` exercising NVK) — this project's own tests, not something a
+    consumer embeds, kept in the package because they are the evidence the libraries in the
+    same tarball actually work,
+  - `LICENSE`, `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
 - release notes carrying the build id and the caveats below.
 
@@ -33,13 +53,13 @@ in, so a package built by hand is no different.
 the release body, because a reader who skips `STATUS.md` should still not come away
 thinking otherwise. A `.nro` that compiles is not a `.nro` that works.
 
-**What it leaves out, and why.** The fourteen `t_vk_*` tests and the NVK driver itself are
-absent. They need the derived toolchain image — libclang, `bindgen`, `cbindgen`, a Rust
-sysroot for the Switch target, an LLVM-15 `libclc` closure — plus a full Mesa build, with
-material fetched outside the container because containers here have no network. That is
-tens of minutes and several GB, and it is not something a tag push should quietly start.
-The gap is named in the workflow header and in the release notes rather than left to look
-like completeness.
+**Nothing is left out any more.** The `release.yml` this workflow replaces on Forgejo
+shipped only the eighteen driver-free `.nro`, because the image it ran in carried no Mesa
+checkout. That gap does not exist here: this workflow's toolchain image is the same one
+`ci.yml` builds and runs the full `scripts/ci-build-archives.sh` in — Mesa, the Rust half
+and NVK — so the package includes every archive the tests link, `t_vk_*` included.
+Publishing less than what CI itself already validated would be the wrong kind of gap to
+leave unnamed.
 
 `workflow_dispatch` runs the build and packaging **without publishing**, which is the way
 to check the pipeline without cutting anything: it builds, packages, proves the manifest
@@ -52,6 +72,24 @@ branch — without that guard, a dispatch from `main` would publish a release ca
 debugging on the first failure: it fetches from four external services, so a red run is
 as likely to be somebody else's CDN as a broken tree. Its network steps already retry
 three times for that reason.
+
+To publish by hand instead of through the workflow — reproducing exactly what
+`release.yml`'s `publish` step does. `package-horizon.sh` fills `build/pkg` with the `.nro`,
+licences and `MANIFEST.txt`; it does not tar them, and `NOTES.md` is not generated for you
+outside the workflow, so both are yours to make here:
+
+```sh
+scripts/package-horizon.sh build/pkg
+tar -czf mesa-nvk-horizon-v0.1.0-nro.tar.gz -C build/pkg .
+sha256sum mesa-nvk-horizon-v0.1.0-nro.tar.gz > mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
+# write NOTES.md — see "What a release may claim" below for what it must say
+GH_TOKEN=<token with contents: write> \
+    scripts/ci-github-release.sh v0.1.0 NOTES.md \
+        mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
+```
+
+The Forgejo equivalent is still `scripts/ci-forgejo-release.sh` (see the manual section
+below for its full invocation, including the environment it reads).
 
 ## The manual one — with hardware behind it
 
@@ -87,9 +125,12 @@ Switch attached.
    ```sh
    git tag -a v0.1.0 -m "…"
    git push origin v0.1.0
+   tar -czf mesa-nvk-horizon-v0.1.0-nro.tar.gz -C build/pkg .
+   sha256sum mesa-nvk-horizon-v0.1.0-nro.tar.gz > mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
    GITHUB_API_URL=<instance>/api/v1 GITHUB_REPOSITORY=<owner>/<repo> \
    FORGEJO_TOKEN=<token with write:repository> \
-       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md \
+           mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
    ```
 
    Say in the notes which tests ran on hardware, on which firmware, and in which memory

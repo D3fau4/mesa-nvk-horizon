@@ -1,0 +1,260 @@
+# Everything CI does on a push: make sure the derived toolchain image is
+# current, then build the whole tree against it.
+#
+# This is the GitHub port of .forgejo/workflows-disabled/archives.yml.
+# ONE JOB, not two, and the build steps run ON THE RUNNER, not inside a
+# `container:` or a single wrapping `docker run` — both departures from
+# what the Forgejo original did, and both forced by things measured on
+# real runs rather than chosen upfront.
+#
+# WHY ONE JOB. A `toolchain` job that PUSHES the image and a second job
+# that PULLS it back by the same mutable `:latest` tag has a race: two
+# concurrent runs (this workflow allows one per ref) can interleave, so
+# the second job can end up building against a *different* ref's image.
+# It also fails outright on a fork pull request, whose GITHUB_TOKEN
+# GitHub downgrades to read-only — exactly on the PRs, ones touching
+# toolchain/Dockerfile or a pin, that most need the full build to run.
+# One job builds/pulls the image and uses it immediately in the same
+# job; the registry push at the end is best-effort caching for *future*
+# runs, not something this run's correctness depends on, so it is
+# skipped rather than failed when the token cannot write.
+#
+# WHY NOT ONE BIG `docker run` FOR THE BUILD STEPS EITHER — this was the
+# first attempt, and it does not work: scripts/ci-build-archives.sh's
+# own fetch steps (scripts/fetch-mesa-subprojects.sh,
+# horizon_ensure_meson, horizon_ensure_python_deps, ...) install through
+# `python3 -m pip`, and the toolchain image deliberately has neither pip
+# nor is meant to reach the network on its own (scripts/toolchain-env.sh:
+# "the toolchain image has no pip and no outbound connectivity" — every
+# fetch script's own header says the same). Measured directly: wrapping
+# the whole sequence in `docker run ... "$TOOLCHAIN_IMAGE" ...` died on
+# `/usr/bin/python3: No module named pip` the first time a fetch step
+# that needs it actually ran.
+#
+# The fix is not a workaround, it is the mechanism scripts/toolchain-env.sh
+# already has for exactly this split: `horizon_run` (used throughout
+# scripts/build-mesa-clc.sh, scripts/configure-mesa*.sh,
+# scripts/build-mesa*.sh, scripts/build-horizon.sh) checks whether
+# $DEVKITPRO is set. Unset — the state this job's steps run in, since
+# nothing here sets it as a job-level env — it spawns its OWN per-command
+# `docker run --rm -v "$PWD":"$PWD" ... "$HORIZON_IMAGE" "$@"` only
+# around the specific commands that need the cross toolchain, while
+# fetch/setup steps run directly on the runner, where python3, pip, curl
+# and git already live (scripts/ci-require-host-tools.sh already checks
+# for exactly these). Running scripts/ci-build-archives.sh as a normal
+# step here, not wrapped in anything, is what turns that mechanism on —
+# it is the same "quick way" split scripts/build-switch.sh already uses
+# for the Makefile path, just exercised by a script that needs more of it.
+#
+# This also sidesteps the reason the Forgejo original ran *inside* a
+# `container:` job at all — a bind mount from a job that is ITSELF a
+# container resolves against the host, not the job, and comes up empty
+# (Forgejo task 1274). A GitHub-hosted `ubuntu-latest` job is a plain VM,
+# not a container, so `horizon_run`'s nested `-v "$PWD":"$PWD"` resolves
+# against a real path the whole way down. That problem was specific to a
+# containerised job nesting another one; a host job nesting one is fine.
+#
+# WHY ghcr.io AT ALL, THEN. Rebuilding the derived image from scratch
+# costs ~11 minutes and 7.3 GB (docs/BUILDING.md) on every run without a
+# cache, and GitHub-hosted runners are a fresh VM per job with nothing to
+# reuse between runs — unlike Forgejo's persistent runner, where the
+# image just stayed in the daemon. ghcr.io is HTTPS, so it can hold that
+# cache; the Forgejo instance never could (plain HTTP, tasks 1275/1276 —
+# see STATUS.md, "CI switched off"). scripts/build-toolchain-image.sh
+# needed no change for this: it already resolves the image to build or
+# reuse through $HORIZON_NX_DERIVED_IMAGE, and its own identity check —
+# base image ID, pinned bindgen/cbindgen/LLVM versions, the resolved
+# .deb closure, the Dockerfile's digest — does the right thing against a
+# pulled image with no further help. horizon_run picks up the same
+# override, so the per-command nested containers use exactly the image
+# this job just built or pulled, not whatever versions.env names by
+# default.
+#
+# WHY THE FULL BUILD RUNS ON EVERY PUSH, PR AND DISPATCH, UNIFORMLY. The
+# whole point of scripts/ci-build-archives.sh is catching a broken patch
+# in mesa-patches/ before it lands — the one thing five cheap gates
+# cannot see. This is affordable because the repository is public (no
+# metered Actions minutes) and because the registry cache above turns
+# the expensive part of "compile Mesa entero" into a one-time cost per
+# pin change, on runs that can write the cache, rather than a per-run one.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # A ghcr.io repository name has to be all-lowercase, and GitHub
+      # Actions expressions have no lower() function to enforce that on
+      # ${{ github.repository_owner }} inline — measured: the first run
+      # of this workflow failed docker pull outright with "invalid
+      # reference format: repository name (D3fau4/nx-dev-mesa) must be
+      # lowercase" because the account is D3fau4, not d3fau4.
+      #
+      # Exported as HORIZON_NX_DERIVED_IMAGE too, not just TOOLCHAIN_IMAGE:
+      # that is the exact override scripts/toolchain-env.sh reads, and
+      # every later step — including the ones that only touch it through
+      # horizon_run's own nested `docker run` calls — needs to resolve
+      # the same image this job built or pulled, not the bare
+      # mesa-nvk-horizon/nx-dev-mesa:latest name versions.env defaults to.
+      - name: resolve the toolchain image name
+        run: |
+          set -eu
+          image="${{ vars.TOOLCHAIN_IMAGE }}"
+          if [ -z "$image" ]; then
+              owner_lower=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+              image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
+          fi
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
+          echo "HORIZON_NX_DERIVED_IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: the runner can drive docker
+        run: scripts/ci-require-docker.sh
+
+      # ubuntu-latest ships Rust already, so this is normally a no-op.
+      # Kept anyway: it is what caught task 1272 on Forgejo's runner
+      # image, which had none, and a different GitHub runner image is not
+      # a promise this project controls.
+      - name: rust, only if this runner has none
+        run: |
+          set -eu
+          command -v cargo >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: what this machine has to provide
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/ci-require-host-tools.sh
+
+      # Always attempted, even on a fork PR: login only needs to succeed
+      # far enough to pull, and packages linked to a public repo stay
+      # readable by a read-only fork token. Never fatal here — a failure
+      # just means the pull below tries anonymously and, if that also
+      # fails, this run pays the full ~11 minute rebuild instead of
+      # using the cache. That is a slower run, not a broken one.
+      - name: log in to ghcr.io
+        continue-on-error: true
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Best-effort. Failing here is expected and fine: the very first
+      # run ever, or the first run after a Dockerfile/pin change moved
+      # the identity nothing published yet matches.
+      #
+      # pre_id is captured through `if id=$(...); then`, not through
+      # $(cmd 2>/dev/null || echo none) inlined in an echo. Measured on a
+      # real run: `docker image inspect` on a missing image writes an
+      # empty line to *stdout* before it fails, so the naive form
+      # captured $'\nnone' — two lines — and GitHub's $GITHUB_OUTPUT
+      # parser rejected the bare second line ("Invalid format 'none'").
+      # The `if` form never reads $id on the failure path, so that stray
+      # blank line never reaches the file.
+      - name: pull the cached toolchain image, if there is one
+        id: pull
+        run: |
+          set -eu
+          if docker pull "$TOOLCHAIN_IMAGE"; then
+              :
+          else
+              echo "ci: no cached toolchain image yet (first run, the pins moved, or no read access)"
+          fi
+          pre_id=none
+          if id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null); then
+              pre_id="$id"
+          fi
+          echo "pre_id=$pre_id" >> "$GITHUB_OUTPUT"
+
+      # Unmodified script. HORIZON_NX_DERIVED_IMAGE is already exported
+      # (the "resolve" step above); pointing it at the tag just pulled is
+      # the entire mechanism. Seconds when the pulled image's identity
+      # already matches; ~11 minutes only when toolchain/Dockerfile or a
+      # pin in toolchain/versions.env moved.
+      - name: the toolchain image is present and current
+        id: build
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/build-toolchain-image.sh
+          post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")
+          echo "post_id=$post_id" >> "$GITHUB_OUTPUT"
+
+      # Push only when the image actually changed — comparing image IDs,
+      # not trusting that the step ran, because "ran" and "rebuilt" are
+      # not the same claim. And only when this token can write at all:
+      # a fork pull request's GITHUB_TOKEN is read-only regardless of the
+      # `permissions:` block above, so an unconditional push here would
+      # fail the whole job on exactly the PRs that most need the build
+      # below to run. Best-effort either way — a failed push here still
+      # leaves the image built and used by this run; it only means the
+      # *next* run pays to rebuild it.
+      - name: publish the toolchain image, if it rebuilt and this run can
+        if: |
+          steps.pull.outputs.pre_id != steps.build.outputs.post_id &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        run: docker push "$TOOLCHAIN_IMAGE"
+
+      # --- seconds, and they run first for that reason ---------------
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
+
+      # --- and then the long one -------------------------------------
+      #
+      # Runs directly on the runner (see this file's header for why):
+      # its own fetch steps need the runner's python3/pip/curl/git, and
+      # horizon_run — used internally by the scripts this calls — spawns
+      # its own per-command `docker run` against $TOOLCHAIN_IMAGE for
+      # everything that needs the cross toolchain. Every .a the tests
+      # link, then the .nro that prove the archives are usable rather
+      # than merely present, then the two gates that need built
+      # artefacts. Ordering and retries are in the script.
+      - name: every archive the tests link
+        run: scripts/ci-build-archives.sh
+
+      - name: package
+        run: |
+          set -eu
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-gpu-full
+          path: build/pkg
+          if-no-files-found: error

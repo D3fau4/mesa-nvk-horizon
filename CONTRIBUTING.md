@@ -114,14 +114,20 @@ scripts/check-history-intact.sh    # the record and the logs match their manifes
 scripts/check-mesa-test-parity.sh  # the Makefile and the Meson build still agree
 ```
 
-**Nothing runs them for you.** CI is switched off — the workflows are kept, commented,
-in [`.forgejo/workflows-disabled/`](.forgejo/workflows-disabled/), with a note on each
-saying what it did and what its runs taught. Run the five yourself before you push.
+**GitHub Actions runs all five automatically** on every push and pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), then goes on to build Mesa, the
+Rust half and NVK the same way `scripts/ci-build-archives.sh` does by hand — see below.
+Run the five yourself before you push anyway: CI feedback on a build that takes tens of
+minutes is a bad first signal for a typo, and a red run you already expected is not worth
+the wait. The Forgejo instance's own workflow is still off, kept commented in
+[`.forgejo/workflows-disabled/`](.forgejo/workflows-disabled/), with a note on each saying
+what it did and what its runs taught.
 
-One command does the rest: [`scripts/ci-build-archives.sh`](scripts/ci-build-archives.sh)
-builds Mesa, the Rust half and NVK and then asserts that **every** `.a` the tests link
-exists and that every `.nro` `meson.build` names links them. If you touch
-`mesa-patches/`, that is what will tell you — and it is the only thing that will.
+One command does the rest, locally, before CI does it again:
+[`scripts/ci-build-archives.sh`](scripts/ci-build-archives.sh) builds Mesa, the Rust half
+and NVK and then asserts that **every** `.a` the tests link exists and that every `.nro`
+`meson.build` names links them. If you touch `mesa-patches/`, that is what will tell you
+first — CI runs the identical command, but only after you push.
 
 Two further gates — `check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built
 artefacts. `scripts/ci-build-archives.sh` ends by running them against what it just
