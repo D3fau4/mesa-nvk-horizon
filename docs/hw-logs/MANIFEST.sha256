@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-c4d00fa5f8186fb4373219d6744d59450f1af38b4ab6b57ec8287fcb9b68ae99  README.md
+62e21e79158e1d7e066548e7b391bd858d677a073e4124ae9b603c943fb185ef  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
@@ -110,6 +110,7 @@ d647264e7d620d6dc1b4fbeee525bb208a113436011d1ffa234620ffc43790c9  t_vk_submits-r
 449e851a079572ab08e6b0f12b0213994672c303bf1f52da3f23c2539b6ccf3e  t_vk_submits-run14-PASS.log
 8976b99e458a8ebcee5e29e315585322d8253fb703a90f39e5e0c2acf0710f9f  t_vk_submits-run5-batch5-PASS.log
 094cc78b823d55ee58baee2caa8f84da7a810a22e3b41a49805b166f30104ed8  t_vk_submits-run6-pr7-rerun-PASS.log
+6c8c1b52191548f2d74658b05977b50ea89796f399e48089f5efff216ffc1a23  t_vk_suboptimal-run21-PASS.log
 67fd3aab8c58f203b86017caf715da74f232c68c66945b6d56034d749355cbb1  t_vk_swapchain-run1-phase6-FAIL.log
 468b8f9e19af95d9fd027f76108fc75660aa0b2748bd5f0e7f038172af73daca  t_vk_swapchain-run11-STALE-DRIVER-FAIL.log
 af58cee6a395af0a32302c08bffffa08c33d7b0a09a5eb506b9bc30fc5382f37  t_vk_swapchain-run12-PASS.log

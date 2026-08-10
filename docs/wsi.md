@@ -405,8 +405,10 @@ no fall-through: every path either queues, copies, or returns an error.
 ## 5. Resize and recreation
 
 - `nwindowSetDimensions` on creation.
-- A dimension change detected at acquire returns `VK_ERROR_OUT_OF_DATE_KHR`.
-  **Corrected: the change has to be read from the consumer, not from the
+- A dimension change detected at acquire or at present returns
+  **`VK_SUBOPTIMAL_KHR`** — see § 5.1, which is where that result and
+  `VK_ERROR_OUT_OF_DATE_KHR` are separated.
+  **The change has to be read from the consumer, not from the
   window.** `nwindowGetDimensions` returns `NWindow::width` when it is set, and
   this backend is what sets it — at creation, through `nwindowSetDimensions`. A
   check written that way compares the swapchain's extent with itself and can
@@ -417,13 +419,89 @@ no fall-through: every path either queues, copies, or returns an error.
   picks up what libnx recorded. Docking the console, which takes the display to
   1920x1080, is what exercises it.
 - Surface capabilities read the same field for the same reason, so a swapchain
-  created after a mode change is not handed the previous one's extent.
+  created after a mode change is not handed the previous one's extent. **The
+  zero-copy path has to write that field itself**, and did not until the change
+  in § 5.1: it drives the producer through `bqQueueBuffer` rather than
+  `nwindowQueueBuffer`, so libnx never saw the queue's output and its cached
+  `default_*` stayed at whatever `bqConnect` reported at start-up. An
+  application told its swapchain was suboptimal would then have asked the
+  surface what to build, been handed the size it already had, and recreated the
+  same suboptimal swapchain — a loop with no exit, on the path that is the
+  default on working hardware. The fallback never had it, because
+  `framebufferEnd` goes through `nwindowQueueBuffer`.
 - Recreation with an `oldSwapchain` must return every slot to the compositor before
   releasing buffers, in a defined order, and must be safe when the old swapchain has
   outstanding acquired images.
 - Partial configuration failure during creation (some slots registered, one fails) unwinds
   every already-registered slot before falling back. The reference's behaviour in this case
   is untested and its safety is unknown.
+
+### 5.1 `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR`
+
+Vulkan separates the two by one question — **can the swapchain still present?**
+
+| | |
+|---|---|
+| `VK_SUBOPTIMAL_KHR` | the swapchain no longer matches the surface's properties exactly and **can still be used to present successfully** |
+| `VK_ERROR_OUT_OF_DATE_KHR` | the surface has changed so that the swapchain is no longer compatible with it, and **further presentation requests will fail** |
+
+On this backend **exactly one condition is suboptimal**, and every other refusal is
+out of date. The full list, which is also stated in one comment above
+`wsi_horizon_extent_changed()` so the code and this file cannot drift:
+
+| Condition | Result | Where |
+|---|---|---|
+| the VI consumer reports a layer size other than the one this swapchain registered its buffers at — i.e. the console was docked or undocked | **`VK_SUBOPTIMAL_KHR`** | acquire (after an image has been handed over) and present (after the queue succeeded) |
+| a newer swapchain has taken the window (`presentable` is false) | `VK_ERROR_OUT_OF_DATE_KHR` | acquire, present |
+| `bqQueueBuffer` refused the frame | `VK_ERROR_OUT_OF_DATE_KHR` | present, zero-copy |
+| `bqDequeueBuffer` failed with anything that is not "come back later" | `VK_ERROR_OUT_OF_DATE_KHR` | acquire, zero-copy |
+| the compositor released a slot this swapchain believes it holds | `VK_ERROR_OUT_OF_DATE_KHR` | acquire, zero-copy |
+| the release fence could not be waited on at an infinite timeout | `VK_ERROR_OUT_OF_DATE_KHR` | acquire, zero-copy |
+| every image is with the application and the caller asked with no deadline — a deadlock, not a wait | `VK_ERROR_OUT_OF_DATE_KHR` | acquire, both paths |
+| the copy fallback has no framebuffer, no mapping, or `framebufferBegin` produced nothing | `VK_ERROR_OUT_OF_DATE_KHR` | present, fallback |
+| a slot could not be cancelled back to the compositor | `VK_ERROR_OUT_OF_DATE_KHR` | `release_images` |
+| the device is lost | `VK_ERROR_DEVICE_LOST`, checked before all of the above | acquire |
+| the acquire's deadline expired, or it was asked with a zero timeout | `VK_TIMEOUT` / `VK_NOT_READY` | acquire |
+
+**Why a resized window keeps presenting**, which is the whole argument for the first
+row. Nothing on the producer's side of the BufferQueue changes when the consumer
+resizes: the dequeue asks for `NWindow::width/height`, which this backend set at
+registration and nobody has touched, so every preallocated slot still matches and
+`bqDequeueBuffer` keeps handing them over; `bqQueueBuffer` validates the crop against
+the buffer rather than against the layer, so it keeps succeeding; and the layer's
+scaling mode is what puts the smaller image on the larger display. The frames still
+arrive — scaled rather than native, which is exactly "usable but not matching".
+
+This was `VK_ERROR_OUT_OF_DATE_KHR` at the acquire until 2026-08-10, and it was wrong
+in both directions: it promised that presentation would fail, when it does not, and it
+refused the application an image it could have rendered and presented — so an
+application that recreates on `OUT_OF_DATE` lost every frame between the mode change
+and the new swapchain, while one that ignores the result (legal for `SUBOPTIMAL`, not
+for `OUT_OF_DATE`) stalled outright.
+
+**It degrades into the other result on its own.** If a resize ever does make the queue
+refuse a buffer, that refusal is reported where it happens — the third and fourth rows
+of the table — so nothing has to predict which it will be.
+
+**No sticky flag.** The condition is a comparison of two values that are both current,
+so it answers "suboptimal *now*". It stays true while the console stays docked, which
+is what makes the result repeat on every acquire and every present until the
+application recreates, and it stops being true by itself when the console is undocked
+again — which is correct, because the swapchain matches the surface once more.
+
+**Ordering matters at the acquire.** `VK_SUBOPTIMAL_KHR` is a *success* code: the
+specification says the image was acquired and `*pImageIndex` is valid, and
+`wsi_common_acquire_next_image2` marks the image acquired and signals the caller's
+semaphore and fence on it. So the check runs *after* the acquire and only when it
+produced an image; `VK_TIMEOUT`, `VK_NOT_READY` and every error are returned untouched.
+
+**What has been measured** is in `tests/t_vk_suboptimal.c`. Sections A, B, C and E run
+on any console and check the rule in both directions —
+`SUBOPTIMAL ⟺ currentExtent ≠ the swapchain's imageExtent` — per frame on both present
+paths. Section D is the mode change itself, and it needs a hand on a physical console:
+the producer side of a BufferQueue can read the consumer's default buffer size and
+cannot set it, so **nothing in the process can provoke this condition**, and the test
+says in its log when the coverage did not run rather than reporting it as passed.
 
 ---
 

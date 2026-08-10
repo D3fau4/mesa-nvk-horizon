@@ -5,6 +5,76 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## `VK_SUBOPTIMAL_KHR`, and the half of it a console cannot show
+
+### `t_vk_suboptimal-run21-PASS.log`
+
+Run 21, 2026-08-10, `2026-08-10T13:44:43.834Z 13336c0-dirty mesa:c5e9e66`,
+game mode (3155 MiB), `RESULT: PASS (273/273)`. The test for patch **0074**,
+which is the first change in this project to return `VK_SUBOPTIMAL_KHR` at all.
+
+**Read the pass carefully, because it is not the whole claim.** Sections A, B,
+C and E would pass on the *old* driver too: with the console undocked and
+nothing resizing the layer, a backend that never returns `VK_SUBOPTIMAL_KHR`
+and one that returns it only on a resize are indistinguishable. What this log
+does establish is the other half — the half a wrong implementation fails:
+
+- **2303 frames with the rule checked in both directions**, on both present
+  paths, and **zero disagreements**. The rule is
+  `SUBOPTIMAL ⟺ currentExtent ≠ the swapchain's imageExtent`, checked per
+  frame against the surface rather than against a flag in the driver, so a
+  false positive from any cause is a failure. Section D alone contributes
+  **1803 frames** — 30 s of continuous presenting with the acquire and the
+  present each asserted every frame.
+- **The two results stay distinct.** On both paths, a superseded swapchain
+  answers `VK_ERROR_OUT_OF_DATE_KHR` from acquire *and* present while the
+  surface's extent is checked to be unchanged, so that result cannot be coming
+  from the resize check; and an acquire that cannot be satisfied answers
+  `VK_TIMEOUT` after three images were held, not a success code.
+- **Eight recreation generations** alternating present path, each presenting
+  its 20 frames in full, then a swapchain created after all of them were
+  destroyed — which is what says the window came back.
+- Nothing retained: `no slot was left with the compositor` and `the driver
+  tore down every object it created`.
+
+**The mode change itself did not happen**, and the log says so in as many
+words:
+
+```
+  note D: no mode change happened (the wait expired after 1803 frames), so
+       SUBOPTIMAL was never provoked and THIS COVERAGE DID NOT RUN. Nothing in
+       this process can resize a VI layer; only docking the console can.
+```
+
+That is the honest boundary. The producer side of a BufferQueue can read the
+consumer's default buffer size and cannot set it, so **`VK_SUBOPTIMAL_KHR` has
+never been observed on hardware** — only the rule around it, and the absence of
+false positives. A run in which somebody docks the console during section D is
+what would close it.
+
+**That the binary under test carried the change was checked, not assumed** —
+run 11 in this directory is what a stale driver looks like. Both
+`wsi_horizon_swapchain_queue_present` and
+`wsi_horizon_swapchain_acquire_next_image` in `t_vk_suboptimal.elf` build
+`0x3B9ACDEB` (1000001003, `VK_SUBOPTIMAL_KHR`) into `w0` with a
+`mov`/`movk` pair and return it.
+
+The build id names `mesa:c5e9e66` and `git -C mesa log` does not contain that
+hash, which is not a discrepancy: it is patch 0074's commit before this run's
+evidence was written into its message, and amending a message changes the hash
+and nothing else. Same relationship patch 0071 records between `mesa:597ea0a`
+and `mesa:85638f8` for run 20.
+
+Two side results this run also produced, both first-time evidence:
+
+- **Zero `vk_log*() called with client-invisible object` warnings.** Run 20's
+  log carries 188 of them and patch **0073** exists to take that to zero; this
+  is the first console run since, and it is zero.
+- Patch **0072** (closing the framebuffer is releasing the window) is exercised
+  by section C's copy-path recreation and by four of section E's generations,
+  and neither the console nor `qlaunch` went down — which is the failure run 18
+  produced from the same sequence.
+
 ## The framebuffer defect, proved in both directions
 
 Five files, and they are the strongest evidence in this directory: the same

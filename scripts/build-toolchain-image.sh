@@ -105,7 +105,7 @@ want=$(image_identity | sha256sum | cut -d' ' -f1)
 
 # AND ASK AGAIN, because the first answer was given without the closure.
 #
-# On a tree where build/toolchain/clc-deps/closure.txt is absent — every
+# On a tree where the resolved .deb closure is not there yet — every
 # fresh clone, and therefore every CI checkout — the check at the top
 # computes an identity that no image can match, so it always falls
 # through to here. Before this, that meant a full rebuild even when the
@@ -227,6 +227,15 @@ echo "build-toolchain-image: checking the image can actually do the work"
 probe=build/toolchain/image-probe
 mkdir -p "$probe"
 printf 'struct probe_s { int a; unsigned long b; };\n' > "$probe/probe.h"
+# MSYS_NO_PATHCONV=1 for the same reason horizon_run carries it: under
+# Git Bash on Windows, MSYS rewrites anything that looks like an
+# absolute Unix path in an argument to a native binary, so -w reached
+# docker.exe in the drive-letter spelling and the daemon refused it with
+#   docker: Error response from daemon: the working directory
+#   '<drive-letter path>' is invalid, it needs to be an absolute path
+# — after a fifteen-minute image build, on the step whose whole job is
+# to prove the image works. The variable is meaningless everywhere else.
+MSYS_NO_PATHCONV=1 \
 docker run --rm -v "$PWD":"$PWD" -w "$PWD" \
     -e "PATH=$HORIZON_IMAGE_RUST_TOOLS_BIN:$RUST_CARGO_HOME_IN_IMAGE/bin:/usr/local/bin:/usr/bin:/bin" \
     "$STAGING" \
@@ -277,6 +286,7 @@ pub extern "C" fn horizon_sysroot_probe(n: u32) -> u32 {
     v.iter().sum()
 }
 EOF
+MSYS_NO_PATHCONV=1 \
 docker run --rm -v "$PWD":"$PWD" -w "$PWD" \
     -e "PATH=$RUST_CARGO_HOME_IN_IMAGE/bin:/usr/local/bin:/usr/bin:/bin" \
     "$STAGING" \

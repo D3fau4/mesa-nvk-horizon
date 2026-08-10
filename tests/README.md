@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-two standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-three standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -11,9 +11,9 @@ They come in three groups, and **which of them you get depends on what you built
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
 | Mesa's own code, measured on hardware | 2 | Mesa's core built | both build paths |
-| Vulkan, through NVK | 12 | the full NVK driver built | **the Meson path only** |
+| Vulkan, through NVK | 13 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 20 and the Meson path at most 32 — see
+So the Makefile produces at most 20 and the Meson path at most 33 — see
 [`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
 
 There are also six host-side suites that need no console at all; they are at the bottom
@@ -46,7 +46,7 @@ Without that, both build paths skip those two with a message and produce
 the other eighteen — and the Makefile path also deletes any `.nro` a
 previous build with Mesa present had left, so `build/` never mixes
 artefacts from two builds. Nothing else in this group needs Mesa; the
-twelve Vulkan tests need all of it, and NVK besides.
+thirteen Vulkan tests need all of it, and NVK besides.
 
 `$MESA_BUILD_DIR` selects where Mesa was built (default `build/mesa-probe`)
 and is honoured by all four of `scripts/{configure,build}-mesa.sh`, the
@@ -127,6 +127,7 @@ after touching either build system.
    | 30 | `t_vk_caps` | what the driver claims, measured against what the backend can do |
    | 31 | `t_vk_swapchain` | a `VK_KHR_swapchain` on the compositor: pacing, buffering, recreation, errors |
    | 32 | `t_vk_wsi_mt` | the same swapchain under concurrency and under length |
+   | 33 | `t_vk_suboptimal` | `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR`, and the line between them. Its section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed |
 
 3. Each test ends with "Press + to exit". The verdict is on screen and in
    `sdmc:/horizon_gpu_tests/<name>.log`.

@@ -102,7 +102,7 @@ RESULT: PASS (52/52)
 - Mesa's own output (`vk_logi`, `mesa_loge`) is interleaved into the same file: stderr
   is redirected into the log so driver messages and test messages share one timeline.
 
-`docs/hw-logs/` holds 164 of these from earlier runs, plus one console fatal report, with
+`docs/hw-logs/` holds 165 of these from earlier runs, plus one console fatal report, with
 a [narrative index](hw-logs/README.md) explaining what each one settled. Failing logs are
 kept deliberately — including ones later found to have measured less than they claimed.
 
@@ -128,13 +128,19 @@ Include:
 - **The 18 `horizon_gpu` tests** exercise the layer under Vulkan: `nv` bring-up, memory,
   address space, channels, submission, syncpoints, teardown, and the `nwindow` path.
   These need no Mesa build.
-- **The 12 `t_vk_*` tests** are the Vulkan ones — buffer fill and readback, transfers,
+- **The 13 `t_vk_*` tests** are the Vulkan ones — buffer fill and readback, transfers,
   compute, a triangle, textures, depth, formats, concurrent submits, capabilities, the
-  swapchain, and the multi-threaded swapchain. They only exist if you built NVK.
-- **What has never been verified**: display mode changes, docked resolution,
-  `VK_SUBOPTIMAL_KHR`, `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan, and two surfaces
-  over two `NWindow`s. The current known failures are listed in `STATUS.md` and are not
-  hidden.
+  swapchain, the multi-threaded swapchain, and `VK_SUBOPTIMAL_KHR`. They only exist if
+  you built NVK.
+- **One of them wants your hands.** `t_vk_suboptimal`'s section D needs the console
+  **docked or undocked while the test is running** — nothing in the process can resize a
+  VI layer, so that is the one part of it no run has executed, and
+  `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware. Thirty seconds of
+  somebody's attention closes it; if you have a dock, this is the single most valuable
+  run you can send.
+- **What has never been verified**: docked resolution,
+  `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan, and two surfaces over two `NWindow`s.
+  The current known failures are listed in `STATUS.md` and are not hidden.
 - **This is pre-1.0 software driving a GPU through system services.** It has taken a
   console down before — `qlaunch` fatal `0x290`, kept in `docs/hw-logs/` as evidence and
   fixed by patch `0070`. Nothing here can write to system storage, but a hang or a

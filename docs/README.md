@@ -1,6 +1,6 @@
 # Documentation index
 
-Most of this directory is **evidence** rather than prose: 164 console logs and the
+Most of this directory is **evidence** rather than prose: 165 console logs and the
 working record of how the driver got to where it is. The design documents are the nine
 files listed first.
 
@@ -37,7 +37,7 @@ is self-contained.
 
 | Path | What it is |
 |---|---|
-| [`hw-logs/`](hw-logs/README.md) | 164 console runs kept verbatim, plus one Atmosphère fatal report. Filenames carry their own verdict (`-PASS`, `-FAIL`, `-CRASH`, `-HUNG`). Its README is a narrative index of what each run settled — start there, not with the files. |
+| [`hw-logs/`](hw-logs/README.md) | 165 console runs kept verbatim, plus one Atmosphère fatal report. Filenames carry their own verdict (`-PASS`, `-FAIL`, `-CRASH`, `-HUNG`). Its README is a narrative index of what each run settled — start there, not with the files. |
 | `history/` | The dated working record moved out of `STATUS.md` when that file reached 7749 lines (decision D17), verbatim and in original order: phases 1–5, the review rounds, and the commit logs. |
 
 Both directories are covered by a `MANIFEST.sha256` and checked by

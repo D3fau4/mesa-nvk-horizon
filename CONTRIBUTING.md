@@ -118,7 +118,7 @@ CI runs all five on every push and pull request, as the first steps of the one w
 there is ([`.forgejo/workflows/archives.yml`](.forgejo/workflows/archives.yml)). They
 take six seconds and run before anything expensive, so their answer arrives first. The
 rest of that job builds Mesa, the Rust half and NVK, and asserts that **every** `.a` the
-tests link exists and that 32 `.nro` link them. If you touch `mesa-patches/`, that is
+tests link exists and that every `.nro` meson.build names links them. If you touch `mesa-patches/`, that is
 what will tell you.
 
 Two further gates — `check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built

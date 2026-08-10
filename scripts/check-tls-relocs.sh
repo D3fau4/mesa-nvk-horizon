@@ -131,9 +131,23 @@ fi
 
 # One container invocation for all of them: starting a container per
 # object turned a two-second check into minutes.
+#
+# THE LIST GOES IN A FILE, NOT ON THE COMMAND LINE, and that is not
+# tidiness. Passed as arguments, this reached 1203 objects and 126 kB on
+# a full NVK build — past the 32767-character command line Windows gives
+# a native binary, so docker.exe never ran, `report` came back empty,
+# and the branch below blamed the toolchain. The file lives in the tree,
+# which horizon_run mounts at the same path on both sides, so nothing
+# about how the container is started has to change.
+#
+# Its stderr is NOT discarded any more, for the same reason: `2>/dev/null`
+# on this line is what turned a specific docker error into the guess
+# underneath it.
+printf '%s\n' "${objs[@]}" > "$tls_probe_dir/objects.txt"
 report=$(horizon_run sh -c '
     ok=0; bad=0
-    for o in "$@"; do
+    while IFS= read -r o; do
+        [ -n "$o" ] || continue
         aarch64-none-elf-nm "$o" 2>/dev/null |
             grep -q "U __aarch64_read_tp" || continue
         if aarch64-none-elf-readelf -r "$o" 2>/dev/null |
@@ -143,9 +157,9 @@ report=$(horizon_run sh -c '
             bad=$((bad+1))
             echo "BAD $o"
         fi
-    done
+    done < "$1"
     echo "COUNT $ok $bad"
-' sh "${objs[@]}" 2>/dev/null)
+' sh "$tls_probe_dir/objects.txt")
 
 bad_list=$(printf '%s\n' "$report" | sed -n 's/^BAD //p')
 counts=$(printf '%s\n' "$report" | sed -n 's/^COUNT //p')

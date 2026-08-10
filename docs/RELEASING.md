@@ -34,7 +34,7 @@ in, so a package built by hand is no different.
 the release body, because a reader who skips `STATUS.md` should still not come away
 thinking otherwise. A `.nro` that compiles is not a `.nro` that works.
 
-**What it leaves out, and why.** The twelve `t_vk_*` tests and the NVK driver itself are
+**What it leaves out, and why.** The thirteen `t_vk_*` tests and the NVK driver itself are
 absent. They need the derived toolchain image — libclang, `bindgen`, `cbindgen`, a Rust
 sysroot for the Switch target, an LLVM-15 `libclc` closure — plus a full Mesa build, with
 material fetched outside the container because containers here have no network. That is
@@ -59,7 +59,7 @@ else's CDN.
 This is the release worth making, and it cannot be automated: no CI runner has a Nintendo
 Switch attached.
 
-1. **Build everything**, including NVK — [`BUILDING.md`](BUILDING.md) §4. Up to 32
+1. **Build everything**, including NVK — [`BUILDING.md`](BUILDING.md) §4. Up to 33
    `.nro`.
 2. **Package it**, and let the manifest do its job:
 
@@ -104,9 +104,10 @@ in it carries its number and the run that produced it.
 Also state, in any release notes:
 
 - the build id, which is the only thing that makes a bug report attributable;
-- what has never been verified — currently display mode changes, docked resolution,
-  `VK_SUBOPTIMAL_KHR`, `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan, and two surfaces
-  over two `NWindow`s;
+- what has never been verified — currently docked resolution,
+  `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan, two surfaces over two `NWindow`s, and
+  `VK_SUBOPTIMAL_KHR` ever being *returned* (run 21 measured the rule around it over
+  2303 frames, but its section D needs a hand on the dock and has never executed);
 - the known failures from `STATUS.md`, not a summary of them;
 - that this is pre-1.0 software driving a GPU through system services, and that it has
   taken a console down before.

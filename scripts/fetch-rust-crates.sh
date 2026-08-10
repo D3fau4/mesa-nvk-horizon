@@ -156,7 +156,19 @@ for blk in open(lock).read().split('[[package]]'):
     # dependencies inside the standard library itself.
     if n and v and s and c and s.group(1).startswith('registry+'):
         pkgs.append((n.group(1), v.group(1), c.group(1)))
-open(out, 'w').write(''.join(f"{n} {v} {c}\n" for n, v, c in pkgs))
+# newline='\n', and it is not a style choice. Python's text mode
+# translates '\n' to the platform's line ending, so on Windows this file
+# came out CRLF — and the shell loop below reads it with `read -r`,
+# which splits on IFS and leaves the '\r' attached to the checksum. Every
+# crate then "did not match the lockfile checksum", was re-downloaded,
+# and failed with the two hashes printed identically:
+#   error: addr2line-0.27.0.crate hashes to efe1709..., but the
+#          lockfile says efe1709.... Refusing to vendor it.
+# which is a gate that cannot be satisfied and cannot be diagnosed from
+# what it prints. Same class as the CRLF defect scripts/split-status.py
+# was fixed for; this is the file the *shell* reads back.
+open(out, 'w', newline='\n').write(
+    ''.join(f"{n} {v} {c}\n" for n, v, c in pkgs))
 print(f"fetch-rust-crates: {len(pkgs)} registry packages in the lockfile")
 PY
 

@@ -213,11 +213,24 @@ fi
 # copy of that directory looked like a valid package and attributed
 # exactly the stale binaries the gates exist to stop. Reported by Codex
 # on PR #8, and right.
+#
+# NO `strings`, because it is not everywhere. Git Bash on Windows ships
+# no binutils, so `strings -a` was "command not found" for every
+# artefact and this script then reported the one thing it must never
+# report wrongly: "no build id in: <all 31 of them>". The stamp was in
+# each of those binaries the whole time.
+#
+# `grep -a -o` reads the same bytes with a tool POSIX requires. The
+# marker is anchored the same way it was — it is the token the log line
+# starts with, so what this reads and what the operator reads stay the
+# same bytes — and the trailing class stops at the first byte that
+# cannot be in a stamp, which is what `strings` was doing implicitly.
 _pkg_ids=""
 _pkg_unstamped=""
 for nro in "$SRC"/*.nro; do
     [ -e "$nro" ] || continue
-    _id=$(strings -a "$nro" | sed -n 's/^horizon-build-id //p' | head -1)
+    _id=$(grep -a -o 'horizon-build-id [!-~]*' "$nro" 2>/dev/null |
+              head -1 | sed 's/^horizon-build-id //')
     if [ -z "$_id" ]; then
         _pkg_unstamped="$_pkg_unstamped $(basename "$nro")"
     else

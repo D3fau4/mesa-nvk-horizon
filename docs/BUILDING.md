@@ -64,7 +64,7 @@ There are two, deliberately, and they do **not** build the same set:
 | `libhorizon_gpu.a` | yes | yes |
 | The 18 `horizon_gpu` tests | yes | yes |
 | `t_threads`, `t_ostime` (need Mesa core) | yes, when Mesa is built | yes, when Mesa is built |
-| The 12 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
+| The 13 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
 | Maximum `.nro` | 20 | **32** |
 
 The Makefile is the path whose output was verified on hardware, and it is readable
@@ -142,7 +142,7 @@ scripts/build-mesa-clc.sh           # native tools for the build machine
 scripts/build-mesa-nvk.sh           # configures itself if needed
 ```
 
-Then `scripts/build-horizon.sh` again, and the 12 `t_vk_*` `.nro` appear.
+Then `scripts/build-horizon.sh` again, and the 13 `t_vk_*` `.nro` appear.
 
 `$MESA_NVK_BUILD_DIR` (default `build/mesa-nvk`) selects where the driver is built and
 is passed through to Meson as `-Dnvk_build_dir`. Set it for *both* the driver build and
@@ -242,7 +242,7 @@ resolves local-vs-container mode and is what every other script agrees through)
 
 **CI**
 `ci-build-archives.sh` — the whole chain above in one command, with retries around the
-network steps, ending in a check that every archive exists and that 32 `.nro` link
+network steps, ending in a check that every archive exists and that every `.nro` meson.build names links
 them. Run it by hand to reproduce what CI does · `ci-require-host-tools.sh` and
 `ci-require-docker.sh` — the two preflights it starts with ·
 `ci-forgejo-release.sh` — creates a release and uploads assets through the Forgejo API
@@ -298,7 +298,7 @@ no longer corresponds to `toolchain/Dockerfile` cannot be used silently.
 | `DEVKITPRO` | unset | A local devkitA64. When set, no container is used anywhere. |
 | `HORIZON_NX_IMAGE` | `ghcr.io/d3fau4/nx-dev:latest` | The toolchain container. |
 | `MESA_BUILD_DIR` | `build/mesa-probe` | Where Mesa's core was built; selects whether `t_threads`/`t_ostime` are built. |
-| `MESA_NVK_BUILD_DIR` | `build/mesa-nvk` | Where NVK was built; selects whether the 12 `t_vk_*` are built. |
+| `MESA_NVK_BUILD_DIR` | `build/mesa-nvk` | Where NVK was built; selects whether the 13 `t_vk_*` are built. |
 | `HORIZON_BUILD_DIR` | `build/meson` | The Meson build directory. |
 | `CC`, `OUT` | `cc`, `build/host-tests` | Host tests only. |
 
