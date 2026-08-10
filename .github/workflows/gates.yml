@@ -26,6 +26,15 @@ on:
     branches: ['**']
   pull_request:
 
+# Nothing here writes anything.
+permissions:
+  contents: read
+
+# Superseded pushes to the same branch are not worth minutes.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -53,3 +62,48 @@ jobs:
       # toolchain, no device.
       - name: host tests
         run: ./scripts/run-host-tests.sh
+
+  # The gates above never compiled anything for the console, so a change
+  # that broke the cross build left all five green — which is how the
+  # release path could fail for the first time on a tag, on work already
+  # merged. This is a pull of the toolchain image and about a minute of
+  # compiling.
+  #
+  # It is deliberately the *Makefile* path: it needs nothing but the
+  # image, it is the path whose output was verified on hardware, and it
+  # is what .github/workflows/release.yml runs. The Meson path needs
+  # pinned Meson installed over the network, and the twelve t_vk_* tests
+  # need the whole Mesa and Rust chain — both still uncovered here, and
+  # said out loud rather than left to look complete.
+  cross:
+    name: cross build
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/d3fau4/nx-dev:latest
+      env:
+        DEVKITPRO: /opt/devkitpro
+    steps:
+      - uses: actions/checkout@v4
+
+      # gen-build-id.sh reads HEAD, and git refuses a repository owned
+      # by another uid — which is what a checkout mounted into a
+      # container is. Without this the stamp silently becomes "nogit".
+      - name: let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: the .nro build
+        run: make all -j"$(nproc)"
+
+      # Not the build's own claim: count what is on disk. A build that
+      # silently produced fewer artefacts is the failure this catches.
+      - name: 18 .nro, and the packaging step agrees
+        run: |
+          set -eu
+          n=$(find build -maxdepth 1 -name '*.nro' | wc -l)
+          echo "built $n .nro"
+          [ "$n" -eq 18 ] || {
+              echo "expected 18 .nro from the Makefile path without Mesa" >&2
+              exit 1
+          }
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
