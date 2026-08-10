@@ -42,8 +42,17 @@ tens of minutes and several GB, and it is not something a tag push should quietl
 The gap is named in the workflow header and in the release notes rather than left to look
 like completeness.
 
-`workflow_dispatch` runs the build and packaging without publishing, which is the way to
-check the pipeline without cutting anything.
+`workflow_dispatch` runs the build and packaging **without publishing**, which is the way
+to check the pipeline without cutting anything: it builds, packages, proves the manifest
+identifies its toolchain, and attaches the tarball to the run as an artefact. Publishing
+is guarded on the ref being a `v*` tag, because on a manual run `$GITHUB_REF_NAME` is the
+branch — without that guard, a dispatch from `main` would publish a release called
+`main`.
+
+[`gates.yml`](../.forgejo/workflows/gates.yml) is manually runnable too. That is mostly
+for its `archives` job, which fetches from four external services: when it goes red,
+pressing the button again is how you tell a broken tree from a bad afternoon on somebody
+else's CDN.
 
 ## The manual one — with hardware behind it
 

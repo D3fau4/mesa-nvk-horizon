@@ -81,9 +81,17 @@ jobs:
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
-          tar -czf "mesa-nvk-horizon-${tag}-nro.tar.gz" -C build/pkg .
-          sha256sum "mesa-nvk-horizon-${tag}-nro.tar.gz" \
-              > "mesa-nvk-horizon-${tag}-nro.tar.gz.sha256"
+          # On a tag this is the tag. On a workflow_dispatch it is the
+          # BRANCH, and a branch name contains slashes — this very
+          # branch is claude/repo-publication-prep-q96kty — which would
+          # send `tar -czf` at a directory that does not exist. Only the
+          # filename is sanitised; the publish step below is guarded on
+          # the ref being a tag, so the name it passes is always the
+          # real one.
+          safe_tag=$(printf '%s' "$tag" | tr '/' '-')
+          tar -czf "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" -C build/pkg .
+          sha256sum "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
+              > "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
 
           build_id=$(sed -n 's/^build id  *: //p' build/pkg/MANIFEST.txt)
           count=$(find build/pkg -name '*.nro' | wc -l)
@@ -139,12 +147,49 @@ jobs:
             echo "devkitA64 and libnx package versions the build used."
           } > NOTES.md
 
+      # A manual run gets the artefact and stops. Everything above this
+      # point is the useful half of a dry run — it builds, packages, and
+      # proves the manifest identifies its toolchain — and none of it
+      # should end in a published release.
+      - name: Upload dist
+        uses: forgejo/upload-artifact@v4
+        with:
+          # A constant, not the ref: a branch name has slashes in it and
+          # an artefact name is not a path.
+          name: mesa-nvk-horizon-nro
+          path: |
+            mesa-nvk-horizon-*-nro.tar.gz
+            mesa-nvk-horizon-*-nro.tar.gz.sha256
+            NOTES.md
+          if-no-files-found: error
+
+      # ONLY FOR A TAG, and the guard is not decoration.
+      #
+      # $GITHUB_REF_NAME is the *branch* name on a workflow_dispatch, so
+      # without this a manual run from main would publish a release
+      # called "main" — with notes and assets naming it as a version.
+      # The GitHub workflow this was ported from had the guard on a
+      # separate publishing job; collapsing the two jobs into one for
+      # Forgejo dropped it, and docs/RELEASING.md was already promising
+      # the behaviour restored here: dispatch builds and packages
+      # without cutting anything.
       - name: publish
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
+          # Same transformation the assembling step used, so the names
+          # cannot drift apart. For a v* tag the two are identical.
+          safe_tag=$(printf '%s' "$tag" | tr '/' '-')
           scripts/ci-forgejo-release.sh "$tag" NOTES.md \
-              "mesa-nvk-horizon-${tag}-nro.tar.gz" \
-              "mesa-nvk-horizon-${tag}-nro.tar.gz.sha256"
+              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
+              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+
+      - name: say what a dispatch run did and did not do
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "Not a v* tag, so nothing was published."
+          echo "The package is attached to this run as an artefact."
+          echo "To cut a release: git tag -a vX.Y.Z -m '…' && git push origin vX.Y.Z"

@@ -28,6 +28,12 @@ name: gates
 on:
   push:
   pull_request:
+  # Runnable by hand from the web UI. Worth having for the `archives`
+  # job in particular: it is the long one, it depends on material
+  # fetched from four external services, and "did that break, or was it
+  # the network" is a question best answered by pressing a button rather
+  # than by pushing an empty commit.
+  workflow_dispatch:
 
 concurrency:
   group: gates-${{ github.ref }}
