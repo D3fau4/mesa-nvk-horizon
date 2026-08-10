@@ -33,8 +33,9 @@
 
 # 2. The hardware logs. They are evidence: verbatim console output whose
 #    sha256 is recorded in docs/hw-logs/MANIFEST.sha256 and checked by
-#    scripts/check-history-intact.sh. All 165 are LF today, which is the
-#    point — a checkout that converted them, in either direction, would
+#    scripts/check-history-intact.sh. All 165 files there (164 logs and
+#    one console fatal report) are LF today, which is the point — a
+#    checkout that converted them, in either direction, would
 #    fail that check on a tree nobody had edited, and the failure would
 #    say the evidence had been altered.
 docs/hw-logs/** -text
