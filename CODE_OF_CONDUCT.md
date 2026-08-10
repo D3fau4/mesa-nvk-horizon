@@ -59,9 +59,9 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement by opening a
-private report through this repository's **Security** tab, or by contacting the
-repository owner ([@D3fau4](https://github.com/D3fau4)) directly on GitHub.
+reported to the community leaders responsible for enforcement by contacting
+the repository owner (**@D3fau4**) directly on the Forgejo instance this
+project is hosted on, or through any contact address listed on their profile.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

@@ -22,9 +22,14 @@ There is no released version yet, so only the current `main` branch is supported
 
 ## Reporting a vulnerability
 
-Report privately through **GitHub Security Advisories** — the *Report a vulnerability*
-button under this repository's *Security* tab. Please do not open a public issue for
-something that could brick or crash somebody's console until it has been looked at.
+**Contact the maintainer directly and privately.** This project is hosted on Forgejo,
+which has no private-advisory workflow, so there is no button to press — send a direct
+message to the repository owner on the instance, or use any contact address listed on
+their profile. Please do not open a public issue for something that could brick or
+crash somebody's console until it has been looked at.
+
+If you have no private channel and the issue is serious, open an issue saying only
+*that* you have found something and how to reach you, with no details.
 
 Include, as far as you have it:
 

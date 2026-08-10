@@ -115,10 +115,14 @@ scripts/check-mesa-test-parity.sh  # the Makefile and the Meson build still agre
 ```
 
 CI runs all five on every push and pull request
-([`.github/workflows/gates.yml`](.github/workflows/gates.yml)), plus a cross build of
-the `.nro` in the toolchain container. Two further gates —
-`check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built artefacts and stay
-manual; run them if your change touches the dispatch table or TLS.
+([`.forgejo/workflows/gates.yml`](.forgejo/workflows/gates.yml)), and two more jobs
+beside them: a cross build of the eighteen `.nro`, and `archives`, which builds Mesa,
+the Rust half and NVK and asserts that **every** `.a` the tests link exists and that 32
+`.nro` link them. If you touch `mesa-patches/`, that last one is what will tell you.
+
+Two further gates — `check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built
+artefacts, and the `archives` job runs them once it has produced some. Run them yourself
+if your change touches the dispatch table or TLS and you do not want to wait for CI.
 
 Build instructions are in [`docs/BUILDING.md`](docs/BUILDING.md); running the result on
 a console is [`docs/USAGE.md`](docs/USAGE.md).

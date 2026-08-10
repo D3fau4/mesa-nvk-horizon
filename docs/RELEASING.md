@@ -6,20 +6,29 @@ this project is organised around: **what compiled** versus **what ran on a conso
 ## The automatic one — cross-built, unverified
 
 Pushing a tag matching `v*` runs
-[`.github/workflows/release.yml`](../.github/workflows/release.yml):
+[`.forgejo/workflows/release.yml`](../.forgejo/workflows/release.yml):
 
 ```sh
 git tag -a v0.1.0 -m "…"
 git push origin v0.1.0
 ```
 
-It builds the Makefile path inside `ghcr.io/d3fau4/nx-dev:latest`, runs
-`scripts/package-horizon.sh`, and publishes:
+It builds the Makefile path *driving* `ghcr.io/d3fau4/nx-dev:latest` from the runner —
+not inside it, which matters: a step running inside the image has `$DEVKITPRO` set, and
+`scripts/toolchain-env.sh` then reports local mode, so the manifest would record
+`image: local` and lose the digest of the image that actually produced the binaries.
+The workflow refuses to publish a package whose manifest carries no `@sha256:`.
 
-- `mesa-nvk-horizon-<tag>-nro.tar.gz` — the 18 `horizon_gpu` test `.nro` plus
-  `MANIFEST.txt`,
+Then `scripts/package-horizon.sh`, and it publishes:
+
+- `mesa-nvk-horizon-<tag>-nro.tar.gz` — the 18 `horizon_gpu` test `.nro`, `LICENSE`,
+  `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
 - release notes carrying the build id and the caveats below.
+
+The licence files are in there because MIT requires its notice to accompany copies of
+the software, and a tarball of built artefacts is a copy. `package-horizon.sh` puts them
+in, so a package built by hand is no different.
 
 **What it is not.** Nothing in that package has run on a console. The notes say so, in
 the release body, because a reader who skips `STATUS.md` should still not come away

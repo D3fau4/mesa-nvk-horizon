@@ -186,8 +186,8 @@ read-only.
 ## 7. The gates
 
 Five run in CI on every push and pull request
-([`.github/workflows/gates.yml`](../.github/workflows/gates.yml)), alongside a cross
-build of the `.nro` in the toolchain container:
+([`.forgejo/workflows/gates.yml`](../.forgejo/workflows/gates.yml)), alongside two build
+jobs — `cross` for the eighteen `.nro`, and `archives` for every `.a` the tests link:
 
 | Gate | What it refuses |
 |---|---|
@@ -197,21 +197,23 @@ build of the `.nro` in the toolchain container:
 | `check-mesa-test-parity.sh` | the Makefile and the Meson build drifting apart on tests, archives, defines or includes |
 | `run-host-tests.sh` | a regression in the pure logic |
 
-Two more need built artefacts and stay manual, which
-[`gates.yml`](../.github/workflows/gates.yml) says in its own header rather than
-pretending the coverage is complete:
+Two more need built artefacts, so they used to be manual. The `archives` job produces
+exactly those artefacts, so it runs them too — `scripts/ci-build-archives.sh` ends with
+both:
 
 - `check-dispatch-complete.sh` — reads the generated Vulkan dispatch table out of a
   linked Horizon ELF.
 - `check-tls-relocs.sh` — scans devkitA64 objects for the TLS miscompile described in
   [`docs/devkita64-tls-report.md`](devkita64-tls-report.md).
 
+Run them by hand after a build if you want them sooner than CI.
+
 `check-rust-target.sh` compares the checked-in target JSON against what `rustc` reports,
 and needs a nightly toolchain.
 
 ## 8. The scripts, in one table
 
-All 32 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
+All 34 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
 themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 
 **Fetch** (host-side, because containers have no network)
@@ -236,6 +238,12 @@ themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 `package-horizon.sh` · `print-toolchain-versions.sh` · `apply-mesa-patches.sh` ·
 `split-status.py` · `spv-embed.py` · `toolchain-env.sh` (sourced, never executed — it
 resolves local-vs-container mode and is what every other script agrees through)
+
+**CI**
+`ci-build-archives.sh` — the whole chain above in one command, with retries around the
+network steps, ending in a check that every archive exists and that 32 `.nro` link
+them. Run it by hand to reproduce what CI does · `ci-forgejo-release.sh` — creates a
+release and uploads assets through the Forgejo API
 
 ## 9. Environment variables
 

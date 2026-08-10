@@ -1,20 +1,19 @@
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
 name: Bug report
-description: Something is wrong in the driver, the build, or the tooling
+about: Something is wrong in the driver, the build, or the tooling
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before filing: [`STATUS.md`](../blob/main/STATUS.md) lists what is already known
-        broken and what has never been verified, and
-        [`docs/known-risks.md`](../blob/main/docs/known-risks.md) lists the open risks.
-        A bug already recorded there does not need a new issue — though a *new
-        occurrence* of one, with its log, is genuinely useful.
+        Before filing: `STATUS.md` lists what is already known broken and what has
+        never been verified, and `docs/known-risks.md` lists the open risks. A bug
+        already recorded there does not need a new issue — though a *new occurrence*
+        of one, with its log, is genuinely useful.
 
-        **If this can crash or brick a console, report it privately instead** through
-        the Security tab. See [`SECURITY.md`](../blob/main/SECURITY.md).
+        **If this can crash or brick a console, do not open a public issue.** Contact
+        the maintainer directly first; see `SECURITY.md`.
 
   - type: dropdown
     id: area
@@ -68,8 +67,8 @@ body:
     attributes:
       label: How to reproduce
       description: >
-        The exact commands, in order. For a console issue, which `.nro` and what you did
-        in it.
+        The exact commands, in order. For a console issue, which `.nro` and what you
+        did in it.
       render: shell
     validations:
       required: true

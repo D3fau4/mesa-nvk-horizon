@@ -1,7 +1,7 @@
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
 name: Hardware run report
-description: Report the result of running a .nro on a real console — pass or fail
+about: Report the result of running a .nro on a real console — pass or fail
 title: "run: <test name> on <build id>"
 labels: ["hardware-run"]
 body:
@@ -9,9 +9,8 @@ body:
     attributes:
       value: |
         **This is the most useful thing you can file here.** Nobody working on this
-        project is guaranteed to have a console in front of them
-        ([`docs/known-risks.md`](../blob/main/docs/known-risks.md) R2), so a run
-        somebody else did is often the only way a change gets verified.
+        project is guaranteed to have a console in front of them (`docs/known-risks.md`
+        R2), so a run somebody else did is often the only way a change gets verified.
 
         A passing run is worth reporting too. Please attach the log file rather than
         retyping it — the exact text is the evidence.
@@ -103,9 +102,9 @@ body:
     attributes:
       label: The log
       description: >
-        Attach `sdmc:/horizon_gpu_tests/<name>.log` by dragging it in. If the console
-        produced a fatal report, attach that from `sdmc:/atmosphere/fatal_reports/` too.
-        Paste inline only if the file is short.
+        Attach `sdmc:/horizon_gpu_tests/<name>.log`. If the console produced a fatal
+        report, attach that from `sdmc:/atmosphere/fatal_reports/` too. Paste inline
+        only if the file is short.
       render: text
     validations:
       required: true

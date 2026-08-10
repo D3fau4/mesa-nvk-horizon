@@ -86,7 +86,7 @@ this project is guaranteed to have a console in front of them.
 | `mesa/` | Pinned Mesa checkout, fetched by `scripts/fetch-mesa.sh` and gitignored. **Not a submodule, and not our source.** |
 | `compat/` | Narrowly-scoped newlib/libnx gap fillers, each individually justified. Currently one: `sysconf`. |
 | `toolchain/` | Meson cross file, the derived-image Dockerfile, Rust target JSON, and every pinned version |
-| `scripts/` | 32 reproducible fetch / configure / build / check / package scripts |
+| `scripts/` | 34 reproducible fetch / configure / build / check / package / CI scripts |
 | `tests/` | 6 host suites and 32 on-device tests |
 | `docs/` | Design, milestones, risks, the reference audit, the working record and 164 hardware logs |
 | `examples/` | Reserved. Empty today. |
