@@ -30,6 +30,95 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ---
 
+## CI on Forgejo, for real this time — and three defects it found (2026-08-10)
+
+The YAML stopped being theoretical: it ran on the project's own Forgejo
+(`act_runner v12.7.1`, `ghcr.io/catthehacker/ubuntu:runner-latest`,
+`runs-on: ubuntu-latest`). What it found is worth more than the green
+tick.
+
+### What the first two runs settled
+
+**Run 1 (`gates`) passed.** Five gates and six host suites, same numbers
+as here, in six seconds. `actions/checkout@v5` resolves from
+`data.forgejo.org` without help.
+
+**Run 2 (`archives`) failed, usefully.** It got fifty seconds in — Mesa
+cloned, 73 patches applied, 29 Rust wraps downloaded — and died on
+
+    scripts/fetch-rust-tools.sh: line 125: cargo: command not found
+
+The runner image ships no Rust. **And the retry loop tried three more
+times over thirty seconds**, for a binary that was never going to
+appear. A retry is for a flaky network; a missing tool is a fact about
+the machine. `scripts/ci-require-host-tools.sh` now asks about those
+facts first — git, python3, curl, tar, sha256sum, cargo — before the
+loop can see them.
+
+One worry was disproved: `ci-require-docker.sh` reported
+`Docker version 29.7.2-1, uid 1001`. act_runner's non-root job user can
+reach the socket after all.
+
+### Two defects in the toolchain image, found while wiring up the registry
+
+**1. The identity was never re-checked after fetching.**
+`build-toolchain-image.sh` compares the existing image's identity label
+against what it wants, at the top — before the fetches that the identity
+partly depends on. On any tree without the fetched material, which is
+every CI checkout, that first answer cannot match, and there was no
+second check. So a machine holding exactly the right image rebuilt it
+anyway: **nine minutes for an answer available the moment the fetches
+finished.** Measured after the fix: fresh closure state → 15 s of
+fetching → `is current (identity confirmed after fetching)`, no build.
+
+**2. `clc-closure` in that identity was always empty.** It hashed
+`build/toolchain/clc-deps/closure.txt`, and nothing has ever written
+that file — `fetch-clc-deps.sh` produces `debs/` and an `installed.txt`
+listing what the base image already had. `sha256sum` failed silently on
+every run since the function was written, so **a change in the resolved
+LLVM closure could not have rebuilt the image**: exactly the drift that
+field exists to catch, undetected by the line meant to catch it. It now
+hashes the sorted list of the 42 `.deb` names, which carry their
+versions. One rebuild to re-label, then `is current`.
+
+### The registry
+
+`.forgejo/workflows/toolchain-image.yml` publishes the derived image
+(11 min, 7.3 GB) to the instance's own registry when
+`toolchain/Dockerfile`, `versions.env` or the build script change; the
+build job pulls it. The location is computed from `$GITHUB_SERVER_URL`
+and `$GITHUB_REPOSITORY` rather than written down, so nothing bakes in a
+hostname.
+
+**A pull is a candidate, not an authority.** The identity check above
+still runs against it and rebuilds if it no longer matches the
+Dockerfile and the pins. Verified locally by tagging the image under the
+registry name: `toolchain-env.sh` selects it, `build-toolchain-image.sh`
+calls it current without rebuilding, and `ci-build-archives.sh` runs
+green through it to 32 `.nro`.
+
+### Also
+
+CI is one workflow now, at the owner's direction: `gates` and `cross`
+are gone and their five cheap checks are the opening steps of
+`archives`, where they still answer in six seconds. `cross` was
+redundant — `archives` builds those eighteen `.nro` and twelve more.
+
+`check-no-abs-paths.sh` rejected the new preflight twice, for a
+letter-colon-backslash sequence inside an escaped `PATH` example and
+then inside the comment explaining it. The gate was right both times.
+
+### Unverified
+
+The three workflow files have not run in their current form. The scripts
+under them have: `ci-build-archives.sh` end to end several times,
+`ci-require-host-tools.sh` and `ci-require-docker.sh` down every branch,
+`ci-forgejo-release.sh` against a local imitation of the Forgejo API.
+Still a **cross build** throughout — no console, and run 20 is still the
+newest hardware evidence.
+
+---
+
 ## CI moved to Forgejo, and it now builds every archive (2026-08-10)
 
 Two changes asked for after the entry below, and one of them closes a
