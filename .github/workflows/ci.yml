@@ -112,14 +112,29 @@ jobs:
       # Best-effort. Failing here is expected and fine: the very first
       # run ever, or the first run after a Dockerfile/pin change moved
       # the identity nothing published yet matches.
+      #
+      # pre_id is captured through `if id=$(...); then`, not through
+      # $(cmd 2>/dev/null || echo none) inlined in the echo. Measured:
+      # `docker image inspect` on a missing image writes an empty line
+      # to *stdout* before it fails, so the naive form captured
+      # $'\npre none' — two lines — and GitHub's $GITHUB_OUTPUT parser
+      # rejected the bare second line ("Invalid format 'none'"). The
+      # `if` form never reads $id on the failure path, so that stray
+      # blank line never reaches the file.
       - name: pull the cached toolchain image, if there is one
         id: pull
         run: |
           set -eu
-          docker pull "$TOOLCHAIN_IMAGE" || \
+          if docker pull "$TOOLCHAIN_IMAGE"; then
+              :
+          else
               echo "ci: no cached toolchain image yet (first run, or the pins moved)"
-          echo "pre_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null || echo none)" \
-              >> "$GITHUB_OUTPUT"
+          fi
+          pre_id=none
+          if id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null); then
+              pre_id="$id"
+          fi
+          echo "pre_id=$pre_id" >> "$GITHUB_OUTPUT"
 
       # Unmodified script. HORIZON_NX_DERIVED_IMAGE is the override
       # scripts/toolchain-env.sh already reads; pointing it at the tag
@@ -132,8 +147,8 @@ jobs:
           set -eu
           export PATH="$HOME/.cargo/bin:$PATH"
           scripts/build-toolchain-image.sh
-          echo "post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")" \
-              >> "$GITHUB_OUTPUT"
+          post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")
+          echo "post_id=$post_id" >> "$GITHUB_OUTPUT"
 
       # Push only when the image actually changed — comparing image IDs,
       # not trusting that the step ran, because "ran" and "rebuilt" are

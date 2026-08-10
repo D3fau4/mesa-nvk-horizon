@@ -91,14 +91,25 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" |
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # See ci.yml's identical step for why pre_id is captured through
+      # `if id=$(...); then` rather than $(cmd 2>/dev/null || echo none)
+      # inlined in the echo — the naive form broke on a real run because
+      # `docker image inspect` writes a blank line to stdout before it
+      # fails, corrupting the $GITHUB_OUTPUT line with an embedded newline.
       - name: pull the cached toolchain image, if there is one
         id: pull
         run: |
           set -eu
-          docker pull "$TOOLCHAIN_IMAGE" || \
+          if docker pull "$TOOLCHAIN_IMAGE"; then
+              :
+          else
               echo "release: no cached toolchain image yet (first run, or the pins moved)"
-          echo "pre_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null || echo none)" \
-              >> "$GITHUB_OUTPUT"
+          fi
+          pre_id=none
+          if id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null); then
+              pre_id="$id"
+          fi
+          echo "pre_id=$pre_id" >> "$GITHUB_OUTPUT"
 
       - name: the toolchain image is present and current
         id: build
@@ -108,8 +119,8 @@ jobs:
           set -eu
           export PATH="$HOME/.cargo/bin:$PATH"
           scripts/build-toolchain-image.sh
-          echo "post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")" \
-              >> "$GITHUB_OUTPUT"
+          post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")
+          echo "post_id=$post_id" >> "$GITHUB_OUTPUT"
 
       - name: publish the toolchain image, if it rebuilt
         if: steps.pull.outputs.pre_id != steps.build.outputs.post_id
