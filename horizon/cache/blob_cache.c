@@ -1,0 +1,1105 @@
+/*
+ * horizon_gpu — the keyed blob store declared in
+ * horizon_gpu/blob_cache.h. Read that header first: it states what this
+ * file is for, why the format is content-validated rather than
+ * rename-atomic, and what the concurrency contract is.
+ *
+ * ON-DISK FORMAT, in one place so it can be checked against the code.
+ * Every field is little-endian and is read and written byte by byte
+ * through the get_u32le/put_u32le helpers below — never by casting a
+ * buffer to a struct, which would make the format depend on this
+ * compiler's padding and alignment rules.
+ *
+ *   file header, 64 bytes at offset 0
+ *     0   magic[8]           "HZBLOBC1"
+ *     8   format_version     u32, HORIZON_BC_FORMAT_VERSION
+ *     12  header_size        u32, 64 + align8(driver_key_size)
+ *     16  key_size           u32, HORIZON_GPU_BLOB_CACHE_KEY_SIZE
+ *     20  driver_key_size    u32
+ *     24  driver_key_crc     u32, crc32 of the driver key bytes
+ *     28  flags              u32, reserved, 0
+ *     32  reserved[7]        u32 x 7
+ *     60  header_crc         u32, crc32 over bytes [0, 60)
+ *     64  driver key bytes, then zero padding to header_size
+ *
+ *   record, 56 bytes then payload then zero padding to a multiple of 8
+ *     0   magic              u32, HORIZON_BC_REC_MAGIC
+ *     4   flags              u32, HORIZON_BC_REC_*
+ *     8   key[32]
+ *     40  payload_size       u32
+ *     44  payload_crc        u32, crc32 of the payload bytes
+ *     48  seq                u32, monotonic within the file
+ *     52  header_crc         u32, crc32 over bytes [0, 52)
+ *
+ * WHY THE DRIVER KEY IS STORED WHOLE AND COMPARED BYTE FOR BYTE. A
+ * digest would be smaller, and a digest collision here does not mean a
+ * miss — it means handing a shader compiled by a different driver to
+ * this one, which is a GPU fault with no error path. The key is a few
+ * dozen bytes; there is no reason to be clever about it.
+ *
+ * Copyright (c) mesa-nvk-horizon contributors
+ * SPDX-License-Identifier: MIT
+ */
+
+/* Before any include. fileno(), fsync() and ftruncate() are POSIX, and
+ * the host test build compiles with -std=c11 (scripts/run-host-tests.sh),
+ * where glibc hides all three unless a feature-test macro asks for them.
+ * newlib reads the same macro (__POSIX_VISIBLE), so one define serves
+ * both builds. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#include "horizon_gpu/blob_cache.h"
+
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include "crc32.h"
+
+/* ------------------------------------------------------------------ */
+/* Format constants                                                    */
+/* ------------------------------------------------------------------ */
+
+#define HORIZON_BC_FORMAT_VERSION 1u
+
+#define HORIZON_BC_FILE_HDR_SIZE  64u
+#define HORIZON_BC_REC_HDR_SIZE   56u
+
+/* Record alignment. 8 keeps every record header 8-byte aligned in the
+ * file, which is not required by this code (it reads bytes) but keeps
+ * the format readable by anything that does map it. */
+#define HORIZON_BC_ALIGN          8u
+
+static const uint8_t horizon_bc_file_magic[8] = {
+    'H', 'Z', 'B', 'L', 'O', 'B', 'C', '1'
+};
+
+/* "HZR1", little-endian. */
+#define HORIZON_BC_REC_MAGIC UINT32_C(0x31525A48)
+
+/* Record kinds. Exactly one of DATA/KEY/TOMBSTONE is set. */
+#define HORIZON_BC_REC_DATA      UINT32_C(0x1)
+#define HORIZON_BC_REC_KEY       UINT32_C(0x2)
+#define HORIZON_BC_REC_TOMBSTONE UINT32_C(0x4)
+#define HORIZON_BC_REC_KIND_MASK (HORIZON_BC_REC_DATA | \
+                                  HORIZON_BC_REC_KEY | \
+                                  HORIZON_BC_REC_TOMBSTONE)
+
+/* Upper bound on the driver key, so a corrupt header cannot ask for an
+ * allocation of four gigabytes before anything has been validated. */
+#define HORIZON_BC_MAX_DRIVER_KEY 4096u
+
+/* Index load factor, as a percentage, above which the table doubles. */
+#define HORIZON_BC_INDEX_MAX_LOAD 70u
+
+/* Smallest index the store ever allocates. Power of two. */
+#define HORIZON_BC_INDEX_MIN_CAP 64u
+
+/* ------------------------------------------------------------------ */
+/* Small helpers: little-endian access and checked arithmetic          */
+/* ------------------------------------------------------------------ */
+
+static void put_u32le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static uint32_t get_u32le(const uint8_t *p)
+{
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static bool add_u64(uint64_t a, uint64_t b, uint64_t *out)
+{
+    if (a > UINT64_MAX - b)
+        return false;
+    *out = a + b;
+    return true;
+}
+
+/* Round `v` up to a multiple of HORIZON_BC_ALIGN, refusing to wrap. */
+static bool align_up_u64(uint64_t v, uint64_t *out)
+{
+    uint64_t r = v % HORIZON_BC_ALIGN;
+
+    if (r == 0) {
+        *out = v;
+        return true;
+    }
+    return add_u64(v, HORIZON_BC_ALIGN - r, out);
+}
+
+/* ------------------------------------------------------------------ */
+/* The index                                                           */
+/* ------------------------------------------------------------------ */
+
+typedef struct bc_slot {
+    uint8_t  key[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+    uint64_t offset;   /* file offset of the record header */
+    uint32_t size;     /* payload bytes                    */
+    uint32_t seq;      /* record sequence number           */
+    uint32_t flags;    /* HORIZON_BC_REC_DATA or _KEY      */
+    bool     used;
+} bc_slot;
+
+struct horizon_gpu_blob_cache {
+    FILE    *file;
+    char    *path;
+    char    *tmp_path;      /* "<path>.tmp", built once for compaction */
+
+    uint8_t *driver_key;
+    uint32_t driver_key_size;
+
+    uint64_t header_size;   /* where the record chain starts */
+    uint64_t write_off;     /* end of the last intact record */
+    uint64_t max_size;
+    uint32_t next_seq;
+    bool     read_only;
+
+    bc_slot *slots;
+    uint32_t slot_cap;      /* power of two */
+    uint32_t slot_used;
+
+    horizon_gpu_blob_cache_stats stats;
+};
+
+/* The first four key bytes are already a hash: keys come from BLAKE3.
+ * Reading them as a little-endian word rather than casting keeps this
+ * defined on any alignment. */
+static uint32_t bc_key_hash(const uint8_t *key)
+{
+    return get_u32le(key);
+}
+
+static bool bc_key_eq(const uint8_t *a, const uint8_t *b)
+{
+    return memcmp(a, b, HORIZON_GPU_BLOB_CACHE_KEY_SIZE) == 0;
+}
+
+/* Find the slot holding `key`, or the first free slot on its probe
+ * chain. Never fails: the table is kept below 100% load. */
+static bc_slot *bc_index_probe(horizon_gpu_blob_cache *c, const uint8_t *key)
+{
+    uint32_t mask = c->slot_cap - 1u;
+    uint32_t i = bc_key_hash(key) & mask;
+
+    for (uint32_t n = 0; n < c->slot_cap; n++) {
+        bc_slot *s = &c->slots[i];
+        if (!s->used || bc_key_eq(s->key, key))
+            return s;
+        i = (i + 1u) & mask;
+    }
+    return NULL; /* unreachable while load < 100% */
+}
+
+static bool bc_index_grow(horizon_gpu_blob_cache *c, uint32_t new_cap)
+{
+    bc_slot *old = c->slots;
+    uint32_t old_cap = c->slot_cap;
+
+    bc_slot *fresh = calloc(new_cap, sizeof(*fresh));
+    if (fresh == NULL)
+        return false;
+
+    c->slots = fresh;
+    c->slot_cap = new_cap;
+    c->slot_used = 0;
+
+    for (uint32_t i = 0; i < old_cap; i++) {
+        if (!old[i].used)
+            continue;
+        bc_slot *dst = bc_index_probe(c, old[i].key);
+        *dst = old[i];
+        c->slot_used++;
+    }
+
+    free(old);
+    return true;
+}
+
+/* Insert or replace. `flags` is DATA or KEY; TOMBSTONE removes. */
+static bool bc_index_set(horizon_gpu_blob_cache *c, const uint8_t *key,
+                         uint64_t offset, uint32_t size, uint32_t seq,
+                         uint32_t flags)
+{
+    if ((uint64_t)(c->slot_used + 1u) * 100u >
+        (uint64_t)c->slot_cap * HORIZON_BC_INDEX_MAX_LOAD) {
+        if (c->slot_cap > UINT32_MAX / 2u)
+            return false;
+        if (!bc_index_grow(c, c->slot_cap * 2u))
+            return false;
+    }
+
+    bc_slot *s = bc_index_probe(c, key);
+    if (s == NULL)
+        return false;
+
+    if (!s->used) {
+        memcpy(s->key, key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+        s->used = true;
+        c->slot_used++;
+    }
+    s->offset = offset;
+    s->size = size;
+    s->seq = seq;
+    s->flags = flags;
+    return true;
+}
+
+/* Look up a live entry of the given kind. NULL when absent. */
+static bc_slot *bc_index_find(horizon_gpu_blob_cache *c, const uint8_t *key,
+                              uint32_t kind)
+{
+    if (c->slot_used == 0)
+        return NULL;
+
+    bc_slot *s = bc_index_probe(c, key);
+    if (s == NULL || !s->used || s->flags != kind)
+        return NULL;
+    return s;
+}
+
+/* Deleting from an open-addressed table cannot just clear the slot —
+ * that would cut the probe chains running through it. The slot is
+ * cleared and everything after it in the same cluster is reinserted,
+ * which is the standard repair and is cheap at this load factor. */
+static void bc_index_erase(horizon_gpu_blob_cache *c, const uint8_t *key)
+{
+    bc_slot *s = bc_index_probe(c, key);
+    if (s == NULL || !s->used)
+        return;
+
+    uint32_t mask = c->slot_cap - 1u;
+    uint32_t i = (uint32_t)(s - c->slots);
+
+    c->slots[i].used = false;
+    c->slot_used--;
+
+    uint32_t j = (i + 1u) & mask;
+    while (c->slots[j].used) {
+        bc_slot moved = c->slots[j];
+        c->slots[j].used = false;
+        c->slot_used--;
+        bc_slot *dst = bc_index_probe(c, moved.key);
+        *dst = moved;
+        c->slot_used++;
+        j = (j + 1u) & mask;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* File primitives                                                     */
+/* ------------------------------------------------------------------ */
+
+static bool bc_seek(FILE *f, uint64_t off)
+{
+    /* long is 32-bit on some targets; the cache is bounded well below
+     * 2 GiB by HORIZON_GPU_BLOB_CACHE_MAX_ENTRY_SIZE and max_size, but
+     * a corrupt header could still produce a large number, so the
+     * conversion is checked rather than assumed. */
+    if (off > (uint64_t)LONG_MAX)
+        return false;
+    return fseek(f, (long)off, SEEK_SET) == 0;
+}
+
+static bool bc_read_at(FILE *f, uint64_t off, void *buf, size_t len)
+{
+    if (!bc_seek(f, off))
+        return false;
+    return fread(buf, 1, len, f) == len;
+}
+
+static bool bc_file_size(FILE *f, uint64_t *out)
+{
+    if (fseek(f, 0, SEEK_END) != 0)
+        return false;
+    long end = ftell(f);
+    if (end < 0)
+        return false;
+    *out = (uint64_t)end;
+    return true;
+}
+
+/* Push everything as far towards the storage device as the platform
+ * allows. fflush() empties the C library's buffer; fsync() is what
+ * makes the FS sysmodule commit it on Horizon (libnx fsdev_fsync ->
+ * fsFileFlush). */
+static bool bc_sync(FILE *f)
+{
+    if (fflush(f) != 0)
+        return false;
+
+    int fd = fileno(f);
+    if (fd < 0)
+        return false;
+
+    return fsync(fd) == 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Header and record serialisation                                     */
+/* ------------------------------------------------------------------ */
+
+static void bc_build_file_header(uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE],
+                                 uint64_t header_size,
+                                 const uint8_t *driver_key,
+                                 uint32_t driver_key_size)
+{
+    memset(hdr, 0, HORIZON_BC_FILE_HDR_SIZE);
+    memcpy(hdr, horizon_bc_file_magic, sizeof(horizon_bc_file_magic));
+    put_u32le(hdr + 8, HORIZON_BC_FORMAT_VERSION);
+    put_u32le(hdr + 12, (uint32_t)header_size);
+    put_u32le(hdr + 16, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+    put_u32le(hdr + 20, driver_key_size);
+    put_u32le(hdr + 24, horizon_crc32(driver_key, driver_key_size));
+    put_u32le(hdr + 28, 0);
+    put_u32le(hdr + 60, horizon_crc32(hdr, 60));
+}
+
+/* Write a fresh, empty file: header plus the driver key, nothing else.
+ * Used both when the file does not exist and when what is there cannot
+ * be trusted. */
+static horizon_gpu_result bc_write_fresh_header(horizon_gpu_blob_cache *c)
+{
+    uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE];
+    uint64_t key_span = c->header_size - HORIZON_BC_FILE_HDR_SIZE;
+
+    bc_build_file_header(hdr, c->header_size, c->driver_key,
+                         c->driver_key_size);
+
+    if (!bc_seek(c->file, 0))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    if (fwrite(hdr, 1, sizeof(hdr), c->file) != sizeof(hdr))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    if (key_span > 0) {
+        uint8_t pad[HORIZON_BC_ALIGN] = { 0 };
+
+        if (c->driver_key_size > 0 &&
+            fwrite(c->driver_key, 1, c->driver_key_size, c->file) !=
+                c->driver_key_size)
+            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+        size_t padding = (size_t)(key_span - c->driver_key_size);
+        if (padding > 0 && fwrite(pad, 1, padding, c->file) != padding)
+            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    if (!bc_sync(c->file))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    /* Anything that used to be beyond the header is not ours. */
+    if (ftruncate(fileno(c->file), (off_t)c->header_size) != 0)
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    c->write_off = c->header_size;
+    c->next_seq = 1;
+    return horizon_gpu_ok();
+}
+
+/* Is the header on disk one we wrote, for this driver key? */
+static bool bc_header_matches(horizon_gpu_blob_cache *c, uint64_t file_size)
+{
+    uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE];
+
+    if (file_size < HORIZON_BC_FILE_HDR_SIZE)
+        return false;
+    if (!bc_read_at(c->file, 0, hdr, sizeof(hdr)))
+        return false;
+    if (memcmp(hdr, horizon_bc_file_magic, sizeof(horizon_bc_file_magic)) != 0)
+        return false;
+    if (get_u32le(hdr + 60) != horizon_crc32(hdr, 60))
+        return false;
+    if (get_u32le(hdr + 8) != HORIZON_BC_FORMAT_VERSION)
+        return false;
+    if (get_u32le(hdr + 16) != HORIZON_GPU_BLOB_CACHE_KEY_SIZE)
+        return false;
+    if (get_u32le(hdr + 20) != c->driver_key_size)
+        return false;
+    if (get_u32le(hdr + 12) != (uint32_t)c->header_size)
+        return false;
+    if (file_size < c->header_size)
+        return false;
+    if (get_u32le(hdr + 24) !=
+        horizon_crc32(c->driver_key, c->driver_key_size))
+        return false;
+
+    /* The CRC above is a pre-filter. The comparison that decides is the
+     * bytes themselves — see the file banner. */
+    if (c->driver_key_size > 0) {
+        uint8_t *disk = malloc(c->driver_key_size);
+        if (disk == NULL)
+            return false;
+        bool ok = bc_read_at(c->file, HORIZON_BC_FILE_HDR_SIZE, disk,
+                             c->driver_key_size) &&
+                  memcmp(disk, c->driver_key, c->driver_key_size) == 0;
+        free(disk);
+        if (!ok)
+            return false;
+    }
+
+    return true;
+}
+
+/* Total bytes a record with `payload` bytes of payload occupies. */
+static bool bc_record_span(uint64_t payload, uint64_t *out)
+{
+    uint64_t total;
+
+    if (!add_u64(HORIZON_BC_REC_HDR_SIZE, payload, &total))
+        return false;
+    return align_up_u64(total, out);
+}
+
+/* ------------------------------------------------------------------ */
+/* Opening: scan, validate, repair                                     */
+/* ------------------------------------------------------------------ */
+
+/* Walk the record chain from header_size, feeding the index, and stop at
+ * the first record that does not validate. Sets c->write_off to the end
+ * of the last intact record. */
+static horizon_gpu_result bc_scan(horizon_gpu_blob_cache *c,
+                                  uint64_t file_size)
+{
+    uint8_t hdr[HORIZON_BC_REC_HDR_SIZE];
+    uint64_t off = c->header_size;
+
+    c->next_seq = 1;
+
+    for (;;) {
+        uint64_t hdr_end;
+
+        if (!add_u64(off, HORIZON_BC_REC_HDR_SIZE, &hdr_end))
+            break;
+        if (hdr_end > file_size)
+            break;
+        if (!bc_read_at(c->file, off, hdr, sizeof(hdr)))
+            break;
+
+        if (get_u32le(hdr + 0) != HORIZON_BC_REC_MAGIC)
+            break;
+        if (get_u32le(hdr + 52) != horizon_crc32(hdr, 52))
+            break;
+
+        uint32_t flags = get_u32le(hdr + 4);
+        uint32_t payload = get_u32le(hdr + 40);
+        uint32_t seq = get_u32le(hdr + 48);
+
+        if ((flags & HORIZON_BC_REC_KIND_MASK) != flags)
+            break;
+        if (flags != HORIZON_BC_REC_DATA && flags != HORIZON_BC_REC_KEY &&
+            flags != HORIZON_BC_REC_TOMBSTONE)
+            break;
+        if (flags != HORIZON_BC_REC_DATA && payload != 0)
+            break;
+        if ((uint64_t)payload > HORIZON_GPU_BLOB_CACHE_MAX_ENTRY_SIZE)
+            break;
+
+        uint64_t span, rec_end;
+        if (!bc_record_span(payload, &span))
+            break;
+        if (!add_u64(off, span, &rec_end))
+            break;
+        if (rec_end > file_size)
+            break;
+
+        const uint8_t *key = hdr + 8;
+        if (flags == HORIZON_BC_REC_TOMBSTONE) {
+            bc_index_erase(c, key);
+        } else if (!bc_index_set(c, key, off, payload, seq, flags)) {
+            return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        }
+
+        if (seq >= c->next_seq)
+            c->next_seq = seq + 1u;
+
+        off = rec_end;
+    }
+
+    c->write_off = off;
+
+    if (off != file_size) {
+        c->stats.was_truncated = true;
+        c->stats.discarded_bytes = file_size - off;
+
+        if (!c->read_only) {
+            if (ftruncate(fileno(c->file), (off_t)off) != 0)
+                return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+        }
+    }
+
+    return horizon_gpu_ok();
+}
+
+static void bc_recompute_live(horizon_gpu_blob_cache *c)
+{
+    c->stats.entries = 0;
+    c->stats.keys = 0;
+    c->stats.live_bytes = 0;
+
+    for (uint32_t i = 0; i < c->slot_cap; i++) {
+        if (!c->slots[i].used)
+            continue;
+        if (c->slots[i].flags == HORIZON_BC_REC_DATA) {
+            c->stats.entries++;
+            c->stats.live_bytes += c->slots[i].size;
+        } else {
+            c->stats.keys++;
+        }
+    }
+}
+
+static void bc_free(horizon_gpu_blob_cache *c)
+{
+    if (c == NULL)
+        return;
+    if (c->file != NULL)
+        fclose(c->file);
+    free(c->path);
+    free(c->tmp_path);
+    free(c->driver_key);
+    free(c->slots);
+    free(c);
+}
+
+horizon_gpu_result
+horizon_gpu_blob_cache_open(const horizon_gpu_blob_cache_config *config,
+                            horizon_gpu_blob_cache **out)
+{
+    if (out == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    *out = NULL;
+
+    if (config == NULL || config->path == NULL || config->path[0] == '\0')
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (config->driver_key == NULL && config->driver_key_size != 0)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (config->driver_key_size > HORIZON_BC_MAX_DRIVER_KEY)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    horizon_gpu_blob_cache *c = calloc(1, sizeof(*c));
+    if (c == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+
+    c->read_only = config->read_only;
+    c->max_size = config->max_size != 0
+                      ? config->max_size
+                      : HORIZON_GPU_BLOB_CACHE_DEFAULT_MAX_SIZE;
+    c->driver_key_size = (uint32_t)config->driver_key_size;
+
+    size_t path_len = strlen(config->path);
+    c->path = malloc(path_len + 1);
+    c->tmp_path = malloc(path_len + sizeof(".tmp"));
+    if (c->path == NULL || c->tmp_path == NULL) {
+        bc_free(c);
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+    }
+    memcpy(c->path, config->path, path_len + 1);
+    memcpy(c->tmp_path, config->path, path_len);
+    memcpy(c->tmp_path + path_len, ".tmp", sizeof(".tmp"));
+
+    if (c->driver_key_size > 0) {
+        c->driver_key = malloc(c->driver_key_size);
+        if (c->driver_key == NULL) {
+            bc_free(c);
+            return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        }
+        memcpy(c->driver_key, config->driver_key, c->driver_key_size);
+    }
+
+    uint64_t key_span;
+    if (!align_up_u64(c->driver_key_size, &key_span) ||
+        !add_u64(HORIZON_BC_FILE_HDR_SIZE, key_span, &c->header_size)) {
+        bc_free(c);
+        return horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
+    }
+
+    c->slots = calloc(HORIZON_BC_INDEX_MIN_CAP, sizeof(*c->slots));
+    if (c->slots == NULL) {
+        bc_free(c);
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+    }
+    c->slot_cap = HORIZON_BC_INDEX_MIN_CAP;
+
+    /* "r+b" first so an existing file is not destroyed by the attempt to
+     * open it; only if that fails is a new one created. A read-only
+     * cache never creates. */
+    bool created = false;
+
+    c->file = fopen(c->path, "r+b");
+    if (c->file == NULL) {
+        if (c->read_only) {
+            bc_free(c);
+            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+        }
+        c->file = fopen(c->path, "w+b");
+        if (c->file == NULL) {
+            bc_free(c);
+            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+        }
+        created = true;
+    }
+
+    uint64_t file_size = 0;
+    if (!bc_file_size(c->file, &file_size)) {
+        bc_free(c);
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    if (bc_header_matches(c, file_size)) {
+        horizon_gpu_result r = bc_scan(c, file_size);
+        if (horizon_gpu_failed(r)) {
+            bc_free(c);
+            return r;
+        }
+    } else {
+        /* Not ours, wrong version, damaged, or written by a different
+         * driver build. All four are the same thing to us: what is here
+         * cannot be read, so it is replaced.
+         *
+         * `created` separates the one case that is not a repair: a file
+         * that did not exist a moment ago has nothing to reset, and a
+         * caller reading was_reset to decide whether to warn should not
+         * be told that a first run threw something away. */
+        c->stats.was_reset = !created;
+        c->stats.discarded_bytes = file_size;
+
+        if (c->read_only) {
+            /* Nothing to serve, and nothing may be written. Present an
+             * empty cache rather than failing: a read-only cache that
+             * cannot be read is still a cache that misses. */
+            c->write_off = c->header_size;
+            c->next_seq = 1;
+        } else {
+            horizon_gpu_result r = bc_write_fresh_header(c);
+            if (horizon_gpu_failed(r)) {
+                bc_free(c);
+                return r;
+            }
+        }
+    }
+
+    bc_recompute_live(c);
+    c->stats.file_size = c->write_off;
+
+    *out = c;
+    return horizon_gpu_ok();
+}
+
+void horizon_gpu_blob_cache_close(horizon_gpu_blob_cache *cache)
+{
+    bc_free(cache);
+}
+
+/* ------------------------------------------------------------------ */
+/* Appending                                                           */
+/* ------------------------------------------------------------------ */
+
+static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
+                                     uint64_t incoming);
+
+/* Append one record. `data` may be NULL when size is 0 (KEY, TOMBSTONE).
+ *
+ * Nothing about the index is touched until the bytes are on disk, so a
+ * failed append leaves a cache that misses rather than one that lies. */
+static horizon_gpu_result bc_append(horizon_gpu_blob_cache *c,
+                                    const uint8_t *key, uint32_t flags,
+                                    const void *data, uint32_t size)
+{
+    uint8_t hdr[HORIZON_BC_REC_HDR_SIZE];
+    uint8_t pad[HORIZON_BC_ALIGN] = { 0 };
+    uint64_t span;
+
+    if (!bc_record_span(size, &span))
+        return horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
+
+    uint64_t new_end;
+    if (!add_u64(c->write_off, span, &new_end))
+        return horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
+
+    if (new_end > c->max_size) {
+        horizon_gpu_result r = bc_compact(c, span);
+        if (horizon_gpu_failed(r))
+            return r;
+        if (!add_u64(c->write_off, span, &new_end))
+            return horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
+    }
+
+    uint32_t seq = c->next_seq;
+    uint64_t at = c->write_off;
+
+    memset(hdr, 0, sizeof(hdr));
+    put_u32le(hdr + 0, HORIZON_BC_REC_MAGIC);
+    put_u32le(hdr + 4, flags);
+    memcpy(hdr + 8, key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+    put_u32le(hdr + 40, size);
+    put_u32le(hdr + 44, horizon_crc32(data, size));
+    put_u32le(hdr + 48, seq);
+    put_u32le(hdr + 52, horizon_crc32(hdr, 52));
+
+    size_t padding = (size_t)(span - HORIZON_BC_REC_HDR_SIZE - size);
+    bool ok = bc_seek(c->file, at) &&
+              fwrite(hdr, 1, sizeof(hdr), c->file) == sizeof(hdr) &&
+              (size == 0 || fwrite(data, 1, size, c->file) == size) &&
+              (padding == 0 || fwrite(pad, 1, padding, c->file) == padding) &&
+              bc_sync(c->file);
+
+    if (!ok) {
+        /* Put the file back the way it was, so the next open does not
+         * have to discover the stump. Best effort: if even this fails
+         * the stump is still harmless, because it will not validate. */
+        int rewound = ftruncate(fileno(c->file), (off_t)at);
+        (void)rewound; /* best effort; see the comment above */
+        (void)fflush(c->file);
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    if (flags == HORIZON_BC_REC_TOMBSTONE) {
+        bc_index_erase(c, key);
+    } else if (!bc_index_set(c, key, at, size, seq, flags)) {
+        /* On disk and unreachable. Not a lie — the next open will index
+         * it — but this handle must say something went wrong. */
+        c->write_off = new_end;
+        c->next_seq = seq + 1u;
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+    }
+
+    c->write_off = new_end;
+    c->next_seq = seq + 1u;
+    c->stats.puts++;
+    c->stats.file_size = c->write_off;
+    bc_recompute_live(c);
+
+    return horizon_gpu_ok();
+}
+
+/* ------------------------------------------------------------------ */
+/* Compaction                                                          */
+/* ------------------------------------------------------------------ */
+
+static int bc_slot_cmp_newest_first(const void *a, const void *b)
+{
+    const bc_slot *x = a, *y = b;
+
+    if (x->seq > y->seq)
+        return -1;
+    if (x->seq < y->seq)
+        return 1;
+    return 0;
+}
+
+/* Rewrite the file keeping the newest live entries that fit in
+ * max_size, leaving room for `incoming` bytes.
+ *
+ * WHY A REWRITE AND NOT AN IN-PLACE HOLE PUNCH. The file is append-only
+ * by construction; that is what makes a torn write recoverable by
+ * truncation alone. Reclaiming space in place would mean moving records
+ * under an index that a crash could leave half-updated, which is the
+ * one failure mode this format is built to not have. */
+static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
+                                     uint64_t incoming)
+{
+    if (c->read_only)
+        return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+
+    /* Snapshot the live entries, newest first. */
+    bc_slot *live = NULL;
+    uint32_t live_n = 0;
+
+    if (c->slot_used > 0) {
+        live = calloc(c->slot_used, sizeof(*live));
+        if (live == NULL)
+            return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        for (uint32_t i = 0; i < c->slot_cap; i++)
+            if (c->slots[i].used)
+                live[live_n++] = c->slots[i];
+        qsort(live, live_n, sizeof(*live), bc_slot_cmp_newest_first);
+    }
+
+    FILE *tmp = fopen(c->tmp_path, "w+b");
+    if (tmp == NULL) {
+        free(live);
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    horizon_gpu_result res = horizon_gpu_ok();
+    uint8_t fhdr[HORIZON_BC_FILE_HDR_SIZE];
+    uint8_t pad[HORIZON_BC_ALIGN] = { 0 };
+
+    bc_build_file_header(fhdr, c->header_size, c->driver_key,
+                         c->driver_key_size);
+
+    if (fwrite(fhdr, 1, sizeof(fhdr), tmp) != sizeof(fhdr))
+        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    uint64_t key_span = c->header_size - HORIZON_BC_FILE_HDR_SIZE;
+    if (horizon_gpu_succeeded(res) && key_span > 0) {
+        size_t padding = (size_t)(key_span - c->driver_key_size);
+        if ((c->driver_key_size > 0 &&
+             fwrite(c->driver_key, 1, c->driver_key_size, tmp) !=
+                 c->driver_key_size) ||
+            (padding > 0 && fwrite(pad, 1, padding, tmp) != padding))
+            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    uint64_t out_off = c->header_size;
+    uint32_t seq = 1;
+
+    /* Budget: what is left of max_size once the record about to be
+     * appended has its place reserved. A single entry larger than the
+     * whole budget still gets written by the caller afterwards — the
+     * ceiling is a policy on accumulation, not a reason to refuse the
+     * one thing somebody asked to store. */
+    uint64_t budget = c->max_size > incoming ? c->max_size - incoming : 0;
+
+    for (uint32_t i = 0; horizon_gpu_succeeded(res) && i < live_n; i++) {
+        uint32_t size = live[i].flags == HORIZON_BC_REC_DATA ? live[i].size : 0;
+        uint64_t span;
+
+        if (!bc_record_span(size, &span))
+            continue;
+        if (out_off + span > budget)
+            continue; /* the rest are older; keep trying the smaller ones */
+
+        uint8_t *payload = NULL;
+        if (size > 0) {
+            payload = malloc(size);
+            if (payload == NULL) {
+                res = horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+                break;
+            }
+            if (!bc_read_at(c->file, live[i].offset + HORIZON_BC_REC_HDR_SIZE,
+                            payload, size)) {
+                free(payload);
+                continue; /* unreadable entry: drop it, do not fail */
+            }
+        }
+
+        uint8_t rhdr[HORIZON_BC_REC_HDR_SIZE];
+        memset(rhdr, 0, sizeof(rhdr));
+        put_u32le(rhdr + 0, HORIZON_BC_REC_MAGIC);
+        put_u32le(rhdr + 4, live[i].flags);
+        memcpy(rhdr + 8, live[i].key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+        put_u32le(rhdr + 40, size);
+        put_u32le(rhdr + 44, horizon_crc32(payload, size));
+        put_u32le(rhdr + 48, seq);
+        put_u32le(rhdr + 52, horizon_crc32(rhdr, 52));
+
+        size_t padding = (size_t)(span - HORIZON_BC_REC_HDR_SIZE - size);
+        if (fwrite(rhdr, 1, sizeof(rhdr), tmp) != sizeof(rhdr) ||
+            (size > 0 && fwrite(payload, 1, size, tmp) != size) ||
+            (padding > 0 && fwrite(pad, 1, padding, tmp) != padding))
+            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+        free(payload);
+        out_off += span;
+        seq++;
+    }
+
+    if (horizon_gpu_succeeded(res) && !bc_sync(tmp))
+        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    fclose(tmp);
+    free(live);
+
+    if (horizon_gpu_failed(res)) {
+        (void)remove(c->tmp_path);
+        return res;
+    }
+
+    /* The swap. remove() then rename(), because rename() onto an
+     * existing name fails on Horizon (fsFsRenameFile) — see blob_cache.h.
+     * The window between the two is the one moment a crash loses the
+     * cache, and losing a cache costs a recompile and nothing else. */
+    fclose(c->file);
+    c->file = NULL;
+
+    (void)remove(c->path);
+    if (rename(c->tmp_path, c->path) != 0) {
+        /* The old file is gone and the new one could not take its name,
+         * so the cache is lost. That is a recompile, not a corruption:
+         * the reopen below recreates an empty file and everything keeps
+         * working. Leaving the temp behind would not. */
+        (void)remove(c->tmp_path);
+    }
+
+    c->file = fopen(c->path, "r+b");
+    if (c->file == NULL) {
+        c->file = fopen(c->path, "w+b");
+        if (c->file == NULL)
+            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
+    /* Rebuild from what is actually on disk rather than from what we
+     * believe we wrote. */
+    memset(c->slots, 0, (size_t)c->slot_cap * sizeof(*c->slots));
+    c->slot_used = 0;
+
+    uint64_t file_size = 0;
+    if (!bc_file_size(c->file, &file_size))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    if (bc_header_matches(c, file_size)) {
+        horizon_gpu_result r = bc_scan(c, file_size);
+        if (horizon_gpu_failed(r))
+            return r;
+    } else {
+        horizon_gpu_result r = bc_write_fresh_header(c);
+        if (horizon_gpu_failed(r))
+            return r;
+    }
+
+    c->stats.compactions++;
+    bc_recompute_live(c);
+    c->stats.file_size = c->write_off;
+
+    return horizon_gpu_ok();
+}
+
+/* ------------------------------------------------------------------ */
+/* Public entry points                                                 */
+/* ------------------------------------------------------------------ */
+
+horizon_gpu_result
+horizon_gpu_blob_cache_put(horizon_gpu_blob_cache *cache, const uint8_t *key,
+                           const void *data, size_t size)
+{
+    if (cache == NULL || key == NULL || data == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (size == 0 || (uint64_t)size > HORIZON_GPU_BLOB_CACHE_MAX_ENTRY_SIZE)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (cache->read_only)
+        return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+
+    return bc_append(cache, key, HORIZON_BC_REC_DATA, data, (uint32_t)size);
+}
+
+horizon_gpu_result
+horizon_gpu_blob_cache_get(horizon_gpu_blob_cache *cache, const uint8_t *key,
+                           void **out_data, size_t *out_size)
+{
+    if (cache == NULL || key == NULL || out_data == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    *out_data = NULL;
+    if (out_size != NULL)
+        *out_size = 0;
+
+    bc_slot *s = bc_index_find(cache, key, HORIZON_BC_REC_DATA);
+    if (s == NULL) {
+        cache->stats.misses++;
+        return horizon_gpu_err(HORIZON_GPU_ERR_NOT_FOUND);
+    }
+
+    uint8_t hdr[HORIZON_BC_REC_HDR_SIZE];
+    uint32_t size = s->size;
+    uint64_t off = s->offset;
+
+    /* Re-read and re-validate the record header rather than trusting the
+     * index. The index is memory; the file is what somebody else's
+     * homebrew, a bad card or a yanked console may have changed. */
+    if (!bc_read_at(cache->file, off, hdr, sizeof(hdr)) ||
+        get_u32le(hdr + 0) != HORIZON_BC_REC_MAGIC ||
+        get_u32le(hdr + 52) != horizon_crc32(hdr, 52) ||
+        get_u32le(hdr + 4) != HORIZON_BC_REC_DATA ||
+        get_u32le(hdr + 40) != size ||
+        memcmp(hdr + 8, key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE) != 0) {
+        bc_index_erase(cache, key);
+        bc_recompute_live(cache);
+        cache->stats.misses++;
+        return horizon_gpu_err(HORIZON_GPU_ERR_NOT_FOUND);
+    }
+
+    uint8_t *buf = malloc(size);
+    if (buf == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+
+    if (fread(buf, 1, size, cache->file) != size ||
+        horizon_crc32(buf, size) != get_u32le(hdr + 44)) {
+        /* A payload that fails its checksum is a miss, never an answer.
+         * It is also dropped from the index so the next lookup does not
+         * pay for the same disappointment. */
+        free(buf);
+        bc_index_erase(cache, key);
+        bc_recompute_live(cache);
+        cache->stats.misses++;
+        return horizon_gpu_err(HORIZON_GPU_ERR_NOT_FOUND);
+    }
+
+    *out_data = buf;
+    if (out_size != NULL)
+        *out_size = size;
+    cache->stats.hits++;
+    return horizon_gpu_ok();
+}
+
+horizon_gpu_result
+horizon_gpu_blob_cache_put_key(horizon_gpu_blob_cache *cache,
+                               const uint8_t *key)
+{
+    if (cache == NULL || key == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (cache->read_only)
+        return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+
+    return bc_append(cache, key, HORIZON_BC_REC_KEY, NULL, 0);
+}
+
+bool horizon_gpu_blob_cache_has_key(horizon_gpu_blob_cache *cache,
+                                    const uint8_t *key)
+{
+    if (cache == NULL || key == NULL)
+        return false;
+
+    return bc_index_find(cache, key, HORIZON_BC_REC_KEY) != NULL;
+}
+
+horizon_gpu_result
+horizon_gpu_blob_cache_remove(horizon_gpu_blob_cache *cache,
+                              const uint8_t *key)
+{
+    if (cache == NULL || key == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (cache->read_only)
+        return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+
+    /* Absent is not an error, and it is also not a write: a tombstone
+     * for something that was never there would grow the file for
+     * nothing. */
+    bc_slot *s = bc_index_probe(cache, key);
+    if (s == NULL || !s->used)
+        return horizon_gpu_ok();
+
+    return bc_append(cache, key, HORIZON_BC_REC_TOMBSTONE, NULL, 0);
+}
+
+horizon_gpu_result horizon_gpu_blob_cache_flush(horizon_gpu_blob_cache *cache)
+{
+    if (cache == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    if (cache->read_only)
+        return horizon_gpu_ok();
+
+    return bc_sync(cache->file) ? horizon_gpu_ok()
+                                : horizon_gpu_err(HORIZON_GPU_ERR_IO);
+}
+
+void horizon_gpu_blob_cache_get_stats(const horizon_gpu_blob_cache *cache,
+                                      horizon_gpu_blob_cache_stats *out)
+{
+    if (cache == NULL || out == NULL)
+        return;
+
+    *out = cache->stats;
+}

@@ -41,6 +41,10 @@ int main(void)
                    "unsupported") == 0, "ERR_UNSUPPORTED");
     H_CHECK(strcmp(horizon_gpu_status_str(HORIZON_GPU_ERR_STATE),
                    "wrong object state") == 0, "ERR_STATE");
+    H_CHECK(strcmp(horizon_gpu_status_str(HORIZON_GPU_ERR_IO),
+                   "filesystem I/O error") == 0, "ERR_IO");
+    H_CHECK(strcmp(horizon_gpu_status_str(HORIZON_GPU_ERR_NOT_FOUND),
+                   "entry not found") == 0, "ERR_NOT_FOUND");
 
     /* Every string above must also be distinct from every other, and from
      * the fallback below — two statuses sharing a message would be just
@@ -51,7 +55,8 @@ int main(void)
         HORIZON_GPU_ERR_TIMEOUT, HORIZON_GPU_ERR_VA_EXHAUSTED,
         HORIZON_GPU_ERR_BUSY, HORIZON_GPU_ERR_CHANNEL_LOST,
         HORIZON_GPU_ERR_LEAK, HORIZON_GPU_ERR_UNSUPPORTED,
-        HORIZON_GPU_ERR_STATE,
+        HORIZON_GPU_ERR_STATE, HORIZON_GPU_ERR_IO,
+        HORIZON_GPU_ERR_NOT_FOUND,
     };
     int distinct = 1;
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)

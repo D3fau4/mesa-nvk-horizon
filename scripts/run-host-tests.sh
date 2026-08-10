@@ -40,5 +40,7 @@ run h_syncpt_math tests/host/h_syncpt_math.c
 run h_cmds        tests/host/h_cmds.c        horizon/submit/cmds.c
 run h_status      tests/host/h_status.c      horizon/debug/status.c
 run h_log         tests/host/h_log.c         horizon/debug/log.c
+run h_blob_cache  tests/host/h_blob_cache.c  horizon/cache/blob_cache.c \
+                                             horizon/cache/crc32.c
 
 exit "$status"

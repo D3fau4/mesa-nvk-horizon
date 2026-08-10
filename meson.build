@@ -108,6 +108,8 @@ add_project_arguments('-Wall', '-Wextra', '-Werror', language : 'c')
 # Keep the two lists in step: a file added here and not there builds
 # clean under Meson and vanishes from the hardware-verified path.
 horizon_gpu_sources = files(
+  'horizon/cache/crc32.c',
+  'horizon/cache/blob_cache.c',
   'horizon/debug/log.c',
   'horizon/debug/status.c',
   'horizon/device/device.c',

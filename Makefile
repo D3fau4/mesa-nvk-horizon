@@ -34,6 +34,8 @@ LIBS    := -lhorizon_compat -lnx
 BUILD   := build
 
 LIB_SRCS := \
+    horizon/cache/crc32.c \
+    horizon/cache/blob_cache.c \
     horizon/debug/log.c \
     horizon/debug/status.c \
     horizon/device/device.c \
