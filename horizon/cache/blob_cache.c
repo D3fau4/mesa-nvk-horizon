@@ -17,7 +17,7 @@
  *     16  key_size           u32, HORIZON_GPU_BLOB_CACHE_KEY_SIZE
  *     20  driver_key_size    u32
  *     24  driver_key_crc     u32, crc32 of the driver key bytes
- *     28  flags              u32, reserved, 0
+ *     28  state              u32, HORIZON_BC_STATE_*
  *     32  reserved[7]        u32 x 7
  *     60  header_crc         u32, crc32 over bytes [0, 60)
  *     64  driver key bytes, then zero padding to header_size
@@ -30,6 +30,21 @@
  *     44  payload_crc        u32, crc32 of the payload bytes
  *     48  seq                u32, monotonic within the file
  *     52  header_crc         u32, crc32 over bytes [0, 52)
+ *
+ * NO PATH OPERATION HAPPENS AFTER open(). Not one: no rename, no
+ * remove, no second fopen, no stat. This is not tidiness. libnx's fsdev
+ * devoptab routes every path-based entry point — open, stat, unlink,
+ * mkdir, rename, diropen — through fsdev_fixpath(), which copies into
+ * the single file-scope buffer `__nx_dev_path_buf` with no lock of any
+ * kind (nx/source/runtime/devices/fs_dev.c: the buffer at line 211, and
+ * `char *fs_path = __nx_dev_path_buf` at 405, 1111, 1197, 1225, 1276).
+ * Two threads doing path work at once corrupt each other's path, and
+ * the symptom is a write to the wrong file. Everything this module does
+ * after open() goes through the FILE handle — read, write, seek,
+ * ftruncate, fsync — none of which touches that buffer. So compaction
+ * rewrites the file *in place* rather than doing the usual
+ * write-temp-then-rename, and the caller may hand the open cache to a
+ * worker thread without inheriting a data race it cannot see.
  *
  * WHY THE DRIVER KEY IS STORED WHOLE AND COMPARED BYTE FOR BYTE. A
  * digest would be smaller, and a digest collision here does not mean a
@@ -90,6 +105,18 @@ static const uint8_t horizon_bc_file_magic[8] = {
                                   HORIZON_BC_REC_KEY | \
                                   HORIZON_BC_REC_TOMBSTONE)
 
+/* File states, in the header at offset 28.
+ *
+ * Compaction rewrites live records towards the front of the file it is
+ * already holding open, which means that between its first write and its
+ * last the file is neither the old one nor the new one. CLEAN is stamped
+ * and flushed only once it is the new one; a file found in COMPACTING
+ * was interrupted — by a flat battery, or by Horizon killing the applet
+ * — and cannot be parsed, so it is reset. That is the whole cost of an
+ * interrupted compaction: a cold cache, and one recompile. */
+#define HORIZON_BC_STATE_CLEAN      UINT32_C(0)
+#define HORIZON_BC_STATE_COMPACTING UINT32_C(1)
+
 /* Upper bound on the driver key, so a corrupt header cannot ask for an
  * allocation of four gigabytes before anything has been validated. */
 #define HORIZON_BC_MAX_DRIVER_KEY 4096u
@@ -99,6 +126,18 @@ static const uint8_t horizon_bc_file_magic[8] = {
 
 /* Smallest index the store ever allocates. Power of two. */
 #define HORIZON_BC_INDEX_MIN_CAP 64u
+
+/* stdio buffer, in bytes, installed on the cache file.
+ *
+ * WHY IT IS SET AND NOT LEFT TO THE C LIBRARY. Opening a cache means
+ * walking every record header in the file, and newlib's default BUFSIZ
+ * is 1024 — so a scan of a few thousand entries becomes a few thousand
+ * fsFileRead calls to the FS sysmodule. 64 KiB turns the same walk into
+ * a sequential read, because newlib's fseek keeps the buffer when the
+ * target is already inside it. The number is a guess until a console
+ * measures it; tests/t_shader_cache.c reports the open time so it can
+ * stop being one. */
+#define HORIZON_BC_STREAM_BUF (64u * 1024u)
 
 /* ------------------------------------------------------------------ */
 /* Small helpers: little-endian access and checked arithmetic          */
@@ -155,8 +194,8 @@ typedef struct bc_slot {
 
 struct horizon_gpu_blob_cache {
     FILE    *file;
+    char    *stream_buf;    /* owned; must outlive `file` (setvbuf)     */
     char    *path;
-    char    *tmp_path;      /* "<path>.tmp", built once for compaction */
 
     uint8_t *driver_key;
     uint32_t driver_key_size;
@@ -354,7 +393,8 @@ static bool bc_sync(FILE *f)
 static void bc_build_file_header(uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE],
                                  uint64_t header_size,
                                  const uint8_t *driver_key,
-                                 uint32_t driver_key_size)
+                                 uint32_t driver_key_size,
+                                 uint32_t state)
 {
     memset(hdr, 0, HORIZON_BC_FILE_HDR_SIZE);
     memcpy(hdr, horizon_bc_file_magic, sizeof(horizon_bc_file_magic));
@@ -363,7 +403,7 @@ static void bc_build_file_header(uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE],
     put_u32le(hdr + 16, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
     put_u32le(hdr + 20, driver_key_size);
     put_u32le(hdr + 24, horizon_crc32(driver_key, driver_key_size));
-    put_u32le(hdr + 28, 0);
+    put_u32le(hdr + 28, state);
     put_u32le(hdr + 60, horizon_crc32(hdr, 60));
 }
 
@@ -376,7 +416,7 @@ static horizon_gpu_result bc_write_fresh_header(horizon_gpu_blob_cache *c)
     uint64_t key_span = c->header_size - HORIZON_BC_FILE_HDR_SIZE;
 
     bc_build_file_header(hdr, c->header_size, c->driver_key,
-                         c->driver_key_size);
+                         c->driver_key_size, HORIZON_BC_STATE_CLEAN);
 
     if (!bc_seek(c->file, 0))
         return horizon_gpu_err(HORIZON_GPU_ERR_IO);
@@ -423,6 +463,8 @@ static bool bc_header_matches(horizon_gpu_blob_cache *c, uint64_t file_size)
         return false;
     if (get_u32le(hdr + 8) != HORIZON_BC_FORMAT_VERSION)
         return false;
+    if (get_u32le(hdr + 28) != HORIZON_BC_STATE_CLEAN)
+        return false; /* a compaction was interrupted; see the state doc */
     if (get_u32le(hdr + 16) != HORIZON_GPU_BLOB_CACHE_KEY_SIZE)
         return false;
     if (get_u32le(hdr + 20) != c->driver_key_size)
@@ -566,8 +608,9 @@ static void bc_free(horizon_gpu_blob_cache *c)
         return;
     if (c->file != NULL)
         fclose(c->file);
+    /* After fclose, never before: setvbuf hands this buffer to stdio. */
+    free(c->stream_buf);
     free(c->path);
-    free(c->tmp_path);
     free(c->driver_key);
     free(c->slots);
     free(c);
@@ -600,14 +643,11 @@ horizon_gpu_blob_cache_open(const horizon_gpu_blob_cache_config *config,
 
     size_t path_len = strlen(config->path);
     c->path = malloc(path_len + 1);
-    c->tmp_path = malloc(path_len + sizeof(".tmp"));
-    if (c->path == NULL || c->tmp_path == NULL) {
+    if (c->path == NULL) {
         bc_free(c);
         return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
     }
     memcpy(c->path, config->path, path_len + 1);
-    memcpy(c->tmp_path, config->path, path_len);
-    memcpy(c->tmp_path + path_len, ".tmp", sizeof(".tmp"));
 
     if (c->driver_key_size > 0) {
         c->driver_key = malloc(c->driver_key_size);
@@ -649,6 +689,16 @@ horizon_gpu_blob_cache_open(const horizon_gpu_blob_cache_config *config,
             return horizon_gpu_err(HORIZON_GPU_ERR_IO);
         }
         created = true;
+    }
+
+    c->stream_buf = malloc(HORIZON_BC_STREAM_BUF);
+    if (c->stream_buf != NULL &&
+        setvbuf(c->file, c->stream_buf, _IOFBF, HORIZON_BC_STREAM_BUF) != 0) {
+        /* Refused: stdio keeps whatever buffer it already had, which is
+         * correct but slower. Not a failure — the cache works either
+         * way, and saying so is better than failing to open over it. */
+        free(c->stream_buf);
+        c->stream_buf = NULL;
     }
 
     uint64_t file_size = 0;
@@ -799,23 +849,77 @@ static int bc_slot_cmp_newest_first(const void *a, const void *b)
     return 0;
 }
 
-/* Rewrite the file keeping the newest live entries that fit in
- * max_size, leaving room for `incoming` bytes.
+/* Order two snapshot slots by file offset, ascending. */
+static int bc_slot_cmp_offset(const void *a, const void *b)
+{
+    const bc_slot *x = a, *y = b;
+
+    if (x->offset < y->offset)
+        return -1;
+    if (x->offset > y->offset)
+        return 1;
+    return 0;
+}
+
+/* Copy `len` bytes from `src` to `dst` within the same open file, using
+ * a bounded staging buffer. Only ever called with dst <= src (see
+ * bc_compact), so the copy runs forwards without overwriting what it has
+ * not read yet. */
+static bool bc_move_range(FILE *f, uint64_t dst, uint64_t src, uint64_t len)
+{
+    uint8_t buf[4096];
+
+    while (len > 0) {
+        size_t chunk = len < sizeof(buf) ? (size_t)len : sizeof(buf);
+
+        if (!bc_read_at(f, src, buf, chunk))
+            return false;
+        if (!bc_seek(f, dst) || fwrite(buf, 1, chunk, f) != chunk)
+            return false;
+
+        src += chunk;
+        dst += chunk;
+        len -= chunk;
+    }
+    return true;
+}
+
+/* Reclaim space by rewriting the file in place, keeping the newest live
+ * entries that fit in max_size with room left for `incoming` bytes.
  *
- * WHY A REWRITE AND NOT AN IN-PLACE HOLE PUNCH. The file is append-only
- * by construction; that is what makes a torn write recoverable by
- * truncation alone. Reclaiming space in place would mean moving records
- * under an index that a crash could leave half-updated, which is the
- * one failure mode this format is built to not have. */
+ * WHY IN PLACE, when write-a-new-file-and-rename is the usual answer.
+ * Because renaming is a path operation, and path operations are exactly
+ * what this module may not do after open() — libnx routes all of them
+ * through one unlocked global buffer (see the file banner). Working on
+ * the open handle also removes the window where neither file is the
+ * cache: there is only ever one file, and the header says whether it can
+ * be trusted.
+ *
+ * WHY IT IS SAFE TO OVERWRITE THE FILE IT IS READING. Records are copied
+ * in increasing source order, and the destination advances only over the
+ * records that are kept while the source advances over all of them. So
+ * dst <= src at every step, and a forward copy never overwrites bytes it
+ * has still to read. The check is asserted below rather than assumed.
+ *
+ * WHY A CRASH HERE IS SURVIVABLE. The header is stamped COMPACTING and
+ * flushed before the first byte moves, and CLEAN only once the last one
+ * has. A file found in COMPACTING is reset on open, because it is
+ * genuinely neither the old cache nor the new one. */
 static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
                                      uint64_t incoming)
 {
+    uint8_t fhdr[HORIZON_BC_FILE_HDR_SIZE];
+    bc_slot *live = NULL;
+    uint32_t live_n = 0;
+
     if (c->read_only)
         return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
 
-    /* Snapshot the live entries, newest first. */
-    bc_slot *live = NULL;
-    uint32_t live_n = 0;
+    /* Budget: max_size less the record about to be appended. A single
+     * entry larger than the whole budget is still written by the caller
+     * afterwards — the ceiling is a policy on accumulation, not a reason
+     * to refuse the one thing somebody asked to store. */
+    uint64_t budget = c->max_size > incoming ? c->max_size - incoming : 0;
 
     if (c->slot_used > 0) {
         live = calloc(c->slot_used, sizeof(*live));
@@ -824,125 +928,96 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
         for (uint32_t i = 0; i < c->slot_cap; i++)
             if (c->slots[i].used)
                 live[live_n++] = c->slots[i];
+
+        /* Newest first, so that what survives is what was used most
+         * recently written. */
         qsort(live, live_n, sizeof(*live), bc_slot_cmp_newest_first);
     }
 
-    FILE *tmp = fopen(c->tmp_path, "w+b");
-    if (tmp == NULL) {
-        free(live);
-        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
-    }
+    /* Choose the survivors against the budget, then put them back into
+     * file order: the copy below depends on ascending source offsets. */
+    uint32_t keep_n = 0;
+    uint64_t kept_bytes = c->header_size;
 
-    horizon_gpu_result res = horizon_gpu_ok();
-    uint8_t fhdr[HORIZON_BC_FILE_HDR_SIZE];
-    uint8_t pad[HORIZON_BC_ALIGN] = { 0 };
-
-    bc_build_file_header(fhdr, c->header_size, c->driver_key,
-                         c->driver_key_size);
-
-    if (fwrite(fhdr, 1, sizeof(fhdr), tmp) != sizeof(fhdr))
-        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
-
-    uint64_t key_span = c->header_size - HORIZON_BC_FILE_HDR_SIZE;
-    if (horizon_gpu_succeeded(res) && key_span > 0) {
-        size_t padding = (size_t)(key_span - c->driver_key_size);
-        if ((c->driver_key_size > 0 &&
-             fwrite(c->driver_key, 1, c->driver_key_size, tmp) !=
-                 c->driver_key_size) ||
-            (padding > 0 && fwrite(pad, 1, padding, tmp) != padding))
-            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
-    }
-
-    uint64_t out_off = c->header_size;
-    uint32_t seq = 1;
-
-    /* Budget: what is left of max_size once the record about to be
-     * appended has its place reserved. A single entry larger than the
-     * whole budget still gets written by the caller afterwards — the
-     * ceiling is a policy on accumulation, not a reason to refuse the
-     * one thing somebody asked to store. */
-    uint64_t budget = c->max_size > incoming ? c->max_size - incoming : 0;
-
-    for (uint32_t i = 0; horizon_gpu_succeeded(res) && i < live_n; i++) {
+    for (uint32_t i = 0; i < live_n; i++) {
         uint32_t size = live[i].flags == HORIZON_BC_REC_DATA ? live[i].size : 0;
         uint64_t span;
 
         if (!bc_record_span(size, &span))
             continue;
-        if (out_off + span > budget)
-            continue; /* the rest are older; keep trying the smaller ones */
+        if (kept_bytes + span > budget)
+            continue; /* older and smaller entries may still fit */
 
-        uint8_t *payload = NULL;
-        if (size > 0) {
-            payload = malloc(size);
-            if (payload == NULL) {
-                res = horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
-                break;
-            }
-            if (!bc_read_at(c->file, live[i].offset + HORIZON_BC_REC_HDR_SIZE,
-                            payload, size)) {
-                free(payload);
-                continue; /* unreadable entry: drop it, do not fail */
-            }
-        }
+        live[keep_n++] = live[i];
+        kept_bytes += span;
+    }
+    /* Guarded: qsort's first argument is declared non-null, so passing
+     * the NULL of an empty snapshot is undefined even with a count of
+     * zero — UBSan says so, and it is right. */
+    if (keep_n > 0)
+        qsort(live, keep_n, sizeof(*live), bc_slot_cmp_offset);
 
-        uint8_t rhdr[HORIZON_BC_REC_HDR_SIZE];
-        memset(rhdr, 0, sizeof(rhdr));
-        put_u32le(rhdr + 0, HORIZON_BC_REC_MAGIC);
-        put_u32le(rhdr + 4, live[i].flags);
-        memcpy(rhdr + 8, live[i].key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
-        put_u32le(rhdr + 40, size);
-        put_u32le(rhdr + 44, horizon_crc32(payload, size));
-        put_u32le(rhdr + 48, seq);
-        put_u32le(rhdr + 52, horizon_crc32(rhdr, 52));
-
-        size_t padding = (size_t)(span - HORIZON_BC_REC_HDR_SIZE - size);
-        if (fwrite(rhdr, 1, sizeof(rhdr), tmp) != sizeof(rhdr) ||
-            (size > 0 && fwrite(payload, 1, size, tmp) != size) ||
-            (padding > 0 && fwrite(pad, 1, padding, tmp) != padding))
-            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
-
-        free(payload);
-        out_off += span;
-        seq++;
+    /* Stamp COMPACTING before anything moves. */
+    bc_build_file_header(fhdr, c->header_size, c->driver_key,
+                         c->driver_key_size, HORIZON_BC_STATE_COMPACTING);
+    if (!bc_seek(c->file, 0) ||
+        fwrite(fhdr, 1, sizeof(fhdr), c->file) != sizeof(fhdr) ||
+        !bc_sync(c->file)) {
+        free(live);
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
     }
 
-    if (horizon_gpu_succeeded(res) && !bc_sync(tmp))
-        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    horizon_gpu_result res = horizon_gpu_ok();
+    uint64_t dst = c->header_size;
 
-    fclose(tmp);
+    for (uint32_t i = 0; i < keep_n; i++) {
+        uint32_t size = live[i].flags == HORIZON_BC_REC_DATA ? live[i].size : 0;
+        uint64_t span;
+
+        if (!bc_record_span(size, &span)) {
+            res = horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
+            break;
+        }
+        if (dst > live[i].offset) {
+            /* The invariant above failed, which would mean the copy is
+             * about to eat its own input. Stop rather than corrupt. */
+            res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+            break;
+        }
+        if (dst != live[i].offset &&
+            !bc_move_range(c->file, dst, live[i].offset, span)) {
+            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+            break;
+        }
+        dst += span;
+    }
+
+    if (horizon_gpu_succeeded(res)) {
+        if (fflush(c->file) != 0 ||
+            ftruncate(fileno(c->file), (off_t)dst) != 0 || !bc_sync(c->file))
+            res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    }
+
     free(live);
 
     if (horizon_gpu_failed(res)) {
-        (void)remove(c->tmp_path);
+        /* The header still says COMPACTING and stays that way: the next
+         * open resets the file, which is the honest outcome for a
+         * rewrite that stopped halfway. */
         return res;
     }
 
-    /* The swap. remove() then rename(), because rename() onto an
-     * existing name fails on Horizon (fsFsRenameFile) — see blob_cache.h.
-     * The window between the two is the one moment a crash loses the
-     * cache, and losing a cache costs a recompile and nothing else. */
-    fclose(c->file);
-    c->file = NULL;
+    /* Back to CLEAN, and only now. */
+    bc_build_file_header(fhdr, c->header_size, c->driver_key,
+                         c->driver_key_size, HORIZON_BC_STATE_CLEAN);
+    if (!bc_seek(c->file, 0) ||
+        fwrite(fhdr, 1, sizeof(fhdr), c->file) != sizeof(fhdr) ||
+        !bc_sync(c->file))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
 
-    (void)remove(c->path);
-    if (rename(c->tmp_path, c->path) != 0) {
-        /* The old file is gone and the new one could not take its name,
-         * so the cache is lost. That is a recompile, not a corruption:
-         * the reopen below recreates an empty file and everything keeps
-         * working. Leaving the temp behind would not. */
-        (void)remove(c->tmp_path);
-    }
-
-    c->file = fopen(c->path, "r+b");
-    if (c->file == NULL) {
-        c->file = fopen(c->path, "w+b");
-        if (c->file == NULL)
-            return horizon_gpu_err(HORIZON_GPU_ERR_IO);
-    }
-
-    /* Rebuild from what is actually on disk rather than from what we
-     * believe we wrote. */
+    /* Rebuild the index from what is on disk rather than from what we
+     * believe we wrote. The records kept their sequence numbers, so
+     * newest-wins still means the same thing afterwards. */
     memset(c->slots, 0, (size_t)c->slot_cap * sizeof(*c->slots));
     c->slot_used = 0;
 
@@ -950,15 +1025,9 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     if (!bc_file_size(c->file, &file_size))
         return horizon_gpu_err(HORIZON_GPU_ERR_IO);
 
-    if (bc_header_matches(c, file_size)) {
-        horizon_gpu_result r = bc_scan(c, file_size);
-        if (horizon_gpu_failed(r))
-            return r;
-    } else {
-        horizon_gpu_result r = bc_write_fresh_header(c);
-        if (horizon_gpu_failed(r))
-            return r;
-    }
+    horizon_gpu_result r = bc_scan(c, file_size);
+    if (horizon_gpu_failed(r))
+        return r;
 
     c->stats.compactions++;
     bc_recompute_live(c);

@@ -584,6 +584,199 @@ int main(void)
     }
 
     /* ---------------------------------------------------------------
+     * An interrupted compaction. Compaction rewrites the file in place,
+     * so between its first write and its last the file is neither the
+     * old cache nor the new one. The header state is what says so, and
+     * a file caught in that window must be reset rather than parsed.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        horizon_gpu_blob_cache_stats st;
+        uint8_t hdr[64];
+        FILE *f;
+
+        for (uint32_t i = 0; i < 4; i++)
+            put_n(c, i, 100);
+        horizon_gpu_blob_cache_close(c);
+
+        /* Stamp COMPACTING by hand, checksum and all, so this is the
+         * state an interrupted rewrite really leaves behind and not a
+         * corrupt header wearing its name. */
+        f = fopen(BC_PATH, "r+b");
+        H_CHECK(f != NULL && fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr),
+                "read the file header back");
+        if (f != NULL) {
+            hdr[28] = 1; /* HORIZON_BC_STATE_COMPACTING */
+            hdr[29] = hdr[30] = hdr[31] = 0;
+            {
+                uint32_t crc = horizon_crc32(hdr, 60);
+                hdr[60] = (uint8_t)(crc & 0xFFu);
+                hdr[61] = (uint8_t)((crc >> 8) & 0xFFu);
+                hdr[62] = (uint8_t)((crc >> 16) & 0xFFu);
+                hdr[63] = (uint8_t)((crc >> 24) & 0xFFu);
+            }
+            H_CHECK(fseek(f, 0, SEEK_SET) == 0 &&
+                        fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr),
+                    "stamp the header COMPACTING with a valid checksum");
+            fclose(f);
+        }
+
+        c = open_a();
+        H_CHECK(c != NULL, "a file caught mid-compaction opens");
+        if (c != NULL) {
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            H_CHECK(st.was_reset,
+                    "and is reset, not parsed — it is neither cache");
+            H_CHECK(st.entries == 0 && is_miss(c, 0),
+                    "so none of the half-moved records is served");
+            H_CHECK(put_n(c, 0, 100) && get_is(c, 0, 100),
+                    "and it works again immediately");
+            horizon_gpu_blob_cache_close(c);
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * Sizes that a corrupt header could ask for. Each of these is a
+     * number the parser must refuse rather than trust; the checksum
+     * catches most of them, so the sizes here are made consistent with
+     * their checksums on purpose.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        long hdr_end;
+        uint8_t rec[56];
+        FILE *f;
+
+        put_n(c, 0, 64);
+        put_n(c, 1, 64);
+        horizon_gpu_blob_cache_close(c);
+
+        hdr_end = 64 + (long)((sizeof(drv_a) + 7u) & ~(size_t)7u);
+
+        /* Claim a payload that runs past the end of the file, and fix
+         * the header checksum so only the bounds check can stop it. */
+        f = fopen(BC_PATH, "r+b");
+        H_CHECK(f != NULL, "reopen the file by hand");
+        if (f != NULL) {
+            H_CHECK(fseek(f, hdr_end, SEEK_SET) == 0 &&
+                        fread(rec, 1, sizeof(rec), f) == sizeof(rec),
+                    "read the first record header");
+            rec[40] = 0x00; rec[41] = 0x00; rec[42] = 0x10; rec[43] = 0x00;
+            {
+                uint32_t crc = horizon_crc32(rec, 52);
+                rec[52] = (uint8_t)(crc & 0xFFu);
+                rec[53] = (uint8_t)((crc >> 8) & 0xFFu);
+                rec[54] = (uint8_t)((crc >> 16) & 0xFFu);
+                rec[55] = (uint8_t)((crc >> 24) & 0xFFu);
+            }
+            H_CHECK(fseek(f, hdr_end, SEEK_SET) == 0 &&
+                        fwrite(rec, 1, sizeof(rec), f) == sizeof(rec),
+                    "claim a 1 MiB payload in a 300-byte file");
+            fclose(f);
+        }
+
+        c = open_a();
+        H_CHECK(c != NULL, "a record claiming more than the file holds opens");
+        if (c != NULL) {
+            horizon_gpu_blob_cache_stats st;
+
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            H_CHECK(st.entries == 0,
+                    "the impossible record is refused by the bounds check");
+            H_CHECK(st.was_truncated, "and everything after it goes with it");
+            horizon_gpu_blob_cache_close(c);
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * A key of all zeroes is an ordinary key. It is worth its own check
+     * because a zero key is what an uninitialised buffer looks like, and
+     * a store that treated it as "absent" would turn a caller's bug into
+     * a silent cache miss that nothing explains.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        uint8_t zero[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 0 };
+        void *data = NULL;
+        size_t got = 0;
+
+        H_CHECK(horizon_gpu_succeeded(
+                    horizon_gpu_blob_cache_put(c, zero, "zero", 4)),
+                "store under an all-zero key");
+        H_CHECK(horizon_gpu_succeeded(
+                    horizon_gpu_blob_cache_get(c, zero, &data, &got)) &&
+                    got == 4 && memcmp(data, "zero", 4) == 0,
+                "and read it back");
+        free(data);
+        horizon_gpu_blob_cache_close(c);
+
+        c = open_a();
+        data = NULL;
+        H_CHECK(horizon_gpu_succeeded(
+                    horizon_gpu_blob_cache_get(c, zero, &data, &got)),
+                "an all-zero key survives a reopen");
+        free(data);
+        horizon_gpu_blob_cache_close(c);
+    }
+
+    /* ---------------------------------------------------------------
+     * The same key stored twice, where the newer copy is the damaged
+     * one. The store does NOT fall back to the older copy: newest wins
+     * is the rule, and a damaged newest is a miss. That is a deliberate
+     * choice — falling back would mean serving a value the caller
+     * already replaced, and a miss costs one recompile.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        long hdr_end, second;
+
+        H_CHECK(put_n(c, 9, 64), "store the first copy");
+        H_CHECK(put_n(c, 9, 64), "store a second copy under the same key");
+        horizon_gpu_blob_cache_close(c);
+
+        hdr_end = 64 + (long)((sizeof(drv_a) + 7u) & ~(size_t)7u);
+        second = hdr_end + 56 + 64;
+        H_CHECK(flip_byte_at(BC_PATH, second + 56 + 5),
+                "damage the newer copy's payload");
+
+        c = open_a();
+        if (c != NULL) {
+            H_CHECK(is_miss(c, 9),
+                    "a damaged newest copy is a miss, not the older value");
+            horizon_gpu_blob_cache_close(c);
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * A ceiling smaller than a single entry. The ceiling governs
+     * accumulation; it is not a reason to refuse the one thing somebody
+     * asked to store, and it must not loop or crash trying.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c =
+            open_at(BC_PATH, drv_a, sizeof(drv_a), 128, false);
+
+        H_CHECK(c != NULL, "open with a ceiling below one record");
+        if (c != NULL) {
+            H_CHECK(put_n(c, 1, 4096), "an entry larger than the ceiling"
+                                       " is still stored");
+            H_CHECK(get_is(c, 1, 4096), "and read back");
+            H_CHECK(put_n(c, 2, 4096), "and a second one after it");
+            H_CHECK(get_is(c, 2, 4096), "which is also readable");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_at(BC_PATH, drv_a, sizeof(drv_a), 128, false);
+            H_CHECK(c != NULL, "and the result reopens");
+            horizon_gpu_blob_cache_close(c);
+        }
+    }
+
+    /* ---------------------------------------------------------------
      * The size ceiling. An SD card is somebody's games; a cache that
      * grows without bound is a bug even when every entry in it is valid.
      * --------------------------------------------------------------- */
