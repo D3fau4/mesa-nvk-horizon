@@ -265,9 +265,31 @@ why the workflow installs a minimal one when `cargo` is absent.
 vendoring could run in there instead of on the host. It does not today for one specific
 reason: the container runs as root while a CI runner's job does not — act_runner uses
 uid 1001 — so the vendored tree would come back owned by root and the next run's
-`rm -rf` would fail on it. Publishing the *derived* image, which already carries cargo,
-bindgen, cbindgen and the LLVM closure, is the change that would remove this whole
-section; see [`RELEASING.md`](RELEASING.md).
+`rm -rf` would fail on it.
+
+### The derived image, and not building it every time
+
+The base image is not enough for Mesa's Rust half: `bindgen`, `cbindgen`, `clang-15`
+and `llvm-config` are all absent from it. `scripts/build-toolchain-image.sh` adds them,
+which costs about **eleven minutes and 7.3 GB**.
+
+That is paid once per machine — the script recognises an image it has already built by
+an identity label covering the base image's ID, the pinned bindgen/cbindgen/LLVM
+versions, the resolved `.deb` closure and the Dockerfile's own digest. A runner that
+keeps its docker daemon between jobs keeps the image too.
+
+For runners that do not, `.forgejo/workflows/toolchain-image.yml` publishes it to the
+instance's container registry and the build job pulls it. Set
+`HORIZON_NX_DERIVED_IMAGE` to use a published one by hand:
+
+```sh
+HORIZON_NX_DERIVED_IMAGE=<registry>/<owner>/nx-dev-mesa:latest \
+    scripts/ci-build-archives.sh
+```
+
+**A pull is a candidate, not an answer.** The identity check runs against whatever is
+there, published or local, and rebuilds when it does not match. A published image that
+no longer corresponds to `toolchain/Dockerfile` cannot be used silently.
 
 ## 9. Environment variables
 

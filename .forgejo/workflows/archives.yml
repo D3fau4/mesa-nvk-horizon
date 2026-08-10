@@ -103,6 +103,27 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           scripts/ci-require-host-tools.sh
 
+      # The derived toolchain image, from the registry rather than built
+      # here: eleven minutes and 7.3 GB otherwise, on every runner that
+      # does not already have it. toolchain-image.yml publishes it.
+      #
+      # A pull is a candidate, not an answer.
+      # scripts/build-toolchain-image.sh still checks its identity label
+      # against the base image ID, the pins, the resolved .deb closure
+      # and the Dockerfile digest, and rebuilds if any of them moved. A
+      # stale published image cannot be used silently, and a missing one
+      # is not an error — it just costs the eleven minutes.
+      - name: the toolchain image, from the registry if it is there
+        run: |
+          set -eu
+          registry="${GITHUB_SERVER_URL#*://}"
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" \
+                      | tr '[:upper:]' '[:lower:]')
+          image="$registry/$owner/nx-dev-mesa:latest"
+          echo "HORIZON_NX_DERIVED_IMAGE=$image" >> "$GITHUB_ENV"
+          docker pull "$image" \
+              || echo "not published yet — it will be built here instead"
+
       # The pinned Mesa checkout, the patch series, the derived
       # toolchain image, mesa_clc, Mesa's core and NVK — then every .a
       # the tests link, then 32 .nro proving the archives are usable
