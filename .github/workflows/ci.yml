@@ -255,6 +255,6 @@ jobs:
       - name: Upload dist
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-gpu-tests-full
+          name: horizon-gpu-full
           path: build/pkg
           if-no-files-found: error

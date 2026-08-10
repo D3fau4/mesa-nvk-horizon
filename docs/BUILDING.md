@@ -154,11 +154,13 @@ themselves.
 scripts/package-horizon.sh [outdir]      # default build/pkg
 ```
 
-Collects the `.nro` into one directory with a `MANIFEST.txt` that ties each artefact to
-the toolchain that produced it: a sha256 per file, the resolved image digest, the live
-devkitA64/libnx package versions, and the **build id read back out of the binaries** —
-not out of the source tree. It refuses a package holding more than one build id, or an
-artefact carrying none.
+Collects `lib/libhorizon_gpu.a`, `lib/libhorizon_compat.a`, the `include/horizon_gpu/`
+public headers and the `.nro` into one directory with a `MANIFEST.txt` that ties each
+artefact to the toolchain that produced it: a sha256 per file, the resolved image digest,
+the live devkitA64/libnx package versions, and the **build id read back out of the
+binaries** — not out of the source tree. It refuses a package holding more than one build
+id, or a `.nro` carrying none; the library and headers are what a project consuming
+`horizon_gpu` actually links against, so it also refuses to package `.nro` without them.
 
 That refusal exists because a `.nro` on an SD card looks exactly like the one it
 replaced, and an afternoon was once spent measuring a three-day-old build.

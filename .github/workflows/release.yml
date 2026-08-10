@@ -246,18 +246,27 @@ jobs:
           {
             echo "## What is in this release"
             echo
-            echo "The full \`horizon_gpu\` test suite as standalone \`.nro\`"
-            echo "homebrew — including the NVK/Vulkan driver tests, not just"
-            echo "the driver-free subset — the licence they are distributed"
-            echo "under, and a manifest tying every one of them to a single"
-            echo "build and toolchain."
+            echo "\`lib/libhorizon_gpu.a\` and \`lib/libhorizon_compat.a\`, the"
+            echo "\`include/horizon_gpu/\` public headers they are compiled"
+            echo "against, the full \`horizon_gpu\` test suite as standalone"
+            echo "\`.nro\` homebrew — including the NVK/Vulkan driver tests, not"
+            echo "just the driver-free subset — the licence they are"
+            echo "distributed under, and a manifest tying every one of them to"
+            echo "a single build and toolchain."
             echo
+            echo "- **\`lib/libhorizon_gpu.a\` + \`lib/libhorizon_compat.a\` +"
+            echo "  \`include/horizon_gpu/\`**"
             echo "- **${count} \`.nro\`, ${vk_count} of them \`t_vk_*\` (NVK/Vulkan)**"
             echo "- **Build id:** \`${build_id}\`"
             echo
             echo "Every test prints that build id as the second line of its"
             echo "log. If a log you are reporting does not carry this exact"
-            echo "stamp, it came from other binaries."
+            echo "stamp, it came from other binaries. \`MANIFEST.txt\` carries"
+            echo "the same stamp for the library, which cannot print its own."
+            echo
+            echo "Pre-1.0: the interfaces in \`include/horizon_gpu/\` may still"
+            echo "change between releases. Check the build id against what you"
+            echo "linked before assuming ABI compatibility across two of these."
             echo
             echo "## What this release does not claim"
             echo

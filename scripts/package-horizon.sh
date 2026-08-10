@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# Collects the built .nro files into one directory with a manifest that
-# ties each artefact to the toolchain that produced it.
+# Collects the built .nro files, libhorizon_gpu.a, libhorizon_compat.a
+# and the horizon_gpu public headers into one directory with a manifest
+# that ties each artefact to the toolchain that produced it.
 #
 #   scripts/package-horizon.sh [outdir]     # default: build/pkg
+#
+# The libraries and headers are what a project consuming horizon_gpu
+# actually links against — the .nro are this tree's own tests, not
+# something another project embeds. Both travel in the same package
+# because they are one build: a .a pulled from a different run than the
+# headers it was compiled against is exactly the kind of mismatch the
+# build id and the manifest exist to make detectable rather than silent.
 #
 # The point of the manifest is the Phase 2 goal itself: when a .nro is
 # copied to an SD card and run on console, the result recorded in
 # STATUS.md has to be attributable to an exact toolchain. A sha256 next
 # to the pinned devkitA64/libnx/image versions is what makes "the ten
-# tests passed" a statement about a specific build.
+# tests passed" a statement about a specific build — and the same
+# attribution is what tells a consuming project which commit's ABI a
+# copy of libhorizon_gpu.a actually implements.
 #
 # Idempotent: artefacts are copied only when their content differs, and
 # the manifest is rewritten only when it changes.
@@ -314,6 +324,47 @@ for nro in "$SRC"/*.nro; do
     fi
 done
 
+# THE LIBRARY ITSELF, NOT JUST THE TESTS THAT LINK IT.
+#
+# libhorizon_gpu.a lands at $SRC's root either way: the Makefile builds
+# it at build/libhorizon_gpu.a, and meson.build's static_library('horizon_gpu', ...)
+# is declared at the top level, so it comes out at
+# $HORIZON_BUILD_DIR/libhorizon_gpu.a — the same directory $SRC already
+# points at, whichever path produced it.
+#
+# Required, not optional: both build paths produce it before they build
+# a single test (the tests link it), so its absence here means $SRC does
+# not hold a real build — packaging binaries without the library the
+# whole package exists to distribute would be the silent kind of
+# incomplete this project's gates exist to refuse.
+_pkg_gpu_lib="$SRC/libhorizon_gpu.a"
+[ -f "$_pkg_gpu_lib" ] || {
+    echo "error: no libhorizon_gpu.a in $SRC; a real build produces one" \
+         "before it builds any test that links it. Run" \
+         "scripts/build-horizon.sh or scripts/build-switch.sh first." >&2
+    exit 1
+}
+[ -f "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" ] || {
+    echo "error: no libhorizon_compat.a in $HORIZON_COMPAT_LIBDIR;" \
+         "run scripts/build-compat.sh first." >&2
+    exit 1
+}
+mkdir -p "$OUT/lib"
+cp "$_pkg_gpu_lib" "$OUT/lib/libhorizon_gpu.a"
+cp "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" "$OUT/lib/libhorizon_compat.a"
+
+# THE HEADERS THAT LIBRARY IS COMPILED AGAINST, not whatever copy a
+# consumer's own tree happens to have. horizon/include/horizon_gpu/ is
+# the only public header surface (CLAUDE.md's target architecture) —
+# re-staged wholesale, the same way scripts/build-mesa-nvk.sh re-stages
+# it before every NVK build, rather than diffed file by file: it is a
+# handful of small headers, not something worth the idempotent-copy
+# bookkeeping the .nro loop above pays for because testfw.o (and so
+# every .nro) really does change on every single build.
+rm -rf "$OUT/include"
+mkdir -p "$OUT/include"
+cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
+
 # THE LICENCE TRAVELS WITH THE BINARIES.
 #
 # This directory is what gets tarred into a release and copied onto an
@@ -349,7 +400,7 @@ tmp="$manifest.tmp.$$"
 _pkg_img=$(horizon_image_digest)
 
 {
-    echo "mesa-nvk-horizon — packaged .nro artefacts"
+    echo "mesa-nvk-horizon — packaged horizon_gpu library and test artefacts"
     echo
     echo "built from : $SRC_DESC"
     echo "toolchain  : $HORIZON_TOOLCHAIN_DESC"
@@ -423,7 +474,10 @@ _pkg_img=$(horizon_image_digest)
     echo "  mesa    : $MESA_TAG ($MESA_COMMIT)"
     echo "  meson   : $MESON_VERSION"
     echo
-    echo "# Artefacts (sha256)"
+    echo "# Library (sha256) — link against this and include/horizon_gpu/"
+    (cd "$OUT" && sha256sum ./lib/*.a | sort -k2)
+    echo
+    echo "# Test artefacts (sha256)"
     # Sorted so the manifest is stable across runs and diffable.
     (cd "$OUT" && sha256sum ./*.nro | sort -k2)
 } > "$tmp"
@@ -436,5 +490,6 @@ else
     manifest_state="written"
 fi
 
-echo "package-horizon: $OUT — $copied copied, $kept already current," \
-     "$dropped dropped, manifest $manifest_state"
+echo "package-horizon: $OUT — $copied .nro copied, $kept already current," \
+     "$dropped dropped, libhorizon_gpu.a + libhorizon_compat.a + headers" \
+     "staged, manifest $manifest_state"

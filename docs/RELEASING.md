@@ -14,22 +14,27 @@ against both forges, and re-enabling CI there is a separate decision from enabli
 `scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API for that
 instance; `scripts/ci-github-release.sh` does the GitHub equivalent through `gh`.
 
-Both workflows build **inside** the toolchain image, for the same reason the Forgejo original
-did: a containerised job's bind mount is resolved by the host daemon against a path that only
-exists inside the job, not against the checkout. Getting the image into that job is different
-on GitHub, though — a GitHub-hosted runner is a fresh VM per job, with no daemon shared between
-`ci.yml`'s `toolchain` job and the one that builds — so `toolchain` pushes the derived image to
-`ghcr.io/<owner>/nx-dev-mesa` and the build job pulls it back through its `container:`. This
-works because `ghcr.io` is HTTPS; the Forgejo instance never got this because it is not (see
-`STATUS.md`, "CI switched off, and what is kept instead"). `scripts/build-toolchain-image.sh`
-needed no change for it — pulling into the tag it already checks the identity of is the whole
-mechanism.
+Both workflows build **on the runner itself**, not inside a `container:` — the toolchain image
+is built or pulled once, then driven per-command through `scripts/toolchain-env.sh`'s own
+`horizon_run` (unset `$DEVKITPRO` is what turns this on; it is the same split
+`scripts/build-switch.sh` already uses for the Makefile path). The image still comes from
+`ghcr.io/<owner>/nx-dev-mesa` — HTTPS, unlike the Forgejo instance (see `STATUS.md`, "CI
+switched off, and what is kept instead") — pushed there once per Dockerfile/pin change and
+pulled on every run after. `scripts/build-toolchain-image.sh` needed no change for any of this —
+pointing `$HORIZON_NX_DERIVED_IMAGE` at the pulled tag is the whole mechanism.
 
 Then `scripts/package-horizon.sh`, and `release.yml` publishes:
 
-- `mesa-nvk-horizon-<tag>-nro.tar.gz` — every `horizon_gpu` test `.nro` the tree currently
-  names in `meson.build` (around 34, fourteen of them `t_vk_*` exercising NVK), `LICENSE`,
-  `LICENSES.md` and `MANIFEST.txt`,
+- `mesa-nvk-horizon-<tag>-nro.tar.gz`, containing:
+  - `lib/libhorizon_gpu.a` and `lib/libhorizon_compat.a` — what another project actually links
+    against,
+  - `include/horizon_gpu/` — the public headers those libraries are compiled against; pre-1.0,
+    both are versioned together and neither is meaningful without the other,
+  - every `horizon_gpu` test `.nro` the tree currently names in `meson.build` (around 34,
+    fourteen of them `t_vk_*` exercising NVK) — this project's own tests, not something a
+    consumer embeds, kept in the package because they are the evidence the library in the same
+    tarball actually works,
+  - `LICENSE`, `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
 - release notes carrying the build id and the caveats below.
 
