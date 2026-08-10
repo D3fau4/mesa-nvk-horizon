@@ -84,9 +84,14 @@ v3d, d3d12, radeonsi, and the video runtime.
 | and reports itself so | `scripts/apply-mesa-patches.sh --list` | `75 applied, 0 pending (75 in mesa-patches/)` |
 | the five gates | `check-{layering,no-abs-paths,mesa-test-parity,dispatch-complete,history-intact}.sh` | all PASS |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 14/14, 8/8 |
-| every archive, cross | `scripts/ci-build-archives.sh` | **still running when this was written** — recorded in the commit that follows |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK — every archive built, 34 `.nro` link them**, `check-dispatch-complete` OK (825 entry points named, 234 core, 1 allowed absence) and `check-tls-relocs` OK (3 objects use TLS, all with relocations, 1203 scanned) against the built artefacts |
 
-**This is a cross build and five gates. It says nothing about a console.**
+The chain ran end to end in container mode — derived toolchain image,
+`mesa_clc` and `vtn_bindgen2` native, Mesa's non-driver core, the nouveau
+Vulkan driver, every archive the tests link, then the 34 `.nro` rebuilt
+against them. Nothing in `mesa-patches/` needed touching at any step.
+
+**This is a cross build and seven gates. It says nothing about a console.**
 No hardware run carries 26.1.6; every number in the rest of this file was
 measured against 26.1.5, and the two NVK commits above are the only driver
 code that differs between them.
