@@ -211,7 +211,7 @@ and needs a nightly toolchain.
 
 ## 8. The scripts, in one table
 
-All 33 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
+All 32 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
 themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 
 **Fetch** (host-side, because containers have no network)
