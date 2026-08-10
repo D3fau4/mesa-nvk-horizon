@@ -281,6 +281,31 @@ for nro in "$SRC"/*.nro; do
     fi
 done
 
+# THE LICENCE TRAVELS WITH THE BINARIES.
+#
+# This directory is what gets tarred into a release and copied onto an
+# SD card, and MIT is explicit that "the above copyright notice and this
+# permission notice shall be included in all copies or substantial
+# portions of the Software" — a distribution of built artefacts is a
+# copy. Packaging them without it published the software while omitting
+# the one condition its licence attaches. Found in review of PR #10.
+#
+# LICENSES/README.md goes with it because our MIT text is not the whole
+# picture: every .nro links libnx, which is ISC, and that file is where
+# the third-party position is recorded. libnx ships no licence file in
+# $DEVKITPRO/libnx for us to copy — checked in the image — so this
+# points at the component and its licence rather than inventing the
+# text of one.
+for _pkg_lic in LICENSE LICENSES/README.md; do
+    [ -f "$_pkg_lic" ] || {
+        echo "error: $_pkg_lic is missing; refusing to package binaries" >&2
+        echo "       without the licence they are distributed under." >&2
+        exit 1
+    }
+done
+cp LICENSE "$OUT/LICENSE"
+cp LICENSES/README.md "$OUT/LICENSES.md"
+
 manifest="$OUT/MANIFEST.txt"
 tmp="$manifest.tmp.$$"
 

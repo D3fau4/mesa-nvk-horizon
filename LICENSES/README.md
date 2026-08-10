@@ -1,9 +1,10 @@
 # Licensing
 
-The licence *text* is `/LICENSE` at the repository root, where GitHub and packaging
+The licence *text* is `/LICENSE` at the repository root, where forges and packaging
 tools look for it; `MIT.txt` here is a byte-identical copy kept so this directory reads
-on its own. This file is the licence *policy* — what is covered, what is external, and
-what may never be copied in.
+on its own. Both travel with the binaries: `scripts/package-horizon.sh` copies `LICENSE`
+and this file into every package it builds. This file is the licence *policy* — what is
+covered, what is external, and what may never be copied in.
 
 ## This repository
 
