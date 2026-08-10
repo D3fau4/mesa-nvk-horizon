@@ -1,0 +1,273 @@
+# Cutting a release, and saying exactly what it is.
+#
+# GitHub port of .forgejo/workflows-disabled/release.yml, with one
+# deliberate difference from that original: THIS PUBLISHES THE FULL
+# BUILD. The Forgejo version only ever shipped the eighteen .nro of the
+# Makefile path, because the image it ran in carried no Mesa checkout —
+# it named that gap in its own header rather than hide it. That
+# constraint does not exist here: this workflow's toolchain image is the
+# same one ci.yml builds and runs the full scripts/ci-build-archives.sh
+# in, so the package this produces has every archive the tests link,
+# including the fourteen t_vk_* Vulkan/NVK tests. Publishing less than
+# what CI already validates would be the wrong kind of gap to leave
+# unnamed.
+#
+# WHY THE STEPS RUN INSIDE THE TOOLCHAIN IMAGE, and why there is a
+# `toolchain` job at all. Same reason as ci.yml: bind-mounting a
+# containerised job's $PWD resolves against the host, not the job
+# (Forgejo task 1274), so the build runs as the job's own container
+# instead, pulled from ghcr.io — see ci.yml's `toolchain` job for the
+# full mechanism (identical here, duplicated rather than factored into a
+# reusable workflow, so each file stays readable top to bottom on its
+# own).
+#
+# WHAT THIS PRODUCES, AND WHAT IT DOES NOT. A cross build. The artefacts
+# have compiled and nothing more: no console has run them. This project
+# keeps host / cross / hardware-verified apart everywhere else, and a
+# release is not where that stops — so the notes say it in the release
+# body rather than leaving a reader to assume.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # Override with the TOOLCHAIN_IMAGE repository variable to point at an
+  # image built somewhere else — same override docs/BUILDING.md already
+  # documents for scripts/ci-build-archives.sh's own HORIZON_NX_DERIVED_IMAGE.
+  TOOLCHAIN_IMAGE: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
+
+jobs:
+  # Identical to ci.yml's toolchain job — see it for the full mechanism
+  # and rationale.
+  toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: the runner can drive docker
+        run: scripts/ci-require-docker.sh
+
+      - name: rust, only if this runner has none
+        run: |
+          set -eu
+          command -v cargo >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: what this machine has to provide
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/ci-require-host-tools.sh
+
+      - name: log in to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: pull the cached toolchain image, if there is one
+        id: pull
+        run: |
+          set -eu
+          docker pull "$TOOLCHAIN_IMAGE" || \
+              echo "release: no cached toolchain image yet (first run, or the pins moved)"
+          echo "pre_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null || echo none)" \
+              >> "$GITHUB_OUTPUT"
+
+      - name: the toolchain image is present and current
+        id: build
+        env:
+          HORIZON_NX_DERIVED_IMAGE: ${{ env.TOOLCHAIN_IMAGE }}
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/build-toolchain-image.sh
+          echo "post_id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE")" \
+              >> "$GITHUB_OUTPUT"
+
+      - name: publish the toolchain image, if it rebuilt
+        if: steps.pull.outputs.pre_id != steps.build.outputs.post_id
+        run: docker push "$TOOLCHAIN_IMAGE"
+
+  release:
+    needs: toolchain
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.TOOLCHAIN_IMAGE || format('ghcr.io/{0}/nx-dev-mesa:latest', github.repository_owner) }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      env:
+        DEVKITPRO: /opt/devkitpro
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # --- the same gates ci.yml runs, and for the same reason: seconds,
+      # so they run before the long build rather than after it ---------
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
+
+      # The full build, not `make all`: every archive the tests link,
+      # including NVK, so the package below can carry the fourteen
+      # t_vk_* tests. See this file's header.
+      - name: every archive the tests link
+        run: scripts/ci-build-archives.sh
+
+      - name: package
+        run: |
+          set -eu
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
+
+      # The digest has to be in there. If it is not, the packaging step
+      # ran in a mode that cannot attribute these binaries to a
+      # toolchain, and publishing them would put an unattributable
+      # artefact in front of people.
+      - name: the manifest identifies the toolchain
+        run: |
+          set -eu
+          grep -qE '^image +: (in-image:|.*@sha256:)' build/pkg/MANIFEST.txt || {
+              echo "error: MANIFEST.txt does not identify its toolchain:" >&2
+              grep '^image' build/pkg/MANIFEST.txt >&2 || true
+              echo "       Refusing to publish artefacts whose toolchain" >&2
+              echo "       cannot be identified." >&2
+              exit 1
+          }
+
+      - name: assemble the assets and the notes
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          # On a tag this is the tag. On a workflow_dispatch it is the
+          # BRANCH, and a branch name contains slashes. Only the
+          # filename is sanitised; the publish step below is guarded on
+          # the ref being a tag, so the name it passes is always the
+          # real one.
+          safe_tag=$(printf '%s' "$tag" | tr '/' '-')
+          tar -czf "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" -C build/pkg .
+          sha256sum "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
+              > "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+
+          build_id=$(sed -n 's/^build id  *: //p' build/pkg/MANIFEST.txt)
+          count=$(find build/pkg -name '*.nro' | wc -l)
+          vk_count=$(find build/pkg -name 't_vk_*.nro' | wc -l)
+
+          {
+            echo "## What is in this release"
+            echo
+            echo "The full \`horizon_gpu\` test suite as standalone \`.nro\`"
+            echo "homebrew — including the NVK/Vulkan driver tests, not just"
+            echo "the driver-free subset — the licence they are distributed"
+            echo "under, and a manifest tying every one of them to a single"
+            echo "build and toolchain."
+            echo
+            echo "- **${count} \`.nro\`, ${vk_count} of them \`t_vk_*\` (NVK/Vulkan)**"
+            echo "- **Build id:** \`${build_id}\`"
+            echo
+            echo "Every test prints that build id as the second line of its"
+            echo "log. If a log you are reporting does not carry this exact"
+            echo "stamp, it came from other binaries."
+            echo
+            echo "## What this release does not claim"
+            echo
+            echo "**These artefacts are cross-built. No console has run"
+            echo "them.** This project keeps *host build*, *cross build* and"
+            echo "*verified on real hardware* strictly apart, and a release"
+            echo "does not blur them: a \`.nro\` that compiles is not a"
+            echo "\`.nro\` that works. What has run on hardware, and what has"
+            echo "not, is in \`STATUS.md\` — read its *Current state* block"
+            echo "before assuming."
+            echo
+            echo "## Running these"
+            echo
+            echo "Copy the \`.nro\` to \`sdmc:/switch/horizon_gpu_tests/\` and"
+            echo "launch from hbmenu. Each prints \`RESULT: PASS (n/n)\` on"
+            echo "screen and to \`sdmc:/horizon_gpu_tests/<name>.log\`. Full"
+            echo "instructions: \`docs/USAGE.md\`."
+            echo
+            echo "This is pre-1.0 software driving a GPU through system"
+            echo "services. It has taken a console down before. Run it when"
+            echo "you are willing to reboot."
+            echo
+            echo "## Verifying what you downloaded"
+            echo
+            echo '```sh'
+            echo "sha256sum -c mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+            echo '```'
+            echo
+            echo "\`MANIFEST.txt\` inside the archive carries a sha256 for"
+            echo "each \`.nro\`, the toolchain image it was built in, and the"
+            echo "devkitA64 and libnx package versions the build used."
+          } > NOTES.md
+
+      # A manual run gets the artefact and stops. Everything above this
+      # point is the useful half of a dry run — it builds, packages, and
+      # proves the manifest identifies its toolchain — and none of it
+      # should end in a published release.
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          # A constant, not the ref: a branch name has slashes in it and
+          # an artefact name is not a path.
+          name: mesa-nvk-horizon-nro
+          path: |
+            mesa-nvk-horizon-*-nro.tar.gz
+            mesa-nvk-horizon-*-nro.tar.gz.sha256
+            NOTES.md
+          if-no-files-found: error
+
+      # ONLY FOR A TAG, and the guard is not decoration.
+      #
+      # $GITHUB_REF_NAME is the *branch* name on a workflow_dispatch, so
+      # without this a manual run from main would publish a release
+      # called "main" — with notes and assets naming it as a version.
+      - name: publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          safe_tag=$(printf '%s' "$tag" | tr '/' '-')
+          scripts/ci-github-release.sh "$tag" NOTES.md \
+              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
+              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+
+      - name: say what a dispatch run did and did not do
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "Not a v* tag, so nothing was published."
+          echo "The package is attached to this run as an artefact."
+          echo "To cut a release: git tag -a vX.Y.Z -m '…' && git push origin vX.Y.Z"

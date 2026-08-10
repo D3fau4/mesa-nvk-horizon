@@ -5,22 +5,30 @@ this project is organised around: **what compiled** versus **what ran on a conso
 
 ## The automatic one — cross-built, unverified
 
-**There is no automatic release any more.** CI is off; the workflow that did this is
-kept commented in
-[`.forgejo/workflows-disabled/release.yml`](../.forgejo/workflows-disabled/release.yml),
-and what follows describes what it did — because the same steps are what you run by hand,
-and `scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API.
+CI runs on GitHub Actions now: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on
+every push, pull request and manual dispatch, and
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) on a `v*` tag or manual
+dispatch. The Forgejo instance's own workflows are kept, commented, in
+[`.forgejo/workflows-disabled/`](../.forgejo/workflows-disabled/) — this project is developed
+against both forges, and re-enabling CI there is a separate decision from enabling it here.
+`scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API for that
+instance; `scripts/ci-github-release.sh` does the GitHub equivalent through `gh`.
 
-It builds the Makefile path **inside** the toolchain image. Driving the image from the
-runner instead is impossible here — a containerised job's bind mount is resolved by the
-host daemon against a path that only exists inside the job — and running inside costs
-nothing, because the image records the identity it was built under and
-`scripts/toolchain-env.sh` reads it. The workflow refuses to publish a package whose
-manifest identifies no toolchain at all.
+Both workflows build **inside** the toolchain image, for the same reason the Forgejo original
+did: a containerised job's bind mount is resolved by the host daemon against a path that only
+exists inside the job, not against the checkout. Getting the image into that job is different
+on GitHub, though — a GitHub-hosted runner is a fresh VM per job, with no daemon shared between
+`ci.yml`'s `toolchain` job and the one that builds — so `toolchain` pushes the derived image to
+`ghcr.io/<owner>/nx-dev-mesa` and the build job pulls it back through its `container:`. This
+works because `ghcr.io` is HTTPS; the Forgejo instance never got this because it is not (see
+`STATUS.md`, "CI switched off, and what is kept instead"). `scripts/build-toolchain-image.sh`
+needed no change for it — pulling into the tag it already checks the identity of is the whole
+mechanism.
 
-Then `scripts/package-horizon.sh`, and it publishes:
+Then `scripts/package-horizon.sh`, and `release.yml` publishes:
 
-- `mesa-nvk-horizon-<tag>-nro.tar.gz` — the 18 `horizon_gpu` test `.nro`, `LICENSE`,
+- `mesa-nvk-horizon-<tag>-nro.tar.gz` — every `horizon_gpu` test `.nro` the tree currently
+  names in `meson.build` (around 34, fourteen of them `t_vk_*` exercising NVK), `LICENSE`,
   `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
 - release notes carrying the build id and the caveats below.
@@ -33,13 +41,13 @@ in, so a package built by hand is no different.
 the release body, because a reader who skips `STATUS.md` should still not come away
 thinking otherwise. A `.nro` that compiles is not a `.nro` that works.
 
-**What it leaves out, and why.** The fourteen `t_vk_*` tests and the NVK driver itself are
-absent. They need the derived toolchain image — libclang, `bindgen`, `cbindgen`, a Rust
-sysroot for the Switch target, an LLVM-15 `libclc` closure — plus a full Mesa build, with
-material fetched outside the container because containers here have no network. That is
-tens of minutes and several GB, and it is not something a tag push should quietly start.
-The gap is named in the workflow header and in the release notes rather than left to look
-like completeness.
+**Nothing is left out any more.** The `release.yml` this workflow replaces on Forgejo
+shipped only the eighteen driver-free `.nro`, because the image it ran in carried no Mesa
+checkout. That gap does not exist here: this workflow's toolchain image is the same one
+`ci.yml` builds and runs the full `scripts/ci-build-archives.sh` in — Mesa, the Rust half
+and NVK — so the package includes every archive the tests link, `t_vk_*` included.
+Publishing less than what CI itself already validated would be the wrong kind of gap to
+leave unnamed.
 
 `workflow_dispatch` runs the build and packaging **without publishing**, which is the way
 to check the pipeline without cutting anything: it builds, packages, proves the manifest
@@ -52,6 +60,18 @@ branch — without that guard, a dispatch from `main` would publish a release ca
 debugging on the first failure: it fetches from four external services, so a red run is
 as likely to be somebody else's CDN as a broken tree. Its network steps already retry
 three times for that reason.
+
+To publish by hand instead of through the workflow — reproducing exactly what
+`release.yml`'s `publish` step does:
+
+```sh
+scripts/package-horizon.sh build/pkg
+GH_TOKEN=<token with contents: write> \
+    scripts/ci-github-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+```
+
+The Forgejo equivalent is still `scripts/ci-forgejo-release.sh` (see the manual section
+below for its full invocation, including the environment it reads).
 
 ## The manual one — with hardware behind it
 

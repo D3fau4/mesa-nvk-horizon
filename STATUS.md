@@ -15,7 +15,9 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
 | **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
-| **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); CI now cross-builds, and a tag publishes a package. **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
+| **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); GitHub Actions CI now
+cross-builds on every push, and a `v*` tag publishes a package (2026-08-10, see the entry
+below this table). **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
@@ -27,6 +29,64 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## CI back on, on GitHub — the same pipeline, a real registry under it (2026-08-10)
+
+At the project owner's direction, the reverse of the entry below: GitHub Actions now runs
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on every push, pull request and
+manual dispatch, and [`.github/workflows/release.yml`](../.github/workflows/release.yml) on
+a `v*` tag or manual dispatch, against `D3fau4/mesa-nvk-horizon` — a public GitHub repo, so
+this costs nothing in Actions minutes. The Forgejo instance's own workflows stay off,
+unchanged, for the reasons in the entry below.
+
+**Same two jobs, same job names, same reason for the split** as
+`.forgejo/workflows-disabled/archives.yml` — `toolchain` produces the derived image,
+`archives`/`release` build inside it. What differs is the mechanism connecting them, and it
+has to: a GitHub-hosted runner is one throwaway VM per job, so there is no docker daemon for
+`toolchain` to leave an image in and the next job to find locally, the way task
+1274's fix relied on on Forgejo's persistent runner.
+
+**What replaces it is the registry the Forgejo instance never got.** Tasks 1275 and 1276
+found that instance speaks plain HTTP and docker refuses a non-HTTPS registry — a fact about
+that instance, not about registries in general. `ghcr.io` is HTTPS, so `toolchain` pushes the
+derived image to `ghcr.io/d3fau4/nx-dev-mesa` and the build job pulls it back through its own
+`container:`. `scripts/build-toolchain-image.sh` needed no change for this: it already
+resolves the image to build or reuse through `$HORIZON_NX_DERIVED_IMAGE`
+(`docs/BUILDING.md`, "Point somewhere else with the `TOOLCHAIN_IMAGE` repository variable"),
+and its own identity check — base image ID, pinned bindgen/cbindgen/LLVM versions, the
+resolved `.deb` closure, the Dockerfile's digest — does the right thing against a pulled
+image with no further help. Push happens only when the image's own ID changed between the
+pull and the build step, so an unchanged Dockerfile/pins costs one `docker pull` per run and
+zero pushes.
+
+**The release package changed shape, deliberately.** The Forgejo `release.yml` this replaces
+only ever published the eighteen driver-free `.nro`, because the image it ran in carried no
+Mesa checkout — named as a gap in its own header. That constraint does not exist here:
+`release.yml`'s toolchain image is the one `ci.yml` builds and runs the full
+`scripts/ci-build-archives.sh` in, so the package now carries every archive the tests link,
+`t_vk_*` and NVK included — around 34 `.nro` instead of 18. Publishing less than what CI
+itself already validated would have been the wrong kind of gap to leave unnamed.
+
+**`scripts/ci-github-release.sh` replaces `ci-forgejo-release.sh` for the publish step**, same
+interface (`<tag> <notes-file> <asset>...`), same idempotency (reuse an existing release,
+replace an asset of the same name), but built on `gh` instead of hand-rolled
+python3/urllib/multipart — that complexity in the Forgejo script exists only because a
+third-party action does not resolve against an arbitrary Forgejo instance and `jq` is not
+guaranteed there. Neither is true of GitHub, where `gh` is preinstalled and authenticates
+from `$GITHUB_TOKEN` for free. `ci-forgejo-release.sh` itself is untouched —
+`docs/RELEASING.md` still needs it for the actual Forgejo instance.
+
+Every gate the Forgejo workflow ran still runs, in the same order, before the long build:
+`check-history-intact.sh`, `check-mesa-test-parity.sh`, `check-layering.sh`,
+`check-no-abs-paths.sh`, `run-host-tests.sh`, then `scripts/ci-build-archives.sh` itself,
+which ends by running `check-dispatch-complete.sh` and `check-tls-relocs.sh` against what it
+just built. Nothing about the gates changed; only what runs them, and where.
+
+**Host-level change only. No console, and no claim about one.** This entry is about a build
+pipeline, not about anything that has run on Switch hardware — read the *Current state*
+block above for that.
 
 ---
 
