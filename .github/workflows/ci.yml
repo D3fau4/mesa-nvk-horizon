@@ -184,9 +184,20 @@ jobs:
       # than one per gate: each `docker run` is a fresh, unrelated
       # container instance, so a `git config --global` (or anything else
       # stateful) set in one would not survive into the next. One
-      # invocation keeps the state that matters — the build id carries
-      # HEAD, and git refuses a repository owned by another uid — inside
-      # a single container for the whole sequence.
+      # invocation keeps the state that matters inside a single container
+      # for the whole sequence.
+      #
+      # safe.directory '*', not just $PWD: measured — `git init mesa`
+      # inside this same container, done by scripts/fetch-mesa.sh, failed
+      # with "mesa did not become its own git repository, git-dir: <none>"
+      # on the very first real run. $PWD (the bind-mounted checkout) had
+      # already been marked safe, but mesa/ is a SEPARATE repository at
+      # its own path once git-init'd, and git's ownership check is
+      # per-repository, not inherited from a parent directory — the same
+      # will be true of the SPIRV-Tools/SPIRV-Headers clones
+      # fetch-clc-deps.sh makes later. One container, one tree, nothing
+      # else mounted in it: there is no adversarial multi-tenant repo
+      # here for the usual safe.directory risk to apply to.
       #
       # Gates first, and they cost seconds; scripts/ci-build-archives.sh
       # is the long one, and it ends by running the two gates that need
@@ -200,7 +211,7 @@ jobs:
               "$TOOLCHAIN_IMAGE" \
               bash -c '
                 set -eu
-                git config --global --add safe.directory "$PWD"
+                git config --global --add safe.directory "*"
                 ./scripts/check-history-intact.sh
                 ./scripts/check-mesa-test-parity.sh
                 ./scripts/check-layering.sh

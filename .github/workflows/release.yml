@@ -162,7 +162,10 @@ jobs:
       # `docker run` for the reason ci.yml's identical step documents:
       # separate `docker run` invocations are separate containers, and
       # `git config --global --add safe.directory` set in one would not
-      # survive into the next.
+      # survive into the next. '*', not just $PWD, because
+      # scripts/fetch-mesa.sh's `git init mesa` makes mesa/ its own
+      # repository with its own ownership check — see ci.yml for the
+      # exact failure this was measured against.
       - name: gates, then every archive the tests link, then package
         run: |
           docker run --rm \
@@ -171,7 +174,7 @@ jobs:
               "$TOOLCHAIN_IMAGE" \
               bash -c '
                 set -eu
-                git config --global --add safe.directory "$PWD"
+                git config --global --add safe.directory "*"
                 ./scripts/check-history-intact.sh
                 ./scripts/check-mesa-test-parity.sh
                 ./scripts/check-layering.sh
