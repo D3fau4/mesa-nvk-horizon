@@ -1,0 +1,126 @@
+# The only CI workflow that runs on a push: build everything.
+#
+# WHAT HAPPENED TO THE OTHER TWO. There were three jobs — `gates`
+# (bash, python and a C compiler, six seconds), `cross` (the Makefile
+# path, eighteen .nro, about a minute) and `archives`. Two are gone at
+# the project owner's direction, and `cross` was redundant anyway:
+# `archives` builds those same eighteen .nro and twelve more.
+#
+# The five cheap checks are NOT gone, they are the first steps here.
+# They cost six seconds against this job's several minutes, they run
+# before anything expensive so their answer arrives first, and one of
+# them — check-history-intact.sh — is the only thing standing between an
+# undeclared edit to a hardware log and nobody noticing. Dropping the
+# job that contained them was asked for; dropping the checks was not.
+#
+# WHAT THE RUNNER NEEDS. This job does NOT run inside a container: the
+# scripts drive containers themselves, and one of them runs
+# `docker build`. So the runner needs the docker CLI and a
+# /var/run/docker.sock this user can reach — measured on the real
+# runner, act_runner starts job containers as uid 1001, not root.
+# scripts/ci-require-docker.sh checks both and names whichever is
+# missing. Running the steps *inside* the toolchain image instead would
+# also lose the image digest from the packaging manifest, which is the
+# field that attributes an artefact to a toolchain.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+name: archives
+
+on:
+  push:
+  pull_request:
+  # Runnable by hand from the web UI. Worth having: this job depends on
+  # material fetched from four external services, and "did that break,
+  # or was it the network" is a question best answered by pressing a
+  # button rather than by pushing an empty commit.
+  workflow_dispatch:
+
+concurrency:
+  group: archives-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archives:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # --- seconds, and they run first for that reason ---------------
+
+      # The record is evidence. An edit nobody declared is what this is
+      # for, and it costs a second.
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      # Two build systems describing the same tests. This is the one
+      # that had already diverged, found by a reviewer instead.
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      # horizon/ must not reach for Vulkan, Mesa or nwindow.
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      # horizon_gpu's pure logic, compiled and run natively. No
+      # toolchain, no device.
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
+
+      # --- and then the long one -------------------------------------
+
+      - name: the runner can drive docker
+        run: scripts/ci-require-docker.sh
+
+      # ghcr.io/catthehacker/ubuntu:runner-latest ships no Rust, and the
+      # first run here died on `cargo: command not found` after fifty
+      # seconds of useful work. Only `cargo vendor` needs it — nothing
+      # is compiled with this toolchain, so any recent one does, and the
+      # minimal profile keeps it small. Skipped entirely when the runner
+      # image already has cargo.
+      #
+      # The toolchain image has cargo too (1.99.0-nightly at /opt/cargo)
+      # and using it instead would avoid this download; see
+      # docs/BUILDING.md for why that is not the current answer.
+      - name: rust, only if this runner has none
+        run: |
+          set -eu
+          if command -v cargo >/dev/null; then
+              echo "cargo already here: $(cargo --version)"
+              exit 0
+          fi
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: what this machine has to provide
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/ci-require-host-tools.sh
+
+      # The pinned Mesa checkout, the patch series, the derived
+      # toolchain image, mesa_clc, Mesa's core and NVK — then every .a
+      # the tests link, then 32 .nro proving the archives are usable
+      # rather than merely present, then the dispatch and TLS gates
+      # against the artefacts it just produced. The ordering and the
+      # retries are explained in the script, which can be run by hand.
+      - name: every archive the tests link
+        run: scripts/ci-build-archives.sh
+
+      - name: package
+        run: |
+          set -eu
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
+
+      - name: Upload dist
+        uses: forgejo/upload-artifact@v4
+        with:
+          name: horizon-gpu-tests-full
+          path: build/pkg
+          if-no-files-found: error

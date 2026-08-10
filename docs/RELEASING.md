@@ -49,8 +49,8 @@ is guarded on the ref being a `v*` tag, because on a manual run `$GITHUB_REF_NAM
 branch — without that guard, a dispatch from `main` would publish a release called
 `main`.
 
-[`gates.yml`](../.forgejo/workflows/gates.yml) is manually runnable too. That is mostly
-for its `archives` job, which fetches from four external services: when it goes red,
+[`archives.yml`](../.forgejo/workflows/archives.yml) is manually runnable too, and for
+the same kind of reason: it fetches from four external services, so when it goes red,
 pressing the button again is how you tell a broken tree from a bad afternoon on somebody
 else's CDN.
 

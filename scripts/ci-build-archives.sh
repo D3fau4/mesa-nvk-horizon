@@ -45,6 +45,13 @@ step() { printf '\n=== %s\n' "$*" >&2; }
 # Three attempts, backing off, and only around the steps that reach the
 # network. A build step that fails is a real failure and is not retried:
 # retrying a compile error just takes three times as long to report it.
+#
+# THE LOOP MUST ONLY EVER SEE TRANSIENT FAILURES, which is why the
+# preflight below runs before it. The first Forgejo run of this script
+# retried `cargo: command not found` three times over 30 seconds — the
+# runner image simply has no Rust, and no amount of waiting was going to
+# add some. A retry around a fact about the machine is noise that
+# teaches people to ignore retries.
 retry() { # description, command...
     _rt_what="$1"; shift
     _rt_n=1
@@ -61,6 +68,9 @@ retry() { # description, command...
         _rt_n=$((_rt_n + 1))
     done
 }
+
+step "what this machine has to provide"
+scripts/ci-require-host-tools.sh
 
 if [ -n "${DEVKITPRO:-}" ]; then
     echo "ci-build-archives: using the local devkitA64 at \$DEVKITPRO" >&2

@@ -114,11 +114,12 @@ scripts/check-history-intact.sh    # the record and the logs match their manifes
 scripts/check-mesa-test-parity.sh  # the Makefile and the Meson build still agree
 ```
 
-CI runs all five on every push and pull request
-([`.forgejo/workflows/gates.yml`](.forgejo/workflows/gates.yml)), and two more jobs
-beside them: a cross build of the eighteen `.nro`, and `archives`, which builds Mesa,
-the Rust half and NVK and asserts that **every** `.a` the tests link exists and that 32
-`.nro` link them. If you touch `mesa-patches/`, that last one is what will tell you.
+CI runs all five on every push and pull request, as the first steps of the one workflow
+there is ([`.forgejo/workflows/archives.yml`](.forgejo/workflows/archives.yml)). They
+take six seconds and run before anything expensive, so their answer arrives first. The
+rest of that job builds Mesa, the Rust half and NVK, and asserts that **every** `.a` the
+tests link exists and that 32 `.nro` link them. If you touch `mesa-patches/`, that is
+what will tell you.
 
 Two further gates — `check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built
 artefacts, and the `archives` job runs them once it has produced some. Run them yourself

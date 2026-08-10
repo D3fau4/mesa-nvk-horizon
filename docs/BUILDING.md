@@ -185,9 +185,10 @@ read-only.
 
 ## 7. The gates
 
-Five run in CI on every push and pull request
-([`.forgejo/workflows/gates.yml`](../.forgejo/workflows/gates.yml)), alongside two build
-jobs — `cross` for the eighteen `.nro`, and `archives` for every `.a` the tests link:
+Five run in CI on every push and pull request, as the opening steps of
+[`.forgejo/workflows/archives.yml`](../.forgejo/workflows/archives.yml) — the one
+workflow there is. They cost seconds against that job's several minutes, so they come
+first:
 
 | Gate | What it refuses |
 |---|---|
@@ -242,8 +243,31 @@ resolves local-vs-container mode and is what every other script agrees through)
 **CI**
 `ci-build-archives.sh` — the whole chain above in one command, with retries around the
 network steps, ending in a check that every archive exists and that 32 `.nro` link
-them. Run it by hand to reproduce what CI does · `ci-forgejo-release.sh` — creates a
-release and uploads assets through the Forgejo API
+them. Run it by hand to reproduce what CI does · `ci-require-host-tools.sh` and
+`ci-require-docker.sh` — the two preflights it starts with ·
+`ci-forgejo-release.sh` — creates a release and uploads assets through the Forgejo API
+
+### What has to be on the machine itself
+
+Most of the build happens inside the toolchain image, but the **downloads do not**: the
+image has no network, so everything fetched is fetched out here and mounted in. That
+makes a short list of host requirements, which `scripts/ci-require-host-tools.sh` checks
+before anything slow starts:
+
+`git` · `python3` · `curl` · `tar` · `sha256sum` · **`cargo`**
+
+`cargo` is the one that catches people out — `scripts/fetch-rust-tools.sh` runs
+`cargo vendor` to collect bindgen's and cbindgen's sources. Nothing is *compiled* with
+it, so any recent toolchain does. Most CI runner images ship no Rust at all, which is
+why the workflow installs a minimal one when `cargo` is absent.
+
+`ghcr.io/d3fau4/nx-dev` does contain cargo (1.99.0-nightly, at `/opt/cargo`), so the
+vendoring could run in there instead of on the host. It does not today for one specific
+reason: the container runs as root while a CI runner's job does not — act_runner uses
+uid 1001 — so the vendored tree would come back owned by root and the next run's
+`rm -rf` would fail on it. Publishing the *derived* image, which already carries cargo,
+bindgen, cbindgen and the LLVM closure, is the change that would remove this whole
+section; see [`RELEASING.md`](RELEASING.md).
 
 ## 9. Environment variables
 
