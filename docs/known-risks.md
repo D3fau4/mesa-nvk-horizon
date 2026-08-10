@@ -313,6 +313,26 @@ Consequence accepted: line references in `docs/reference-analysis.md`, which des
 25.0.7 tree, are now approximate. Treat them as pointers to the right file and concept, not
 to the right line.
 
+**Point release taken, 2026-08-10: `mesa-26.1.5` → `mesa-26.1.6`**, commit
+`ffa422e53d59a4938b38abd5c3fc319555da31dd` (tag object `87f2e1c684613954`, released
+2026-07-29, [release notes](https://docs.mesa3d.org/relnotes/26.1.6.html)). This is
+*inside* the series D2 chose, not a new choice: the notes say "New features: None", and
+of the 114 files it changes, **none is one of the 121 `mesa-patches/` writes to**. The
+series applies unmodified, 75 of 75. Two NVK commits are in it, both worth having and
+neither large — `nvk: free copy_memory_indirect_temps on command buffer destroy` (a leak
+on the command-buffer destroy path) and `nvk: report fills from memory correctly`
+(`VK_KHR_pipeline_executable_properties` reported spills where it meant fills).
+
+**The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
+is a development release whose own notes tell stability-minded users to wait for 26.2.1,
+and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
+we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/`, 4 in
+`src/vulkan/wsi/`, both `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates
+NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,
+plus `proc/as_slice.rs`). Rebasing onto it is a real piece of work with a real risk of
+silent behaviour change on a driver whose evidence is all hardware runs, so it is put to
+the owner rather than taken.
+
 ---
 
 ## R15 — devkitPro is not version-pinnable in the usual sense

@@ -3,10 +3,17 @@
 **Status:** investigated and answered at the start of Phase 2, before any
 toolchain was built, which is what `docs/known-risks.md` R13 asked for.
 
-**Evidence base:** the Mesa tree at the pinned commit — `mesa-26.1.5`,
-`6a02618ccf6c5651ecb9cccbde571eb61fd73592` (decision D2, pinned in
+**Evidence base:** the Mesa tree at the commit pinned when this was written —
+`mesa-26.1.5`, `6a02618ccf6c5651ecb9cccbde571eb61fd73592` (decision D2, pinned in
 `toolchain/versions.env`). Every file:line below is from that checkout;
 re-check with `scripts/fetch-mesa.sh` and the greps quoted in each section.
+
+The pin moved to `mesa-26.1.6` (`ffa422e53d59a4938b38abd5c3fc319555da31dd`) on
+2026-08-10 and **nothing quoted here moved with it**: the 26.1.5 → 26.1.6 diff
+touches 114 files and not one of them is under `src/nouveau/compiler/` or
+`src/compiler/rust/`, so the file:line references below are still exact rather
+than approximate. Checked with
+`git -C mesa diff --name-only mesa-26.1.5^{} mesa-26.1.6^{}`.
 
 ---
 
