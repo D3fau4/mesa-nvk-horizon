@@ -99,6 +99,36 @@ specific firmware beyond homebrew-capable CFW, or network access. If a test hang
 button, note which test it was, and report that too — every wait in the
 suite is bounded, so a hang is itself a finding.
 
+## Getting a log off the console
+
+A test that sets `test_uses_display` starts no console, so its log file
+*is* the whole record and nothing of it reaches a screen. `testfw` used
+to stream itself over nxlink and that was removed at the user's
+direction (`STATUS.md`, 2026-08-08): the socket driver was the one
+variable that correlated with run 14's MMU fault, and streaming per line
+also puts network I/O inside the very loops the swapchain tests measure
+the pacing of.
+
+`tools/logcat/` reads the file back afterwards instead — a separate
+program, launched separately, once the measured run has ended. The
+`.nro` under test still links no socket, and nothing about reading a
+file that is already on disk can perturb what it records.
+
+```sh
+scripts/build-logcat.sh                       # -> build/logcat.nro
+# console at hbmenu -> Y (NetLoader), then:
+bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro
+bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro t_vk_immediate
+```
+
+With no argument it lists `sdmc:/horizon_gpu_tests` with sizes; with
+one it prints that log, resolving a bare stem against that directory and
+taking anything containing `:` as a whole path. **Check for the trailing
+`===== END … (n bytes) =====` marker**: without it the stream was cut
+short and what you are reading is not the whole file. That failure looked
+exactly like a homebrew hanging at the point the text stopped, and cost
+one run being diagnosed as a driver hang that had not happened.
+
 ## Host-side unit tests (no console needed)
 
 ```sh
