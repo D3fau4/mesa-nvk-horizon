@@ -1,27 +1,24 @@
-# The only CI workflow that runs on a push: build everything.
+# Everything CI does on a push, and it happens INSIDE the toolchain
+# image.
 #
-# WHAT HAPPENED TO THE OTHER TWO. There were three jobs — `gates`
-# (bash, python and a C compiler, six seconds), `cross` (the Makefile
-# path, eighteen .nro, about a minute) and `archives`. Two are gone at
-# the project owner's direction, and `cross` was redundant anyway:
-# `archives` builds those same eighteen .nro and twelve more.
+# WHY INSIDE, and it is not a preference. The jobs used to drive the
+# image from outside, so that scripts/package-horizon.sh could read a
+# registry digest. That cannot work here: act_runner puts the job in a
+# container, `docker run -v "$PWD":"$PWD"` is then resolved by the
+# *host* daemon against a path that only exists in the job, and the
+# mount comes up empty. Measured on task 1274 — bindgen reported
+# `No such file or directory` about a header sitting right beside it,
+# and every horizon_run in the build would have done the same.
 #
-# The five cheap checks are NOT gone, they are the first steps here.
-# They cost six seconds against this job's several minutes, they run
-# before anything expensive so their answer arrives first, and one of
-# them — check-history-intact.sh — is the only thing standing between an
-# undeclared edit to a hardware log and nobody noticing. Dropping the
-# job that contained them was asked for; dropping the checks was not.
+# Inside the image there is no nested docker and no mount at all:
+# $DEVKITPRO is set, scripts/toolchain-env.sh takes the local path, and
+# cargo, bindgen, cbindgen, LLVM and the Rust sysroot are already there.
+# Attribution survives because the image records its own build identity
+# in /etc/mesa-nvk-horizon-toolchain, which the packaging step reads.
 #
-# WHAT THE RUNNER NEEDS. This job does NOT run inside a container: the
-# scripts drive containers themselves, and one of them runs
-# `docker build`. So the runner needs the docker CLI and a
-# /var/run/docker.sock this user can reach — measured on the real
-# runner, act_runner starts job containers as uid 1001, not root.
-# scripts/ci-require-docker.sh checks both and names whichever is
-# missing. Running the steps *inside* the toolchain image instead would
-# also lose the image digest from the packaging manifest, which is the
-# field that attributes an artefact to a toolchain.
+# THE IMAGE HAS TO EXIST FIRST. toolchain-image.yml builds and publishes
+# it. Override the reference with the TOOLCHAIN_IMAGE repository
+# variable if this repository moves.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
@@ -30,10 +27,6 @@ name: archives
 on:
   push:
   pull_request:
-  # Runnable by hand from the web UI. Worth having: this job depends on
-  # material fetched from four external services, and "did that break,
-  # or was it the network" is a question best answered by pressing a
-  # button rather than by pushing an empty commit.
   workflow_dispatch:
 
 concurrency:
@@ -43,93 +36,41 @@ concurrency:
 jobs:
   archives:
     runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.TOOLCHAIN_IMAGE || 'git.not-d3fau4.com:3000/d3fau4/nx-dev-mesa:latest' }}
+      env:
+        DEVKITPRO: /opt/devkitpro
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       # --- seconds, and they run first for that reason ---------------
-
-      # The record is evidence. An edit nobody declared is what this is
-      # for, and it costs a second.
       - name: history and hardware logs match their manifests
         run: ./scripts/check-history-intact.sh
 
-      # Two build systems describing the same tests. This is the one
-      # that had already diverged, found by a reviewer instead.
       - name: the two build systems agree
         run: ./scripts/check-mesa-test-parity.sh
 
-      # horizon/ must not reach for Vulkan, Mesa or nwindow.
       - name: layer rules
         run: ./scripts/check-layering.sh
 
       - name: no absolute paths in tracked files
         run: ./scripts/check-no-abs-paths.sh
 
-      # horizon_gpu's pure logic, compiled and run natively. No
-      # toolchain, no device.
       - name: host tests
         run: ./scripts/run-host-tests.sh
 
       # --- and then the long one -------------------------------------
-
-      - name: the runner can drive docker
-        run: scripts/ci-require-docker.sh
-
-      # ghcr.io/catthehacker/ubuntu:runner-latest ships no Rust, and the
-      # first run here died on `cargo: command not found` after fifty
-      # seconds of useful work. Only `cargo vendor` needs it — nothing
-      # is compiled with this toolchain, so any recent one does, and the
-      # minimal profile keeps it small. Skipped entirely when the runner
-      # image already has cargo.
       #
-      # The toolchain image has cargo too (1.99.0-nightly at /opt/cargo)
-      # and using it instead would avoid this download; see
-      # docs/BUILDING.md for why that is not the current answer.
-      - name: rust, only if this runner has none
-        run: |
-          set -eu
-          if command -v cargo >/dev/null; then
-              echo "cargo already here: $(cargo --version)"
-              exit 0
-          fi
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --no-modify-path
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # The build id carries HEAD, and git refuses a repository owned by
+      # another uid. Without this the stamp degrades to "nogit" and the
+      # artefacts lose the field that attributes them to a commit.
+      - name: let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: what this machine has to provide
-        run: |
-          set -eu
-          export PATH="$HOME/.cargo/bin:$PATH"
-          scripts/ci-require-host-tools.sh
-
-      # The derived toolchain image, from the registry rather than built
-      # here: eleven minutes and 7.3 GB otherwise, on every runner that
-      # does not already have it. toolchain-image.yml publishes it.
-      #
-      # A pull is a candidate, not an answer.
-      # scripts/build-toolchain-image.sh still checks its identity label
-      # against the base image ID, the pins, the resolved .deb closure
-      # and the Dockerfile digest, and rebuilds if any of them moved. A
-      # stale published image cannot be used silently, and a missing one
-      # is not an error — it just costs the eleven minutes.
-      - name: the toolchain image, from the registry if it is there
-        run: |
-          set -eu
-          registry="${GITHUB_SERVER_URL#*://}"
-          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" \
-                      | tr '[:upper:]' '[:lower:]')
-          image="$registry/$owner/nx-dev-mesa:latest"
-          echo "HORIZON_NX_DERIVED_IMAGE=$image" >> "$GITHUB_ENV"
-          docker pull "$image" \
-              || echo "not published yet — it will be built here instead"
-
-      # The pinned Mesa checkout, the patch series, the derived
-      # toolchain image, mesa_clc, Mesa's core and NVK — then every .a
-      # the tests link, then 32 .nro proving the archives are usable
-      # rather than merely present, then the dispatch and TLS gates
-      # against the artefacts it just produced. The ordering and the
-      # retries are explained in the script, which can be run by hand.
+      # Every .a the tests link, then the .nro that prove the archives
+      # are usable rather than merely present, then the two gates that
+      # need built artefacts. Ordering and retries are in the script.
       - name: every archive the tests link
         run: scripts/ci-build-archives.sh
 

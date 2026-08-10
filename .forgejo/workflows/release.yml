@@ -5,12 +5,17 @@
 # under, and a manifest that ties every artefact to one build id and one
 # toolchain — and it was only ever run by hand. Nothing published it.
 #
-# WHY THE STEPS ARE NOT INSIDE THE TOOLCHAIN IMAGE. They drive it from
-# outside. Running them inside would set $DEVKITPRO, which puts
-# scripts/toolchain-env.sh into local mode, and then package-horizon.sh
-# writes `image: local` — losing the digest of the image that actually
-# produced the binaries, against a mutable `:latest` tag. That is the
-# manifest's whole job, and it was the finding of a review on PR #10.
+# WHY THE STEPS RUN INSIDE THE TOOLCHAIN IMAGE. They used to drive it
+# from outside, so the manifest could carry a registry digest. That
+# cannot work on a runner that containerises the job: the bind mount is
+# resolved by the host daemon against a path that only exists inside the
+# job, and comes up empty (Forgejo task 1274).
+#
+# The digest is not lost by moving in. The image records the identity it
+# was built under in /etc/mesa-nvk-horizon-toolchain, and
+# scripts/toolchain-env.sh reads it in local mode — so the manifest says
+# how the toolchain was built rather than where it was pushed, which is
+# the more useful half of what a review on PR #10 asked for.
 #
 # WHAT THIS PRODUCES, AND WHAT IT DOES NOT. A cross build. The artefacts
 # have compiled and nothing more: no console has run them. This project
@@ -18,11 +23,11 @@
 # release is not where that stops — so the notes say it in the release
 # body rather than leaving a reader to assume.
 #
-# NAMING THE GAP, the way gates.yml does. This publishes the eighteen
-# .nro of the Makefile path. The twelve t_vk_* and the NVK driver are
-# built by the `archives` job in gates.yml, which takes far longer;
-# publishing those is docs/RELEASING.md's manual path, with a hardware
-# run behind it.
+# NAMING THE GAP, the way archives.yml does. This publishes the
+# eighteen .nro of the Makefile path — the image carries the toolchain
+# but not a Mesa checkout, so the Vulkan tests are not built here. They
+# come from archives.yml, which takes far longer; publishing those is
+# docs/RELEASING.md's manual path, with a hardware run behind it.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
@@ -40,15 +45,21 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.TOOLCHAIN_IMAGE || 'git.not-d3fau4.com:3000/d3fau4/nx-dev-mesa:latest' }}
+      env:
+        DEVKITPRO: /opt/devkitpro
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: the runner can drive docker
-        run: scripts/ci-require-docker.sh
+      # The build id carries HEAD, and git refuses a repository owned by
+      # another uid; without this every artefact loses that field.
+      - name: let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: build
-        run: scripts/build-switch.sh -j"$(nproc)"
+        run: make all -j"$(nproc)"
 
       - name: package
         run: |
@@ -63,8 +74,8 @@ jobs:
       - name: the manifest identifies the toolchain
         run: |
           set -eu
-          grep -qE '^image +: .*@sha256:' build/pkg/MANIFEST.txt || {
-              echo "error: no image digest in MANIFEST.txt:" >&2
+          grep -qE '^image +: (in-image:|.*@sha256:)' build/pkg/MANIFEST.txt || {
+              echo "error: MANIFEST.txt does not identify its toolchain:" >&2
               grep '^image' build/pkg/MANIFEST.txt >&2 || true
               echo "       Refusing to publish artefacts whose toolchain" >&2
               echo "       cannot be identified." >&2
@@ -115,7 +126,7 @@ jobs:
             echo "not, is in \`STATUS.md\` — read its *Current state* block"
             echo "before assuming."
             echo
-            echo "**The Vulkan half is not here.** The twelve \`t_vk_*\`"
+            echo "**The Vulkan half is not here.** The thirteen \`t_vk_*\`"
             echo "tests and the NVK driver need the derived toolchain image"
             echo "and a full Mesa build. See \`docs/RELEASING.md\`."
             echo
@@ -137,7 +148,7 @@ jobs:
             echo '```'
             echo
             echo "\`MANIFEST.txt\` inside the archive carries a sha256 for"
-            echo "each \`.nro\`, the resolved toolchain image digest, and the"
+            echo "each \`.nro\`, the toolchain image it was built in, and the"
             echo "devkitA64 and libnx package versions the build used."
           } > NOTES.md
 

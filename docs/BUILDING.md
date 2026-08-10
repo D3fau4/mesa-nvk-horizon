@@ -258,14 +258,22 @@ before anything slow starts:
 
 `cargo` is the one that catches people out — `scripts/fetch-rust-tools.sh` runs
 `cargo vendor` to collect bindgen's and cbindgen's sources. Nothing is *compiled* with
-it, so any recent toolchain does. Most CI runner images ship no Rust at all, which is
-why the workflow installs a minimal one when `cargo` is absent.
+it, so any recent toolchain does.
 
-`ghcr.io/d3fau4/nx-dev` does contain cargo (1.99.0-nightly, at `/opt/cargo`), so the
-vendoring could run in there instead of on the host. It does not today for one specific
-reason: the container runs as root while a CI runner's job does not — act_runner uses
-uid 1001 — so the vendored tree would come back owned by root and the next run's
-`rm -rf` would fail on it.
+None of that applies when you work **inside** the toolchain image, which is what CI does
+and what you can do too:
+
+```sh
+docker run --rm -e DEVKITPRO=/opt/devkitpro \
+    -v "$PWD":"$PWD" -w "$PWD" <toolchain-image> \
+    scripts/ci-build-archives.sh
+```
+
+`$DEVKITPRO` is set in there, so `scripts/toolchain-env.sh` takes the local path: no
+nested containers, no mounts of its own, and cargo, bindgen, cbindgen, LLVM and the Rust
+sysroot are already present. Do not use a **login** shell for this — `/etc/profile`
+rewrites `PATH` and drops `/opt/cargo/bin`, and the preflight will tell you cargo is
+missing on an image that has it.
 
 ### The derived image, and not building it every time
 
@@ -275,12 +283,11 @@ which costs about **eleven minutes and 7.3 GB**.
 
 That is paid once per machine — the script recognises an image it has already built by
 an identity label covering the base image's ID, the pinned bindgen/cbindgen/LLVM
-versions, the resolved `.deb` closure and the Dockerfile's own digest. A runner that
-keeps its docker daemon between jobs keeps the image too.
+versions, the resolved `.deb` closure and the Dockerfile's own digest.
 
-For runners that do not, `.forgejo/workflows/toolchain-image.yml` publishes it to the
-instance's container registry and the build job pulls it. Set
-`HORIZON_NX_DERIVED_IMAGE` to use a published one by hand:
+`.forgejo/workflows/toolchain-image.yml` publishes it to the instance's container
+registry, and everything else runs inside it. Point elsewhere with the
+`TOOLCHAIN_IMAGE` repository variable, or by hand:
 
 ```sh
 HORIZON_NX_DERIVED_IMAGE=<registry>/<owner>/nx-dev-mesa:latest \
@@ -290,6 +297,13 @@ HORIZON_NX_DERIVED_IMAGE=<registry>/<owner>/nx-dev-mesa:latest \
 **A pull is a candidate, not an answer.** The identity check runs against whatever is
 there, published or local, and rebuilds when it does not match. A published image that
 no longer corresponds to `toolchain/Dockerfile` cannot be used silently.
+
+**The image says what it is.** `toolchain/Dockerfile` writes its build identity to
+`/etc/mesa-nvk-horizon-toolchain`, and `scripts/package-horizon.sh` reads it — so a
+package built *inside* the image still records the toolchain behind it, where it used to
+record nothing but `local`. The two probes that prove the image works (bindgen against a
+real header, `rustc` against the sysroot) are `RUN` steps in that Dockerfile, so a broken
+toolchain fails the build instead of producing an image somebody has to un-tag.
 
 ## 9. Environment variables
 
