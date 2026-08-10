@@ -24,8 +24,7 @@ the GPFIFO command emitters, status strings and logging — with `-Wall -Wextra 
 and, where the compiler supports them, ASan and UBSan. Each prints `RESULT: PASS (n/n)`.
 
 This works because those modules are libnx-free by design, which
-[`scripts/check-layering.sh`](../scripts/check-layering.sh) enforces. It is also what CI
-runs on every push.
+[`scripts/check-layering.sh`](../scripts/check-layering.sh) enforces.
 
 `CC` and `OUT` are honoured (`CC=clang scripts/run-host-tests.sh`).
 
@@ -185,10 +184,10 @@ read-only.
 
 ## 7. The gates
 
-Five run in CI on every push and pull request, as the opening steps of
-[`.forgejo/workflows/archives.yml`](../.forgejo/workflows/archives.yml) — the one
-workflow there is. They cost seconds against that job's several minutes, so they come
-first:
+Five cost seconds and need nothing but bash, python and a C compiler. **Nothing runs
+them automatically** — CI is off, and the workflows that used to are kept commented in
+[`.forgejo/workflows-disabled/`](../.forgejo/workflows-disabled/). Run them yourself, or
+let `scripts/ci-build-archives.sh` do it:
 
 | Gate | What it refuses |
 |---|---|
@@ -198,9 +197,8 @@ first:
 | `check-mesa-test-parity.sh` | the Makefile and the Meson build drifting apart on tests, archives, defines or includes |
 | `run-host-tests.sh` | a regression in the pure logic |
 
-Two more need built artefacts, so they used to be manual. The `archives` job produces
-exactly those artefacts, so it runs them too — `scripts/ci-build-archives.sh` ends with
-both:
+Two more need built artefacts. `scripts/ci-build-archives.sh` produces exactly those,
+so it ends by running both:
 
 - `check-dispatch-complete.sh` — reads the generated Vulkan dispatch table out of a
   linked Horizon ELF.

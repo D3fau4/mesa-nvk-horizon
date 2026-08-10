@@ -5,13 +5,11 @@ this project is organised around: **what compiled** versus **what ran on a conso
 
 ## The automatic one — cross-built, unverified
 
-Pushing a tag matching `v*` runs
-[`.forgejo/workflows/release.yml`](../.forgejo/workflows/release.yml):
-
-```sh
-git tag -a v0.1.0 -m "…"
-git push origin v0.1.0
-```
+**There is no automatic release any more.** CI is off; the workflow that did this is
+kept commented in
+[`.forgejo/workflows-disabled/release.yml`](../.forgejo/workflows-disabled/release.yml),
+and what follows describes what it did — because the same steps are what you run by hand,
+and `scripts/ci-forgejo-release.sh` still uploads a package through the Forgejo API.
 
 It builds the Makefile path **inside** the toolchain image. Driving the image from the
 runner instead is impossible here — a containerised job's bind mount is resolved by the
@@ -50,10 +48,10 @@ is guarded on the ref being a `v*` tag, because on a manual run `$GITHUB_REF_NAM
 branch — without that guard, a dispatch from `main` would publish a release called
 `main`.
 
-[`archives.yml`](../.forgejo/workflows/archives.yml) is manually runnable too, and for
-the same kind of reason: it fetches from four external services, so when it goes red,
-pressing the button again is how you tell a broken tree from a bad afternoon on somebody
-else's CDN.
+`scripts/ci-build-archives.sh` is the other half, and worth re-running rather than
+debugging on the first failure: it fetches from four external services, so a red run is
+as likely to be somebody else's CDN as a broken tree. Its network steps already retry
+three times for that reason.
 
 ## The manual one — with hardware behind it
 
@@ -84,9 +82,18 @@ Switch attached.
    Failing logs go in too. They are evidence, and a directory holding only successes is
    not a record.
 6. **Update `STATUS.md`** — what ran, what passed, what did not, on which build id.
-7. **Tag and push.** The workflow publishes the cross-built package; edit the release
-   afterwards to attach the full set and to say which tests ran on hardware, on which
-   firmware, and in which memory mode. Link the logs.
+7. **Tag, and publish it yourself.** Nothing does it for you:
+
+   ```sh
+   git tag -a v0.1.0 -m "…"
+   git push origin v0.1.0
+   GITHUB_API_URL=<instance>/api/v1 GITHUB_REPOSITORY=<owner>/<repo> \
+   FORGEJO_TOKEN=<token with write:repository> \
+       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+   ```
+
+   Say in the notes which tests ran on hardware, on which firmware, and in which memory
+   mode, and link the logs.
 
 ## What a release may claim
 

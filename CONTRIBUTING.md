@@ -114,16 +114,18 @@ scripts/check-history-intact.sh    # the record and the logs match their manifes
 scripts/check-mesa-test-parity.sh  # the Makefile and the Meson build still agree
 ```
 
-CI runs all five on every push and pull request, as the first steps of the one workflow
-there is ([`.forgejo/workflows/archives.yml`](.forgejo/workflows/archives.yml)). They
-take six seconds and run before anything expensive, so their answer arrives first. The
-rest of that job builds Mesa, the Rust half and NVK, and asserts that **every** `.a` the
-tests link exists and that every `.nro` meson.build names links them. If you touch `mesa-patches/`, that is
-what will tell you.
+**Nothing runs them for you.** CI is switched off — the workflows are kept, commented,
+in [`.forgejo/workflows-disabled/`](.forgejo/workflows-disabled/), with a note on each
+saying what it did and what its runs taught. Run the five yourself before you push.
+
+One command does the rest: [`scripts/ci-build-archives.sh`](scripts/ci-build-archives.sh)
+builds Mesa, the Rust half and NVK and then asserts that **every** `.a` the tests link
+exists and that every `.nro` `meson.build` names links them. If you touch
+`mesa-patches/`, that is what will tell you — and it is the only thing that will.
 
 Two further gates — `check-dispatch-complete.sh` and `check-tls-relocs.sh` — need built
-artefacts, and the `archives` job runs them once it has produced some. Run them yourself
-if your change touches the dispatch table or TLS and you do not want to wait for CI.
+artefacts. `scripts/ci-build-archives.sh` ends by running them against what it just
+built; on their own they need a build first.
 
 Build instructions are in [`docs/BUILDING.md`](docs/BUILDING.md); running the result on
 a console is [`docs/USAGE.md`](docs/USAGE.md).

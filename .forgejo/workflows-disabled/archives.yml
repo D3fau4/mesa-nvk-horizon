@@ -1,0 +1,179 @@
+# DISABLED — this is not a workflow any more, it is a record of one.
+#
+# CI is switched off at the project owner's direction. Forgejo only
+# reads .forgejo/workflows/, so nothing here runs, nothing parses it and
+# nothing can fail because of it. Every line below is commented for the
+# same reason: to make that impossible rather than merely unlikely.
+#
+# WHAT IT DID, and what it cost to learn. This ran on the project's own
+# Forgejo and the runs are what taught the tree most of what it now
+# knows about its own build:
+#
+#   - task 1267: the five gates and six host suites, green in six seconds.
+#   - task 1272: died on `cargo: command not found` after fifty seconds
+#     of useful work, and the retry loop tried three more times for a
+#     binary that was never going to appear. That is why
+#     scripts/ci-require-host-tools.sh asks first.
+#   - task 1274: `docker run -v "$PWD":"$PWD"` from a containerised job
+#     mounts an empty directory, because the host daemon resolves that
+#     path and it only exists inside the job. bindgen reported
+#     `No such file or directory` about a header beside it. That is why
+#     the image probes moved into toolchain/Dockerfile.
+#   - tasks 1275 and 1276: the instance speaks plain HTTP and docker
+#     refuses a non-HTTPS registry, in both directions. That is why the
+#     image is never published and stays in the runner's own daemon.
+#
+# TO BRING IT BACK: copy this file to .forgejo/workflows/archives.yml and
+# uncomment it. Everything it calls still exists and still works —
+# scripts/ci-build-archives.sh runs the whole thing by hand.
+#
+# Copyright (c) mesa-nvk-horizon contributors
+# SPDX-License-Identifier: MIT
+
+# ---------------------------------------------------------------------
+# # Everything CI does on a push: make sure the toolchain image exists on
+# # this runner, then build the whole tree inside it.
+# #
+# # WHY TWO JOBS, AND NO REGISTRY. The image is built by the runner's own
+# # docker daemon and stays there, so nothing has to publish or pull it.
+# # Publishing was tried and is not worth what it costs here: the instance
+# # speaks plain HTTP, docker refuses a registry that is not HTTPS
+# # (`http: server gave HTTP response to HTTPS client`, tasks 1275 and
+# # 1276), and fixing that means daemon configuration on the host for an
+# # image that never leaves the host anyway.
+# #
+# # So `toolchain` runs on the runner and leaves the image in the daemon;
+# # `archives` names it and act_runner finds it locally. The first job
+# # takes about five seconds when the image is already current — the
+# # identity check compares the base image's ID, the pinned versions, the
+# # resolved .deb closure and the Dockerfile's own digest, and only
+# # rebuilds when one of them moved.
+# #
+# # WHY THE SECOND JOB IS *INSIDE* THE IMAGE. Because bind mounts cannot
+# # work from a containerised job: `-v "$PWD":"$PWD"` is resolved by the
+# # host daemon against a path that only exists inside the job, and the
+# # mount comes up empty — measured on task 1274, where bindgen reported
+# # `No such file or directory` about a header sitting right beside it.
+# # Inside the image there is nothing to mount: $DEVKITPRO is set,
+# # scripts/toolchain-env.sh takes the local path, and cargo, bindgen,
+# # cbindgen, LLVM and the Rust sysroot are already there.
+# #
+# # Attribution survives the move: the image records its own build
+# # identity in /etc/mesa-nvk-horizon-toolchain and the packaging step
+# # reads it, so a manifest still says which toolchain produced its
+# # binaries.
+# #
+# # IF `archives` FAILS TO START saying it cannot resolve the image, the
+# # `toolchain` job did not leave one behind — read that job's log, not
+# # this one. Override the name with the TOOLCHAIN_IMAGE repository
+# # variable if it is built somewhere else.
+# #
+# # Copyright (c) mesa-nvk-horizon contributors
+# # SPDX-License-Identifier: MIT
+# name: archives
+#
+# on:
+#   push:
+#   pull_request:
+#   workflow_dispatch:
+#
+# concurrency:
+#   group: archives-${{ github.ref }}
+#   cancel-in-progress: true
+#
+# jobs:
+#   # Not inside a container: this one builds one.
+#   toolchain:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v5
+#
+#       - name: the runner can drive docker
+#         run: scripts/ci-require-docker.sh
+#
+#       # The runner image ships no Rust, and `cargo vendor` is a host-side
+#       # step of the image build. Only vendoring — nothing is compiled
+#       # with this toolchain, so any recent one does.
+#       - name: rust, only if this runner has none
+#         run: |
+#           set -eu
+#           command -v cargo >/dev/null && exit 0
+#           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+#               | sh -s -- -y --profile minimal --no-modify-path
+#           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+#
+#       - name: what this machine has to provide
+#         run: |
+#           set -eu
+#           export PATH="$HOME/.cargo/bin:$PATH"
+#           scripts/ci-require-host-tools.sh
+#
+#       # Seconds when it is current; about eleven minutes when the
+#       # Dockerfile or a pin moved. It leaves the image in this runner's
+#       # daemon, which is the whole mechanism.
+#       - name: the toolchain image is present and current
+#         run: |
+#           set -eu
+#           export PATH="$HOME/.cargo/bin:$PATH"
+#           scripts/build-toolchain-image.sh
+#           docker image inspect --format \
+#               'toolchain image ready: {{.Id}}' \
+#               "${TOOLCHAIN_IMAGE:-mesa-nvk-horizon/nx-dev-mesa:latest}"
+#         env:
+#           TOOLCHAIN_IMAGE: ${{ vars.TOOLCHAIN_IMAGE }}
+#
+#   archives:
+#     needs: toolchain
+#     runs-on: ubuntu-latest
+#     container:
+#       image: ${{ vars.TOOLCHAIN_IMAGE || 'mesa-nvk-horizon/nx-dev-mesa:latest' }}
+#       env:
+#         DEVKITPRO: /opt/devkitpro
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v5
+#
+#       # --- seconds, and they run first for that reason ---------------
+#       - name: history and hardware logs match their manifests
+#         run: ./scripts/check-history-intact.sh
+#
+#       - name: the two build systems agree
+#         run: ./scripts/check-mesa-test-parity.sh
+#
+#       - name: layer rules
+#         run: ./scripts/check-layering.sh
+#
+#       - name: no absolute paths in tracked files
+#         run: ./scripts/check-no-abs-paths.sh
+#
+#       - name: host tests
+#         run: ./scripts/run-host-tests.sh
+#
+#       # --- and then the long one -------------------------------------
+#       #
+#       # The build id carries HEAD, and git refuses a repository owned by
+#       # another uid. Without this the stamp degrades to "nogit" and the
+#       # artefacts lose the field that attributes them to a commit.
+#       - name: let git read the checkout
+#         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+#
+#       # Every .a the tests link, then the .nro that prove the archives
+#       # are usable rather than merely present, then the two gates that
+#       # need built artefacts. Ordering and retries are in the script.
+#       - name: every archive the tests link
+#         run: scripts/ci-build-archives.sh
+#
+#       - name: package
+#         run: |
+#           set -eu
+#           scripts/package-horizon.sh build/pkg
+#           cat build/pkg/MANIFEST.txt
+#
+#       - name: Upload dist
+#         uses: forgejo/upload-artifact@v4
+#         with:
+#           name: horizon-gpu-tests-full
+#           path: build/pkg
+#           if-no-files-found: error
+#

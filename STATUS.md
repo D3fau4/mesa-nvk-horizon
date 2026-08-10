@@ -30,6 +30,44 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ---
 
+## CI switched off, and what is kept instead (2026-08-10)
+
+At the project owner's direction. `.forgejo/workflows/` is gone, so
+nothing runs on a push and nothing can fail on a push.
+
+**The two workflows are kept, commented, in
+`.forgejo/workflows-disabled/`** — every line, plus a header on each
+saying what it did and what its runs on the real instance taught, since
+that is the part worth more than the YAML:
+
+- task 1267: the five gates and six host suites, green in six seconds.
+- task 1272: `cargo: command not found` after fifty seconds of useful
+  work, retried three times for a binary that was never going to appear.
+- task 1274: a bind mount from a containerised job resolves against the
+  *host*, so `-v "$PWD":"$PWD"` mounted an empty directory and bindgen
+  reported a missing header that was right there.
+- tasks 1275 and 1276: plain-HTTP instance, and docker refuses a
+  non-HTTPS registry, on push and on pull alike.
+
+Each of those is a defect this tree fixed rather than worked around, and
+each fix is still in place. What is gone is only the thing that ran them.
+
+**Nothing else was removed.** `scripts/ci-build-archives.sh` is the
+whole chain in one command and still works — it is now the only thing
+that will tell you a patch in `mesa-patches/` broke the build. The two
+preflights, the release script, the image identity, the in-image
+attribution: all still there, all still exercised by running that
+script.
+
+`CONTRIBUTING.md`, `docs/BUILDING.md` and `docs/RELEASING.md` stopped
+saying CI runs anything, because it does not. `RELEASING.md` now shows
+the `ci-forgejo-release.sh` invocation to publish a release by hand
+instead of pointing at a workflow that no longer exists.
+
+Host-level change only. No console, and no claim about one.
+
+---
+
 ## Merging main again: a fourteenth Vulkan test, and nothing to change for it (2026-08-10)
 
 `main` gained run 25, `t_vk_immediate` and patch 0075 while this branch
