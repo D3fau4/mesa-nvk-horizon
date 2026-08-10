@@ -51,8 +51,22 @@ image_identity() {
     echo "cbindgen=$CBINDGEN_VERSION"
     echo "libclang=$DEBIAN_LIBCLANG_DEB"
     echo "libllvm=$DEBIAN_LIBLLVM_DEB"
-    echo "clc-closure=$(sha256sum build/toolchain/clc-deps/closure.txt \
-                           2>/dev/null | cut -d' ' -f1)"
+    # THE RESOLVED CLOSURE, WHICH IS THE .deb FILES THEMSELVES.
+    #
+    # This read build/toolchain/clc-deps/closure.txt, and nothing has
+    # ever written that file — scripts/fetch-clc-deps.sh produces
+    # `debs/` and an `installed.txt` that lists what the base image
+    # already had. So `sha256sum` failed silently on every run since
+    # this function was written, the field was always empty, and a
+    # change in the resolved closure could not have rebuilt the image:
+    # exactly the drift this line exists to catch, undetected by the
+    # line meant to catch it.
+    #
+    # The names carry the versions, so the sorted list of them is the
+    # closure's identity; hashing 42 .deb payloads would say the same
+    # thing far more slowly.
+    echo "clc-closure=$(ls build/toolchain/clc-deps/debs 2>/dev/null |
+                            sort | sha256sum | cut -d' ' -f1)"
     echo "spirv-tools=$SPIRV_TOOLS_COMMIT"
     echo "target=$RUST_TARGET"
     echo "dockerfile=$(sha256sum toolchain/Dockerfile | cut -d' ' -f1)"
@@ -88,6 +102,24 @@ scripts/fetch-clc-deps.sh
 # image is labelled with an identity no later run can reproduce, and it
 # rebuilds itself every time.
 want=$(image_identity | sha256sum | cut -d' ' -f1)
+
+# AND ASK AGAIN, because the first answer was given without the closure.
+#
+# On a tree where build/toolchain/clc-deps/closure.txt is absent — every
+# fresh clone, and therefore every CI checkout — the check at the top
+# computes an identity that no image can match, so it always falls
+# through to here. Before this, that meant a full rebuild even when the
+# image on this machine was already exactly the wanted one. Nine minutes,
+# for an answer that was available as soon as the fetches finished.
+#
+# It is what makes pulling the image from a registry worth anything: the
+# pull lands under $HORIZON_DERIVED_IMAGE, and this is the line that
+# recognises it rather than building over it.
+if [ "$FORCE" -eq 0 ] && [ "$(built_identity)" = "$want" ]; then
+    echo "build-toolchain-image: $HORIZON_DERIVED_IMAGE is current" \
+         "(identity confirmed after fetching)"
+    exit 0
+fi
 
 # --- 2. the build context ---------------------------------------------
 #
