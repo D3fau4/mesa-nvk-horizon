@@ -202,10 +202,72 @@ Phase 6 test rather than a formality.
 - The knob that does exist is the **swap interval**, per queued buffer
   (`BqBufferInput::swapInterval`). `VK_PRESENT_MODE_FIFO_KHR` is interval 1 and
   `VK_PRESENT_MODE_IMMEDIATE_KHR` is 0 — which libnx documents as honoured only
-  with three or more buffers registered, so a two-image swapchain gets FIFO
-  behaviour whatever it asks for, and the backend says so at creation.
+  with three or more buffers registered, so a two-image swapchain would get FIFO
+  behaviour whatever it asks for. ~~and the backend says so at creation.~~
+  **Corrected: it does not say so, it prevents it.** An `IMMEDIATE` swapchain
+  takes a third image whatever `minImageCount` asked for; `minImageCount` is a
+  minimum and the implementation chooses the count, so raising it is the
+  conformant answer and needs no agreement from the application. Measured on
+  hardware (run 25): asking for `IMMEDIATE` with `minImageCount` 2 yields three
+  images and interval 0, and paces at 8274 us against FIFO's 16614 us. Asking
+  for FIFO with 2 yields two images and interval 1, so the bump belongs to
+  `IMMEDIATE` and is not a floor everything gets.
 - Double (2) and triple (3) buffering must be observably different in frame pacing; Phase 6
   records measurements for both.
+
+#### `VK_PRESENT_MODE_IMMEDIATE_KHR` — what it is here, measured
+
+Verified on a console on 2026-08-10 (run 25, `t_vk_immediate`, **PASS 442/442**,
+`docs/hw-logs/t_vk_immediate-run25-PASS.log`), 1280x720 handheld, three images,
+240 frames per measurement with a FIFO run before *and* after the `IMMEDIATE`
+one so the reference is shown to be stable:
+
+| | mean interval | intervals under half a refresh, queue full |
+|---|---|---|
+| FIFO, before | 16577 us | 0 of 237 |
+| **IMMEDIATE** | **8264 us** | **119 of 237** |
+| FIFO, after | 16538 us | 0 of 237 |
+
+**The mode is real, and this is exactly what it is.** Two frames per refresh
+rather than one: interval 0 makes the compositor stop holding each buffer for a
+whole vertical blank, so surplus queued frames are dropped and freed early and
+the producer takes them as they come. It is *not* unbounded — the ceiling is
+what the compositor gives back, which with three registered buffers is two per
+refresh. A fourth image raises it.
+
+**There is no tearing, and that is not a violation.** VI composites and flips at
+the vertical blank; nothing a producer can do puts its buffer on a scanline
+mid-frame. The specification says this mode "may result in visible tearing", not
+that it must, and the normative half — the presentation engine not waiting for a
+vertical blank to update the current image, no internal queuing needed — is what
+the numbers above show. An application that asks for `IMMEDIATE` to escape
+refresh-rate pacing gets what it asked for; one that asks for it expecting a
+torn frame does not, and cannot on this platform.
+
+**On the copy fallback it changes nothing, and the backend now says so.** The
+same test forced that path (`MESA_VK_WSI_HORIZON_FORCE_COPY`) and measured 16807
+us at interval 1 against 16767 us at interval 0 — forty microseconds apart, both
+at the refresh. The interval is not lost on the way: `nwindowQueueBuffer`
+stores `NWindow::swap_interval` at offset 44 of the queue input, the same field
+`wsi_horizon_fill_queue_input` writes (verified by disassembling the pinned
+libnx). What interval 0 buys is the compositor dropping *surplus queued* frames,
+and this path never accumulates any — the cheapest present on it cost **12210 us
+and 12370 us** against a 16666 us refresh, because every frame is copied row by
+row and then swizzled into the block-linear scanout buffer by the CPU. One frame
+costs most of a refresh, so a second one never gets into the queue and there is
+nothing to drop.
+
+That is a property of the fallback, not a defect in the present mode, and it is
+**not a reason to stop advertising `VK_PRESENT_MODE_IMMEDIATE_KHR`**: present
+modes belong to the surface, which cannot know whether a swapchain not yet
+created will decline zero-copy, and on the path this backend takes on working
+hardware the mode is delivered. Patch **0075** logs the limitation through the
+debug-utils messenger when the two do meet, so an application observing the
+swapchain decision learns which one it got instead of having to measure it.
+Run **24** is the same measurement from the build that patch was written from,
+which differs from run 25's only in comments: 8296 us against 16551 us on the
+zero-copy path, 16626 against 16732 on the fallback. Two consoles' worth of the
+same answer is not available; two runs of it are, and they agree.
 
 ### 2.4 Format gating
 
