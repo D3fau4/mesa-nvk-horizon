@@ -51,9 +51,25 @@ stamp=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 # Filtered here for the same reason fetch-mesa.sh, apply-mesa-patches.sh
 # and fetch-mesa-subprojects.sh filter it: a dirty marker that is always
 # on is not a marker.
+# The top-level test is not decoration. `git -C mesa` walks *up* when
+# mesa/ is not itself a repository, and mesa/ is exactly that on any
+# tree where fetch-mesa.sh has not run — it holds one .gitkeep belonging
+# to this repository. So this used to answer with the outer HEAD and the
+# stamp read `mesa:9053687`, which is a claim that Mesa is at a commit
+# that is this repository's commit. Measured on a tree with mesa/
+# unpopulated: `git -C mesa rev-parse --show-toplevel` reports the
+# mesa-nvk-horizon root.
+#
+# That is the one thing this stamp exists to prevent, aimed at itself:
+# an artefact attributed to sources it was not built from. It reaches
+# published packages too, since .github/workflows/release.yml builds
+# without Mesa. Same guard as scripts/apply-mesa-patches.sh:110-120 —
+# ask git where the repository actually is, not whether it found one.
 _describe() { # dir -> "<short-head>[-dirty]" or "nogit"
     if command -v git >/dev/null 2>&1 &&
-       git -C "$1" rev-parse --git-dir >/dev/null 2>&1; then
+       git -C "$1" rev-parse --git-dir >/dev/null 2>&1 &&
+       [ "$(cd "$1" && pwd -P)" = \
+         "$(cd "$(git -C "$1" rev-parse --show-toplevel)" && pwd -P)" ]; then
         _h=$(git -C "$1" rev-parse --short HEAD 2>/dev/null || echo unknown)
         if [ -n "$(git -C "$1" status --porcelain 2>/dev/null |
                    grep -v '^?? \.gitkeep$' || true)" ]; then
