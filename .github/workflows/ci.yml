@@ -1,37 +1,51 @@
 # Everything CI does on a push: make sure the derived toolchain image is
-# current in ghcr.io, then build the whole tree inside it.
+# current, then build the whole tree against it.
 #
 # This is the GitHub port of .forgejo/workflows-disabled/archives.yml.
-# Same two jobs, same reason for the split — but the mechanism connecting
-# them is different, because it has to be: GitHub-hosted runners are one
-# throwaway VM per job, so there is no shared docker daemon for `toolchain`
-# to leave an image in and `archives` to find it in the way the Forgejo
-# original did on its own persistent runner.
+# ONE JOB, not two, and that is a deliberate departure from the Forgejo
+# original — two review findings on the first version of this workflow
+# are why:
 #
-# WHAT REPLACES THE SHARED DAEMON. ghcr.io. The Forgejo original never
-# published this image because that instance speaks plain HTTP and docker
-# refuses a non-HTTPS registry (STATUS.md, "CI switched off", tasks 1275
-# and 1276) — a constraint specific to that instance, not to the idea of a
-# registry. ghcr.io is HTTPS, so `toolchain` pushes the image there and
-# `archives` pulls it back through the job `container:`, which is exactly
-# what `container:` is for. scripts/build-toolchain-image.sh did not need
-# to change for this: it already resolves the image to build or reuse
-# through $HORIZON_NX_DERIVED_IMAGE (docs/BUILDING.md, "Point somewhere
-# else with the TOOLCHAIN_IMAGE repository variable"), and its own
-# identity check — base image ID, pinned bindgen/cbindgen/LLVM versions,
-# the resolved .deb closure, the Dockerfile's digest — does the right
-# thing against a pulled image with no further help. Seconds when the
-# pulled image already matches; ~11 minutes only when toolchain/Dockerfile
-# or a pin in toolchain/versions.env actually moved.
+#   - a `toolchain` job that PUSHES the image and an `archives` job that
+#     PULLS it back by the same mutable `:latest` tag has a race: two
+#     concurrent runs (this workflow allows one per ref) can interleave,
+#     so `archives` can end up building against a *different* ref's
+#     image. Nothing here fixes that by being careful; the fix is not
+#     needing a second pull at all.
+#   - GitHub downgrades a fork pull request's GITHUB_TOKEN to read-only,
+#     so a job that unconditionally pushes to ghcr.io fails outright on
+#     exactly the PRs — ones touching toolchain/Dockerfile or a pin —
+#     that most need the full build to run.
+#
+# One job sidesteps both: it builds or pulls the image into ITS OWN
+# docker daemon and uses it immediately, in the same job, by driving
+# `docker run` directly — the same pattern docs/BUILDING.md already
+# documents by hand ("docker run ... <toolchain-image> scripts/ci-build-
+# archives.sh"). There is no second pull to race, and the registry push
+# at the end is best-effort caching for *future* runs, not something
+# this run's correctness depends on — so it is skipped, not failed, when
+# the token cannot write.
+#
+# WHY ghcr.io AT ALL, THEN. Rebuilding the derived image from scratch
+# costs ~11 minutes and 7.3 GB (docs/BUILDING.md) on every run without a
+# cache, and GitHub-hosted runners are a fresh VM per job with nothing to
+# reuse between runs — unlike Forgejo's persistent runner, where the
+# image just stayed in the daemon. ghcr.io is HTTPS, so it can hold that
+# cache; the Forgejo instance never could (plain HTTP, tasks 1275/1276 —
+# see STATUS.md, "CI switched off"). scripts/build-toolchain-image.sh
+# needed no change for this: it already resolves the image to build or
+# reuse through $HORIZON_NX_DERIVED_IMAGE, and its own identity check —
+# base image ID, pinned bindgen/cbindgen/LLVM versions, the resolved
+# .deb closure, the Dockerfile's digest — does the right thing against a
+# pulled image with no further help.
 #
 # WHY THE FULL BUILD RUNS ON EVERY PUSH, PR AND DISPATCH, UNIFORMLY. The
 # whole point of scripts/ci-build-archives.sh is catching a broken patch
-# in mesa-patches/ before it lands — the one thing five cheap gates cannot
-# see. A PR-only "gates" job would skip exactly the check that matters
-# most on a PR. This is affordable here because the repository is public
-# (no metered Actions minutes) and because the GHCR cache above turns the
-# expensive part of "compile Mesa entero" into a one-time cost per pin
-# change rather than a per-run one.
+# in mesa-patches/ before it lands — the one thing five cheap gates
+# cannot see. This is affordable because the repository is public (no
+# metered Actions minutes) and because the registry cache above turns
+# the expensive part of "compile Mesa entero" into a one-time cost per
+# pin change, on runs that can write the cache, rather than a per-run one.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
@@ -43,7 +57,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: archives-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -51,12 +65,8 @@ permissions:
   packages: write
 
 jobs:
-  # Not inside a container: this one produces the image the other job
-  # runs in.
-  toolchain:
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.image.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -66,13 +76,8 @@ jobs:
       # ${{ github.repository_owner }} inline — measured: the first run
       # of this workflow failed docker pull outright with "invalid
       # reference format: repository name (D3fau4/nx-dev-mesa) must be
-      # lowercase" because the account is D3fau4, not d3fau4. Lowercasing
-      # in a shell step, once, and threading the result through
-      # $GITHUB_ENV (rest of this job) and $GITHUB_OUTPUT (the other job,
-      # via needs.toolchain.outputs.image) is what fixes it everywhere at
-      # once instead of at every place the image name is spelled out.
+      # lowercase" because the account is D3fau4, not d3fau4.
       - name: resolve the toolchain image name
-        id: image
         run: |
           set -eu
           image="${{ vars.TOOLCHAIN_IMAGE }}"
@@ -80,7 +85,6 @@ jobs:
               owner_lower=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
               image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
           fi
-          echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: the runner can drive docker
@@ -104,7 +108,14 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           scripts/ci-require-host-tools.sh
 
+      # Always attempted, even on a fork PR: login only needs to succeed
+      # far enough to pull, and packages linked to a public repo stay
+      # readable by a read-only fork token. Never fatal here — a failure
+      # just means the pull below tries anonymously and, if that also
+      # fails, this run pays the full ~11 minute rebuild instead of
+      # using the cache. That is a slower run, not a broken one.
       - name: log in to ghcr.io
+        continue-on-error: true
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" |
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -114,12 +125,12 @@ jobs:
       # the identity nothing published yet matches.
       #
       # pre_id is captured through `if id=$(...); then`, not through
-      # $(cmd 2>/dev/null || echo none) inlined in the echo. Measured:
-      # `docker image inspect` on a missing image writes an empty line
-      # to *stdout* before it fails, so the naive form captured
-      # $'\npre none' — two lines — and GitHub's $GITHUB_OUTPUT parser
-      # rejected the bare second line ("Invalid format 'none'"). The
-      # `if` form never reads $id on the failure path, so that stray
+      # $(cmd 2>/dev/null || echo none) inlined in an echo. Measured on a
+      # real run: `docker image inspect` on a missing image writes an
+      # empty line to *stdout* before it fails, so the naive form
+      # captured $'\nnone' — two lines — and GitHub's $GITHUB_OUTPUT
+      # parser rejected the bare second line ("Invalid format 'none'").
+      # The `if` form never reads $id on the failure path, so that stray
       # blank line never reaches the file.
       - name: pull the cached toolchain image, if there is one
         id: pull
@@ -128,7 +139,7 @@ jobs:
           if docker pull "$TOOLCHAIN_IMAGE"; then
               :
           else
-              echo "ci: no cached toolchain image yet (first run, or the pins moved)"
+              echo "ci: no cached toolchain image yet (first run, the pins moved, or no read access)"
           fi
           pre_id=none
           if id=$(docker image inspect -f '{{.Id}}' "$TOOLCHAIN_IMAGE" 2>/dev/null); then
@@ -138,7 +149,9 @@ jobs:
 
       # Unmodified script. HORIZON_NX_DERIVED_IMAGE is the override
       # scripts/toolchain-env.sh already reads; pointing it at the tag
-      # just pulled is the entire mechanism.
+      # just pulled is the entire mechanism. Seconds when the pulled
+      # image's identity already matches; ~11 minutes only when
+      # toolchain/Dockerfile or a pin in toolchain/versions.env moved.
       - name: the toolchain image is present and current
         id: build
         env:
@@ -152,61 +165,51 @@ jobs:
 
       # Push only when the image actually changed — comparing image IDs,
       # not trusting that the step ran, because "ran" and "rebuilt" are
-      # not the same claim and the whole point of this cache is not
-      # re-pushing 7.3 GB on a run that changed nothing.
-      - name: publish the toolchain image, if it rebuilt
-        if: steps.pull.outputs.pre_id != steps.build.outputs.post_id
+      # not the same claim. And only when this token can write at all:
+      # a fork pull request's GITHUB_TOKEN is read-only regardless of the
+      # `permissions:` block above, so an unconditional push here would
+      # fail the whole job on exactly the PRs that most need the build
+      # below to run. Best-effort either way — a failed push here still
+      # leaves the image built and used by this run; it only means the
+      # *next* run pays to rebuild it.
+      - name: publish the toolchain image, if it rebuilt and this run can
+        if: |
+          steps.pull.outputs.pre_id != steps.build.outputs.post_id &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
         run: docker push "$TOOLCHAIN_IMAGE"
 
-  archives:
-    needs: toolchain
-    runs-on: ubuntu-latest
-    container:
-      image: ${{ needs.toolchain.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      env:
-        DEVKITPRO: /opt/devkitpro
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      # --- seconds, and they run first for that reason ---------------
-      - name: history and hardware logs match their manifests
-        run: ./scripts/check-history-intact.sh
-
-      - name: the two build systems agree
-        run: ./scripts/check-mesa-test-parity.sh
-
-      - name: layer rules
-        run: ./scripts/check-layering.sh
-
-      - name: no absolute paths in tracked files
-        run: ./scripts/check-no-abs-paths.sh
-
-      - name: host tests
-        run: ./scripts/run-host-tests.sh
-
-      # --- and then the long one -------------------------------------
+      # Everything that needs the toolchain, in one `docker run` rather
+      # than one per gate: each `docker run` is a fresh, unrelated
+      # container instance, so a `git config --global` (or anything else
+      # stateful) set in one would not survive into the next. One
+      # invocation keeps the state that matters — the build id carries
+      # HEAD, and git refuses a repository owned by another uid — inside
+      # a single container for the whole sequence.
       #
-      # The build id carries HEAD, and git refuses a repository owned by
-      # another uid. Without this the stamp degrades to "nogit" and the
-      # artefacts lose the field that attributes them to a commit.
-      - name: let git read the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # Every .a the tests link, then the .nro that prove the archives
-      # are usable rather than merely present, then the two gates that
-      # need built artefacts. Ordering and retries are in the script.
-      - name: every archive the tests link
-        run: scripts/ci-build-archives.sh
-
-      - name: package
+      # Gates first, and they cost seconds; scripts/ci-build-archives.sh
+      # is the long one, and it ends by running the two gates that need
+      # built artefacts (check-dispatch-complete.sh, check-tls-relocs.sh)
+      # itself.
+      - name: gates, then every archive the tests link
         run: |
-          set -eu
-          scripts/package-horizon.sh build/pkg
-          cat build/pkg/MANIFEST.txt
+          docker run --rm \
+              -e DEVKITPRO=/opt/devkitpro \
+              -v "$PWD":"$PWD" -w "$PWD" \
+              "$TOOLCHAIN_IMAGE" \
+              bash -c '
+                set -eu
+                git config --global --add safe.directory "$PWD"
+                ./scripts/check-history-intact.sh
+                ./scripts/check-mesa-test-parity.sh
+                ./scripts/check-layering.sh
+                ./scripts/check-no-abs-paths.sh
+                ./scripts/run-host-tests.sh
+                scripts/ci-build-archives.sh
+                scripts/package-horizon.sh build/pkg
+                cat build/pkg/MANIFEST.txt
+              '
 
       - name: Upload dist
         uses: actions/upload-artifact@v4

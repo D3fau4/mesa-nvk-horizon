@@ -62,12 +62,18 @@ as likely to be somebody else's CDN as a broken tree. Its network steps already 
 three times for that reason.
 
 To publish by hand instead of through the workflow — reproducing exactly what
-`release.yml`'s `publish` step does:
+`release.yml`'s `publish` step does. `package-horizon.sh` fills `build/pkg` with the `.nro`,
+licences and `MANIFEST.txt`; it does not tar them, and `NOTES.md` is not generated for you
+outside the workflow, so both are yours to make here:
 
 ```sh
 scripts/package-horizon.sh build/pkg
+tar -czf mesa-nvk-horizon-v0.1.0-nro.tar.gz -C build/pkg .
+sha256sum mesa-nvk-horizon-v0.1.0-nro.tar.gz > mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
+# write NOTES.md — see "What a release may claim" below for what it must say
 GH_TOKEN=<token with contents: write> \
-    scripts/ci-github-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+    scripts/ci-github-release.sh v0.1.0 NOTES.md \
+        mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
 ```
 
 The Forgejo equivalent is still `scripts/ci-forgejo-release.sh` (see the manual section
@@ -107,9 +113,12 @@ Switch attached.
    ```sh
    git tag -a v0.1.0 -m "…"
    git push origin v0.1.0
+   tar -czf mesa-nvk-horizon-v0.1.0-nro.tar.gz -C build/pkg .
+   sha256sum mesa-nvk-horizon-v0.1.0-nro.tar.gz > mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
    GITHUB_API_URL=<instance>/api/v1 GITHUB_REPOSITORY=<owner>/<repo> \
    FORGEJO_TOKEN=<token with write:repository> \
-       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md build/pkg/*.tar.gz
+       scripts/ci-forgejo-release.sh v0.1.0 NOTES.md \
+           mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
    ```
 
    Say in the notes which tests ran on hardware, on which firmware, and in which memory

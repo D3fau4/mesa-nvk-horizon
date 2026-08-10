@@ -75,10 +75,17 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     echo "ci-github-release: release $TAG already exists; reusing it"
     gh release edit "$TAG" --title "$TAG" --notes-file "$NOTES"
 else
+    # --verify-tag: without it, `gh release create` on a tag that does
+    # not exist yet quietly creates one from the current default-branch
+    # HEAD instead of failing — so a mistyped or not-yet-pushed tag,
+    # given to this script by hand, would publish assets named after the
+    # tag but built from (and pointing at) the wrong commit. This script
+    # exists to publish a build that already happened, not to mint the
+    # tag it happened on.
     if [ "$prerelease" = true ]; then
-        gh release create "$TAG" --title "$TAG" --notes-file "$NOTES" --prerelease
+        gh release create "$TAG" --title "$TAG" --notes-file "$NOTES" --verify-tag --prerelease
     else
-        gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+        gh release create "$TAG" --title "$TAG" --notes-file "$NOTES" --verify-tag
     fi
     echo "ci-github-release: created release $TAG"
 fi
