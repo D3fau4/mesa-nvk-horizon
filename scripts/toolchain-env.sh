@@ -177,9 +177,25 @@ if [ -n "${DEVKITPRO:-}" ]; then
     HORIZON_IN_CONTAINER=0
     HORIZON_DEVKITPRO="$DEVKITPRO"
     HORIZON_TOOLCHAIN_DESC="local devkitA64 at \$DEVKITPRO"
-    # Built in the tree by scripts/build-rust-sysroot.sh: there is no
-    # image to bake it into in this mode.
+    # Built in the tree by scripts/build-rust-sysroot.sh: on a
+    # developer's machine there is no image to have baked one in.
     HORIZON_RUST_SYSROOT="$PWD/$HORIZON_RUST_SYSROOT_REL"
+
+    # UNLESS THIS *IS* THE IMAGE. A CI job whose container is the
+    # toolchain has $DEVKITPRO set and lands here — correctly, there is
+    # nothing to drive — but the image already carries a sysroot for
+    # $RUST_TARGET, built when it was. Ignoring it means every run
+    # rebuilds core and alloc into the workspace: minutes, for a
+    # directory sitting at $HORIZON_IMAGE_RUST_SYSROOT.
+    #
+    # /etc/mesa-nvk-horizon-toolchain is the same marker
+    # horizon_image_digest reads, so "we are inside the image" is asked
+    # once and answered the same way everywhere.
+    if [ -r /etc/mesa-nvk-horizon-toolchain ] &&
+       [ -d "$HORIZON_IMAGE_RUST_SYSROOT" ]; then
+        HORIZON_RUST_SYSROOT="$HORIZON_IMAGE_RUST_SYSROOT"
+        HORIZON_TOOLCHAIN_DESC="the toolchain image itself (\$DEVKITPRO set inside it)"
+    fi
 else
     command -v docker >/dev/null 2>&1 || {
         echo "error: \$DEVKITPRO is not set and docker is unavailable." >&2

@@ -105,6 +105,14 @@ retry "fetch-clc-deps"         scripts/fetch-clc-deps.sh
 if [ "${HORIZON_IN_CONTAINER:-0}" = "1" ]; then
     step "building the derived toolchain image"
     scripts/build-toolchain-image.sh
+elif [ "$HORIZON_RUST_SYSROOT" = "$HORIZON_IMAGE_RUST_SYSROOT" ]; then
+    # Running *inside* the toolchain image: it carries a sysroot for
+    # $RUST_TARGET, built when the image was, and scripts/toolchain-env.sh
+    # has already pointed at it. Rebuilding core and alloc into the
+    # workspace would cost minutes to produce what is already mounted at
+    # $HORIZON_IMAGE_RUST_SYSROOT.
+    step "using the Rust sysroot the image carries"
+    echo "ci-build-archives: $HORIZON_RUST_SYSROOT" >&2
 else
     step "building the Rust sysroot for $RUST_TARGET"
     scripts/build-rust-sysroot.sh

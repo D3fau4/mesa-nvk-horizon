@@ -1,24 +1,39 @@
-# Everything CI does on a push, and it happens INSIDE the toolchain
-# image.
+# Everything CI does on a push: make sure the toolchain image exists on
+# this runner, then build the whole tree inside it.
 #
-# WHY INSIDE, and it is not a preference. The jobs used to drive the
-# image from outside, so that scripts/package-horizon.sh could read a
-# registry digest. That cannot work here: act_runner puts the job in a
-# container, `docker run -v "$PWD":"$PWD"` is then resolved by the
-# *host* daemon against a path that only exists in the job, and the
-# mount comes up empty. Measured on task 1274 — bindgen reported
-# `No such file or directory` about a header sitting right beside it,
-# and every horizon_run in the build would have done the same.
+# WHY TWO JOBS, AND NO REGISTRY. The image is built by the runner's own
+# docker daemon and stays there, so nothing has to publish or pull it.
+# Publishing was tried and is not worth what it costs here: the instance
+# speaks plain HTTP, docker refuses a registry that is not HTTPS
+# (`http: server gave HTTP response to HTTPS client`, tasks 1275 and
+# 1276), and fixing that means daemon configuration on the host for an
+# image that never leaves the host anyway.
 #
-# Inside the image there is no nested docker and no mount at all:
-# $DEVKITPRO is set, scripts/toolchain-env.sh takes the local path, and
-# cargo, bindgen, cbindgen, LLVM and the Rust sysroot are already there.
-# Attribution survives because the image records its own build identity
-# in /etc/mesa-nvk-horizon-toolchain, which the packaging step reads.
+# So `toolchain` runs on the runner and leaves the image in the daemon;
+# `archives` names it and act_runner finds it locally. The first job
+# takes about five seconds when the image is already current — the
+# identity check compares the base image's ID, the pinned versions, the
+# resolved .deb closure and the Dockerfile's own digest, and only
+# rebuilds when one of them moved.
 #
-# THE IMAGE HAS TO EXIST FIRST. toolchain-image.yml builds and publishes
-# it. Override the reference with the TOOLCHAIN_IMAGE repository
-# variable if this repository moves.
+# WHY THE SECOND JOB IS *INSIDE* THE IMAGE. Because bind mounts cannot
+# work from a containerised job: `-v "$PWD":"$PWD"` is resolved by the
+# host daemon against a path that only exists inside the job, and the
+# mount comes up empty — measured on task 1274, where bindgen reported
+# `No such file or directory` about a header sitting right beside it.
+# Inside the image there is nothing to mount: $DEVKITPRO is set,
+# scripts/toolchain-env.sh takes the local path, and cargo, bindgen,
+# cbindgen, LLVM and the Rust sysroot are already there.
+#
+# Attribution survives the move: the image records its own build
+# identity in /etc/mesa-nvk-horizon-toolchain and the packaging step
+# reads it, so a manifest still says which toolchain produced its
+# binaries.
+#
+# IF `archives` FAILS TO START saying it cannot resolve the image, the
+# `toolchain` job did not leave one behind — read that job's log, not
+# this one. Override the name with the TOOLCHAIN_IMAGE repository
+# variable if it is built somewhere else.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
@@ -34,10 +49,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Not inside a container: this one builds one.
+  toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: the runner can drive docker
+        run: scripts/ci-require-docker.sh
+
+      # The runner image ships no Rust, and `cargo vendor` is a host-side
+      # step of the image build. Only vendoring — nothing is compiled
+      # with this toolchain, so any recent one does.
+      - name: rust, only if this runner has none
+        run: |
+          set -eu
+          command -v cargo >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: what this machine has to provide
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/ci-require-host-tools.sh
+
+      # Seconds when it is current; about eleven minutes when the
+      # Dockerfile or a pin moved. It leaves the image in this runner's
+      # daemon, which is the whole mechanism.
+      - name: the toolchain image is present and current
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/build-toolchain-image.sh
+          docker image inspect --format \
+              'toolchain image ready: {{.Id}}' \
+              "${TOOLCHAIN_IMAGE:-mesa-nvk-horizon/nx-dev-mesa:latest}"
+        env:
+          TOOLCHAIN_IMAGE: ${{ vars.TOOLCHAIN_IMAGE }}
+
   archives:
+    needs: toolchain
     runs-on: ubuntu-latest
     container:
-      image: ${{ vars.TOOLCHAIN_IMAGE || 'git.not-d3fau4.com:3000/d3fau4/nx-dev-mesa:latest' }}
+      image: ${{ vars.TOOLCHAIN_IMAGE || 'mesa-nvk-horizon/nx-dev-mesa:latest' }}
       env:
         DEVKITPRO: /opt/devkitpro
     steps:

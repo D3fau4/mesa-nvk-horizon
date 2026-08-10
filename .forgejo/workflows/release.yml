@@ -43,10 +43,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Not inside a container: this one makes sure there is one to use. It
+  # is the same job archives.yml opens with, and for the same reason —
+  # the image lives in this runner's docker daemon and is never pushed
+  # anywhere, because the instance speaks plain HTTP and docker refuses
+  # a registry that is not HTTPS (tasks 1275 and 1276).
+  toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: the runner can drive docker
+        run: scripts/ci-require-docker.sh
+
+      - name: rust, only if this runner has none
+        run: |
+          set -eu
+          command -v cargo >/dev/null && exit 0
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: the toolchain image is present and current
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/ci-require-host-tools.sh
+          scripts/build-toolchain-image.sh
+
   release:
+    needs: toolchain
     runs-on: ubuntu-latest
     container:
-      image: ${{ vars.TOOLCHAIN_IMAGE || 'git.not-d3fau4.com:3000/d3fau4/nx-dev-mesa:latest' }}
+      image: ${{ vars.TOOLCHAIN_IMAGE || 'mesa-nvk-horizon/nx-dev-mesa:latest' }}
       env:
         DEVKITPRO: /opt/devkitpro
     steps:

@@ -285,12 +285,17 @@ That is paid once per machine — the script recognises an image it has already 
 an identity label covering the base image's ID, the pinned bindgen/cbindgen/LLVM
 versions, the resolved `.deb` closure and the Dockerfile's own digest.
 
-`.forgejo/workflows/toolchain-image.yml` publishes it to the instance's container
-registry, and everything else runs inside it. Point elsewhere with the
-`TOOLCHAIN_IMAGE` repository variable, or by hand:
+**CI does not publish it anywhere.** The first job of each workflow builds it on the
+runner, where it stays in that machine's docker daemon; the job that does the work then
+names it and finds it locally. Publishing was tried and abandoned: the instance speaks
+plain HTTP, docker refuses a registry that is not HTTPS, and configuring an exception on
+the daemon is a lot of ceremony for an image that never leaves the machine. If a job
+cannot resolve the image, the job that builds it is the log to read.
+
+Point somewhere else with the `TOOLCHAIN_IMAGE` repository variable, or by hand:
 
 ```sh
-HORIZON_NX_DERIVED_IMAGE=<registry>/<owner>/nx-dev-mesa:latest \
+HORIZON_NX_DERIVED_IMAGE=<some-other>/nx-dev-mesa:latest \
     scripts/ci-build-archives.sh
 ```
 

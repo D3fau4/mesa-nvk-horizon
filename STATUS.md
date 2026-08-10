@@ -103,6 +103,22 @@ equals what `strings` shows.
 scope after it, and the first version of the identity file wrote an
 empty `base=`. Found by reading the file the image had just written.
 
+### And the image's own sysroot was being ignored
+
+Inside the image `$DEVKITPRO` is set, so `toolchain-env.sh` took the
+local path — and the local path builds a Rust sysroot into the
+workspace, because on a developer's machine there is no image to have
+baked one in. Inside the image there is: `/opt/rust-sysroot`, built when
+the image was. Every CI run would have spent minutes rebuilding core and
+alloc to produce what was already mounted a directory away.
+
+Both `toolchain-env.sh` and `ci-build-archives.sh` now ask the same
+question the packaging step asks — is `/etc/mesa-nvk-horizon-toolchain`
+there — and take the image's sysroot when it is. Checked in both
+directions: outside, the workspace path and "local devkitA64"; inside,
+`/opt/rust-sysroot` and "the toolchain image itself", with no sysroot
+built in the tree.
+
 ### Measured
 
 The whole chain, run **inside** the derived image exactly as CI will:
@@ -425,21 +441,29 @@ field exists to catch, undetected by the line meant to catch it. It now
 hashes the sorted list of the 42 `.deb` names, which carry their
 versions. One rebuild to re-label, then `is current`.
 
-### The registry
+### The registry, and why there is none
 
-`.forgejo/workflows/toolchain-image.yml` publishes the derived image
-(11 min, 7.3 GB) to the instance's own registry when
-`toolchain/Dockerfile`, `versions.env` or the build script change; the
-build job pulls it. The location is computed from `$GITHUB_SERVER_URL`
-and `$GITHUB_REPOSITORY` rather than written down, so nothing bakes in a
-hostname.
+The derived image (11 min, 7.3 GB) was going to be published to the
+instance's own registry so runners could pull it rather than build it.
+That is dead: **the instance speaks plain HTTP and docker refuses a
+registry that is not HTTPS** —
 
-**A pull is a candidate, not an authority.** The identity check above
-still runs against it and rebuilds if it no longer matches the
-Dockerfile and the pins. Verified locally by tagging the image under the
-registry name: `toolchain-env.sh` selects it, `build-toolchain-image.sh`
-calls it current without rebuilding, and `ci-build-archives.sh` runs
-green through it to 32 `.nro`.
+    Get "https://git.not-d3fau4.com:3000/v2/":
+        http: server gave HTTP response to HTTPS client
+
+on the push (task 1276) and on the pull (task 1275). Making it work
+means an `insecure-registries` entry in the runner's daemon
+configuration, which is a lot of ceremony for an image that never leaves
+that machine.
+
+**It does not need to leave.** The image is built by the runner's own
+daemon and stays in it, so each workflow opens with a `toolchain` job
+that runs `build-toolchain-image.sh` — seconds when the identity still
+matches — and the job that does the work names the image and finds it
+locally. No registry, no credentials, no token scope, nothing to
+configure. What the identity check was already doing is what makes it
+safe: a Dockerfile or pin that moves rebuilds the image rather than
+reusing a stale one.
 
 ### Also
 
