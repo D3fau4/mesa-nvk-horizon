@@ -14,13 +14,19 @@
 # validates would be the wrong kind of gap to leave unnamed.
 #
 # SECOND: ONE JOB, not a `toolchain` job handing an image to a
-# container-based `release` job. See ci.yml's header for the two review
-# findings that drove this (a mutable-tag race between concurrent runs;
-# a fork PR's read-only token failing an unconditional registry push) —
-# both apply here too, and a release additionally never runs from a
-# fork in the first place, so there was no offsetting benefit to keep
-# the split. Driving the toolchain through `docker run` instead of
-# `container:` has a third, release-specific payoff: `gh`, preinstalled
+# container-based `release` job, AND the build steps run ON THE RUNNER,
+# not inside `container:` or one wrapping `docker run` — see ci.yml's
+# header for the full reasoning (a mutable-tag race between concurrent
+# runs; a fork PR's read-only token failing an unconditional registry
+# push; scripts/ci-build-archives.sh's fetch steps needing python3/pip,
+# which the toolchain image deliberately does not have — measured on a
+# real run before this settled on driving the toolchain through
+# `horizon_run`'s own per-command `docker run` instead). A release never
+# runs from a fork, so the registry-write finding does not strictly
+# apply here — but the image-handoff race and the fetch-steps failure
+# both would, unchanged, so this stays identical in shape to ci.yml.
+# Driving the toolchain through per-command `docker run` instead of
+# `container:` has a release-specific payoff on top: `gh`, preinstalled
 # on the runner VM, is only reachable from a step that runs ON the
 # runner. A `container:`-based job never sees it — found in review,
 # before it could turn into a broken publish step that only fails at
@@ -85,6 +91,12 @@ jobs:
       # A ghcr.io repository name has to be all-lowercase, and GitHub
       # Actions expressions have no lower() function to enforce that on
       # ${{ github.repository_owner }} inline.
+      #
+      # Exported as HORIZON_NX_DERIVED_IMAGE too — the override
+      # scripts/toolchain-env.sh reads — so every later step, including
+      # the ones that only touch it through horizon_run's own nested
+      # `docker run` calls, resolves the same image this job built or
+      # pulled.
       - name: resolve the toolchain image name
         run: |
           set -eu
@@ -94,6 +106,7 @@ jobs:
               image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
           fi
           echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
+          echo "HORIZON_NX_DERIVED_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: the runner can drive docker
         run: scripts/ci-require-docker.sh
@@ -140,8 +153,6 @@ jobs:
 
       - name: the toolchain image is present and current
         id: build
-        env:
-          HORIZON_NX_DERIVED_IMAGE: ${{ env.TOOLCHAIN_IMAGE }}
         run: |
           set -eu
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -158,39 +169,43 @@ jobs:
         continue-on-error: true
         run: docker push "$TOOLCHAIN_IMAGE"
 
-      # Gates, then the full build, then packaging — all inside one
-      # `docker run` for the reason ci.yml's identical step documents:
-      # separate `docker run` invocations are separate containers, and
-      # `git config --global --add safe.directory` set in one would not
-      # survive into the next. '*', not just $PWD, because
-      # scripts/fetch-mesa.sh's `git init mesa` makes mesa/ its own
-      # repository with its own ownership check — see ci.yml for the
-      # exact failure this was measured against.
-      - name: gates, then every archive the tests link, then package
+      # --- the same gates ci.yml runs, and for the same reason: seconds,
+      # so they run before the long build rather than after it ---------
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
+
+      # Runs directly on the runner, same as ci.yml's identical step —
+      # see its header for why: this script's own fetch steps need the
+      # runner's python3/pip/curl/git, and horizon_run spawns its own
+      # per-command `docker run` against $TOOLCHAIN_IMAGE for everything
+      # that needs the cross toolchain. The full build, not `make all`:
+      # every archive the tests link, including NVK, so the package below
+      # can carry the fourteen t_vk_* tests. See this file's header.
+      - name: every archive the tests link
+        run: scripts/ci-build-archives.sh
+
+      - name: package
         run: |
-          docker run --rm \
-              -e DEVKITPRO=/opt/devkitpro \
-              -v "$PWD":"$PWD" -w "$PWD" \
-              "$TOOLCHAIN_IMAGE" \
-              bash -c '
-                set -eu
-                git config --global --add safe.directory "*"
-                ./scripts/check-history-intact.sh
-                ./scripts/check-mesa-test-parity.sh
-                ./scripts/check-layering.sh
-                ./scripts/check-no-abs-paths.sh
-                ./scripts/run-host-tests.sh
-                scripts/ci-build-archives.sh
-                scripts/package-horizon.sh build/pkg
-                cat build/pkg/MANIFEST.txt
-              '
+          set -eu
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
 
       # The digest has to be in there. If it is not, the packaging step
       # ran in a mode that cannot attribute these binaries to a
       # toolchain, and publishing them would put an unattributable
-      # artefact in front of people. Plain host step now — the files are
-      # on the runner's own filesystem, the same one the docker run
-      # above bind-mounted, so nothing here needs the toolchain image.
+      # artefact in front of people.
       - name: the manifest identifies the toolchain
         run: |
           set -eu

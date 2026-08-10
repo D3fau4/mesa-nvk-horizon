@@ -2,29 +2,57 @@
 # current, then build the whole tree against it.
 #
 # This is the GitHub port of .forgejo/workflows-disabled/archives.yml.
-# ONE JOB, not two, and that is a deliberate departure from the Forgejo
-# original — two review findings on the first version of this workflow
-# are why:
+# ONE JOB, not two, and the build steps run ON THE RUNNER, not inside a
+# `container:` or a single wrapping `docker run` — both departures from
+# what the Forgejo original did, and both forced by things measured on
+# real runs rather than chosen upfront.
 #
-#   - a `toolchain` job that PUSHES the image and an `archives` job that
-#     PULLS it back by the same mutable `:latest` tag has a race: two
-#     concurrent runs (this workflow allows one per ref) can interleave,
-#     so `archives` can end up building against a *different* ref's
-#     image. Nothing here fixes that by being careful; the fix is not
-#     needing a second pull at all.
-#   - GitHub downgrades a fork pull request's GITHUB_TOKEN to read-only,
-#     so a job that unconditionally pushes to ghcr.io fails outright on
-#     exactly the PRs — ones touching toolchain/Dockerfile or a pin —
-#     that most need the full build to run.
+# WHY ONE JOB. A `toolchain` job that PUSHES the image and a second job
+# that PULLS it back by the same mutable `:latest` tag has a race: two
+# concurrent runs (this workflow allows one per ref) can interleave, so
+# the second job can end up building against a *different* ref's image.
+# It also fails outright on a fork pull request, whose GITHUB_TOKEN
+# GitHub downgrades to read-only — exactly on the PRs, ones touching
+# toolchain/Dockerfile or a pin, that most need the full build to run.
+# One job builds/pulls the image and uses it immediately in the same
+# job; the registry push at the end is best-effort caching for *future*
+# runs, not something this run's correctness depends on, so it is
+# skipped rather than failed when the token cannot write.
 #
-# One job sidesteps both: it builds or pulls the image into ITS OWN
-# docker daemon and uses it immediately, in the same job, by driving
-# `docker run` directly — the same pattern docs/BUILDING.md already
-# documents by hand ("docker run ... <toolchain-image> scripts/ci-build-
-# archives.sh"). There is no second pull to race, and the registry push
-# at the end is best-effort caching for *future* runs, not something
-# this run's correctness depends on — so it is skipped, not failed, when
-# the token cannot write.
+# WHY NOT ONE BIG `docker run` FOR THE BUILD STEPS EITHER — this was the
+# first attempt, and it does not work: scripts/ci-build-archives.sh's
+# own fetch steps (scripts/fetch-mesa-subprojects.sh,
+# horizon_ensure_meson, horizon_ensure_python_deps, ...) install through
+# `python3 -m pip`, and the toolchain image deliberately has neither pip
+# nor is meant to reach the network on its own (scripts/toolchain-env.sh:
+# "the toolchain image has no pip and no outbound connectivity" — every
+# fetch script's own header says the same). Measured directly: wrapping
+# the whole sequence in `docker run ... "$TOOLCHAIN_IMAGE" ...` died on
+# `/usr/bin/python3: No module named pip` the first time a fetch step
+# that needs it actually ran.
+#
+# The fix is not a workaround, it is the mechanism scripts/toolchain-env.sh
+# already has for exactly this split: `horizon_run` (used throughout
+# scripts/build-mesa-clc.sh, scripts/configure-mesa*.sh,
+# scripts/build-mesa*.sh, scripts/build-horizon.sh) checks whether
+# $DEVKITPRO is set. Unset — the state this job's steps run in, since
+# nothing here sets it as a job-level env — it spawns its OWN per-command
+# `docker run --rm -v "$PWD":"$PWD" ... "$HORIZON_IMAGE" "$@"` only
+# around the specific commands that need the cross toolchain, while
+# fetch/setup steps run directly on the runner, where python3, pip, curl
+# and git already live (scripts/ci-require-host-tools.sh already checks
+# for exactly these). Running scripts/ci-build-archives.sh as a normal
+# step here, not wrapped in anything, is what turns that mechanism on —
+# it is the same "quick way" split scripts/build-switch.sh already uses
+# for the Makefile path, just exercised by a script that needs more of it.
+#
+# This also sidesteps the reason the Forgejo original ran *inside* a
+# `container:` job at all — a bind mount from a job that is ITSELF a
+# container resolves against the host, not the job, and comes up empty
+# (Forgejo task 1274). A GitHub-hosted `ubuntu-latest` job is a plain VM,
+# not a container, so `horizon_run`'s nested `-v "$PWD":"$PWD"` resolves
+# against a real path the whole way down. That problem was specific to a
+# containerised job nesting another one; a host job nesting one is fine.
 #
 # WHY ghcr.io AT ALL, THEN. Rebuilding the derived image from scratch
 # costs ~11 minutes and 7.3 GB (docs/BUILDING.md) on every run without a
@@ -37,7 +65,10 @@
 # reuse through $HORIZON_NX_DERIVED_IMAGE, and its own identity check —
 # base image ID, pinned bindgen/cbindgen/LLVM versions, the resolved
 # .deb closure, the Dockerfile's digest — does the right thing against a
-# pulled image with no further help.
+# pulled image with no further help. horizon_run picks up the same
+# override, so the per-command nested containers use exactly the image
+# this job just built or pulled, not whatever versions.env names by
+# default.
 #
 # WHY THE FULL BUILD RUNS ON EVERY PUSH, PR AND DISPATCH, UNIFORMLY. The
 # whole point of scripts/ci-build-archives.sh is catching a broken patch
@@ -77,6 +108,13 @@ jobs:
       # of this workflow failed docker pull outright with "invalid
       # reference format: repository name (D3fau4/nx-dev-mesa) must be
       # lowercase" because the account is D3fau4, not d3fau4.
+      #
+      # Exported as HORIZON_NX_DERIVED_IMAGE too, not just TOOLCHAIN_IMAGE:
+      # that is the exact override scripts/toolchain-env.sh reads, and
+      # every later step — including the ones that only touch it through
+      # horizon_run's own nested `docker run` calls — needs to resolve
+      # the same image this job built or pulled, not the bare
+      # mesa-nvk-horizon/nx-dev-mesa:latest name versions.env defaults to.
       - name: resolve the toolchain image name
         run: |
           set -eu
@@ -86,6 +124,7 @@ jobs:
               image="ghcr.io/${owner_lower}/nx-dev-mesa:latest"
           fi
           echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
+          echo "HORIZON_NX_DERIVED_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: the runner can drive docker
         run: scripts/ci-require-docker.sh
@@ -147,15 +186,13 @@ jobs:
           fi
           echo "pre_id=$pre_id" >> "$GITHUB_OUTPUT"
 
-      # Unmodified script. HORIZON_NX_DERIVED_IMAGE is the override
-      # scripts/toolchain-env.sh already reads; pointing it at the tag
-      # just pulled is the entire mechanism. Seconds when the pulled
-      # image's identity already matches; ~11 minutes only when
-      # toolchain/Dockerfile or a pin in toolchain/versions.env moved.
+      # Unmodified script. HORIZON_NX_DERIVED_IMAGE is already exported
+      # (the "resolve" step above); pointing it at the tag just pulled is
+      # the entire mechanism. Seconds when the pulled image's identity
+      # already matches; ~11 minutes only when toolchain/Dockerfile or a
+      # pin in toolchain/versions.env moved.
       - name: the toolchain image is present and current
         id: build
-        env:
-          HORIZON_NX_DERIVED_IMAGE: ${{ env.TOOLCHAIN_IMAGE }}
         run: |
           set -eu
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -180,47 +217,40 @@ jobs:
         continue-on-error: true
         run: docker push "$TOOLCHAIN_IMAGE"
 
-      # Everything that needs the toolchain, in one `docker run` rather
-      # than one per gate: each `docker run` is a fresh, unrelated
-      # container instance, so a `git config --global` (or anything else
-      # stateful) set in one would not survive into the next. One
-      # invocation keeps the state that matters inside a single container
-      # for the whole sequence.
+      # --- seconds, and they run first for that reason ---------------
+      - name: history and hardware logs match their manifests
+        run: ./scripts/check-history-intact.sh
+
+      - name: the two build systems agree
+        run: ./scripts/check-mesa-test-parity.sh
+
+      - name: layer rules
+        run: ./scripts/check-layering.sh
+
+      - name: no absolute paths in tracked files
+        run: ./scripts/check-no-abs-paths.sh
+
+      - name: host tests
+        run: ./scripts/run-host-tests.sh
+
+      # --- and then the long one -------------------------------------
       #
-      # safe.directory '*', not just $PWD: measured — `git init mesa`
-      # inside this same container, done by scripts/fetch-mesa.sh, failed
-      # with "mesa did not become its own git repository, git-dir: <none>"
-      # on the very first real run. $PWD (the bind-mounted checkout) had
-      # already been marked safe, but mesa/ is a SEPARATE repository at
-      # its own path once git-init'd, and git's ownership check is
-      # per-repository, not inherited from a parent directory — the same
-      # will be true of the SPIRV-Tools/SPIRV-Headers clones
-      # fetch-clc-deps.sh makes later. One container, one tree, nothing
-      # else mounted in it: there is no adversarial multi-tenant repo
-      # here for the usual safe.directory risk to apply to.
-      #
-      # Gates first, and they cost seconds; scripts/ci-build-archives.sh
-      # is the long one, and it ends by running the two gates that need
-      # built artefacts (check-dispatch-complete.sh, check-tls-relocs.sh)
-      # itself.
-      - name: gates, then every archive the tests link
+      # Runs directly on the runner (see this file's header for why):
+      # its own fetch steps need the runner's python3/pip/curl/git, and
+      # horizon_run — used internally by the scripts this calls — spawns
+      # its own per-command `docker run` against $TOOLCHAIN_IMAGE for
+      # everything that needs the cross toolchain. Every .a the tests
+      # link, then the .nro that prove the archives are usable rather
+      # than merely present, then the two gates that need built
+      # artefacts. Ordering and retries are in the script.
+      - name: every archive the tests link
+        run: scripts/ci-build-archives.sh
+
+      - name: package
         run: |
-          docker run --rm \
-              -e DEVKITPRO=/opt/devkitpro \
-              -v "$PWD":"$PWD" -w "$PWD" \
-              "$TOOLCHAIN_IMAGE" \
-              bash -c '
-                set -eu
-                git config --global --add safe.directory "*"
-                ./scripts/check-history-intact.sh
-                ./scripts/check-mesa-test-parity.sh
-                ./scripts/check-layering.sh
-                ./scripts/check-no-abs-paths.sh
-                ./scripts/run-host-tests.sh
-                scripts/ci-build-archives.sh
-                scripts/package-horizon.sh build/pkg
-                cat build/pkg/MANIFEST.txt
-              '
+          set -eu
+          scripts/package-horizon.sh build/pkg
+          cat build/pkg/MANIFEST.txt
 
       - name: Upload dist
         uses: actions/upload-artifact@v4
