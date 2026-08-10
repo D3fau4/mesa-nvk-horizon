@@ -4,6 +4,10 @@
 runs on the Nintendo Switch's Tegra X1 (GM20B, Maxwell 2nd gen) through `libnx` and the
 `nv` system services — with no DRM emulation layer in between.
 
+> [`CONTRIBUTING.md`](CONTRIBUTING.md) is this same contract addressed to a person: the
+> layer rules, the rejected designs, the evidence discipline and the gates. When one of
+> them changes, change both — they are two readings of one set of rules, not two sets.
+
 ## Target architecture (non-negotiable)
 
 ```

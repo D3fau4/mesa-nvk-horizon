@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-09
-**Branch:** `multihilo-wsi`
+**Last updated:** 2026-08-10
+**Branch:** `claude/repo-publication-prep-q96kty`
 
 ---
 
@@ -15,6 +15,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
 | **Next concrete task** | **Nothing is blocked.** The layout answer arrived and the phase's last open question with it. What remains is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), never had a test (display mode change, docked resolution, `VK_SUBOPTIMAL_KHR`, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes next is a decision, not a task |
+| **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); CI now cross-builds, and a tag publishes a package. **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
@@ -26,6 +27,117 @@ long. This block is the state itself, and it is the part that must be true.*
 | **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **Patches 0072 and 0073**, and the `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review: cross build only, no console run yet, and the next run is what confirms them. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Preparing the repository to be published and used (2026-08-10)
+
+No driver code changed. This is the front door: the repository was
+private, had no release, and its `README.md` still opened with
+
+    **Phase 0 — audit of the existing reference ports. Complete.**
+    Nothing here builds or runs yet.
+
+which has been false since Phase 1 and is now false by six phases. It
+also had no build instructions, no usage instructions, no `LICENSE` at
+the root, and **236 of its 659 tracked files were vendored agent skills**.
+
+### Two defects found while doing it, and they are the reason this entry is not just documentation
+
+**1. `scripts/configure-horizon.sh` never passed `-Dnvk_build_dir`.**
+`meson.options` declares the option, and `toolchain-env.sh`,
+`configure-mesa-nvk.sh` and `build-mesa-nvk.sh` all honour
+`$MESA_NVK_BUILD_DIR` — nothing connected the two. A caller who set it
+built the driver in one directory while `meson.build` ran `fs.exists()`
+against another, found no archives, and **skipped all twelve `t_vk_*`
+tests** with one configure-time `message()` as the only trace. The
+build then succeeded and produced 20 `.nro` instead of 32.
+
+`toolchain-env.sh:125-132` describes this exact failure for this exact
+variable one layer down, and fixed it there. It was still live in the
+script that passes the options. Source-level fix; the configure path was
+not executed here.
+
+**2. `scripts/gen-build-id.sh` attributed artefacts to a Mesa commit that
+was ours.** `_describe mesa` asked git whether it could find a
+repository at `mesa/` and took the answer — but `git -C mesa` walks *up*
+when `mesa/` is not itself a repository, which is what it is on any tree
+where `fetch-mesa.sh` has not run. The stamp came out as
+
+    2026-08-10T12:27:40.224Z 9053687-dirty mesa:9053687-dirty
+
+`mesa:9053687` is a claim that Mesa is at a commit which is this
+repository's commit. That is the failure this stamp exists to prevent,
+aimed at itself, and it would have reached every published package,
+since the new release workflow builds without Mesa. Fixed with the guard
+`apply-mesa-patches.sh:110-120` already uses on the same directory.
+Measured before and after: `mesa:9053687-dirty` → `mesa:nogit`, with a
+genuine repository still described by its own HEAD.
+
+### What was verified, and in which class
+
+**Host (H).** The four static gates and the host suites pass on this
+tree — `check-layering`, `check-no-abs-paths`, `check-history-intact`
+(9 history files, 166 manifest entries), `check-mesa-test-parity`. All
+relative Markdown links in the new and changed files resolve, checked
+by walking them. Every count that went into the documentation was read
+out of the tree rather than from memory, and three were wrong on the
+first pass: 32 scripts and not 33; 164 logs plus one fatal report and
+not 165 logs; the ten Phase 1 run-14 results are 258 checks across
+varying counts, not 32/32 each.
+
+**Cross (X).** `scripts/build-switch.sh -j4` in
+`ghcr.io/d3fau4/nx-dev:latest` → **18 `.nro`**, and
+`scripts/package-horizon.sh build/pkg` wrote a manifest carrying the
+image digest `sha256:61a38fe4…`, the resolved devkitA64 r29.2-1 /
+libnx 4.12.0-1 versions, and the build id read back out of the
+binaries. That is the whole release pipeline, run end to end.
+
+**Hardware (HW).** *Nothing.* No console was involved in any part of
+this, and no claim here is about one. Run 20 remains the newest
+hardware evidence, and the tree has moved further past it.
+
+### What changed
+
+- `README.md` rewritten: a *what runs on a console* table where every
+  row links the log behind it, followed immediately by **what is not
+  done** — no installable driver, the never-verified list, the three
+  known failures. A status block that lists only successes is the
+  failure mode runs 2 through 20 were spent avoiding.
+- `docs/BUILDING.md`, `docs/USAGE.md`, `docs/RELEASING.md`,
+  `docs/README.md` — none of which existed. `USAGE.md` opens by saying
+  there is no installable ICD, because that is the first wrong
+  assumption a reader would otherwise make.
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and
+  pull-request templates. The hardware-run template makes the build id
+  a required field.
+- `LICENSE` at the root — the project has been MIT since its first
+  commit with SPDX on all 105 sources, and GitHub showed no licence at
+  all.
+- `.gitattributes`, and its exceptions are the point: `*.patch`,
+  `docs/hw-logs/**` and `docs/history/**` are `-text`, because their
+  bytes are checked by `patch-id` and by `MANIFEST.sha256`. Without
+  that, a Windows clone fails `check-history-intact.sh` on a tree
+  nobody edited, and the failure reads as evidence having been altered.
+- `.github/workflows/release.yml`, and a `cross` job in `gates.yml`.
+  CI had never compiled anything for the console, so a broken cross
+  build left all five gates green.
+- `.claude/` and `_bmad/` untracked: 659 → 408 files. `_bmad/config.user.toml`
+  held one developer's name and language preference.
+- `tests/README.md` said "Thirteen standalone `.nro`" and listed
+  thirteen. There are thirty-two.
+
+### Still open, and deliberately not done here
+
+- **The repository is still private, with no description and no topics.**
+  Changing visibility is not something this work can do.
+- No release has been cut. The workflow exists and its steps were run
+  locally; no tag was pushed.
+- `examples/` and `horizon/surface/` are still empty. Documented as
+  empty rather than filled with invented content.
+- The Meson cross build and the twelve `t_vk_*` are still uncovered by
+  CI — named in the `cross` job's comment rather than left looking
+  complete.
 
 ---
 
