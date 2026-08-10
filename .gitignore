@@ -24,3 +24,16 @@
 # be committed is the one kind of file this project cannot afford to lose,
 # since a result nobody can re-run is only as good as its record.
 !/docs/hw-logs/*.log
+
+# Agent tooling. Vendored skills and installer-managed state for the
+# assistant this project is developed with — 251 files against 408 of
+# actual project content, which is what anyone cloning would see first.
+# It is also personal: _bmad/config.user.toml holds install answers
+# scoped to one developer, not to the repository.
+#
+# CLAUDE.md is deliberately NOT here. It is the engineering contract —
+# the layer rules, the rejected designs, the evidence discipline — and
+# it happens to be addressed to an assistant. CONTRIBUTING.md says the
+# same things to a human.
+/.claude/
+/_bmad/
