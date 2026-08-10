@@ -1,4 +1,4 @@
-From c5e9e666fca3ded3444ae5346b1736b4bdbf51c6 Mon Sep 17 00:00:00 2001
+From 186b0820e3413fdbfa9030e54b99329e9066f73d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
 Subject: [PATCH] vulkan/wsi: Horizon, a resized window is suboptimal, not out
@@ -49,10 +49,50 @@ Why: a display mode change - docking the console, which takes the layer
  the copy fallback has no framebuffer, or the application holds every
  image and is blocking for one only it can free. The full table is in
  docs/wsi.md 5.1 and in the comment above wsi_horizon_extent_changed().
-Evidence: CROSS BUILD ONLY - no console has run this, and the condition
- it exists for cannot be provoked from inside a process, so this patch
- is written from the specification and from the code paths rather than
- from a measurement. Both are stated here so a reader can check them.
+Evidence: hardware, run 21 (2026-08-10, build 2026-08-10T13:44:43.834Z
+ 13336c0-dirty mesa:c5e9e66, game mode 3155 MiB), tests/t_vk_suboptimal.c:
+ RESULT PASS (273/273), docs/hw-logs/t_vk_suboptimal-run21-PASS.log.
+ .
+ AND THE BOUNDARY OF THAT PASS, because it is not the whole claim. With
+ the console undocked and nothing resizing the layer, a backend that
+ never returns VK_SUBOPTIMAL_KHR and one that returns it only on a
+ resize are indistinguishable, so sections A, B, C and E would have
+ passed without this patch. VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON
+ HARDWARE. What run 21 does establish is the rest of the contract:
+ .
+ - 2303 frames on both present paths with the rule checked in both
+   directions per frame - SUBOPTIMAL exactly when the surface's
+   currentExtent differs from the swapchain's imageExtent - and ZERO
+   disagreements. Section D alone is 1803 of those frames, 30 s of
+   continuous presenting with the acquire and the present each asserted
+   every frame. That is the no-false-positives half, and it is the half
+   a wrong implementation fails.
+ - The two results stay distinct: on both paths a superseded swapchain
+   answers VK_ERROR_OUT_OF_DATE_KHR from acquire AND present while the
+   surface's extent is checked to be unchanged, so that result cannot be
+   coming from the resize check; an acquire that cannot be satisfied
+   answers VK_TIMEOUT after three images were held.
+ - Eight recreation generations alternating present path, 20 of 20
+   frames each, then a swapchain created after all of them were
+   destroyed; "no slot was left with the compositor" and "the driver
+   tore down every object it created".
+ .
+ The binary was checked rather than assumed, because a stale driver has
+ cost this project a run before: both wsi_horizon_swapchain_queue_present
+ and wsi_horizon_swapchain_acquire_next_image in the shipped
+ t_vk_suboptimal.elf build 0x3B9ACDEB (1000001003, VK_SUBOPTIMAL_KHR)
+ into w0 with a mov/movk pair and return it.
+ .
+ The build id names mesa:c5e9e66 and this commit is not that hash. They
+ are the same tree: c5e9e66 is this commit before the evidence above was
+ written into its message, and amending a message changes the hash and
+ nothing else. Same relationship patch 0071 records between mesa:597ea0a
+ and mesa:85638f8 for run 20, and it is stated rather than left for a
+ reader to find that `git log` does not contain the hash the artefact
+ names.
+ .
+ The rest is the specification and the code paths, stated so a reader
+ can check them.
  .
  The specification, on the two results: VK_SUBOPTIMAL_KHR is "a
  swapchain no longer matches the surface properties exactly, but can
@@ -92,11 +132,8 @@ Evidence: CROSS BUILD ONLY - no console has run this, and the condition
  and libnx keeps the default window's ViLayer private in any case.
  .
  The build: aarch64-none-elf-gcc from the pinned toolchain image,
- scripts/build-mesa-nvk.sh, clean tree, no diagnostics.
- tests/t_vk_suboptimal.c is the test; its sections A, B, C and E check
- the rule in both directions on both present paths and run unattended,
- and its section D is the mode change and records in its own log when
- the coverage did not run.
+ scripts/build-mesa-nvk.sh, clean tree, -Wall -Wextra -Werror, no
+ diagnostics.
 Upstream: no - this file is the Horizon backend itself.
 ---
  src/vulkan/wsi/wsi_horizon.c | 157 +++++++++++++++++++++++++++++++----
