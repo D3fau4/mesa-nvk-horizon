@@ -30,6 +30,122 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ---
 
+## CI moved to Forgejo, and it now builds every archive (2026-08-10)
+
+Two changes asked for after the entry below, and one of them closes a
+gap this file has carried since CI existed.
+
+### CI compiles all of it now, not a corner of it
+
+`scripts/ci-build-archives.sh` builds the whole chain — the pinned Mesa
+checkout, the 73-patch series, the derived toolchain image, `mesa_clc`,
+Mesa's core and NVK — and then checks that **every** archive the tests
+link is there: `$HORIZON_MESA_TEST_LIBS` and `$HORIZON_NVK_TEST_LIBS`
+read from `toolchain-env.sh`, not a fourth copy of the list.
+
+**Presence is not enough, and this is why the job does not stop there.**
+Meson writes *thin* archives. Measured: `libnvk.a` is 96 KiB, opens with
+`!<thin>` and names 179 members it does not contain — so every
+`fs.exists()` in `meson.build`, and every check of the kind above, is
+satisfied by a file whose objects could all be missing. Linking is what
+cannot be faked, so the job ends by rebuilding and asserting **32
+`.nro`** (18 + 2 + 12). `t_vk_swapchain.nro` comes out at 14 MiB against
+`t_init.nro`'s 237 KiB, which is the driver actually being in there.
+
+**And the two gates that were manual are not manual any more.**
+`check-dispatch-complete.sh` and `check-tls-relocs.sh` were excluded
+from CI with the honest reason that they need a linked Horizon ELF and
+devkitA64 objects, which CI did not have. This job produces both, so it
+runs them. First time either has run anywhere but by hand: **825 entry
+points named, 234 core, 1 allowed absence**, and **3 objects using TLS,
+all with relocations, out of 351 scanned**.
+
+### Measured here, end to end, twice
+
+| Step | Time |
+|---|---|
+| `fetch-mesa.sh` (503 MB) | 23 s |
+| `apply-mesa-patches.sh` (73 patches) | 11 s |
+| the three other fetches | ~50 s |
+| `build-toolchain-image.sh` (7.34 GB image) | **11 min 04 s** |
+| `mesa_clc` + Mesa core + NVK + 32 `.nro` | **7 min 54 s** |
+| the whole script again, everything current | **53 s** |
+
+The image is the long pole and it is a first-run cost: it is skipped by
+identity label, so a runner that keeps its docker daemon between jobs
+pays it once. That is also why these jobs *drive* containers instead of
+running inside one.
+
+### Two review findings from PR #10, both real
+
+**The licence did not travel with the binaries.** `package-horizon.sh`
+built a directory of `.nro` and a manifest, and that directory is what
+gets tarred into a release and copied to an SD card. MIT requires its
+notice to accompany copies of the software; a distribution of built
+artefacts is a copy. It now copies `LICENSE` and `LICENSES/README.md`
+into every package and refuses to build one without them — so a package
+made by hand is no different. `LICENSES/README.md` goes too because our
+MIT text is not the whole picture: every `.nro` links libnx, which is
+ISC. libnx ships no licence file under `$DEVKITPRO/libnx` — checked
+inside the image — so that file points at the component rather than
+inventing the text of a licence.
+
+**The manifest would have said `image: local`.** The first release
+workflow ran its steps *inside* `ghcr.io/d3fau4/nx-dev:latest`, which
+sets `$DEVKITPRO`, which puts `toolchain-env.sh` into local mode — and
+`package-horizon.sh` then records no image digest at all, against a
+mutable `:latest` tag. Attribution is that manifest's whole purpose.
+Fixed by construction: the steps drive the image from outside, which is
+the path that was verified here. There is also a guard that refuses to
+publish a package whose manifest carries no `@sha256:`, checked in both
+directions against a real manifest and against a `local` one.
+
+Verified in this run: `image: mesa-nvk-horizon/nx-dev-mesa@sha256:73e07527…`,
+`LICENSE` and `LICENSES.md` byte-identical to the sources, 32 `.nro`
+packaged, staleness gate checking 12 driver-linked artefacts.
+
+### And the build id proved itself in the other direction
+
+The fix below made `mesa:` say `nogit` on a tree with no Mesa checkout.
+With `mesa/` populated it now reads `mesa:ea85b2b` — which is what
+`apply-mesa-patches.sh` reports for the pinned commit plus 73 patches,
+and is not this repository's commit. Both directions of that fix are
+now measured.
+
+### The move itself
+
+`.github/` is gone; `.forgejo/` replaces it — two workflows, the issue
+templates in Gitea's schema, and the pull-request template.
+`ci-forgejo-release.sh` creates releases through the Forgejo API using
+`python3`, which this build already requires, rather than `jq` or a
+third-party action whose resolution on a given instance cannot be
+assumed.
+
+`SECURITY.md` no longer promises GitHub Security Advisories, because
+Forgejo has no such thing; it asks for direct private contact and says
+what to do when there is no private channel. The code of conduct's
+enforcement contact moved for the same reason.
+
+### What is NOT verified
+
+**The Forgejo YAML has never run.** There is no instance here to run it
+on. That is exactly why the logic lives in
+`scripts/ci-build-archives.sh` and `scripts/ci-forgejo-release.sh`,
+which were both executed: the first end to end, twice; the second
+against a local server imitating the Forgejo release API, where it
+created a release, reused it on a 409, and uploaded 5000 bytes of binary
+intact. The YAML is a wrapper around tested scripts, and it is still a
+wrapper nobody has executed.
+
+**The runner needs the docker CLI and `/var/run/docker.sock`.** Every
+build job checks for it first and fails with that sentence rather than
+halfway through a build.
+
+Still a **cross build**. No console has run any of it, and run 20
+remains the newest hardware evidence.
+
+---
+
 ## Preparing the repository to be published and used (2026-08-10)
 
 No driver code changed. This is the front door: the repository was
@@ -119,9 +235,10 @@ hardware evidence, and the tree has moved further past it.
   bytes are checked by `patch-id` and by `MANIFEST.sha256`. Without
   that, a Windows clone fails `check-history-intact.sh` on a tree
   nobody edited, and the failure reads as evidence having been altered.
-- `.github/workflows/release.yml`, and a `cross` job in `gates.yml`.
-  CI had never compiled anything for the console, so a broken cross
-  build left all five gates green.
+- A release workflow, and a `cross` job beside the gates. CI had never
+  compiled anything for the console, so a broken cross build left all
+  five gates green. *(Written for GitHub Actions first; moved to Forgejo
+  the same day — see the entry above.)*
 - `.claude/` and `_bmad/` untracked: 659 → 408 files. `_bmad/config.user.toml`
   held one developer's name and language preference.
 - `tests/README.md` said "Thirteen standalone `.nro`" and listed
