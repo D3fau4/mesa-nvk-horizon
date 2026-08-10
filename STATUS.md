@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution, `IMMEDIATE` through Vulkan), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); CI now cross-builds, and a tag publishes a package. **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
 | **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
@@ -22,7 +22,7 @@ long. This block is the state itself, and it is the part that must be true.*
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
 | **Exit criteria** | **1. Met** (89 of 89 intervals within 10% of 16666 us, run 13). **3. Met.** **4. Met**, and since run 13 the check that proves it is no longer gated on zero-copy succeeding. **2. Met as throughput, and only as throughput** — the structural half stands (3 concurrent slots against 2) and the pacing half is a 50% difference in throughput (25170 us against 16837 us, run 13), *not* the burst absorption the tests originally claimed: `over_1p5_refresh` is **45 with three images and 45 with two**, twice measured |
 | **THE LAYOUT IS CONFIRMED** | **The operator reports the pattern renders correctly on the console, every time it has been shown** (2026-08-08). Four coloured bars, the 16px border, the black diagonal corner to corner, the yellow square — the appearance a wrong stride, a wrong block height or a wrong GOB sector ordering would each destroy in a way that is not subtle. This is the only evidence in the phase that is about *what was in* the frames rather than that they arrived, and it is human by necessity: nothing can read a presented frame back, and a GPU readback would write and read with the same layout and agree with itself. **The zero-copy path is closed** — showing 1 ran in runs 14, 15 and 16. Showing 2, on the copy fallback, has only existed since run 16, so whether "every time" covers it is worth one word from the operator |
-| **What is still unverified** | Any display mode change, docked resolution, and `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those |
+| **What is still unverified** | Any display mode change and docked resolution — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those. **`VK_PRESENT_MODE_IMMEDIATE_KHR` is no longer on this list**: run 25 measured it end to end through `vkCreateSwapchainKHR` — 8264 us against FIFO's 16577 us over 240 frames each, with a FIFO run either side of it, and run 24 said the same a build earlier |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 only.** D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
@@ -30,6 +30,183 @@ long. This block is the state itself, and it is the part that must be true.*
 
 ---
 
+## Merging main again: a fourteenth Vulkan test, and nothing to change for it (2026-08-10)
+
+`main` gained run 25, `t_vk_immediate` and patch 0075 while this branch
+was being written. Only `STATUS.md` conflicted, both sides having
+prepended to the working record; all sections are kept, main's first.
+
+**The count moved and no code did.** There are now 34 `.nro` instead of
+33, and `scripts/ci-build-archives.sh` did not need touching, because
+the merge before this one stopped it hard-coding the number and made it
+read `meson.build`'s own three test lists. That was the point of the
+change and this is the first time it paid.
+
+What did need touching is prose. `VK_PRESENT_MODE_IMMEDIATE_KHR` came
+off *never verified on hardware* in `README.md`, `docs/USAGE.md` and
+`docs/RELEASING.md` — run 25 put `t_vk_immediate` at **PASS 442/442** —
+and `tests/README.md` gained its row. Counts corrected against the tree
+rather than adjusted by hand: 75 patches, 34 tests, 14 `t_vk_*`, 167
+hardware logs, 36 scripts.
+
+`docs/RELEASING.md` also still described the release workflow as driving
+the image from the runner. It has run *inside* it since the Forgejo
+runner proved the other way impossible; the paragraph now says so.
+
+No console was involved in any of this. Runs 24 and 25 are somebody
+else's measurements.
+
+---
+
+## `VK_PRESENT_MODE_IMMEDIATE_KHR`, measured instead of assumed (2026-08-10)
+
+**Class: hardware (HW).** A new test, `t_vk_immediate`,
+**`RESULT: PASS (442/442)`** on run 25
+(`docs/hw-logs/t_vk_immediate-run25-PASS.log`), and patch **0075**. This
+closes the last item the state block listed as advertised-and-never-
+measured beside `VK_SUBOPTIMAL_KHR`.
+
+**Run 24 is kept beside it** (`t_vk_immediate-run24-PASS.log`, also
+442/442) because patch 0075's `Evidence` field was taken from it. The two
+builds differ only in comments — run 25 is the committed tree, run 24 the
+tree the patch was written from — and they agree on every number below to
+within a percent. Where one figure is quoted it is run 25's.
+
+### The question, and why it needed a console
+
+The backend has advertised two present modes since 0053 and maps them
+onto VI's one knob, the per-queue swap interval: FIFO is interval 1,
+`IMMEDIATE` is 0. Nothing had ever checked that the second one *does*
+anything through Vulkan. `t_nwindow` had measured interval 0 at the raw
+producer -- 8162 us against 16352 us, run 2 -- but that is a different
+code path, a different producer and no swapchain, so it could not tell a
+working present mode from a swap interval that never left the driver.
+
+The test is written as a comparison taken in one run on one console:
+FIFO, then `IMMEDIATE`, then FIFO again, 240 frames each, so the
+reference is shown to be stable rather than assumed. The verdict is a
+ratio, and the discriminator that carries it is not the mean -- a mean
+can be dragged under a refresh by a burst -- but the count of intervals
+shorter than **half** a refresh, which a mode that waits for a vertical
+blank cannot produce at all.
+
+### What it found: the mode is real, and it is exactly two per refresh
+
+| run 25, 1280x720, three images | mean interval | under half a refresh, queue full |
+|---|---|---|
+| FIFO, before | 16577 us | 0 of 237 |
+| **IMMEDIATE** | **8264 us** | **119 of 237** |
+| FIFO, after | 16538 us | 0 of 237 |
+
+Run 24, same test, same console, a build apart: 16551, **8296**, 16545.
+
+The two FIFO runs agree within 10%, so the middle one is a measurement.
+`IMMEDIATE` is not unbounded, and this says what its ceiling is: the
+compositor gives back more than one buffer per refresh but not
+arbitrarily many, and with three registered buffers that is two.
+
+Also measured, all in the same run:
+
+- **The two-image case, which is the one libnx's note is about.** Asking
+  for `IMMEDIATE` with `minImageCount` 2 yields **three** images and
+  interval 0, and paces at 8274 us. Asking for FIFO with 2 yields two
+  images and interval 1 at 16614 us -- so the bump belongs to
+  `IMMEDIATE` and is not a floor every swapchain gets. `minImageCount`
+  is a minimum and the implementation chooses the count, so this is
+  conformant and needs no agreement from the application.
+- **Recreation, six generations alternating the mode**, each presenting
+  all 60 of its frames, each registering the interval its own mode
+  implies **and paced by it** -- which is the check that would catch a
+  swap interval stuck to the window instead of following the swapchain.
+- **Two images held at once and handed back**, then 60 more frames at
+  8197 us: no slot retained.
+- **Nothing retained at the end.** A swapchain created after all of it
+  still gets zero-copy, still registers interval 0, still paces at 7976
+  us, and the driver never said "stays ACQUIRED", "destroy refused",
+  "nwindowReleaseBuffers", "the compositor refused" or "cancelling slot".
+- **No `VK_SUBOPTIMAL_KHR`, no `VK_TIMEOUT`, no failed present** in 1620
+  presented frames.
+
+### What it found that was not expected: the copy fallback cannot deliver it
+
+Forcing the copy path (`MESA_VK_WSI_HORIZON_FORCE_COPY`) and running the
+same 60 frames in each mode gave **16807 us at interval 1 and 16767 us
+at interval 0** -- both at the refresh.
+
+**The interval is not lost on the way.** `nwindowQueueBuffer` stores
+`NWindow::swap_interval` at offset 44 of `BqBufferInput`, the same field
+`wsi_horizon_fill_queue_input` writes on the zero-copy path; verified by
+disassembling the pinned libnx rather than argued from the header. What
+interval 0 buys is the compositor dropping *surplus queued* frames and
+freeing them early, and this path never accumulates any: **the cheapest
+present on it cost 12210 us and 12370 us** against a 16666 us refresh,
+because every frame is copied row by row and then swizzled into the
+block-linear scanout buffer by the CPU. One frame costs most of a
+refresh, a second one never reaches the queue, and there is nothing to
+drop.
+
+That is a property of the fallback, not a defect in the present mode.
+
+### The decision this forced, stated plainly
+
+**`VK_PRESENT_MODE_IMMEDIATE_KHR` stays advertised.** The brief said to
+stop advertising it if the platform cannot give it honestly. The
+platform can, on the path this backend takes on working hardware, and
+the numbers above are that path. Present modes are a property of the
+*surface*, which cannot know whether a swapchain not yet created will
+decline zero-copy, so un-advertising it would deny the working path a
+working mode because of a fallback the application does not choose and
+never reaches on a healthy console.
+
+What was wrong was that nothing said so. Patch **0075** logs the
+limitation through the debug-utils messenger when the copy fallback and
+interval 0 do meet, beside the decision line that is already there, so
+an application observing the swapchain decision learns which one it got
+instead of having to measure it. The log carries that line twice, once
+per forced-copy swapchain.
+
+### Two things about tearing, so nobody has to rediscover them
+
+There is none, and there cannot be: VI composites and flips at the
+vertical blank. The specification says this mode "may result in visible
+tearing", not that it must, and the normative half -- not waiting for a
+vertical blank to update the current image -- is what the table above
+shows. An application asking for `IMMEDIATE` to escape refresh-rate
+pacing gets what it asked for; one asking for it expecting a torn frame
+does not, and cannot here. `docs/wsi.md` section 2.3 says this next to
+the numbers.
+
+### Two corrections to the test, both from run 23
+
+- **FIFO's first frames run ahead, legitimately.** Every FIFO run
+  produced exactly `image_count - 1` intervals shorter than half a
+  refresh at its head -- 2 of 239 with three images, 1 of 239 with two
+  -- because a swapchain begins with every image free and FIFO throttles
+  a producer at a *full* queue. A check written as "FIFO never gets
+  ahead" failed on a driver that was right. It now counts from frame
+  `image_count` onwards, and the excluded count is printed rather than
+  dropped.
+- **The copy fallback is not judged against the `IMMEDIATE`
+  thresholds.** Applying them would report a driver defect that is not
+  one; relaxing them would say nothing. What is asserted instead is the
+  state that was measured -- the two modes within 10% of each other,
+  both at the refresh, and the cheapest present at least half a refresh,
+  which is the premise -- so a console on which that path *does* get
+  ahead fails these checks and sends somebody to update `docs/wsi.md`.
+
+### How the logs are read back now, and one wrong diagnosis it caused
+
+`tools/logcat/` is a small `.nro` that prints a file from
+`sdmc:/horizon_gpu_tests` over nxlink, launched separately after the
+measured run has ended -- so the `.nro` under test still links no socket
+and `testfw` keeps the shape the user asked for on 2026-08-08. Runs 22
+and 23 were both read back **cut off mid-line, at a different line each
+time**, and that was diagnosed as the test hanging in section F on the
+copy fallback. It was not: `logcat` was calling `socketExit()` straight
+after `fflush()`, and whatever TCP had not yet put on the wire went with
+it. It now shuts the write side down and lets it drain, and prints a
+trailing `===== END ... (n bytes) =====` marker so a truncated read is
+visible instead of looking like a hang. **Check for that marker.**
 ## CI runs inside the toolchain image now, and three defects fell out of it (2026-08-10)
 
 The first `archives` and `toolchain-image` runs on the real Forgejo both

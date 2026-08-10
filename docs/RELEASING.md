@@ -13,11 +13,12 @@ git tag -a v0.1.0 -m "…"
 git push origin v0.1.0
 ```
 
-It builds the Makefile path *driving* `ghcr.io/d3fau4/nx-dev:latest` from the runner —
-not inside it, which matters: a step running inside the image has `$DEVKITPRO` set, and
-`scripts/toolchain-env.sh` then reports local mode, so the manifest would record
-`image: local` and lose the digest of the image that actually produced the binaries.
-The workflow refuses to publish a package whose manifest carries no `@sha256:`.
+It builds the Makefile path **inside** the toolchain image. Driving the image from the
+runner instead is impossible here — a containerised job's bind mount is resolved by the
+host daemon against a path that only exists inside the job — and running inside costs
+nothing, because the image records the identity it was built under and
+`scripts/toolchain-env.sh` reads it. The workflow refuses to publish a package whose
+manifest identifies no toolchain at all.
 
 Then `scripts/package-horizon.sh`, and it publishes:
 
@@ -34,7 +35,7 @@ in, so a package built by hand is no different.
 the release body, because a reader who skips `STATUS.md` should still not come away
 thinking otherwise. A `.nro` that compiles is not a `.nro` that works.
 
-**What it leaves out, and why.** The thirteen `t_vk_*` tests and the NVK driver itself are
+**What it leaves out, and why.** The fourteen `t_vk_*` tests and the NVK driver itself are
 absent. They need the derived toolchain image — libclang, `bindgen`, `cbindgen`, a Rust
 sysroot for the Switch target, an LLVM-15 `libclc` closure — plus a full Mesa build, with
 material fetched outside the container because containers here have no network. That is
@@ -59,7 +60,7 @@ else's CDN.
 This is the release worth making, and it cannot be automated: no CI runner has a Nintendo
 Switch attached.
 
-1. **Build everything**, including NVK — [`BUILDING.md`](BUILDING.md) §4. Up to 33
+1. **Build everything**, including NVK — [`BUILDING.md`](BUILDING.md) §4. Up to 34
    `.nro`.
 2. **Package it**, and let the manifest do its job:
 
@@ -104,10 +105,10 @@ in it carries its number and the run that produced it.
 Also state, in any release notes:
 
 - the build id, which is the only thing that makes a bug report attributable;
-- what has never been verified — currently docked resolution,
-  `VK_PRESENT_MODE_IMMEDIATE_KHR` through Vulkan, two surfaces over two `NWindow`s, and
-  `VK_SUBOPTIMAL_KHR` ever being *returned* (run 21 measured the rule around it over
-  2303 frames, but its section D needs a hand on the dock and has never executed);
+- what has never been verified — currently docked resolution, two surfaces over two
+  `NWindow`s, and `VK_SUBOPTIMAL_KHR` ever being *returned* (run 21 measured the rule
+  around it over 2303 frames, but its section D needs a hand on the dock and has never
+  executed);
 - the known failures from `STATUS.md`, not a summary of them;
 - that this is pre-1.0 software driving a GPU through system services, and that it has
   taken a console down before.

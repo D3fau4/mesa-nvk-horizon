@@ -6,7 +6,7 @@ Three things can be built here, and they cost wildly different amounts:
 |---|---|---|
 | **Host tests** — `horizon/`'s pure logic | a C compiler | seconds |
 | **The 18 `horizon_gpu` test `.nro`** | devkitA64, or Docker | seconds to a minute |
-| **The full NVK driver and its 12 Vulkan test `.nro`** | the above, plus a derived toolchain image with Rust, libclang and LLVM | tens of minutes, and several GB |
+| **The full NVK driver and its 14 Vulkan test `.nro`** | the above, plus a derived toolchain image with Rust, libclang and LLVM | tens of minutes, and several GB |
 
 Start at the top. Each row is useful on its own, and the first needs nothing installed.
 
@@ -64,8 +64,8 @@ There are two, deliberately, and they do **not** build the same set:
 | `libhorizon_gpu.a` | yes | yes |
 | The 18 `horizon_gpu` tests | yes | yes |
 | `t_threads`, `t_ostime` (need Mesa core) | yes, when Mesa is built | yes, when Mesa is built |
-| The 13 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
-| Maximum `.nro` | 20 | **32** |
+| The 14 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
+| Maximum `.nro` | 20 | **34** |
 
 The Makefile is the path whose output was verified on hardware, and it is readable
 without running anything; the Meson path is the one that can link NVK.
@@ -102,7 +102,7 @@ the object Mesa builds.
 
 ```sh
 scripts/fetch-mesa.sh              # mesa/ at the pinned MESA_COMMIT
-scripts/apply-mesa-patches.sh      # the 73-patch series
+scripts/apply-mesa-patches.sh      # the 75-patch series
 scripts/configure-mesa.sh
 scripts/build-mesa.sh
 ```
@@ -142,7 +142,7 @@ scripts/build-mesa-clc.sh           # native tools for the build machine
 scripts/build-mesa-nvk.sh           # configures itself if needed
 ```
 
-Then `scripts/build-horizon.sh` again, and the 13 `t_vk_*` `.nro` appear.
+Then `scripts/build-horizon.sh` again, and the 14 `t_vk_*` `.nro` appear.
 
 `$MESA_NVK_BUILD_DIR` (default `build/mesa-nvk`) selects where the driver is built and
 is passed through to Meson as `-Dnvk_build_dir`. Set it for *both* the driver build and
@@ -214,7 +214,7 @@ and needs a nightly toolchain.
 
 ## 8. The scripts, in one table
 
-All 34 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
+All 36 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
 themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 
 **Fetch** (host-side, because containers have no network)
@@ -317,7 +317,7 @@ toolchain fails the build instead of producing an image somebody has to un-tag.
 | `DEVKITPRO` | unset | A local devkitA64. When set, no container is used anywhere. |
 | `HORIZON_NX_IMAGE` | `ghcr.io/d3fau4/nx-dev:latest` | The toolchain container. |
 | `MESA_BUILD_DIR` | `build/mesa-probe` | Where Mesa's core was built; selects whether `t_threads`/`t_ostime` are built. |
-| `MESA_NVK_BUILD_DIR` | `build/mesa-nvk` | Where NVK was built; selects whether the 13 `t_vk_*` are built. |
+| `MESA_NVK_BUILD_DIR` | `build/mesa-nvk` | Where NVK was built; selects whether the 14 `t_vk_*` are built. |
 | `HORIZON_BUILD_DIR` | `build/meson` | The Meson build directory. |
 | `CC`, `OUT` | `cc`, `build/host-tests` | Host tests only. |
 

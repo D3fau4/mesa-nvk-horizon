@@ -31,7 +31,7 @@ never collapses them; every row below is the third kind, with its log.
 | Frame pacing | 90 frames at a mean of **16666 µs**, with **89 of 89 intervals inside 10%** of a 60 Hz refresh |
 | The swapchain driven from more than one thread | [`t_vk_wsi_mt` run 20](docs/hw-logs/t_vk_wsi_mt-run20-review-fixes-PASS.log) **PASS 52/52** — a render thread and a present thread on separate cores, 600 frames; 50 swapchain generations destroyed on one thread while the survivor presents on another |
 
-165 console logs are kept in [`docs/hw-logs/`](docs/hw-logs/README.md), verbatim,
+167 console logs are kept in [`docs/hw-logs/`](docs/hw-logs/README.md), verbatim,
 **including the failing ones** — among them the run where reverting a single patch took
 the console down, which is the strongest evidence in the directory precisely because it
 is a failure.
@@ -46,9 +46,9 @@ is a failure.
   and measured the rule around it over 2303 frames with zero false positives — but its
   section D did not execute, because nothing in the process can resize a VI layer. It
   needs somebody to dock the console while it runs.
-- **Never verified on hardware:** docked resolution, `VK_PRESENT_MODE_IMMEDIATE_KHR`
-  through Vulkan, and two surfaces over two `NWindow`s. Patch `0068` is cross-built only
-  and unreachable by design — it needs a lost device, and nothing provokes one any more.
+- **Never verified on hardware:** docked resolution, and two surfaces over two
+  `NWindow`s. Patch `0068` is cross-built only and unreachable by design — it needs a
+  lost device, and nothing provokes one any more.
 - **Known failures, all recorded and none hidden:** one unexplained MMU fault in run 14
   that never reproduced and is not being investigated further; whether the console
   survives `t_fault` on exit is unconfirmed; one unexplained occurrence in `t_vk_texture`.
@@ -87,13 +87,13 @@ this project is guaranteed to have a console in front of them.
 | Path | Contents |
 |---|---|
 | `horizon/` | The Horizon GPU abstraction — C, no Vulkan, no Mesa, no WSI. 4092 lines, no stubs. |
-| `mesa-patches/` | Our entire delta against Mesa: 74 tracked patches — platform support, `nvkmd_horizon`, WSI |
+| `mesa-patches/` | Our entire delta against Mesa: 75 tracked patches — platform support, `nvkmd_horizon`, WSI |
 | `mesa/` | Pinned Mesa checkout, fetched by `scripts/fetch-mesa.sh` and gitignored. **Not a submodule, and not our source.** |
 | `compat/` | Narrowly-scoped newlib/libnx gap fillers, each individually justified. Currently one: `sysconf`. |
 | `toolchain/` | Meson cross file, the derived-image Dockerfile, Rust target JSON, and every pinned version |
-| `scripts/` | 34 reproducible fetch / configure / build / check / package / CI scripts |
-| `tests/` | 6 host suites and 33 on-device tests |
-| `docs/` | Design, milestones, risks, the reference audit, the working record and 165 hardware logs |
+| `scripts/` | 36 reproducible fetch / configure / build / check / package / CI scripts |
+| `tests/` | 6 host suites and 34 on-device tests |
+| `docs/` | Design, milestones, risks, the reference audit, the working record and 167 hardware logs |
 | `examples/` | Reserved. Empty today. |
 | `Makefile`, `meson.build` | The two cross-build paths; they do not build the same set — see `docs/BUILDING.md` |
 

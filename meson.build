@@ -386,6 +386,12 @@ nvk_tests = [
   # VK_ERROR_OUT_OF_DATE_KHR. STATUS.md listed it as one of the things
   # that "never had a test".
   't_vk_suboptimal',
+  # Phase 6: VK_PRESENT_MODE_IMMEDIATE_KHR, which STATUS.md listed
+  # beside VK_SUBOPTIMAL_KHR as advertised and never measured through
+  # Vulkan. It compares the two present modes against each other in one
+  # run, so the verdict is a ratio on one console rather than a number
+  # carried between runs.
+  't_vk_immediate',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -435,6 +441,8 @@ nvk_test_shaders = {
   't_vk_wsi_mt' : [],
   # None, for the same reason.
   't_vk_suboptimal' : [],
+  # None, for the same reason.
+  't_vk_immediate' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

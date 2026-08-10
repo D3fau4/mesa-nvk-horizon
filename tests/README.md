@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-three standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-four standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -11,9 +11,9 @@ They come in three groups, and **which of them you get depends on what you built
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
 | Mesa's own code, measured on hardware | 2 | Mesa's core built | both build paths |
-| Vulkan, through NVK | 13 | the full NVK driver built | **the Meson path only** |
+| Vulkan, through NVK | 14 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 20 and the Meson path at most 33 — see
+So the Makefile produces at most 20 and the Meson path at most 34 — see
 [`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
 
 There are also six host-side suites that need no console at all; they are at the bottom
@@ -46,7 +46,7 @@ Without that, both build paths skip those two with a message and produce
 the other eighteen — and the Makefile path also deletes any `.nro` a
 previous build with Mesa present had left, so `build/` never mixes
 artefacts from two builds. Nothing else in this group needs Mesa; the
-thirteen Vulkan tests need all of it, and NVK besides.
+fourteen Vulkan tests need all of it, and NVK besides.
 
 `$MESA_BUILD_DIR` selects where Mesa was built (default `build/mesa-probe`)
 and is honoured by all four of `scripts/{configure,build}-mesa.sh`, the
@@ -128,6 +128,7 @@ after touching either build system.
    | 31 | `t_vk_swapchain` | a `VK_KHR_swapchain` on the compositor: pacing, buffering, recreation, errors |
    | 32 | `t_vk_wsi_mt` | the same swapchain under concurrency and under length |
    | 33 | `t_vk_suboptimal` | `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR`, and the line between them. Its section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed |
+   | 34 | `t_vk_immediate` | whether `VK_PRESENT_MODE_IMMEDIATE_KHR` does anything through Vulkan: FIFO, then IMMEDIATE, then FIFO again, 240 frames each, so the reference is shown to be stable rather than assumed |
 
 3. Each test ends with "Press + to exit". The verdict is on screen and in
    `sdmc:/horizon_gpu_tests/<name>.log`.
@@ -144,6 +145,36 @@ Beyond the build step above for tests 12 and 13, nothing here requires a
 specific firmware beyond homebrew-capable CFW, or network access. If a test hangs longer than ~30 s, hold the power
 button, note which test it was, and report that too — every wait in the
 suite is bounded, so a hang is itself a finding.
+
+## Getting a log off the console
+
+A test that sets `test_uses_display` starts no console, so its log file
+*is* the whole record and nothing of it reaches a screen. `testfw` used
+to stream itself over nxlink and that was removed at the user's
+direction (`STATUS.md`, 2026-08-08): the socket driver was the one
+variable that correlated with run 14's MMU fault, and streaming per line
+also puts network I/O inside the very loops the swapchain tests measure
+the pacing of.
+
+`tools/logcat/` reads the file back afterwards instead — a separate
+program, launched separately, once the measured run has ended. The
+`.nro` under test still links no socket, and nothing about reading a
+file that is already on disk can perturb what it records.
+
+```sh
+scripts/build-logcat.sh                       # -> build/logcat.nro
+# console at hbmenu -> Y (NetLoader), then:
+bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro
+bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro t_vk_immediate
+```
+
+With no argument it lists `sdmc:/horizon_gpu_tests` with sizes; with
+one it prints that log, resolving a bare stem against that directory and
+taking anything containing `:` as a whole path. **Check for the trailing
+`===== END … (n bytes) =====` marker**: without it the stream was cut
+short and what you are reading is not the whole file. That failure looked
+exactly like a homebrew hanging at the point the text stopped, and cost
+one run being diagnosed as a driver hang that had not happened.
 
 ## Host-side unit tests (no console needed)
 

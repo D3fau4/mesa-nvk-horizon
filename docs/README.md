@@ -1,6 +1,6 @@
 # Documentation index
 
-Most of this directory is **evidence** rather than prose: 165 console logs and the
+Most of this directory is **evidence** rather than prose: 167 console logs and the
 working record of how the driver got to where it is. The design documents are the nine
 files listed first.
 
@@ -11,7 +11,7 @@ If you are here for one thing, it is probably [`../STATUS.md`](../STATUS.md) —
 
 | Document | What it answers |
 |---|---|
-| [`BUILDING.md`](BUILDING.md) | How to build: host tests, the two cross-build paths, the full Mesa/NVK chain, the pins, the gates, and what all 34 scripts do. |
+| [`BUILDING.md`](BUILDING.md) | How to build: host tests, the two cross-build paths, the full Mesa/NVK chain, the pins, the gates, and what all 36 scripts do. |
 | [`USAGE.md`](USAGE.md) | How to run the result on a console, what the logs mean, which environment variables exist, and how to report a run. |
 | [`RELEASING.md`](RELEASING.md) | What a release contains, what it claims, and how to cut one that is actually hardware-verified. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The layer rules, the rejected designs, the evidence discipline, and what to run before opening a pull request. |
@@ -37,7 +37,7 @@ is self-contained.
 
 | Path | What it is |
 |---|---|
-| [`hw-logs/`](hw-logs/README.md) | 165 console runs kept verbatim, plus one Atmosphère fatal report. Filenames carry their own verdict (`-PASS`, `-FAIL`, `-CRASH`, `-HUNG`). Its README is a narrative index of what each run settled — start there, not with the files. |
+| [`hw-logs/`](hw-logs/README.md) | 167 console runs kept verbatim, plus one Atmosphère fatal report. Filenames carry their own verdict (`-PASS`, `-FAIL`, `-CRASH`, `-HUNG`). Its README is a narrative index of what each run settled — start there, not with the files. |
 | `history/` | The dated working record moved out of `STATUS.md` when that file reached 7749 lines (decision D17), verbatim and in original order: phases 1–5, the review rounds, and the commit logs. |
 
 Both directories are covered by a `MANIFEST.sha256` and checked by
