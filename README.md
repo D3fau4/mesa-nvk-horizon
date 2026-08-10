@@ -14,7 +14,7 @@ Vulkan application → Mesa/NVK → nvkmd_horizon → horizon_gpu → libnx → 
 
 ## ⚠️ No support, AI-generated
 
-This project is **unsupported**. It is written almost entirely by an AI coding
+This project is **unsupported**. It is written entirely by an AI coding
 assistant as a personal experiment, for my own testing. There is no guarantee of
 correctness, no maintenance commitment, and no support channel. Use it, fork it, or
 read it at your own risk — but do not expect issues to be triaged or pull requests to
