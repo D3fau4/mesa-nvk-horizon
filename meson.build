@@ -355,6 +355,11 @@ nvk_tests = [
   # Phase 5 item 1. Everything later in the phase reads its result back
   # through a copy, so this is the one that has nothing behind it.
   't_vk_transfer',
+  # Phase 7: the only test that asks what the shader cache is FOR — is a
+  # shader compiled on one launch still compiled on the next. Needs two
+  # launches of the same build to mean anything; the first is cold and
+  # says so.
+  't_vk_cache',
   # Phase 5 items 3 and 4. One test because an off-screen image is only
   # observable once something renders to it, and the smallest thing that
   # does is a clear — which NVK implements as a render pass, not a blit.
@@ -419,6 +424,9 @@ nvk_test_shaders = {
   # able to catch the regression patch 0048 fixed.
   't_vk_image' : [],
   't_vk_compute' : ['comp_write_id'],
+  # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
+  # should be about the cache and not about a shader nothing else runs.
+  't_vk_cache' : ['comp_write_id'],
   # Two pipelines: A builds its positions from gl_VertexIndex and writes
   # a constant colour, B fetches position and colour from a vertex
   # buffer and interpolates. Four shaders so that a failure in B alone

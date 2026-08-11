@@ -64,6 +64,11 @@ const bool test_uses_display = false;
 #define STORE_PATH TEST_DIR "/t_shader_cache.hzc"
 /* Section C's cache, deliberately kept across runs. */
 #define PERSIST_PATH TEST_DIR "/t_shader_cache_persist.hzc"
+/* Where section B's disk_cache lands: MESA_SHADER_CACHE_DIR below, plus
+ * the name disk_cache_generate_cache_dir() builds from the gpu_name that
+ * B passes to disk_cache_create(). */
+#define MESA_CACHE_DIR  TEST_DIR "/mesa_cache"
+#define MESA_CACHE_FILE MESA_CACHE_DIR "/t_shader_cache.hzc"
 
 static const char drv_a[] = "t_shader_cache/driver-a";
 static const char drv_b[] = "t_shader_cache/driver-b";
@@ -395,6 +400,15 @@ static void section_b(test_ctx *t)
      * read through os_get_option, and setenv works in-process even
      * though libnx never populates environ from outside. */
     setenv("MESA_SHADER_CACHE_DIR", TEST_DIR "/mesa_cache", 1);
+
+    /* Start from nothing. B7 deliberately ends this section holding the
+     * file under a *different* driver id, so without this the next run's
+     * B1 opens it, correctly refuses it, and logs "did not match this
+     * driver build" — a true line that reads like a fault. Run 27
+     * printed exactly that, with 96 bytes discarded, which is an empty
+     * header and nothing else. A log that is kept as evidence should not
+     * need a footnote. */
+    remove(MESA_CACHE_FILE);
     setenv("MESA_SHADER_CACHE_SHOW_STATS", "1", 1);
 
     struct disk_cache *cache = disk_cache_create("t_shader_cache", "id0", 0);

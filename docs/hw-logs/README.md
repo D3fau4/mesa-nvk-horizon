@@ -5,6 +5,35 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The shader disk cache, working
+
+### `t_shader_cache-run27-PASS.log`
+
+Run 27, 2026-08-11, `2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`,
+`RESULT: PASS (56/56)`. The run that closed the claim a cache exists to make:
+
+```
+note C1 this launch found 32 entries (WARM — a previous launch filled it)
+ok   C2 every entry the previous launch wrote came back intact
+```
+
+Entries written by one process, read back by the next, off a real SD card. It also
+turned run 26's vacuous `ftruncate` check into three real ones, and re-measured the
+two defects run 26 exposed: opening 201 entries went from 40498 µs to **1605 µs**
+(201 → 7 µs per entry) and 100 writes into a full 32 KiB cache from **70 compactions
+to 5**.
+
+One line in this log is correct and reads like a fault. At B1:
+`did not match this driver build …; started over (96 bytes discarded)` — 96 bytes is
+exactly an empty header, i.e. the file the *previous* run's B7 left behind, B7 being
+the check that opens under a deliberately different driver id. The driver is refusing
+last run's leftovers, which is what it should do. The test has since been changed to
+clear its own cache first so the message only appears where it is provoked.
+
+What this log does **not** show is NVK not recompiling. Nothing here touches the
+driver's shader compilation; `t_vk_cache` is the test for that and had not been
+written when this ran.
+
 ## The shader disk cache, and a check that could not fail
 
 ### `t_shader_cache-run26-FAIL.log`

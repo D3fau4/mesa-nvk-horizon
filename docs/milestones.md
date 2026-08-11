@@ -220,15 +220,18 @@ comes back and needs an answer then."*
 
 **Exit criteria**
 
-- Item 1 verified on **H** against damaged files — truncation, flipped payload and
-  header bytes, an interrupted compaction, a file from another driver build, a
-  garbage file — under ASan and UBSan.
-- Items 3 and 4 verified on **X** by a `nm -u` audit showing that the driver's own
-  archives no longer reference `mmap`, `flock`, `posix_fallocate`, `memfd_create`,
-  `getpwuid_r` or `ftw`.
-- `t_shader_cache` PASS on **HW**, including its section C on a *second* launch —
-  a cache that has not outlived the process that filled it has not been shown to be
-  a cache.
-- Item 2 verified on **HW** by a measurement, not by inspection: two builds differing
-  only in `mesa-patches/` must not read each other's entries.
-- A shader compiled on one launch is not recompiled on the next, measured on **HW**.
+- [x] Item 1 verified on **H** against damaged files — truncation, flipped payload and
+      header bytes, an interrupted compaction, a file from another driver build, a
+      garbage file — under ASan and UBSan. *`h_blob_cache` PASS 145/145.*
+- [x] Items 3 and 4 verified on **X** by a `nm -u` audit showing that the driver's own
+      archives no longer reference `mmap`, `flock`, `posix_fallocate`, `memfd_create`,
+      `getpwuid_r` or `ftw`. *Only `libsanity_check_for_rust.a`, which no `.nro` links.*
+- [x] `t_shader_cache` PASS on **HW**, including its section C on a *second* launch —
+      a cache that has not outlived the process that filled it has not been shown to be
+      a cache. *Run 27, PASS 56/56, `C1 … found 32 entries (WARM)`.*
+- [x] Item 2 verified on **HW** by a measurement, not by inspection: two builds differing
+      only in `mesa-patches/` must not read each other's entries. *Runs 26 and 27, A6 and
+      B7: `did not match this driver build …; started over`.*
+- [ ] **A shader compiled on one launch is not recompiled on the next, measured on HW.**
+      `t_vk_cache` asks it; it is built and has never been launched. This is the one
+      criterion left, and it is the one the phase exists for.

@@ -339,3 +339,8 @@ bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
     *found_out = found;
     return true;
 }
+
+const char *t_build_id(void)
+{
+    return HORIZON_BUILD_ID;
+}

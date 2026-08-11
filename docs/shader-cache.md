@@ -160,6 +160,15 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
   in an mmap'd 64 K-slot table where a collision silently overwrites; there is no mmap
   here, so they are records. Nothing in NVK calls either.
 
+### What is still not shown
+
+That NVK **stops recompiling**. Everything above is about the store and about Mesa's
+API; none of it measures the thing the feature exists for. `tests/t_vk_cache.c` is the
+test that does — one compute pipeline, the driver's own cache directory, no overrides,
+timed and then *dispatched and verified*, because a cache that returned a corrupt
+binary would create a pipeline just as happily and faster. It needs two launches of
+the same build, and has had none.
+
 ## The driver identity, which is the part that could have been dangerous
 
 On Horizon there is no dynamic loader, so NVK cannot read an ELF build id, and
@@ -227,8 +236,30 @@ other cast it to `uint64_t` and got the FAIL. Both are fixed, and callers now as
 that the measurement happened at all.
 
 **Section C reported a cold cache**, which is what a first launch is meant to report.
-Nothing yet shows that entries outlive the process that wrote them; that needs a
-second run, and the file is already on the card for it.
+
+**Run 27, 2026-08-11**, same test with those fixes in, build
+`2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`, **`RESULT: PASS (56/56)`**
+(`docs/hw-logs/t_shader_cache-run27-PASS.log`). It closed the two things run 26 could
+not:
+
+- `C1 this launch found 32 entries (WARM — a previous launch filled it)`, and all
+  three C2 checks: every entry the previous launch wrote came back intact, the file
+  did not have to be reset to do it, and it was not truncated either. **Entries
+  outlive the process that wrote them** — the claim a cache exists to make.
+- `A6 ftruncate() actually shortened the file on this filesystem`, this time measured
+  with the store closed and beside `A6 the store's own size is the size on the card`.
+  The check that could not fail is now one that can.
+
+And the two defects run 26 exposed are fixed, measured on the same console:
+
+| | run 26 | run 27 |
+|---|---|---|
+| open with 201 entries | 40498 µs — **201 µs/entry** | **1605 µs — 7 µs/entry** |
+| 100 puts into a 32 KiB ceiling | **70 compactions**, 2.58 s | **5 compactions**, 0.64 s |
+
+A 25× faster open and 14× fewer rewrites. The file sizes are real numbers now rather
+than `-1`: 25688 bytes for 201 entries, 21688 after compaction, and the card agrees
+with the store about both.
 
 ### The numbers, and what changed because of them
 
@@ -239,8 +270,8 @@ second run, and the file is already on the card for it.
 | `get` of 4 KiB | 3408 µs | — |
 | Mesa `disk_cache_put` + `wait_for_idle` | 4606 µs | — |
 | Mesa `disk_cache_get` | 291 µs | — |
-| open with 201 entries | **40498 µs — 201 µs/entry** | scan rewritten; to be re-measured |
-| 100 `put`s into a 32 KiB ceiling | **70 compactions, 2.58 s** | 200 puts → **11 compactions** on host |
+| open with 201 entries | **40498 µs — 201 µs/entry** | **1605 µs — 7 µs/entry** (run 27) |
+| 100 `put`s into a 32 KiB ceiling | **70 compactions, 2.58 s** | **5 compactions, 0.64 s** (run 27) |
 
 Two of those were structural defects rather than costs:
 
@@ -254,7 +285,8 @@ Two of those were structural defects rather than costs:
   half the ceiling, which on the host takes 200 puts into a 32 KiB cache from ~140
   rewrites to 11.
 
-`fsync` per entry, at ~5 ms, is a cost and not a defect — it is on a background thread
+`fsync` per entry, at ~5 ms, is a cost and not a defect (run 27 measured 5413 µs,
+within noise of run 26's 5292 µs) — it is on a background thread
 and compiling a shader takes far longer. It is worth saying plainly that it buys less
 than it looks: the format already recovers from an unflushed tail by truncating it,
 which is exactly what a missing `fsync` would cost. Changing it is a decision with a

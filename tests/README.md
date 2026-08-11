@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-five standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-six standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -11,9 +11,9 @@ They come in three groups, and **which of them you get depends on what you built
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
 | Mesa's own code, measured on hardware | 3 | Mesa's core built | both build paths |
-| Vulkan, through NVK | 14 | the full NVK driver built | **the Meson path only** |
+| Vulkan, through NVK | 15 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 21 and the Meson path at most 35 — see
+So the Makefile produces at most 21 and the Meson path at most 36 — see
 [`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
 
 There are also six host-side suites that need no console at all; they are at the bottom
@@ -130,6 +130,7 @@ after touching either build system.
    | 32 | `t_vk_wsi_mt` | the same swapchain under concurrency and under length |
    | 33 | `t_vk_suboptimal` | `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR`, and the line between them. Its section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed |
    | 34 | `t_vk_immediate` | whether `VK_PRESENT_MODE_IMMEDIATE_KHR` does anything through Vulkan: FIFO, then IMMEDIATE, then FIFO again, 240 frames each, so the reference is shown to be stable rather than assumed |
+   | 35 | `t_vk_cache` | the only test that asks what the shader cache is *for*: is a shader compiled on one launch still compiled on the next. Uses the driver's own cache directory, no overrides. **Run it twice with the same build** — the first run is cold and says so, and a rebuild in between resets the cache by design, which the test detects and reports rather than calling a loss |
 
 3. Each test ends with "Press + to exit". The verdict is on screen and in
    `sdmc:/horizon_gpu_tests/<name>.log`.

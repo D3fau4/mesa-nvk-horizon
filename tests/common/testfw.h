@@ -95,6 +95,13 @@ void t_note(test_ctx *t, const char *fmt, ...);
  */
 bool t_log_scan(test_ctx *t, const char *needle, bool *found_out);
 
+/* The build stamp this .nro was built with — the same string the second
+ * line of every log carries. Exposed through a function rather than the
+ * macro because build/horizon_build_id.h is on testfw.c's include path
+ * and on nothing else's, and a test that wants to say "this is the same
+ * build as last time" needs the value, not the header. Never NULL. */
+const char *t_build_id(void);
+
 extern const char *const test_name;
 int run_test(test_ctx *t);
 
