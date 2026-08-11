@@ -196,7 +196,7 @@ vkWaitForFences
 
 ---
 
-## Phase 7 — Shader disk cache
+## Phase 7 — Shader disk cache ✅ complete
 
 Phase 6 ended the sequence the reference ports were audited against, and everything
 after it is a decision rather than the next step (`STATUS.md`). This is the first such
@@ -236,7 +236,11 @@ comes back and needs an answer then."*
       *Runs 28 and 29: `disk shader cache: hits = 2, misses = 0`, on the driver's own
       cache path with no overrides.* And correct: run 29 verified **4096 of 4096
       output words** from a shader NVK did not compile, with a poisoned tail intact.
-- [ ] **What the cache saves, measured on HW**: a cold `vkCreateComputePipelines`
-      beside the warm one. Neither run had a cold baseline — the driver's cache
-      survived from the run before, and the test refused to record a warm number as
-      cold. A cold run now clears the cache directory itself.
+- [x] **What the cache saves, measured on HW**: a cold `vkCreateComputePipelines`
+      beside the warm one. *Run 30: **5342 µs cold, 442 µs warm — 91% of the compile,
+      12× faster.** The cold baseline is self-certified: the test records one only
+      when the driver reported `0 entries` at startup, and runs 28 and 29 both wrote
+      nothing rather than record a warm number as cold.*
+
+**Phase 7 is complete.** Every criterion above is met, and the four that matter were
+met on a console rather than in a build log.

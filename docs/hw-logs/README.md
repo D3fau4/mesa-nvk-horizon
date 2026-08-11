@@ -5,6 +5,31 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## What the cache saves
+
+### `t_vk_cache-run30-PASS.log`
+
+Run 30, 2026-08-11, `2026-08-11T18:58:20.516Z e6f6165-dirty mesa:3ba5227`,
+`RESULT: PASS (45/45)`. The last number Phase 7 was missing:
+
+```
+note vkCreateComputePipelines took 442 us on a warm cache
+note against 5342 us when this build's cache was cold: 4900 us saved, 91% of the compile
+ok   a warm cache creates the pipeline faster than a cold one (442 us against 5342 us)
+```
+
+**12× faster, 91% of the compile gone**, on the driver's own cache path with no
+environment override and no `VkPipelineCache` passed to the create — so the only thing
+that could have answered it is the disk. And the shader that came back is right:
+`4096/4096 words match`, with the 64-word poisoned tail untouched.
+
+**The 5342 µs is self-certified.** The cold run's own log was not kept, but the test
+records a cold baseline *only* when the driver reported `0 entries` at startup, and a
+cold run clears `sdmc:/mesa_shader_cache` itself before the driver opens anything. A
+number in the marker file therefore cannot be a warm create wearing a cold label —
+runs 28 and 29 both wrote `0` there rather than lie about it, which is what makes the
+5342 in this one mean something.
+
 ## The shader off the card, correct in full
 
 ### `t_vk_cache-run29-PASS.log`

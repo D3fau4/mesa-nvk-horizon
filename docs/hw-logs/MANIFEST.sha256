@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-230a69c03efe2c30ab79f09fca19d9c0c6f0788a842a74a44fd885b46adb2ef5  README.md
+7200112f15608e5d0261a24c803559212d97ac062e617bc8e09630414c3063eb  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
@@ -83,6 +83,7 @@ c66607e2b4c4ae0edde3a7a12a2ebd4535393066e4951c6879dd168f65e71a3c  t_uncached.log
 00c70ed5af423d1875fe4252f2de3603321032090b0be22e6462d2afa39aecd7  t_va_window-run14-PASS.log
 4f426b626ba93db5bccd6b4a9461d903bb5d1b1e61a04cfb5265e10645d6cecd  t_vk_cache-run28-FAIL.log
 c63e58a6b026ff60daef2c52b67de70701a93afd97f128e0dcb8aec3cc96b89a  t_vk_cache-run29-PASS.log
+64d9a79676c70581cc0cbf64d314e16123f4d916b0312ad55b4cee89fbcb452d  t_vk_cache-run30-PASS.log
 733cf75f35a4802bd98561769d4073aa19caad83b990f512e233c93ccfd8e5f0  t_vk_caps-run-phase6-samechannel-PASS.log
 8d8ce97b78e9e75e18e103fbba98c29e054d266785deaf6cc92b9873284a6ffc  t_vk_caps-run1-debt-batch-PASS.log
 f9e724cd70df740a1bc9eb057a47728a8829241a2de4349ade872a57f20f9b60  t_vk_caps-run14-PASS.log

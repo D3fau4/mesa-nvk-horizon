@@ -1,9 +1,14 @@
 # The shader disk cache on Horizon
 
-NVK recompiles every shader on every launch. Mesa already has the mechanism that
+NVK recompiled every shader on every launch. Mesa already has the mechanism that
 stops that — `util/disk_cache`, of which NVK is already a client — and this port had
 it switched off. This document says why it was off, what turns it on, what the file
 on the SD card looks like, and what has and has not been shown to work.
+
+**Measured on a Nintendo Switch (run 30, 2026-08-11):** `vkCreateComputePipelines`
+**5342 µs cold against 442 µs warm — 91% of the compile, 12× faster**, with the
+shader that came off the card computing all 4096 of its output words correctly and
+the driver reporting `hits = 2, misses = 0`.
 
 ## Why it was off
 
@@ -199,13 +204,29 @@ MESA: info: disk shader cache:  hits = 2, misses = 0
 written past the last invocation. `vkCreateComputePipelines` took 432 µs warm (646 µs
 in run 28 — the same operation, the difference is card noise).
 
-**Still unmeasured: what the cache saves.** Runs 28 and 29 both started with a
-populated driver cache, so neither had a cold `vkCreateComputePipelines` to put beside
-the warm one, and the test refused to record a warm number as a cold baseline —
-writing `0` to its marker and saying why. That guard is the design working; a guard
-that fires twice is a design problem, so a cold run now clears
-`sdmc:/mesa_shader_cache` itself rather than printing an instruction. The remaining
-step is one file: delete the marker, run twice.
+### And this is what it saves — run 30, 2026-08-11
+
+`RESULT: PASS (45/45)` (`docs/hw-logs/t_vk_cache-run30-PASS.log`):
+
+```
+note vkCreateComputePipelines took 442 us on a warm cache
+note against 5342 us when this build's cache was cold: 4900 us saved, 91% of the compile
+ok   a warm cache creates the pipeline faster than a cold one (442 us against 5342 us)
+```
+
+**12× faster. 91% of the compile gone.** On the driver's own cache path, with no
+environment override and no `VkPipelineCache` passed to the create.
+
+The cold baseline is self-certified rather than trusted: the test records one *only*
+when the driver itself reported `0 entries` at startup, and a cold run clears
+`sdmc:/mesa_shader_cache` before the driver opens anything. Runs 28 and 29 both wrote
+`0` to the marker rather than record a warm create as cold, which is what makes the
+number in run 30 mean something.
+
+One shader is one shader. What this does not say is what a real game saves, where
+there are hundreds of pipelines and the per-shader compile is far larger than a
+64-invocation write of a multiply and an XOR — the ratio is a floor rather than a
+figure to quote.
 
 ## The driver identity, which is the part that could have been dangerous
 
