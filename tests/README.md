@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-four standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-five standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -10,10 +10,10 @@ They come in three groups, and **which of them you get depends on what you built
 | Group | Count | Needs | Built by |
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
-| Mesa's own code, measured on hardware | 2 | Mesa's core built | both build paths |
+| Mesa's own code, measured on hardware | 3 | Mesa's core built | both build paths |
 | Vulkan, through NVK | 14 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 20 and the Meson path at most 34 — see
+So the Makefile produces at most 21 and the Meson path at most 35 — see
 [`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
 
 There are also six host-side suites that need no console at all; they are at the bottom
@@ -35,14 +35,14 @@ scripts/build-switch.sh     # uses ghcr.io/d3fau4/nx-dev:latest
 
 Outputs land in `build/*.nro`.
 
-`t_threads` and `t_ostime` link the archives Mesa's own build produced,
-so they need Mesa built first:
+`t_threads`, `t_ostime` and `t_shader_cache` link the archives Mesa's own
+build produced, so they need Mesa built first:
 
 ```sh
 scripts/configure-mesa.sh && scripts/build-mesa.sh
 ```
 
-Without that, both build paths skip those two with a message and produce
+Without that, both build paths skip those three with a message and produce
 the other eighteen — and the Makefile path also deletes any `.nro` a
 previous build with Mesa present had left, so `build/` never mixes
 artefacts from two builds. Nothing else in this group needs Mesa; the
@@ -91,13 +91,14 @@ after touching either build system.
    | 11 | `t_sysinfo` | `compat/sysconf.c`: page size bounded from both sides, process memory, `_SC_NPROCESSORS_*` |
    | 12 | `t_threads` | Mesa's C11 threads shim: `mtx_timedlock` and `cnd_timedwait` expiry (both-sided timing on the calls that must expire; an upper bound only on the ones that must not wait), mutual exclusion, condvars, TSS, and the CPU count |
    | 13 | `t_ostime` | Mesa's `os_time.c`: monotonicity, resolution, rate against the ARM counter, `os_time_sleep` accuracy |
+   | 13a | `t_shader_cache` | the shader disk cache, on the SD card it will live on **and** through Mesa's own `disk_cache_*` API. **Run it twice**: its section C leaves entries behind and reports on the next launch whether they came back, so the first run on any console is cold, which is a pass and is not the measurement. See [`../docs/shader-cache.md`](../docs/shader-cache.md) |
    | 14 | `t_gpuwrite` | does a GPU write become visible to the CPU — the question nothing below `t_vulkan` had asked |
    | 15 | `t_uncached` | the UNCACHED cache policy (decision D14) on real memory |
    | 16 | `t_pbsize` | how large a single GPFIFO entry this hardware will execute (decision D15) |
    | 17 | `t_va_window` | what the address-space allocator does around the shader local/shared memory window |
    | 18 | `t_fault` | a deliberate MMU fault, and the fence that must not lie about it |
 
-   Tests 11–13 use no `horizon_gpu` and need no nv services, so they are
+   Tests 11–13a use no `horizon_gpu` and need no nv services, so they are
    also the cheapest to run first when triaging a console.
 
    `t_fault` provokes a fault on purpose and is best run **last**: whether the console
@@ -163,10 +164,19 @@ file that is already on disk can perturb what it records.
 
 ```sh
 scripts/build-logcat.sh                       # -> build/logcat.nro
-# console at hbmenu -> Y (NetLoader), then:
-bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro
-bash .claude/skills/test-homebrew/nxlink-send.sh <ip> build/logcat.nro t_vk_immediate
 ```
+
+Copy `build/logcat.nro` to the card beside the tests and launch it, or send
+it over NetLoader (console at hbmenu → Y) with devkitPro's `nxlink`:
+
+```sh
+nxlink -s -a <ip> build/logcat.nro
+nxlink -s -a <ip> build/logcat.nro -- t_vk_immediate
+```
+
+*(Earlier revisions of this file pointed at a wrapper script under
+`.claude/`, which was removed from the repository in `825d2f4` and does not
+exist in any clone.)*
 
 With no argument it lists `sdmc:/horizon_gpu_tests` with sizes; with
 one it prints that log, resolving a bare stem against that directory and
@@ -182,9 +192,9 @@ one run being diagnosed as a driver hang that had not happened.
 scripts/run-host-tests.sh
 ```
 
-builds six suites over the pure-logic modules (alignment/overflow, VA interval set,
-wrap-safe syncpoint math, command emitters, status strings, logging) with the host
-compiler and sanitizers. These run anywhere, and CI runs them on every push and pull
+builds seven suites over the pure-logic modules (alignment/overflow, VA interval set,
+wrap-safe syncpoint math, command emitters, status strings, logging, and the shader
+cache's blob store) with the host compiler and sanitizers. These run anywhere, and CI runs them on every push and pull
 request.
 
 ---

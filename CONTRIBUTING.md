@@ -41,6 +41,7 @@ it is broken.
 | `horizon/` | libnx, newlib, C11 | Vulkan, Mesa, NVK, WSI, `nwindow` beyond a surface-info struct |
 | `nvkmd_horizon` (in `mesa-patches/`) | NVK internals, `horizon/` | libnx directly, `nwindow` |
 | WSI Horizon (in `mesa-patches/`) | Vulkan WSI runtime, `horizon/` surface info, libnx `nwindow` | `nvkmd_horizon` internals |
+| `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/`, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
 Full rationale in [`docs/architecture.md`](docs/architecture.md).

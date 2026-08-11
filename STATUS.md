@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-10
-**Branch:** `claude/focused-dijkstra-3wnhix`
+**Last updated:** 2026-08-11
+**Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
 
@@ -12,9 +12,9 @@ long. This block is the state itself, and it is the part that must be true.*
 
 | | |
 |---|---|
-| **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
+| **Phase** | **PHASE 7 — the shader disk cache — IS WRITTEN, BUILT AND UNVERIFIED ON HARDWARE (2026-08-11).** The one thing it was blocked on for four phases is gone: `-Dshader-cache=enabled` now, in both Mesa builds, and `libmesa_util.a` references no `mmap`, no `flock`, no `posix_fallocate`, no `memfd_create`, no `getpwuid_r` and no `ftw` — the pagaré `docs/history/phase-4.md:536` left open. What exists is a blob store in `horizon/cache/` (138 host checks under ASan/UBSan, every one of them about a damaged file), four Mesa patches of which two are written for upstream, a driver identity that finally changes when *this port* changes, and `t_shader_cache.nro` in both build paths. **No console has run any of it.** See `docs/shader-cache.md`. Before that: **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Next concrete task** | **Run `t_shader_cache` on a console, TWICE.** Its section C leaves entries behind and reports on the next launch whether they came back, so one run measures nothing about persistence — the first run on any console is a cold cache and that is a pass. Section A is the only thing that can say whether `ftruncate` shortens a file through `fsFileSetSize`, whether an in-place compaction reopens clean on exFAT, and what an `fsync` per entry costs; section B is the only thing that can say whether Mesa's own `disk_cache_*` works here. Everything about this feature is host-and-cross only until that log exists. Still open from Phase 6: **run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); GitHub Actions CI now
 cross-builds on every push, and a `v*` tag publishes a package (2026-08-10, see the entry
 below this table). **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
@@ -27,8 +27,157 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **What is still unverified** | Any display mode change and docked resolution — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those. **`VK_PRESENT_MODE_IMMEDIATE_KHR` is no longer on this list**: run 25 measured it end to end through `vkCreateSwapchainKHR` — 8264 us against FIFO's 16577 us over 240 frames each, with a FIFO run either side of it, and run 24 said the same a build earlier |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
-| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | **The whole shader disk cache (2026-08-11).** Patches 0076–0079, `horizon/cache/`, `t_shader_cache` — cross-built, gated, host-tested, and never once executed on a Switch. The specific claims with no hardware behind them: that `ftruncate` through `fsFileSetSize` shortens a file, that an interrupted compaction is recoverable on a real card, that entries survive the process that wrote them, that the driver identity discriminates between two builds of this port, and every latency the design assumed rather than measured. Also patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## The shader disk cache, enabled (2026-08-11)
+
+`docs/history/phase-4.md:536-541` left this as a pagaré:
+
+> `getuid` and `flock` are still unresolved in the archives. They are
+> unreachable *today*, with `-Dshader-cache=disabled` … If a later phase
+> enables the shader cache — which `scripts/configure-mesa.sh` records as
+> a decision, not a workaround — `flock` comes back and needs an answer
+> then.
+
+This is that answer. **Host and cross only. No console has run it.**
+
+### What the limitation actually was
+
+One Meson option in three scripts, and only two of them are about Horizon
+(`scripts/build-mesa-clc.sh` is a native build where everything is off).
+The reason recorded in `scripts/configure-mesa.sh:55-63` was accurate:
+`src/util/disk_cache_os.c` is written against `mmap`, `flock`,
+`fcntl(F_SETLK)`, `posix_fallocate`, `ftw` and `getpwuid_r`.
+
+Measured again before touching anything, on devkitA64 gcc 15.2.0:
+
+| | |
+|---|---|
+| `sys/mman.h` | **absent** — `fatal error: sys/mman.h: No such file or directory` at `disk_cache.c:34` |
+| `ftw.h`, `sys/file.h`, `fcntl.h`, `dirent.h` | **present**, all four. The old note was wrong about these |
+| `flock` | declared in `<sys/file.h>` and **not defined**: compiles, then `undefined reference to 'flock'` at link |
+| `posix_fallocate`, `memfd_create` | same, undefined at link |
+| zlib / zstd | **present**, 1.3.1 through devkitPro's portlibs. `HAVE_COMPRESSION` was already being defined |
+
+That last row is worth naming: compression was never the problem, so
+entries are deflated here exactly as they are everywhere else.
+
+### The shape taken, and the one that was rejected
+
+`disk_cache.c` — key derivation, the put queue, compression, the
+statistics — **is upstream's and is reused**. It turned out to use none
+of the five system headers it opens with; only the includes were in the
+way. So the delta is the OS layer only.
+
+Rejected, and recorded because it is the obvious idea: `disk_cache.c`
+already has a storage-agnostic path through `disk_cache_set_callbacks()`,
+which would have needed *no* change to Mesa at all. It caps entries at
+64 KiB — `blob_get_compressed()`'s `max_blob_size`, inherited from
+Android's `egl_cache_t` — and a pipeline binary above that would become a
+permanent silent miss. `t_shader_cache` section B4 stores 256 KiB
+specifically so that ceiling cannot be reintroduced unnoticed.
+
+### The defect this work found before it shipped
+
+**On Horizon the driver identity did not change when this port changed.**
+Patch 0018 derives `driver_build_sha` from `PACKAGE_VERSION` and
+`MESA_GIT_SHA1` because there is no ELF build id without a dynamic
+loader. Both describe the pinned Mesa checkout. Neither moves when
+`mesa-patches/` or `horizon/` move — and those hold NAK, NIL and the
+whole platform layer.
+
+Patch 0018 recorded that as an acceptable limitation, and while the value
+was only `driverUUID` and the pipeline cache UUID it was one. It is not
+acceptable once `nvk_physical_device.c:1349-1366` feeds the same value to
+`disk_cache_create()` and `disk_cache_compute_key()` hashes it into every
+key: it would mean the previous build's shader binaries served to this
+build, with no error path and no line in any log. That is the same class
+of bug as the reference cycle in 0058 and the check that lied in run 2,
+and it would have been introduced *by* enabling the cache.
+
+`scripts/gen-driver-id.sh` closes it — SHA-256 over `MESA_COMMIT`, every
+patch in `mesa-patches/` and every `.c`/`.h` under `horizon/`, passed as
+`-Dhorizon-driver-id`. Sources and not a timestamp, so a rebuild of
+unchanged source keeps its warm cache and reproducible builds stay
+reproducible. It moved when it should during this very session: `6f648660`
+before the engine was reworked, `02fce8cb` after.
+
+### Two dependencies of this repository that shaped the design
+
+**libnx's path operations are not thread-safe.** `fsdev_fixpath()` copies
+into the file-scope `__nx_dev_path_buf` with no lock, and every
+path-based devoptab entry point goes through it
+(`nx/source/runtime/devices/fs_dev.c:211`, and `char *fs_path =
+__nx_dev_path_buf` at 405, 1111, 1197, 1225, 1276). `disk_cache.c` calls
+the backend from its put queue, so a backend doing path work would be a
+race whose symptom is a write to the wrong file. The first version of the
+store compacted by writing a temporary file and calling `remove()` and
+`rename()`; it now rewrites in place and performs **no path operation
+after `open()`**.
+
+**`UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY` is a no-op here.** It is
+implemented `#if defined(__linux__)` (`u_queue.c:254`, `:334`), so
+upstream's four "low priority" disk\$ threads would be four
+normal-priority threads competing with a render loop on a console that
+gives homebrew three cores. One thread on Horizon.
+
+### What was run, and what it said
+
+| what | command | result |
+|---|---|---|
+| host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, **16/16**, 8/8, **138/138** |
+| layering | `scripts/check-layering.sh` | OK |
+| absolute paths | `scripts/check-no-abs-paths.sh` | OK |
+| Makefile ≡ meson | `scripts/check-mesa-test-parity.sh` | OK |
+| the record | `scripts/check-history-intact.sh` | OK |
+| the series | `scripts/apply-mesa-patches.sh --list` | **79 applied, 0 pending** |
+| core, cross | `scripts/configure-mesa.sh && scripts/build-mesa.sh` | `shader-cache: enabled`, `check-tls-relocs` OK |
+| the .nro set | `scripts/build-switch.sh` | 21, `t_shader_cache` among them |
+
+`h_status` goes 14 → 16 because `result.h` gained two statuses, appended
+and never inserted: those numbers are printed in logs kept under
+`docs/hw-logs/`.
+
+And the measurement the old comment was waiting for:
+
+```
+$ nm -u build/mesa-probe/src/util/libmesa_util.a | sort -u \
+    | grep -E 'mmap|flock|posix_fallocate|memfd_create|getpwuid|nftw'
+(no output)
+
+disk_cache.c.o             79968 bytes  42 defined symbols
+disk_cache_horizon.c.o     64024 bytes  53 defined symbols
+disk_cache_os.c.o          not built
+mesa_cache_db.c.o           1432 bytes   0 defined symbols
+```
+
+The only symbol of that family still unresolved is `fcntl`, from
+`os_file.c`'s `os_create_anonymous_file` — unreachable, unrelated, and
+exactly where Phase 4 left it.
+
+### What the host tests found
+
+One real bug, in code written the same hour: `qsort()` on the `NULL` of
+an empty snapshot in the new in-place compaction. UBSan caught it the
+moment the case was covered. It is the argument for the store living in
+`horizon/` rather than inside the Mesa patch, made concretely.
+
+### What is NOT known
+
+Everything a console decides. Whether `ftruncate` through `fsFileSetSize`
+shortens a file on exFAT; whether an in-place compaction reopens clean
+after a real power cut; whether an entry survives the process that wrote
+it; what an `fsync` per entry costs inside a frame; whether the 64 KiB
+stdio buffer chosen for the open scan was the right guess; whether two
+builds of this port really refuse each other's entries. `t_shader_cache`
+asks all of them and has never been launched.
+
+There is also no measurement yet of the thing the feature exists for — a
+shader compiled on one launch and *not* recompiled on the next — because
+that needs `t_vk_*` timings across two runs on hardware.
 
 ---
 

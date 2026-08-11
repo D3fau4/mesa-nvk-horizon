@@ -193,3 +193,42 @@ vkWaitForFences
 - Triple buffering measurably differs from double buffering (frame pacing recorded).
 - Two swapchains can exist and be destroyed independently in one process.
 - Zero-copy on/off is a runtime-observable decision with a logged reason.
+
+---
+
+## Phase 7 — Shader disk cache
+
+Phase 6 ended the sequence the reference ports were audited against, and everything
+after it is a decision rather than the next step (`STATUS.md`). This is the first such
+decision taken: NVK recompiles every shader on every launch, and Mesa already has the
+mechanism that would stop it — `util/disk_cache`, of which NVK is already a client.
+It was switched off for this port in Phase 3 (`-Dshader-cache=disabled`, recorded with
+its reason), and Phase 4 wrote the pagaré: *"If a later phase enables the shader cache
+— which `scripts/configure-mesa.sh` records as a decision, not a workaround — `flock`
+comes back and needs an answer then."*
+
+1. A keyed blob store that needs nothing devkitA64's newlib lacks: no `mmap`, no
+   `flock`, no `fcntl` locking, no `posix_fallocate`, no `memfd_create`, no `*at()`
+   family, no `ftw`. Robustness by content validation rather than by atomic rename,
+   because `rename()` over an existing target fails on Horizon.
+2. A driver identity that changes when *this port* changes, not only when Mesa does.
+   Without it a disk cache would serve the previous build's binaries to this build.
+3. Mesa's `disk_cache` API reaching that store, reusing `disk_cache.c` — key
+   derivation, the put queue, compression, the statistics — and replacing only the
+   OS layer.
+4. `-Dshader-cache=enabled` in both Mesa builds.
+
+**Exit criteria**
+
+- Item 1 verified on **H** against damaged files — truncation, flipped payload and
+  header bytes, an interrupted compaction, a file from another driver build, a
+  garbage file — under ASan and UBSan.
+- Items 3 and 4 verified on **X** by a `nm -u` audit showing that the driver's own
+  archives no longer reference `mmap`, `flock`, `posix_fallocate`, `memfd_create`,
+  `getpwuid_r` or `ftw`.
+- `t_shader_cache` PASS on **HW**, including its section C on a *second* launch —
+  a cache that has not outlived the process that filled it has not been shown to be
+  a cache.
+- Item 2 verified on **HW** by a measurement, not by inspection: two builds differing
+  only in `mesa-patches/` must not read each other's entries.
+- A shader compiled on one launch is not recompiled on the next, measured on **HW**.

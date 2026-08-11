@@ -494,18 +494,22 @@ if mesa_libs_present
   idep_mesa_core = declare_dependency(
     compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC',
                     '-DENABLE_SHADER_CACHE'],
-    # libmesa_util.a gained two outward dependencies when the shader
-    # cache was enabled: disk_cache_horizon.c calls into horizon_gpu, and
-    # compress.c calls into devkitPro's zstd and zlib (Mesa's own
-    # configure found them through portlibs' pkg-config). The Makefile
-    # names the same three on its link line and says why there.
-    link_args : [
+    include_directories : include_directories('mesa/src', 'mesa/include'),
+    # One list, not two: a second `link_args` key would silently replace
+    # the first rather than add to it, and the archives are the half that
+    # would have been lost.
+    #
+    # -lzstd -lz because enabling the shader cache put compress.c on the
+    # reachable side of libmesa_util.a, and Mesa's own configure enabled
+    # it through devkitPro's portlibs. libhorizon_gpu.a is already on the
+    # line — every test links it — and the group makes the order between
+    # them irrelevant. The Makefile names the same libraries and says why
+    # order matters there instead.
+    link_args : mesa_test_lib_paths + [
       '-L' + meson.get_external_property('devkitpro_prefix') /
              'portlibs/switch/lib',
       '-lzstd', '-lz',
     ],
-    include_directories : include_directories('mesa/src', 'mesa/include'),
-    link_args : mesa_test_lib_paths,
   )
   horizon_tests += mesa_tests
 else
