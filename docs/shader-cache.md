@@ -160,14 +160,35 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
   in an mmap'd 64 K-slot table where a collision silently overwrites; there is no mmap
   here, so they are records. Nothing in NVK calls either.
 
-### What is still not shown
+### NVK stops recompiling — run 28, 2026-08-11
 
-That NVK **stops recompiling**. Everything above is about the store and about Mesa's
-API; none of it measures the thing the feature exists for. `tests/t_vk_cache.c` is the
-test that does — one compute pipeline, the driver's own cache directory, no overrides,
-timed and then *dispatched and verified*, because a cache that returned a corrupt
-binary would create a pipeline just as happily and faster. It needs two launches of
-the same build, and has had none.
+`t_vk_cache`, `docs/hw-logs/t_vk_cache-run28-FAIL.log`. The driver's own cache
+directory, no `MESA_SHADER_CACHE_DIR`, and no `VkPipelineCache` passed to the create,
+so nothing in the process could answer it except the disk:
+
+```
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+note vkCreateComputePipelines took 646 µs on a warm cache
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+**Two hits, no misses.** That is the feature working, and it is the first time it has
+been shown.
+
+The run reports `FAIL (37/39)`, and **both failures are the test's own**. It expected
+`out[id] = id` from a shader that documents `out[id] = (id * 2654435769) ^
+2781138957`; at id 0 the multiply vanishes and the answer is the XOR constant,
+`0xa5c4d00d`, which is exactly what the console returned. The test also dispatched 64
+groups of a `LocalSize 64` shader into a 64-word buffer — 4096 invocations, 4032 past
+the end. Both are fixed, with a static check on `expect_word(0)` and a poisoned tail
+that a wrong dispatch size would disturb.
+
+**Still unmeasured**: that all 4096 output words are right (run 28 compared against
+the wrong array and printed only the first mismatch), and the actual saving — 646 µs
+is a warm create with no valid cold baseline beside it, because the driver's cache
+was already populated. The test now records the cold time in its marker and refuses
+to record one unless the driver itself reported `0 entries` at startup, so a single
+log will carry the comparison.
 
 ## The driver identity, which is the part that could have been dangerous
 

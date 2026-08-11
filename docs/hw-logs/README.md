@@ -5,6 +5,42 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## NVK stops recompiling, and a test that read its own result wrong
+
+### `t_vk_cache-run28-FAIL.log`
+
+Run 28, 2026-08-11, `2026-08-11T18:37:03.904Z b5454be-dirty mesa:3ba5227`,
+`RESULT: FAIL (37/39)`. **Read the two FAIL lines as what they are: the test being
+wrong about a console that was right.**
+
+The evidence the run was actually gathering:
+
+```
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+note vkCreateComputePipelines took 646 us on a warm cache
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+The driver's own cache, on its own path, with no environment override — **two hits
+and no misses. NVK compiled nothing.** That is the thing the whole phase exists for,
+and this log is the first place it appears.
+
+The failure is `the cached shader's output: 0/64 words match`, with
+`first mismatch at word 0: got 0xa5c4d00d, want 0x00000000`. The test expected
+`out[id] = id`. `comp_write_id` documents in its own header that it stores
+`(id * 2654435769) ^ 2781138957`, and `expect_word(0)` is exactly **0xa5c4d00d** —
+the multiply vanishes at id 0 and the XOR constant is all that is left. **The cached
+shader computed the correct value and the test did not know what correct was.**
+
+The same test also dispatched 64 groups of a `LocalSize 64` shader into a 64-word
+buffer: 4096 invocations, 4032 of them writing past the end of a runtime array. Both
+are fixed, and the fixed test carries a static check that `expect_word(0)` is that
+value, plus a 64-word poisoned tail that a wrong dispatch size would disturb.
+
+**What this log does not establish**: that all 4096 words are right. It compared
+against the wrong array and printed only the first mismatch, so exactly one word of
+the shader's output is known to be correct here.
+
 ## The shader disk cache, working
 
 ### `t_shader_cache-run27-PASS.log`
