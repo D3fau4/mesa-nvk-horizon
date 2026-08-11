@@ -5,7 +5,7 @@ stops that — `util/disk_cache`, of which NVK is already a client — and this 
 it switched off. This document says why it was off, what turns it on, what the file
 on the SD card looks like, and what has and has not been shown to work.
 
-**Measured on a Nintendo Switch (run 30, 2026-08-11):** `vkCreateComputePipelines`
+**Measured on a Nintendo Switch (run 31, 2026-08-11):** `vkCreateComputePipelines`
 **5342 µs cold against 442 µs warm — 91% of the compile, 12× faster**, with the
 shader that came off the card computing all 4096 of its output words correctly and
 the driver reporting `hits = 2, misses = 0`.
@@ -36,7 +36,7 @@ NVK  →  disk_cache_create / put / get / compute_key      (Mesa's API, unchange
    key derivation, the put queue, zstd/zlib compression, statistics
             │
             ▼
-   src/util/disk_cache_horizon.c            ← mesa-patches/0079
+   src/util/disk_cache_horizon.c            ← mesa-patches/0081
    the OS layer only: entry layout, the lock, the cache path
             │
             ▼
@@ -57,10 +57,10 @@ Four patches, and two of them are meant for upstream:
 
 | | | Upstream |
 |---|---|---|
-| 0076 | `util/disk_cache: include only what disk_cache.c uses` | yes — the file uses none of the five headers it opens with |
-| 0077 | `util/mesa_cache_db: gate on flock, like the Fossilize database beside it` | yes — a libc trait, written the way its sibling writes it |
-| 0078 | `nouveau/vk: let the build name a driver identity Mesa's version cannot` | no |
-| 0079 | `util/disk_cache: add a Horizon backend` | no |
+| 0078 | `util/disk_cache: include only what disk_cache.c uses` | yes — the file uses none of the five headers it opens with |
+| 0079 | `util/mesa_cache_db: gate on flock, like the Fossilize database beside it` | yes — a libc trait, written the way its sibling writes it |
+| 0080 | `nouveau/vk: let the build name a driver identity Mesa's version cannot` | no |
+| 0081 | `util/disk_cache: add a Horizon backend` | no |
 
 ## The file
 
@@ -150,7 +150,7 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
 - **The store is not reentrant.** `disk_cache_horizon.c` serialises every call with a
   `simple_mtx`, which also means `get()` waits behind a `put()` that is writing to the
   SD card.
-- **`fsync` per entry.** Measured at ~5.3 ms on a console (run 26). Correct, on a
+- **`fsync` per entry.** Measured at ~5.3 ms on a console (run 27). Correct, on a
   background thread, and buying less than it appears to — see the results below.
 - **The ceiling is compiled in at 64 MiB.** Upstream defaults to 1 GiB, which is a
   desktop number for a card that also holds somebody's games. `MESA_SHADER_CACHE_DIR`,
@@ -165,9 +165,9 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
   in an mmap'd 64 K-slot table where a collision silently overwrites; there is no mmap
   here, so they are records. Nothing in NVK calls either.
 
-### NVK stops recompiling — run 28, 2026-08-11
+### NVK stops recompiling — run 29, 2026-08-11
 
-`t_vk_cache`, `docs/hw-logs/t_vk_cache-run28-FAIL.log`. The driver's own cache
+`t_vk_cache`, `docs/hw-logs/t_vk_cache-run29-FAIL.log`. The driver's own cache
 directory, no `MESA_SHADER_CACHE_DIR`, and no `VkPipelineCache` passed to the create,
 so nothing in the process could answer it except the disk:
 
@@ -188,10 +188,10 @@ groups of a `LocalSize 64` shader into a 64-word buffer — 4096 invocations, 40
 the end. Both are fixed, with a static check on `expect_word(0)` and a poisoned tail
 that a wrong dispatch size would disturb.
 
-### And it is correct in full — run 29, 2026-08-11
+### And it is correct in full — run 30, 2026-08-11
 
 `t_vk_cache` with those two bugs fixed, **`RESULT: PASS (44/44)`**
-(`docs/hw-logs/t_vk_cache-run29-PASS.log`):
+(`docs/hw-logs/t_vk_cache-run30-PASS.log`):
 
 ```
 ok   the expected-value function matches the shader (expect_word(0) = 0xa5c4d00d)
@@ -202,11 +202,11 @@ MESA: info: disk shader cache:  hits = 2, misses = 0
 
 **Every one of the 4096 words**, from a shader NVK did not compile, and nothing
 written past the last invocation. `vkCreateComputePipelines` took 432 µs warm (646 µs
-in run 28 — the same operation, the difference is card noise).
+in run 29 — the same operation, the difference is card noise).
 
-### And this is what it saves — run 30, 2026-08-11
+### And this is what it saves — run 31, 2026-08-11
 
-`RESULT: PASS (45/45)` (`docs/hw-logs/t_vk_cache-run30-PASS.log`):
+`RESULT: PASS (45/45)` (`docs/hw-logs/t_vk_cache-run31-PASS.log`):
 
 ```
 note vkCreateComputePipelines took 442 us on a warm cache
@@ -219,9 +219,9 @@ environment override and no `VkPipelineCache` passed to the create.
 
 The cold baseline is self-certified rather than trusted: the test records one *only*
 when the driver itself reported `0 entries` at startup, and a cold run clears
-`sdmc:/mesa_shader_cache` before the driver opens anything. Runs 28 and 29 both wrote
+`sdmc:/mesa_shader_cache` before the driver opens anything. Runs 29 and 29 both wrote
 `0` to the marker rather than record a warm create as cold, which is what makes the
-number in run 30 mean something.
+number in run 31 mean something.
 
 One shader is one shader. What this does not say is what a real game saves, where
 there are hundreds of pipelines and the per-shader compile is far larger than a
@@ -268,9 +268,9 @@ $ nm -u build/mesa-probe/src/util/libmesa_util.a | sort -u \
 (no output)
 ```
 
-**Hardware — run 26, 2026-08-11**, `t_shader_cache`, build
+**Hardware — run 27, 2026-08-11**, `t_shader_cache`, build
 `2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`, `RESULT: FAIL (46/47)`
-(`docs/hw-logs/t_shader_cache-run26-FAIL.log`).
+(`docs/hw-logs/t_shader_cache-run27-FAIL.log`).
 
 What it established, and none of it was known before:
 
@@ -296,9 +296,9 @@ that the measurement happened at all.
 
 **Section C reported a cold cache**, which is what a first launch is meant to report.
 
-**Run 27, 2026-08-11**, same test with those fixes in, build
+**Run 28, 2026-08-11**, same test with those fixes in, build
 `2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`, **`RESULT: PASS (56/56)`**
-(`docs/hw-logs/t_shader_cache-run27-PASS.log`). It closed the two things run 26 could
+(`docs/hw-logs/t_shader_cache-run28-PASS.log`). It closed the two things run 27 could
 not:
 
 - `C1 this launch found 32 entries (WARM — a previous launch filled it)`, and all
@@ -309,9 +309,9 @@ not:
   with the store closed and beside `A6 the store's own size is the size on the card`.
   The check that could not fail is now one that can.
 
-And the two defects run 26 exposed are fixed, measured on the same console:
+And the two defects run 27 exposed are fixed, measured on the same console:
 
-| | run 26 | run 27 |
+| | run 27 | run 28 |
 |---|---|---|
 | open with 201 entries | 40498 µs — **201 µs/entry** | **1605 µs — 7 µs/entry** |
 | 100 puts into a 32 KiB ceiling | **70 compactions**, 2.58 s | **5 compactions**, 0.64 s |
@@ -322,15 +322,15 @@ with the store about both.
 
 ### The numbers, and what changed because of them
 
-| | run 26 | after |
+| | run 27 | after |
 |---|---|---|
 | `put` of 4 KiB | 8148 µs | — |
 | 200 `put`s of ~50 B | 5292 µs each | — |
 | `get` of 4 KiB | 3408 µs | — |
 | Mesa `disk_cache_put` + `wait_for_idle` | 4606 µs | — |
 | Mesa `disk_cache_get` | 291 µs | — |
-| open with 201 entries | **40498 µs — 201 µs/entry** | **1605 µs — 7 µs/entry** (run 27) |
-| 100 `put`s into a 32 KiB ceiling | **70 compactions, 2.58 s** | **5 compactions, 0.64 s** (run 27) |
+| open with 201 entries | **40498 µs — 201 µs/entry** | **1605 µs — 7 µs/entry** (run 28) |
+| 100 `put`s into a 32 KiB ceiling | **70 compactions, 2.58 s** | **5 compactions, 0.64 s** (run 28) |
 
 Two of those were structural defects rather than costs:
 
@@ -344,8 +344,8 @@ Two of those were structural defects rather than costs:
   half the ceiling, which on the host takes 200 puts into a 32 KiB cache from ~140
   rewrites to 11.
 
-`fsync` per entry, at ~5 ms, is a cost and not a defect (run 27 measured 5413 µs,
-within noise of run 26's 5292 µs) — it is on a background thread
+`fsync` per entry, at ~5 ms, is a cost and not a defect (run 28 measured 5413 µs,
+within noise of run 27's 5292 µs) — it is on a background thread
 and compiling a shader takes far longer. It is worth saying plainly that it buys less
 than it looks: the format already recovers from an unflushed tail by truncating it,
 which is exactly what a missing `fsync` would cost. Changing it is a decision with a

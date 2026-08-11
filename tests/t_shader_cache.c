@@ -153,7 +153,7 @@ static uint64_t now_us(void)
 
 /* The size of the file on the card, or -1.
  *
- * ONLY VALID WITH THE STORE CLOSED, and run 26 is why this comment
+ * ONLY VALID WITH THE STORE CLOSED, and run 27 is why this comment
  * exists. Opening a file that is already open for writing fails on this
  * platform — the SD card's device layer refuses it, which STATUS.md
  * already records for the test framework's own log file. This helper
@@ -281,7 +281,7 @@ static void section_a(test_ctx *t)
         t_check(t, st.was_reset, "A6 the other build's file is reset");
         t_check(t, st.entries == 0 && is_miss(c, 7),
                 "A6 and none of its entries is served");
-        /* Measured with the store CLOSED. Run 26 made this check while
+        /* Measured with the store CLOSED. Run 27 made this check while
          * it was open, got -1 back, compared it as a signed long and
          * announced a pass for something it had never looked at. */
         uint64_t after_reset = st.file_size;
@@ -357,7 +357,7 @@ static void section_a(test_ctx *t)
                st.compactions, (unsigned long long)(now_us() - t0),
                (unsigned long long)st.file_size);
         t_check(t, st.compactions > 0, "A8 it compacted rather than grew");
-        /* Run 26 measured 70 compactions for 100 puts, because compaction
+        /* Run 27 measured 70 compactions for 100 puts, because compaction
          * used to refill the file to the ceiling and the very next put
          * crossed it again. It now compacts to a watermark below the
          * ceiling, so a compaction has to buy many puts. 100 KiB into a
@@ -404,7 +404,7 @@ static void section_b(test_ctx *t)
     /* Start from nothing. B7 deliberately ends this section holding the
      * file under a *different* driver id, so without this the next run's
      * B1 opens it, correctly refuses it, and logs "did not match this
-     * driver build" — a true line that reads like a fault. Run 27
+     * driver build" — a true line that reads like a fault. Run 28
      * printed exactly that, with 96 bytes discarded, which is an empty
      * header and nothing else. A log that is kept as evidence should not
      * need a footnote. */

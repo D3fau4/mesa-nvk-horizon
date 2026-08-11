@@ -7,9 +7,9 @@ the log, not `STATUS.md`.
 
 ## What the cache saves
 
-### `t_vk_cache-run30-PASS.log`
+### `t_vk_cache-run31-PASS.log`
 
-Run 30, 2026-08-11, `2026-08-11T18:58:20.516Z e6f6165-dirty mesa:3ba5227`,
+Run 31, 2026-08-11, `2026-08-11T18:58:20.516Z e6f6165-dirty mesa:3ba5227`,
 `RESULT: PASS (45/45)`. The last number Phase 7 was missing:
 
 ```
@@ -27,15 +27,15 @@ that could have answered it is the disk. And the shader that came back is right:
 records a cold baseline *only* when the driver reported `0 entries` at startup, and a
 cold run clears `sdmc:/mesa_shader_cache` itself before the driver opens anything. A
 number in the marker file therefore cannot be a warm create wearing a cold label —
-runs 28 and 29 both wrote `0` there rather than lie about it, which is what makes the
+runs 29 and 29 both wrote `0` there rather than lie about it, which is what makes the
 5342 in this one mean something.
 
 ## The shader off the card, correct in full
 
-### `t_vk_cache-run29-PASS.log`
+### `t_vk_cache-run30-PASS.log`
 
-Run 29, 2026-08-11, `2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227`,
-`RESULT: PASS (44/44)`. What run 28 measured and could not prove:
+Run 30, 2026-08-11, `2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227`,
+`RESULT: PASS (44/44)`. What run 29 measured and could not prove:
 
 ```
 MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
@@ -46,7 +46,7 @@ MESA: info: disk shader cache:  hits = 2, misses = 0
 ```
 
 **Every one of the 4096 words**, from a shader NVK did not compile, plus a poisoned
-tail that a wrong dispatch would have disturbed and did not. Run 28's two failures
+tail that a wrong dispatch would have disturbed and did not. Run 29's two failures
 were the test's, and this is the same test with them fixed.
 
 **What it still does not measure is the saving.** Line 26 says it: `the driver's own
@@ -59,9 +59,9 @@ itself on a cold run.
 
 ## NVK stops recompiling, and a test that read its own result wrong
 
-### `t_vk_cache-run28-FAIL.log`
+### `t_vk_cache-run29-FAIL.log`
 
-Run 28, 2026-08-11, `2026-08-11T18:37:03.904Z b5454be-dirty mesa:3ba5227`,
+Run 29, 2026-08-11, `2026-08-11T18:37:03.904Z b5454be-dirty mesa:3ba5227`,
 `RESULT: FAIL (37/39)`. **Read the two FAIL lines as what they are: the test being
 wrong about a console that was right.**
 
@@ -95,9 +95,9 @@ the shader's output is known to be correct here.
 
 ## The shader disk cache, working
 
-### `t_shader_cache-run27-PASS.log`
+### `t_shader_cache-run28-PASS.log`
 
-Run 27, 2026-08-11, `2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`,
+Run 28, 2026-08-11, `2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`,
 `RESULT: PASS (56/56)`. The run that closed the claim a cache exists to make:
 
 ```
@@ -106,8 +106,8 @@ ok   C2 every entry the previous launch wrote came back intact
 ```
 
 Entries written by one process, read back by the next, off a real SD card. It also
-turned run 26's vacuous `ftruncate` check into three real ones, and re-measured the
-two defects run 26 exposed: opening 201 entries went from 40498 µs to **1605 µs**
+turned run 27's vacuous `ftruncate` check into three real ones, and re-measured the
+two defects run 27 exposed: opening 201 entries went from 40498 µs to **1605 µs**
 (201 → 7 µs per entry) and 100 writes into a full 32 KiB cache from **70 compactions
 to 5**.
 
@@ -124,9 +124,9 @@ written when this ran.
 
 ## The shader disk cache, and a check that could not fail
 
-### `t_shader_cache-run26-FAIL.log`
+### `t_shader_cache-run27-FAIL.log`
 
-Run 26, 2026-08-11, `2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`,
+Run 27, 2026-08-11, `2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`,
 `RESULT: FAIL (46/47)`. The first console run of the shader cache, and the first
 evidence that `disk_cache_create()` returns anything but NULL on this platform.
 

@@ -1,7 +1,7 @@
-From 5069b8335cd073f0fd8fd45e29b8d2fded89ce23 Mon Sep 17 00:00:00 2001
+From 3bbf0bffd662d0814411303952d7019b7c01cfb6 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Sun, 9 Aug 2026 16:16:40 +0200
-Subject: [PATCH 70/79] vulkan/wsi: Horizon, only the window's owner may close
+Subject: [PATCH 70/81] vulkan/wsi: Horizon, only the window's owner may close
  the framebuffer
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)

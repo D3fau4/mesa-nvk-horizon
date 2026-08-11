@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-six standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-seven standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -11,9 +11,9 @@ They come in three groups, and **which of them you get depends on what you built
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
 | Mesa's own code, measured on hardware | 3 | Mesa's core built | both build paths |
-| Vulkan, through NVK | 15 | the full NVK driver built | **the Meson path only** |
+| Vulkan, through NVK | 16 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 21 and the Meson path at most 36 — see
+So the Makefile produces at most 21 and the Meson path at most 37 — see
 [`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
 
 There are also six host-side suites that need no console at all; they are at the bottom

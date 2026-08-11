@@ -131,7 +131,7 @@ static const uint8_t horizon_bc_file_magic[8] = {
  * a cache in its steady state holds about half of what the ceiling
  * allows, which for a shader cache is entries that would have been
  * evicted soon anyway — the alternative measured 70 compactions for 100
- * puts on a console (run 26). */
+ * puts on a console (run 27). */
 #define HORIZON_BC_COMPACT_WATERMARK 50u
 
 /* Smallest index the store ever allocates. Power of two. */
@@ -145,7 +145,7 @@ static const uint8_t horizon_bc_file_magic[8] = {
  * fsFileRead calls into the FS sysmodule.
  *
  * IT IS ALSO THE THRESHOLD IN bc_skip_forward(). A buffer only helps a
- * scan that reads forward; run 26 measured the version that seeked to
+ * scan that reads forward; run 27 measured the version that seeked to
  * every record at 201 us per entry, which is one I/O each and the exact
  * opposite of what this buffer is for. The scan now walks forward and
  * only seeks over a payload larger than one refill. */
@@ -373,7 +373,7 @@ static bool bc_read_at(FILE *f, uint64_t off, void *buf, size_t len)
 
 /* Read the next `len` bytes from wherever the stream already is.
  *
- * WHY THE SCAN USES THIS AND NOT bc_read_at(). Run 26 opened a 201-entry
+ * WHY THE SCAN USES THIS AND NOT bc_read_at(). Run 27 opened a 201-entry
  * cache on a console in 40498 us — 201 us per record, to read a 56-byte
  * header out of a 50 KB file. That is one I/O per record, not a
  * sequential read, and the reason is the fseek in bc_read_at(): whether
@@ -986,7 +986,7 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     /* Budget: a WATERMARK BELOW THE CEILING, less the record about to be
      * appended.
      *
-     * Not the ceiling itself, and run 26 is why. Compacting to the
+     * Not the ceiling itself, and run 27 is why. Compacting to the
      * ceiling leaves the file exactly at it, so the very next put
      * crosses it and compacts again: 100 puts into a 32 KiB cache
      * measured 70 compactions and 2.58 s on a console, ~36 ms each. That

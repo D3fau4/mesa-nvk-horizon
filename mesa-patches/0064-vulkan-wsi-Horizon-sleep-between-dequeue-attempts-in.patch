@@ -1,7 +1,7 @@
-From 61e9411272c2014e8e84a46248bc591731d4cf1c Mon Sep 17 00:00:00 2001
+From 9db5d112173820856526b6f4d26435c97479035e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 12:21:40 +0000
-Subject: [PATCH 64/79] vulkan/wsi: Horizon, sleep between dequeue attempts
+Subject: [PATCH 64/81] vulkan/wsi: Horizon, sleep between dequeue attempts
  instead of spinning
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

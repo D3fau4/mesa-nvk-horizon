@@ -64,7 +64,7 @@ There are two, deliberately, and they do **not** build the same set:
 | The 18 `horizon_gpu` tests | yes | yes |
 | `t_threads`, `t_ostime` (need Mesa core) | yes, when Mesa is built | yes, when Mesa is built |
 | The 14 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
-| Maximum `.nro` | 21 | **36** |
+| Maximum `.nro` | 21 | **37** |
 
 The Makefile is the path whose output was verified on hardware, and it is readable
 without running anything; the Meson path is the one that can link NVK.

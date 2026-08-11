@@ -1,7 +1,7 @@
-From 89feab6f62a919a183afaf57bb176984f9fddf8f Mon Sep 17 00:00:00 2001
+From f78feb7d8cbe7594c0daf7e28a47cdc41d8ad128 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 13:04:44 +0000
-Subject: [PATCH 58/79] nouveau/vk: nvkmd_horizon, a VA binding holds a
+Subject: [PATCH 58/81] nouveau/vk: nvkmd_horizon, a VA binding holds a
  reference to its memory
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -47,12 +47,12 @@
 const char *const test_name = "t_vk_cache";
 const bool test_uses_display = false;
 
-/* The shader's geometry, and it is NOT a free choice — run 28 got this
+/* The shader's geometry, and it is NOT a free choice — run 29 got this
  * wrong in both directions at once.
  *
  * comp_write_id declares `OpExecutionMode %main LocalSize 64 1 1`, so a
  * dispatch of N groups runs 64*N invocations, each storing at its own
- * global id. Run 28 dispatched 64 groups into a 64-word buffer: 4096
+ * global id. Run 29 dispatched 64 groups into a 64-word buffer: 4096
  * invocations, 4032 of them writing past the end of a runtime array.
  * These are t_vk_compute's numbers, which are the shader's.
  *
@@ -73,7 +73,7 @@ const bool test_uses_display = false;
  *
  *     out[id] = (id * 2654435769) ^ 2781138957      (mod 2^32)
  *
- * and which t_vk_compute computes the same way. Run 28 assumed
+ * and which t_vk_compute computes the same way. Run 29 assumed
  * `out[id] = id` without reading either, got 0xa5c4d00d back from the
  * console, and reported it as a cache that had returned a wrong shader.
  * 0xa5c4d00d is expect_word(0) — the multiply vanishes at id 0 and the
@@ -103,7 +103,7 @@ static uint64_t now_us(void)
 
 /* Empty the driver's cache, so that a run calling itself cold is cold.
  *
- * WHY THE TEST DOES THIS INSTEAD OF ASKING. Runs 28 and 29 both intended
+ * WHY THE TEST DOES THIS INSTEAD OF ASKING. Runs 29 and 29 both intended
  * a cold baseline and neither got one, because the marker file only
  * records whether *this test* has run and the shader was already in the
  * driver's cache from the run before. Printing "delete this directory
@@ -403,7 +403,7 @@ int run_test(test_ctx *t)
     * faster. What it cannot do is compute the right answer.
     *
     * The self-check first: a wrong expectation here would look exactly
-    * like a wrong shader, and in run 28 it did. */
+    * like a wrong shader, and in run 29 it did. */
    t_check(t, expect_word(0) == 0xa5c4d00du,
            "the expected-value function matches the shader "
            "(expect_word(0) = 0x%08x, must be 0xa5c4d00d)", expect_word(0));
@@ -423,7 +423,7 @@ int run_test(test_ctx *t)
    }
 
    /* And nothing beyond what it was asked to write. This is the check
-    * run 28 did not have, and it is the one that would have named the
+    * run 29 did not have, and it is the one that would have named the
     * dispatch size rather than blaming the cache. */
    uint32_t tail_bad =
       vkfw_expect_words(&fw, (const uint32_t *)ssbo.map + DISPATCH_WORDS,

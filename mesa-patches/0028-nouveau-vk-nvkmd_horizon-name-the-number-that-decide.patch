@@ -1,7 +1,7 @@
-From c529209e71fd4633b4a358ec8081f291ee1a9959 Mon Sep 17 00:00:00 2001
+From 559abcff45c416a35f256d62ae18687f88185f25 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 14:53:31 +0000
-Subject: [PATCH 28/79] nouveau/vk: nvkmd_horizon, name the number that decides
+Subject: [PATCH 28/81] nouveau/vk: nvkmd_horizon, name the number that decides
  a failed bind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

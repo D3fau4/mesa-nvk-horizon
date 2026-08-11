@@ -92,15 +92,15 @@ echo "configure-mesa: driver id $HORIZON_DRIVER_ID"
 # The answer is four patches and a module, and none of it makes newlib
 # pretend to have anything:
 #
-#   0076  disk_cache.c's <ftw.h>/<sys/mman.h>/<sys/file.h>/<fcntl.h>/
+#   0078  disk_cache.c's <ftw.h>/<sys/mman.h>/<sys/file.h>/<fcntl.h>/
 #         <dirent.h> are removed — the file uses none of them, so the
 #         generic half needed nothing but honesty about its includes.
-#   0077  mesa_cache_db.c is gated on HAVE_FLOCK, exactly the way
+#   0079  mesa_cache_db.c is gated on HAVE_FLOCK, exactly the way
 #         fossilize_db.c beside it already was.
-#   0078  the driver identity stops being Mesa's version alone, because a
+#   0080  the driver identity stops being Mesa's version alone, because a
 #         disk cache keyed on an identity that does not change when this
 #         port changes serves last build's binaries to this build.
-#   0079  disk_cache_os.c is replaced on Horizon by disk_cache_horizon.c,
+#   0081  disk_cache_os.c is replaced on Horizon by disk_cache_horizon.c,
 #         which stores entries through horizon/cache/'s append-only,
 #         CRC-validated blob store. No mmap, no flock, no rename.
 #

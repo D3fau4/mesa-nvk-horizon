@@ -228,18 +228,18 @@ comes back and needs an answer then."*
       `getpwuid_r` or `ftw`. *Only `libsanity_check_for_rust.a`, which no `.nro` links.*
 - [x] `t_shader_cache` PASS on **HW**, including its section C on a *second* launch —
       a cache that has not outlived the process that filled it has not been shown to be
-      a cache. *Run 27, PASS 56/56, `C1 … found 32 entries (WARM)`.*
+      a cache. *Run 28, PASS 56/56, `C1 … found 32 entries (WARM)`.*
 - [x] Item 2 verified on **HW** by a measurement, not by inspection: two builds differing
-      only in `mesa-patches/` must not read each other's entries. *Runs 26 and 27, A6 and
+      only in `mesa-patches/` must not read each other's entries. *Runs 27 and 27, A6 and
       B7: `did not match this driver build …; started over`.*
 - [x] **A shader compiled on one launch is not recompiled on the next, measured on HW.**
-      *Runs 28 and 29: `disk shader cache: hits = 2, misses = 0`, on the driver's own
-      cache path with no overrides.* And correct: run 29 verified **4096 of 4096
+      *Runs 29 and 29: `disk shader cache: hits = 2, misses = 0`, on the driver's own
+      cache path with no overrides.* And correct: run 30 verified **4096 of 4096
       output words** from a shader NVK did not compile, with a poisoned tail intact.
 - [x] **What the cache saves, measured on HW**: a cold `vkCreateComputePipelines`
-      beside the warm one. *Run 30: **5342 µs cold, 442 µs warm — 91% of the compile,
+      beside the warm one. *Run 31: **5342 µs cold, 442 µs warm — 91% of the compile,
       12× faster.** The cold baseline is self-certified: the test records one only
-      when the driver reported `0 entries` at startup, and runs 28 and 29 both wrote
+      when the driver reported `0 entries` at startup, and runs 29 and 29 both wrote
       nothing rather than record a warm number as cold.*
 
 **Phase 7 is complete.** Every criterion above is met, and the four that matter were

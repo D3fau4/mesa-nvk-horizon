@@ -797,7 +797,7 @@ int main(void)
             horizon_gpu_blob_cache_get_stats(c, &st);
             H_CHECK(st.compactions > 0, "it compacted rather than grew");
             H_CHECK(st.file_size <= cap, "and stayed inside the ceiling");
-            /* Run 26 measured 70 compactions for 100 puts on a console,
+            /* Run 27 measured 70 compactions for 100 puts on a console,
              * because compaction used to refill the file to the ceiling
              * and the next put crossed it again. 200 puts of 1 KiB into
              * 32 KiB, compacting to half of it, needs on the order of

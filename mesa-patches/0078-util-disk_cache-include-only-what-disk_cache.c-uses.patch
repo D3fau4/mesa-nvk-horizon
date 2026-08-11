@@ -1,7 +1,7 @@
-From 2ed72b008e5880a3e67b0059a29a9a3f7e96f221 Mon Sep 17 00:00:00 2001
+From 5e183deaec1953d5250152e201976d022f429da3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:38:55 +0000
-Subject: [PATCH 76/79] util/disk_cache: include only what disk_cache.c uses
+Subject: [PATCH 78/81] util/disk_cache: include only what disk_cache.c uses
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

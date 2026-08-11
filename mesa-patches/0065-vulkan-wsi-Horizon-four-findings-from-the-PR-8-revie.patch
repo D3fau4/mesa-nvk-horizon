@@ -1,7 +1,7 @@
-From 9d6486a89c4820f7db8c7831c1e1b0a5a0df9a39 Mon Sep 17 00:00:00 2001
+From b255945cb8d5ddb887ad2bb536042eb36757fa04 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 13:10:38 +0000
-Subject: [PATCH 65/79] vulkan/wsi: Horizon, four findings from the PR #8
+Subject: [PATCH 65/81] vulkan/wsi: Horizon, four findings from the PR #8
  review
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

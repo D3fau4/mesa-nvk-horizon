@@ -1,7 +1,7 @@
-From 3cc4c5914e034d22a51379abf19f36d8f4808543 Mon Sep 17 00:00:00 2001
+From fa0fd38c69e9e22dcb54f08ac1456cfcf0257a33 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 20:43:53 +0000
-Subject: [PATCH 69/79] vulkan/wsi: Horizon, the zero-copy acquire refuses a
+Subject: [PATCH 69/81] vulkan/wsi: Horizon, the zero-copy acquire refuses a
  deadlock too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

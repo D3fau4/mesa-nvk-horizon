@@ -388,3 +388,49 @@ category: the value would be *measured*, by a different ioctl than the one
 that failed, and the thresholds, the 64-bit shadow and the fences derived
 from it become as sound as on a platform that can read the counter. The
 cost is 33 ioctls once per channel, and only where the read is missing.
+
+---
+
+## 10. The submit and fence-wait meter
+
+Enabled by `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`. Like § 8 and § 9 it is a diagnostic,
+but unlike them it changes nothing: it reads two clocks around waits that were going to
+happen anyway and prints what it found. No path behaves differently with it on.
+
+It exists because **"`vkWaitForFences` took N milliseconds" is one number and at least
+four different things produce it**, and an application cannot tell them apart from
+outside the driver:
+
+| what the meter reports | what it means when it is the large one |
+|---|---|
+| time on the syncpoint | the GPU genuinely took that long |
+| time **before a fence existed** | the caller waited on a `VkFence` nothing had submitted with yet — the D16 condition-variable wait in `nvkmd_horizon_sync.c` |
+| CPU waits for another channel | a submit was blocked in `nvkmd_horizon_ctx_wait`, waiting on the CPU for a fence belonging to a different channel (§ 4), with the queue held behind it |
+| fence age when the wait returned | how old the fence actually was. An application that believes it is waiting for work from three frames ago, against a mean age of a millisecond, is not pipelining at all |
+
+Two lines a second, per channel:
+
+```
+nvkmd_horizon: channel 0x…: over 1004 ms: 183 submit(s); 0 CPU wait(s) for another
+channel totalling 0 us, 171 wait(s) skipped as already ordered by this channel
+nvkmd_horizon: channel 0x…: over 1004 ms: 61 fence wait(s) blocked, mean 812 us
+(max 3140), of which 0 us before a fence existed and 812 us on the syncpoint;
+mean fence age when the wait returned 1204 us
+```
+
+Reading it:
+
+- **Per channel, not per device.** The exec channel and the upload channel report
+  separately rather than averaging into each other. A cross-channel wait therefore appears
+  twice — once as a CPU wait on the channel that performed it, once as a fence wait on the
+  channel that owned the fence. Those are two true statements about one event, not double
+  counting inside either line.
+- **Only waits that blocked are counted.** A wait that found the sync already signalled
+  cost nothing and would dilute the mean; one that timed out measures the caller's
+  patience rather than the fence. Same rule as the WSI acquire meter, for the same reason.
+- **`submit(s)` is the denominator for everything else**, and answers "is this latency per
+  submission or per frame?" without the application having to guess: divide by the frames
+  in the same second.
+- The skipped-wait count is § 4's same-channel optimisation working. A submit that waits
+  on a semaphore its own channel already ordered needs no wait at all, and a large skipped
+  count next to a zero CPU-wait total is that being confirmed rather than assumed.

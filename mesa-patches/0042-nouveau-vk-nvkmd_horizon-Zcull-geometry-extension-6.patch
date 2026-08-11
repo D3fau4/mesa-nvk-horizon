@@ -1,7 +1,7 @@
-From bf1007c0fe5a7ce517c72c68492304070884969b Mon Sep 17 00:00:00 2001
+From be3100d265707eb8e5245b925c2d734302c37189 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:50:28 +0000
-Subject: [PATCH 42/79] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
+Subject: [PATCH 42/81] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
 
 has_zcull_info was hardcoded false, on the grounds that Zcull "belongs
 to the channel and nothing in Phase 4 uses it". The query is a device

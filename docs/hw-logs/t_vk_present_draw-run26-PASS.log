@@ -1,0 +1,233 @@
+== t_vk_present_draw ==
+  note horizon-build-id 2026-08-11T08:55:10.215Z ccff405-dirty mesa:4cb4b85
+  note this test owns the display: no console was started, and this file is the whole record
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   instance extension list fits (3 asked for)
+  ok   instance extension list fits (3 asked for)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x7dfbdb92a0: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x7dfbdb92a0: up, syncpt=26 initial=2270910 zcull=off
+[horizon_gpu:I] channel 0x7dfbe0a010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x7dfbe0a010: up, syncpt=27 initial=78838 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  ok   every window-system entry point resolved
+  ok   nwindowGetDefault() returned a valid window
+  ok   vkCreateViSurfaceNN over the default window -> VK_SUCCESS
+  ok   A: surface capabilities -> VK_SUCCESS
+  note A: the surface is 1280x720, image count 2..4; operation mode 0 (0 handheld, 1 docked)
+  ok   A: the surface's currentExtent is a real size
+  ok   A: the surface offers 4 format(s) -> VK_SUCCESS
+  note A: presenting in VkFormat 44 (B8G8R8A8_UNORM, the one the report was taken in)
+  ok   vkCreateImage(37, 1280x720x1, 1 mip, 1 layer, optimal) -> VK_SUCCESS
+  ok   a device-local memory type the image accepts
+  ok   vkAllocateMemory(image, 0x3c0000 align 0x20000) -> VK_SUCCESS
+  ok   vkBindImageMemory -> VK_SUCCESS
+  ok   vkCreateBuffer(0x384000) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x384000, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   the texture's staging buffer is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(uploading the texture) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(uploading the texture) -> VK_SUCCESS
+  ok   vkCreateImageView(texture) -> VK_SUCCESS
+  ok   vkCreateSampler(linear) -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets -> VK_SUCCESS
+  ok   the fullscreen blit: vkCreateShaderModule(vertex) -> VK_SUCCESS
+  ok   the fullscreen blit: vkCreateShaderModule(fragment) -> VK_SUCCESS
+  ok   the fullscreen blit: vkCreatePipelineLayout -> VK_SUCCESS
+  ok   the fullscreen blit: vkCreateGraphicsPipelines -> VK_SUCCESS
+  note the draw frames sample a 1280x720 RGBA8 texture (3600 KiB), uploaded once, through a linear sampler
+  ok   A: the texture and the blit pipeline were built
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   B1 GPU cost, clear: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   B1 GPU cost, clear: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   B1 GPU cost, clear: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   B1 GPU cost, clear: the acquire fence -> VK_SUCCESS
+  ok   B1 GPU cost, clear: image view 0 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: command buffer 0 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: semaphore 0 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: fence 0 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: image view 1 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: command buffer 1 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: semaphore 1 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: fence 1 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: image view 2 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: command buffer 2 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: semaphore 2 -> VK_SUCCESS
+  ok   B1 GPU cost, clear: fence 2 -> VK_SUCCESS
+  note B1 GPU cost, clear: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   B1 GPU cost, clear: 60 frame(s) presented in 956 ms
+  note B1 GPU cost, clear [clear x0, FIFO, 3 images]: interval mean 16191 us over 59 (min 1092, max 19055), 56 within 10% of a refresh; acquire mean 14582 us (max 17167), present mean 168 us; 0 SUBOPTIMAL
+  note B1 GPU cost, clear: submit to fence, mean 1193 us over 60 (min 837, max 2052)
+  ok   B1 GPU cost, clear: every one of the 3 images was acquired (mask 0x7)
+  ok   B1 GPU cost, clear: the device is idle before teardown -> VK_SUCCESS
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   B2 GPU cost, one draw: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: the acquire fence -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: image view 0 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: command buffer 0 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: semaphore 0 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: fence 0 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: image view 1 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: command buffer 1 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: semaphore 1 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: fence 1 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: image view 2 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: command buffer 2 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: semaphore 2 -> VK_SUCCESS
+  ok   B2 GPU cost, one draw: fence 2 -> VK_SUCCESS
+  note B2 GPU cost, one draw: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   B2 GPU cost, one draw: 60 frame(s) presented in 955 ms
+  note B2 GPU cost, one draw [draw x1, FIFO, 3 images]: interval mean 16152 us over 59 (min 2046, max 17124), 57 within 10% of a refresh; acquire mean 13932 us (max 14824), present mean 170 us; 0 SUBOPTIMAL
+  note B2 GPU cost, one draw: submit to fence, mean 1814 us over 60 (min 1657, max 2536)
+  ok   B2 GPU cost, one draw: every one of the 3 images was acquired (mask 0x7)
+  ok   B2 GPU cost, one draw: the device is idle before teardown -> VK_SUCCESS
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   B3 GPU cost, three draws: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: the acquire fence -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: image view 0 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: command buffer 0 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: semaphore 0 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: fence 0 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: image view 1 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: command buffer 1 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: semaphore 1 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: fence 1 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: image view 2 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: command buffer 2 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: semaphore 2 -> VK_SUCCESS
+  ok   B3 GPU cost, three draws: fence 2 -> VK_SUCCESS
+  note B3 GPU cost, three draws: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   B3 GPU cost, three draws: 60 frame(s) presented in 959 ms
+  note B3 GPU cost, three draws [draw x3, FIFO, 3 images]: interval mean 16210 us over 59 (min 3363, max 16983), 57 within 10% of a refresh; acquire mean 12798 us (max 13576), present mean 165 us; 0 SUBOPTIMAL
+  note B3 GPU cost, three draws: submit to fence, mean 3022 us over 60 (min 2451, max 3812)
+  ok   B3 GPU cost, three draws: every one of the 3 images was acquired (mask 0x7)
+  ok   B3 GPU cost, three draws: the device is idle before teardown -> VK_SUCCESS
+  note B: three draws cost 3022 us against one draw's 1814 us — it barely scales, so the cost is per frame and not in the drawing
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   C1 pacing, clear: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   C1 pacing, clear: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   C1 pacing, clear: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   C1 pacing, clear: the acquire fence -> VK_SUCCESS
+  ok   C1 pacing, clear: image view 0 -> VK_SUCCESS
+  ok   C1 pacing, clear: command buffer 0 -> VK_SUCCESS
+  ok   C1 pacing, clear: semaphore 0 -> VK_SUCCESS
+  ok   C1 pacing, clear: fence 0 -> VK_SUCCESS
+  ok   C1 pacing, clear: image view 1 -> VK_SUCCESS
+  ok   C1 pacing, clear: command buffer 1 -> VK_SUCCESS
+  ok   C1 pacing, clear: semaphore 1 -> VK_SUCCESS
+  ok   C1 pacing, clear: fence 1 -> VK_SUCCESS
+  ok   C1 pacing, clear: image view 2 -> VK_SUCCESS
+  ok   C1 pacing, clear: command buffer 2 -> VK_SUCCESS
+  ok   C1 pacing, clear: semaphore 2 -> VK_SUCCESS
+  ok   C1 pacing, clear: fence 2 -> VK_SUCCESS
+  note C1 pacing, clear: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   C1 pacing, clear: 180 frame(s) presented in 2962 ms
+  note C1 pacing, clear [clear x0, FIFO, 3 images]: interval mean 16549 us over 179 (min 381, max 27499), 176 within 10% of a refresh; acquire mean 15634 us (max 26376), present mean 244 us; 0 SUBOPTIMAL
+  ok   C1 pacing, clear: every one of the 3 images was acquired (mask 0x7)
+  ok   C1 pacing, clear: the device is idle before teardown -> VK_SUCCESS
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   C2 pacing, three draws: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   C2 pacing, three draws: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   C2 pacing, three draws: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   C2 pacing, three draws: the acquire fence -> VK_SUCCESS
+  ok   C2 pacing, three draws: image view 0 -> VK_SUCCESS
+  ok   C2 pacing, three draws: command buffer 0 -> VK_SUCCESS
+  ok   C2 pacing, three draws: semaphore 0 -> VK_SUCCESS
+  ok   C2 pacing, three draws: fence 0 -> VK_SUCCESS
+  ok   C2 pacing, three draws: image view 1 -> VK_SUCCESS
+  ok   C2 pacing, three draws: command buffer 1 -> VK_SUCCESS
+  ok   C2 pacing, three draws: semaphore 1 -> VK_SUCCESS
+  ok   C2 pacing, three draws: fence 1 -> VK_SUCCESS
+  ok   C2 pacing, three draws: image view 2 -> VK_SUCCESS
+  ok   C2 pacing, three draws: command buffer 2 -> VK_SUCCESS
+  ok   C2 pacing, three draws: semaphore 2 -> VK_SUCCESS
+  ok   C2 pacing, three draws: fence 2 -> VK_SUCCESS
+  note C2 pacing, three draws: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   C2 pacing, three draws: 180 frame(s) presented in 2958 ms
+  note C2 pacing, three draws [draw x3, FIFO, 3 images]: interval mean 16527 us over 179 (min 430, max 23417), 176 within 10% of a refresh; acquire mean 15605 us (max 22428), present mean 250 us; 0 SUBOPTIMAL
+  ok   C2 pacing, three draws: every one of the 3 images was acquired (mask 0x7)
+  ok   C2 pacing, three draws: the device is idle before teardown -> VK_SUCCESS
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 1)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   C3 pacing, clear again: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   C3 pacing, clear again: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   C3 pacing, clear again: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   C3 pacing, clear again: the acquire fence -> VK_SUCCESS
+  ok   C3 pacing, clear again: image view 0 -> VK_SUCCESS
+  ok   C3 pacing, clear again: command buffer 0 -> VK_SUCCESS
+  ok   C3 pacing, clear again: semaphore 0 -> VK_SUCCESS
+  ok   C3 pacing, clear again: fence 0 -> VK_SUCCESS
+  ok   C3 pacing, clear again: image view 1 -> VK_SUCCESS
+  ok   C3 pacing, clear again: command buffer 1 -> VK_SUCCESS
+  ok   C3 pacing, clear again: semaphore 1 -> VK_SUCCESS
+  ok   C3 pacing, clear again: fence 1 -> VK_SUCCESS
+  ok   C3 pacing, clear again: image view 2 -> VK_SUCCESS
+  ok   C3 pacing, clear again: command buffer 2 -> VK_SUCCESS
+  ok   C3 pacing, clear again: semaphore 2 -> VK_SUCCESS
+  ok   C3 pacing, clear again: fence 2 -> VK_SUCCESS
+  note C3 pacing, clear again: 3 image(s), 1280x720, FIFO, zero-copy
+  ok   C3 pacing, clear again: 180 frame(s) presented in 2963 ms
+  note C3 pacing, clear again [clear x0, FIFO, 3 images]: interval mean 16553 us over 179 (min 631, max 28066), 176 within 10% of a refresh; acquire mean 15641 us (max 26753), present mean 242 us; 0 SUBOPTIMAL
+  ok   C3 pacing, clear again: every one of the 3 images was acquired (mask 0x7)
+  ok   C3 pacing, clear again: the device is idle before teardown -> VK_SUCCESS
+  ok   C: C1 pacing, clear is paced at the refresh — 176 of 179 intervals within 10% of 16666 us (>= 90% needed)
+  ok   C: C3 pacing, clear again is paced at the refresh — 176 of 179 intervals within 10% of 16666 us (>= 90% needed)
+  note D: MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1 for this run — the "wsi_horizon: acquire over ..." lines below split the acquire's wait into the dequeue and the release fence
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2534]: wsi_horizon: zero-copy: the swapchain images are the scanout buffers (3 images, 1280x720, swap interval 0)
+  note vk info [../../mesa/src/vulkan/wsi/wsi_horizon.c:2601]: wsi_horizon: layout: stride 5120 B (1280 px), block height 32 GOBs (log2 5, 256 rows), kind 0xfe, block-linear, display GOB order yes, offset 0 B, allocation 3932160 B, scanout 3932160 B
+  ok   D pacing, three draws, IMMEDIATE: vkCreateSwapchainKHR -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: the swapchain has 3 image(s) -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: vkGetSwapchainImagesKHR(list) -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: the acquire fence -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: image view 0 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: command buffer 0 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: semaphore 0 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: fence 0 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: image view 1 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: command buffer 1 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: semaphore 1 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: fence 1 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: image view 2 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: command buffer 2 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: semaphore 2 -> VK_SUCCESS
+  ok   D pacing, three draws, IMMEDIATE: fence 2 -> VK_SUCCESS
+  note D pacing, three draws, IMMEDIATE: 3 image(s), 1280x720, IMMEDIATE, zero-copy
+MESA: info: wsi_horizon: acquire over 1010 ms: 124 acquire(s), mean 7431 us (max 15462), of which 95 us waiting for a free buffer over 0 dequeue round(s) and 7335 us on the compositor's release fence
+  ok   D pacing, three draws, IMMEDIATE: 180 frame(s) presented in 1477 ms
+  note D pacing, three draws, IMMEDIATE [draw x3, IMMEDIATE, 3 images]: interval mean 8253 us over 179 (min 601, max 21838), 86 within 10% of a refresh; acquire mean 7496 us (max 21450), present mean 228 us; 0 SUBOPTIMAL
+  ok   D pacing, three draws, IMMEDIATE: every one of the 3 images was acquired (mask 0x7)
+  ok   D pacing, three draws, IMMEDIATE: the device is idle before teardown -> VK_SUCCESS
+  ok   E: a drawn frame arrives no later than the slower of the display and the GPU allows — 16527 us against a bound of 33333 us (GPU 3022 us, refresh 16666 us, one refresh of slack)
+  note SUMMARY: clear 16549/16553 us before/after, three draws 16527 us FIFO and 8253 us IMMEDIATE; GPU cost clear 1193 us, one draw 1814 us, three draws 3022 us
+RESULT: PASS (183/183)
+  note the run is finished; press + to exit (there is no console to show this)

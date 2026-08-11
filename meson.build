@@ -406,6 +406,12 @@ nvk_tests = [
   # run, so the verdict is a ratio on one console rather than a number
   # carried between runs.
   't_vk_immediate',
+  # Phase 6, and the one shape every other presenting test leaves out: a
+  # frame a graphics pipeline drew. The four tests above present a
+  # vkCmdClearColorImage on purpose, so nothing here had ever put the 3D
+  # pipeline's ROP into a scanout surface, and a report of 157 ms frames
+  # from an application that does had no control to be measured against.
+  't_vk_present_draw',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -460,6 +466,11 @@ nvk_test_shaders = {
   't_vk_suboptimal' : [],
   # None, for the same reason.
   't_vk_immediate' : [],
+  # Shared with t_vk_texture, and shared on purpose: the frame this test
+  # presents has to be a fullscreen textured blit that already works, or
+  # a slow frame here would be one more thing to rule out rather than a
+  # measurement. Same triangle, same sampler, a surface-sized texture.
+  't_vk_present_draw' : ['tex_vert_fullscreen', 'tex_frag_sample'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

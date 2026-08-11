@@ -1,7 +1,7 @@
-From b98047670ac9c4d0608a49a295dce24fe33d6d39 Mon Sep 17 00:00:00 2001
+From 5feab0ad405cb04de7fab9bceeca519aa768eb98 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 15:59:34 +0000
-Subject: [PATCH 67/79] vulkan/wsi: Horizon, one dequeue policy at every
+Subject: [PATCH 67/81] vulkan/wsi: Horizon, one dequeue policy at every
  timeout
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

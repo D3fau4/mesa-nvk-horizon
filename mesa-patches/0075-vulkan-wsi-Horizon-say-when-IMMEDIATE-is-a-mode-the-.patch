@@ -1,7 +1,7 @@
-From 3e49f16664f024f8e2cdee31a33bda437eba92fe Mon Sep 17 00:00:00 2001
+From adb7a9bb87eed9860ab700faa2a0d0f7f474fc81 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 17:58:09 +0200
-Subject: [PATCH 75/79] vulkan/wsi: Horizon, say when IMMEDIATE is a mode the
+Subject: [PATCH 75/81] vulkan/wsi: Horizon, say when IMMEDIATE is a mode the
  copy fallback cannot deliver
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)

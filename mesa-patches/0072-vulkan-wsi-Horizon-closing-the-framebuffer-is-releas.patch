@@ -1,7 +1,7 @@
-From ce335c80840235672bdc0b9beb24164445126ee3 Mon Sep 17 00:00:00 2001
+From 1703e4c8967c00554a9ebb1c446b7d87e4c38373 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Sun, 9 Aug 2026 22:03:32 +0200
-Subject: [PATCH 72/79] vulkan/wsi: Horizon, closing the framebuffer is
+Subject: [PATCH 72/81] vulkan/wsi: Horizon, closing the framebuffer is
  releasing the window
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)

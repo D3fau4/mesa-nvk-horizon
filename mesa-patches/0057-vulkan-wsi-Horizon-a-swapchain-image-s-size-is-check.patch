@@ -1,7 +1,7 @@
-From 535a2c4010e1222bda40ca150342a22567b7d026 Mon Sep 17 00:00:00 2001
+From ac9dea70d7846c7423dcac636b08de8864fedb02 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:50:31 +0000
-Subject: [PATCH 57/79] vulkan/wsi: Horizon, a swapchain image's size is
+Subject: [PATCH 57/81] vulkan/wsi: Horizon, a swapchain image's size is
  checked into 32 bits
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From 4c141afa59a2c362286201a243bd2f1ba06d9737 Mon Sep 17 00:00:00 2001
+From 6fe6f0dddbae9c515b3bd7c93245e420cccbb9c3 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 13:04:44 +0000
-Subject: [PATCH 59/79] vulkan/wsi: Horizon, a full BufferQueue does not always
+Subject: [PATCH 59/81] vulkan/wsi: Horizon, a full BufferQueue does not always
  say WOULD_BLOCK
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

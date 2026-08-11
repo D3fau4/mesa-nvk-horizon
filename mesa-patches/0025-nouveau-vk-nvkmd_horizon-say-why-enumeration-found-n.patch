@@ -1,7 +1,7 @@
-From 2a0f8c296b0aaafa76d9b74eaa7399001c55af56 Mon Sep 17 00:00:00 2001
+From a748b5efebb30b4e9f74245e1754dc9d92e53c87 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 14:12:46 +0000
-Subject: [PATCH 25/79] nouveau/vk: nvkmd_horizon, say why enumeration found no
+Subject: [PATCH 25/81] nouveau/vk: nvkmd_horizon, say why enumeration found no
  GPU
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
