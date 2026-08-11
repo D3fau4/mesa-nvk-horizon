@@ -78,6 +78,7 @@ whatever mechanism your launcher offers for setting the environment.
 | `HORIZON_GPU_SYNC` | `1` | Debug-synchronous mode: wait on the CPU after every submit. This is the *only* sanctioned way to insert those waits — the driver never does it on its own — and it makes an async-ordering bug reproducible at the cost of all the performance. |
 | `HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE` | `1` | Accept a syncpoint baseline the layer did not establish itself. Diagnostic; see [`synchronization.md`](synchronization.md). |
 | `MESA_VK_WSI_HORIZON_FORCE_COPY` | `1` | Force the copy fallback instead of the zero-copy present path. Both paths are real and each names itself in the log; this is how you exercise the one the format/tiling combination would not have chosen. |
+| `MESA_VK_WSI_HORIZON_ACQUIRE_STATS` | `1` | One line a second saying where the zero-copy acquire's wait went: how much of it was spent asking a BufferQueue that had no buffer, and how much inside `nvMultiFenceWait` on the fence the compositor released the slot with. The two mean opposite things — the first is a consumer that has not handed a buffer back, the second is one that handed it back and had not finished reading it — and from outside the driver they are one number. Off by default: a per-second line from inside `vkAcquireNextImageKHR` is not something an application should pay for or read. |
 | `NVK_DEBUG` | see NVK | Upstream NVK's own debug flags. |
 
 `T_VULKAN_DEBUG_SYNC` is **not** one of these — it is a compile-time `#define` in
