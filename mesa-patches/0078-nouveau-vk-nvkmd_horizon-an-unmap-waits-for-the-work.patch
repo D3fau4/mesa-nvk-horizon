@@ -1,4 +1,4 @@
-From bd14ab777de7a9119963b552f9e527a8c436386e Mon Sep 17 00:00:00 2001
+From 6c1812fcacefefe284756a242d73f871f90270c8 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 19:50:01 +0000
 Subject: [PATCH 78/78] nouveau/vk: nvkmd_horizon, an unmap waits for the work
@@ -59,26 +59,35 @@ Why: on every other nvkmd backend an unbind goes through the kernel's
  last one, which runs nvkmd_horizon_mem_free -> nvkmd_va_free -> a wait
  for the GPU. On the submit thread that would be the unconditional stall
  rejected design 6 forbids, arrived at sideways.
-Evidence: HOST AND STATIC ONLY -- NO CONSOLE HAS RUN THIS, and the full
- cross link had not finished when this was committed.
+Evidence: CROSS BUILD ONLY -- NO CONSOLE HAS RUN THIS.
+ `scripts/ci-build-archives.sh`, exit 0, in the mesa-nvk-horizon toolchain
+ image over devkitA64 against Mesa 26.1.6 + this 78-patch series. All four
+ files compile into libnvk.a with no warnings --
+ "[862/878] Compiling C object
+ src/nouveau/vulkan/libnvk.a.p/nvkmd_horizon_nvkmd_horizon_dev.c.o",
+ and [867/878] _defer.c.o, [870/878] _ctx.c.o, [873/878] _va.c.o -- and
+ the run ends "ci-build-archives: OK -- every archive built, 35 .nro link
+ them, and the dispatch and TLS gates ran against them. this is a CROSS
+ BUILD; no console has run any of it."
+ check-dispatch-complete: OK (825 entry points named, 234 core, 1 allowed
+ absence). check-tls-relocs: OK (3 object(s) use TLS, all with
+ relocations, 350 scanned).
  The defect is visible by reading: before this patch,
  `grep -n 'fence\|retire\|reap' nvkmd/horizon/nvkmd_horizon_va.c`
  returned nothing -- the file that unmaps had no reference to completion
  of any kind, while horizon_gpu/vm.h:95-98 requires one of its caller.
  The reachability that decides where the fix goes was read out of the
- tree at mesa-26.1.6 + the 77-patch series: nvkmd_horizon_pdev.c:435
+ tree at mesa-26.1.6 + the series: nvkmd_horizon_pdev.c:435
  `.has_sparse = false`, nvk_physical_device.c:1634 derives
  VK_QUEUE_SPARSE_BINDING_BIT from it, nvk_queue.c:436 creates bind_ctx
  only under that bit, and all four nvkmd_ctx_bind callers
  (nvk_image.c:1837,1935,2005 and nvk_buffer.c:336) use queue->bind_ctx
  -- so nvkmd_horizon_ctx_bind and nvkmd_horizon_va_unbind do not run
  here at all, and nvkmd_horizon_va_free is the path that does.
- `scripts/run-host-tests.sh`: RESULT: PASS on all six suites, 132/132
- (h_align 20/20, h_va_space 21/21, h_syncpt_math 30/30, h_cmds 39/39,
- h_status 14/14, h_log 8/8) -- a no-regression gate, not coverage of
- this code, which lives in Mesa and cannot be reached from there.
- check-layering, check-no-abs-paths, check-history-intact and
- check-mesa-test-parity all report OK.
+ `scripts/run-host-tests.sh`: RESULT: PASS on all six suites, 132/132 --
+ a no-regression gate, not coverage of this code, which lives in Mesa
+ and cannot be reached from there. check-layering, check-no-abs-paths,
+ check-history-intact and check-mesa-test-parity all report OK.
 Upstream: no -- every other backend gets this ordering from the kernel's
  VM_BIND queue, which this platform does not have.
 ---
