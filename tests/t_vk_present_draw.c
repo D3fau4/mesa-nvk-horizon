@@ -1190,11 +1190,29 @@ int run_test(test_ctx *t)
    /* D — the reporter's configuration: three draws under IMMEDIATE.   */
    /* ---------------------------------------------------------------- */
 
+   /* THE METER IS TURNED ON HERE, AND FROM INSIDE THE PROCESS BECAUSE
+    * THERE IS NOWHERE ELSE. Nothing launches homebrew with an
+    * environment, so MESA_VK_WSI_HORIZON_ACQUIRE_STATS can only be set
+    * by the application itself — and it has to be set before
+    * vkCreateSwapchainKHR, which is where the swapchain reads it.
+    *
+    * What it prints goes to stderr, which testfw's main() has dup2'd
+    * onto this test's log, so the split lands in the same file as the
+    * numbers below it and can be read against them. On for this section
+    * only: the other runs are measurements of a driver that is not
+    * logging once a second. */
+   setenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS", "1", 1);
+   t_note(t, "D: MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1 for this run — the "
+             "\"wsi_horizon: acquire over ...\" lines below split the "
+             "acquire's wait into the dequeue and the release fence");
+
    pd_stats imm_draw;
    pd_measure(&fw, surface, &content, format, extent,
               VK_PRESENT_MODE_IMMEDIATE_KHR, PD_FRAME_DRAW, PD_DRAWS_APP,
               PD_FRAMES, PD_RUN_BUDGET_NS, false,
               "D pacing, three draws, IMMEDIATE", &imm_draw);
+
+   unsetenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS");
 
    /* ---------------------------------------------------------------- */
    /* E — the relation the whole file exists for.                      */
