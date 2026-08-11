@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-10
-**Branch:** `claude/focused-dijkstra-3wnhix`
+**Last updated:** 2026-08-11
+**Branch:** `main`
 
 ---
 
@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Next concrete task** | **Run `t_vk_present_draw` on a console, and run it with `MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1`.** Both are new on 2026-08-11 and both are cross-build-only; see the entry below. The test is the first thing in this project to put a graphics pipeline into a scanout image, and it prints the one number the 157 ms report never contained — what the GPU costs per frame. *Then* **run `t_vk_suboptimal` section D with somebody docking the console.** Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); GitHub Actions CI now
 cross-builds on every push, and a `v*` tag publishes a package (2026-08-10, see the entry
 below this table). **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
@@ -29,6 +29,116 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## The 6.4 Hz report: what it is not, and the two things built for it (2026-08-11)
+
+A Vulkan application presenting to the default window through `VK_NN_vi_surface`
+reports **157 ms per frame** — 6.4 fps — at 1280x720 with three images on the
+zero-copy path, handheld, under hbmenu title takeover. Its own instrumentation
+puts 0.6 ms in command recording, 0.1 ms in `vkQueueSubmit` and 0.3 ms in
+`vkQueuePresentKHR`. The report reads the stability of that total as an external
+pacer releasing buffers at 6.4 Hz.
+
+**Nothing has been fixed and nothing has been reproduced.** What follows is one
+argument from the reporter's own numbers, one gap in this project's evidence, and
+two pieces of code built to close it. Every number below that is not the
+reporter's own is a cross build.
+
+### The four measurements do not describe a pacer
+
+| configuration | frame total |
+|---|---|
+| IMMEDIATE, wait in `vkAcquireNextImageKHR` | 157 ms |
+| FIFO, wait in the first draw | 157 ms |
+| `MESA_VK_WSI_HORIZON_FORCE_COPY=1` | **183 ms** |
+
+The fourth row is the one that decides it. Under an independent 157 ms pacer the
+copy fallback's extra work — a row copy plus libnx's block-linear swizzle — lands
+inside a wait the loop was going to spend anyway, and the frame total does not
+move: `wsi_horizon_acquire_fallback` returns immediately and the block happens in
+`framebufferBegin`, so the release rate, not the loop, sets the period. The total
+moved by 26 ms. **That is a serial link in a dependency chain, not a clock.**
+
+Both paths were configured with the same queue depth, so the comparison is
+apples to apples: `wsi_horizon_init_fallback` creates its Framebuffer with
+`MIN2(image_count, WSI_HORIZON_MAX_FB_IMAGES)`, i.e. three.
+
+The same 26 ms also refutes the report's third hypothesis — that something walks
+the scanout buffer with the CPU on uncached memory at ~25 MB/s. That 26 ms *is* a
+full CPU pass over a buffer of exactly that size (3932160 B), i.e. about
+150 MB/s, and it includes the swizzle, so the real traffic is roughly double. And
+on the zero-copy path nothing touches the buffer with the CPU at all: `memcpy`
+and `wsi_image::cpu_map` appear in `wsi_horizon.c` only inside
+`wsi_horizon_present_fallback`.
+
+### The gap in this project's evidence, and it is ours
+
+These two sets were **disjoint** until today:
+
+```
+tests that draw    : t_vk_caps t_vk_depth t_vk_format t_vk_texture t_vk_triangle
+tests that present : t_vk_immediate t_vk_suboptimal t_vk_swapchain t_vk_wsi_mt
+```
+
+Every presenting test's frame is a `vkCmdClearColorImage` — `t_vk_swapchain.c:436`,
+`t_vk_immediate.c:535`, `t_vk_wsi_mt.c:630`, `t_vk_suboptimal.c:398` — and the
+pattern frames are a buffer-to-image copy. `t_vk_triangle` is 64x64 off-screen. So
+**no test in this tree has ever driven the 3D pipeline's ROP into a scanout
+surface**, and "three images present 90 of 90 at a mean of exactly 16666 us"
+covers clears and copies only. "3 images vs 2" as a candidate is separately
+already closed by run 16, which measured three.
+
+### What was built
+
+**`tests/t_vk_present_draw.c`** — a presented frame a graphics pipeline drew: one
+fullscreen textured triangle sampling a surface-sized RGBA8 texture, the shape of
+a guest-output blit. Sections B (submit-to-fence cost on the scanout image
+itself, clear / one draw / three draws), C (pacing, pipelined, clear then draw
+then clear), D (three draws under IMMEDIATE — the reporter's exact
+configuration), E (the relation). E is the check the file exists for:
+
+> a presented interval must be no larger than `max(refresh, GPU time)` plus one
+> refresh of slack
+
+A console where the GPU costs 1 ms and frames arrive 157 ms apart **fails** it and
+names the presentation engine; a console where the GPU costs 145 ms **passes** it
+and section B is then the finding. Neither is assumed. The clear runs are asserted
+to be paced at the refresh *first*, because a run where the control is not paced
+is not interpretable. Every run is capped at four seconds as well as 180 frames —
+at 157 ms a frame, 180 frames is 28 seconds and six runs is three minutes.
+
+**`mesa-patches/0076`** — `MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1`, one line a second
+splitting the zero-copy acquire's wait into the two things it can be: the dequeue
+loop (the consumer has not handed a buffer back) and `nvMultiFenceWait` on the
+release fence (it did, and had not finished reading it). From outside the driver
+those are one number. Off by default, two adds per acquire when off.
+
+### What was actually run
+
+| what | result |
+|---|---|
+| `horizon_ninja -C build/mesa-nvk src/vulkan/wsi/libvulkan_wsi.a` | compiles and links clean |
+| `horizon_ninja -C build/meson` | **89/89 targets, 34 `.nro`**, including `t_vk_present_draw.nro` |
+| `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all OK |
+| `check-dispatch-complete.sh` | OK (825 entry points named, 234 core, 1 allowed absence) |
+| `check-tls-relocs.sh` | OK |
+| `scripts/run-host-tests.sh` | **not run** — no host `cc` on this machine. Neither change touches `horizon/` or `compat/`, which is what those suites cover |
+
+**No console has run either of them.** The 157 ms and 139.6 ms are the reporter's
+application-side numbers, not this test's output.
+
+### One thing found on the way, and it is about this working tree
+
+`scripts/apply-mesa-patches.sh --list` refuses here: `mesa/` is a shallow checkout
+whose base is `6a02618 VERSION: bump for 26.1.5`, while `toolchain/versions.env`
+pins `MESA_COMMIT=ffa422e5…` (26.1.6). The entry below records 26.1.6 being taken
+and verified; **this working copy was never re-fetched**, so it is still building
+26.1.5 (`PACKAGE_VERSION="26.1.5"` in `build/mesa-nvk/build.ninja`). That does not
+affect patch 0076 — it touches only `wsi_horizon.c`, which patch 0053 adds and
+which the 26.1.5→26.1.6 delta does not contain — but `scripts/fetch-mesa.sh`
+followed by `scripts/apply-mesa-patches.sh` is owed before the next release build.
 
 ---
 
