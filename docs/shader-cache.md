@@ -183,12 +183,29 @@ groups of a `LocalSize 64` shader into a 64-word buffer — 4096 invocations, 40
 the end. Both are fixed, with a static check on `expect_word(0)` and a poisoned tail
 that a wrong dispatch size would disturb.
 
-**Still unmeasured**: that all 4096 output words are right (run 28 compared against
-the wrong array and printed only the first mismatch), and the actual saving — 646 µs
-is a warm create with no valid cold baseline beside it, because the driver's cache
-was already populated. The test now records the cold time in its marker and refuses
-to record one unless the driver itself reported `0 entries` at startup, so a single
-log will carry the comparison.
+### And it is correct in full — run 29, 2026-08-11
+
+`t_vk_cache` with those two bugs fixed, **`RESULT: PASS (44/44)`**
+(`docs/hw-logs/t_vk_cache-run29-PASS.log`):
+
+```
+ok   the expected-value function matches the shader (expect_word(0) = 0xa5c4d00d)
+ok   the cached shader's output: 4096/4096 words match
+ok   the words past the dispatch are untouched: 64/64 words are 0xdeadbeef
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+**Every one of the 4096 words**, from a shader NVK did not compile, and nothing
+written past the last invocation. `vkCreateComputePipelines` took 432 µs warm (646 µs
+in run 28 — the same operation, the difference is card noise).
+
+**Still unmeasured: what the cache saves.** Runs 28 and 29 both started with a
+populated driver cache, so neither had a cold `vkCreateComputePipelines` to put beside
+the warm one, and the test refused to record a warm number as a cold baseline —
+writing `0` to its marker and saying why. That guard is the design working; a guard
+that fires twice is a design problem, so a cold run now clears
+`sdmc:/mesa_shader_cache` itself rather than printing an instruction. The remaining
+step is one file: delete the marker, run twice.
 
 ## The driver identity, which is the part that could have been dangerous
 

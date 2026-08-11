@@ -1,0 +1,62 @@
+== t_vk_cache ==
+  note horizon-build-id 2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227
+  note this launch is WARM — this build has run here before for build 2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227
+  ok   GetInstanceProcAddr(vkCreateInstance)
+  ok   vkCreateInstance -> VK_SUCCESS
+  ok   VK_EXT_debug_utils entry points resolved
+  ok   vkCreateDebugUtilsMessengerEXT -> VK_SUCCESS
+  ok   every entry point resolved
+[horizon_gpu:I] device up: gm20b arch=0x120 impl=0xb rev=0xa1 gpc=1 tpc/gpc=2 big_page=0x20000 as_big_page=0x20000 va_bits=40
+WARNING: NVK is not a conformant Vulkan implementation, testing use only.
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+  ok   vkEnumeratePhysicalDevices -> VK_SUCCESS, 1 device(s)
+  ok   vkEnumeratePhysicalDevices(list) -> VK_SUCCESS
+  note device: NVIDIA gm20b (NVK gm20b) (api 1.3.354), 2 memory type(s)
+  ok   queue family count is 1
+  ok   a queue family with graphics and compute
+[horizon_gpu:I] channel 0x38be5ea490: created, syncpt id=26 (live channels now 1)
+[horizon_gpu:I] channel 0x38be5ea490: up, syncpt=26 initial=2542214 zcull=off
+[horizon_gpu:I] channel 0x38be63b010: created, syncpt id=27 (live channels now 2)
+[horizon_gpu:I] channel 0x38be63b010: up, syncpt=27 initial=279423 zcull=off
+  ok   vkCreateDevice -> VK_SUCCESS
+  ok   vkGetDeviceQueue
+  ok   vkCreateCommandPool -> VK_SUCCESS
+  note vkfw_init (instance + device + the disk cache being opened) took 295567 us
+  ok   the log could be scanned for what the driver opened
+  note the driver's own cache was already populated when this launch started
+  ok   vkCreateBuffer(0x4100) -> VK_SUCCESS
+  ok   a memory type with 0x2 that the buffer accepts
+  ok   vkAllocateMemory(0x4100, type 0) -> VK_SUCCESS
+  ok   vkBindBufferMemory -> VK_SUCCESS
+  ok   vkMapMemory -> VK_SUCCESS
+  ok   vkCreateShaderModule -> VK_SUCCESS
+  ok   vkCreateDescriptorSetLayout -> VK_SUCCESS
+  ok   vkCreatePipelineLayout -> VK_SUCCESS
+  ok   vkCreateComputePipelines -> VK_SUCCESS
+  note vkCreateComputePipelines took 432 us on a warm cache
+  ok   vkCreateDescriptorPool -> VK_SUCCESS
+  ok   vkAllocateDescriptorSets -> VK_SUCCESS
+  ok   poison target is mapped
+  ok   vkFlushMappedMemoryRanges -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the poison reached memory (4160/4160 words)
+  ok   vkAllocateCommandBuffers -> VK_SUCCESS
+  ok   vkBeginCommandBuffer -> VK_SUCCESS
+  ok   vkCreateFence(the cached shader's dispatch) -> VK_SUCCESS
+  ok   vkEndCommandBuffer -> VK_SUCCESS
+  ok   vkQueueSubmit -> VK_SUCCESS
+  ok   vkWaitForFences(the cached shader's dispatch) -> VK_SUCCESS
+  ok   vkInvalidateMappedMemoryRanges -> VK_SUCCESS
+  ok   the expected-value function matches the shader (expect_word(0) = 0xa5c4d00d, must be 0xa5c4d00d)
+  ok   host scratch for the expected words
+  ok   the cached shader's output: 4096/4096 words match
+  ok   the shader computes the right answer on a warm cache (0 of 4096 words wrong)
+  ok   the words past the dispatch are untouched: 64/64 words are 0xdeadbeef (all of them)
+  ok   the shader wrote nothing past its last invocation (0 of 64 tail words changed)
+MESA: info: disk shader cache:  hits = 2, misses = 0
+  ok   the log could be scanned for the driver's own account of the cache
+  ok   the driver reported its disk cache hit/miss counts — i.e. it had a disk cache at all
+  note no cold baseline on record, so the saving is not reported. Delete sdmc:/horizon_gpu_tests/t_vk_cache_launch.txt AND sdmc:/mesa_shader_cache, then run twice.
+  ok   a warm run reports a hit, not 'hits = 0' — the shader came off the card instead of being recompiled
+  note sdmc:/horizon_gpu_tests/t_vk_cache_launch.txt records this build. To measure cold again, delete it AND sdmc:/mesa_shader_cache — the driver's cache is what makes a create cheap, and the marker only remembers that this test ran.
+RESULT: PASS (44/44)

@@ -5,6 +5,33 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The shader off the card, correct in full
+
+### `t_vk_cache-run29-PASS.log`
+
+Run 29, 2026-08-11, `2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227`,
+`RESULT: PASS (44/44)`. What run 28 measured and could not prove:
+
+```
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+note vkCreateComputePipelines took 432 us on a warm cache
+ok   the cached shader's output: 4096/4096 words match
+ok   the words past the dispatch are untouched: 64/64 words are 0xdeadbeef
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+**Every one of the 4096 words**, from a shader NVK did not compile, plus a poisoned
+tail that a wrong dispatch would have disturbed and did not. Run 28's two failures
+were the test's, and this is the same test with them fixed.
+
+**What it still does not measure is the saving.** Line 26 says it: `the driver's own
+cache was already populated when this launch started`, so the run had no cold
+baseline to compare 432 µs against, and the test refused to invent one — it recorded
+`0` in its marker and said why. That refusal is the design working; it is also the
+second run in a row where the intended cold measurement did not happen because the
+driver's cache had to be deleted by hand first. The test now clears that directory
+itself on a cold run.
+
 ## NVK stops recompiling, and a test that read its own result wrong
 
 ### `t_vk_cache-run28-FAIL.log`

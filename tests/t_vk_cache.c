@@ -27,6 +27,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +94,60 @@ static uint32_t expect_word(uint32_t id)
 static uint64_t now_us(void)
 {
    return armTicksToNs(armGetSystemTick()) / 1000u;
+}
+
+/* Where the driver keeps its cache when nothing overrides it — the same
+ * string disk_cache_horizon.c builds from CACHE_DIR_NAME. Named here
+ * only so that a cold run can be made cold. */
+#define DRIVER_CACHE_DIR "sdmc:/mesa_shader_cache"
+
+/* Empty the driver's cache, so that a run calling itself cold is cold.
+ *
+ * WHY THE TEST DOES THIS INSTEAD OF ASKING. Runs 28 and 29 both intended
+ * a cold baseline and neither got one, because the marker file only
+ * records whether *this test* has run and the shader was already in the
+ * driver's cache from the run before. Printing "delete this directory
+ * first" put the correctness of a measurement in the hands of whoever
+ * remembered to read the instruction, twice, and twice it did not
+ * survive. A cold run now makes itself cold.
+ *
+ * WHAT IT COSTS: any shader another homebrew left here is recompiled
+ * once, the next time that homebrew runs. That is the whole downside of
+ * clearing a cache, and it is why this is acceptable for a test whose
+ * subject is the cache.
+ *
+ * Path operations, all of them on this thread and all of them before
+ * vkfw_init opens anything (blob_cache.h, CONCURRENCY). Returns how many
+ * files it removed, or -1 if the directory could not be read. */
+static int driver_cache_clear(test_ctx *t)
+{
+   DIR *d = opendir(DRIVER_CACHE_DIR);
+   struct dirent *e;
+   int removed = 0;
+
+   if (d == NULL) {
+      /* Absent is the state we wanted anyway. */
+      t_note(t, "%s does not exist; nothing to clear", DRIVER_CACHE_DIR);
+      return 0;
+   }
+
+   while ((e = readdir(d)) != NULL) {
+      char path[256];
+      size_t len = strlen(e->d_name);
+
+      /* Only what this driver writes. A stray file of somebody else's is
+       * none of this test's business. */
+      if (len < 5 || strcmp(e->d_name + len - 4, ".hzc") != 0)
+         continue;
+      if ((size_t)snprintf(path, sizeof(path), "%s/%s", DRIVER_CACHE_DIR,
+                           e->d_name) >= sizeof(path))
+         continue;
+      if (remove(path) == 0)
+         removed++;
+   }
+   closedir(d);
+
+   return removed;
 }
 
 /* The marker carries the build stamp AND the cold pipeline time, so a
@@ -163,6 +218,14 @@ int run_test(test_ctx *t)
                : "COLD — first run of this build on this console, "
                  "which is a pass",
           build_id);
+
+   /* A cold run makes itself cold, before the driver opens anything. */
+   if (!warm) {
+      int cleared = driver_cache_clear(t);
+      if (cleared > 0)
+         t_note(t, "cleared %d cache file(s) from %s so that this cold run "
+                   "measures a compile", cleared, DRIVER_CACHE_DIR);
+   }
 
    /* No MESA_SHADER_CACHE_DIR: the point is the path the driver uses on
     * its own. MESA_SHADER_CACHE_SHOW_STATS makes disk_cache_destroy
@@ -399,8 +462,8 @@ out:
 
    if (warm && cold_us == 0)
       t_note(t, "no cold baseline on record, so the saving is not "
-                "reported. Delete %s AND sdmc:/mesa_shader_cache, then run "
-                "twice.", MARKER_PATH);
+                "reported. Delete %s and run this test twice.",
+             MARKER_PATH);
 
    if (warm) {
       /* On a warm run NVK must have found the shader. "hits = 0" is the
@@ -428,15 +491,14 @@ out:
       record_us = cache_empty ? pipeline_us : 0;
       if (!cache_empty)
          t_note(t, "NOT recording a cold baseline: the driver's cache "
-                   "already held entries, so %llu us is not the cost of a "
-                   "compile. Delete sdmc:/mesa_shader_cache and run again.",
+                   "still held entries after this run cleared it, so "
+                   "%llu us is not the cost of a compile",
                 (unsigned long long)pipeline_us);
    }
    marker_write(build_id, record_us);
-   t_note(t, "%s records this build. To measure cold again, delete it AND "
-             "sdmc:/mesa_shader_cache — the driver's cache is what makes a "
-             "create cheap, and the marker only remembers that this test "
-             "ran.", MARKER_PATH);
+   t_note(t, "%s records this build. Delete it and run twice to measure "
+             "cold against warm again — the cold run clears %s itself, so "
+             "that is the only step.", MARKER_PATH, DRIVER_CACHE_DIR);
 
    return 0;
 }

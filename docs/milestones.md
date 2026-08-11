@@ -233,8 +233,10 @@ comes back and needs an answer then."*
       only in `mesa-patches/` must not read each other's entries. *Runs 26 and 27, A6 and
       B7: `did not match this driver build …; started over`.*
 - [x] **A shader compiled on one launch is not recompiled on the next, measured on HW.**
-      *Run 28: `disk shader cache: hits = 2, misses = 0`, on the driver's own cache
-      path with no overrides, `vkCreateComputePipelines` in 646 µs.* What that run did
-      **not** establish, and what a re-run must: that the whole of the shader's output
-      is correct (it verified one word, against a wrong expectation), and what the
-      saving actually is (it had no valid cold baseline).
+      *Runs 28 and 29: `disk shader cache: hits = 2, misses = 0`, on the driver's own
+      cache path with no overrides.* And correct: run 29 verified **4096 of 4096
+      output words** from a shader NVK did not compile, with a poisoned tail intact.
+- [ ] **What the cache saves, measured on HW**: a cold `vkCreateComputePipelines`
+      beside the warm one. Neither run had a cold baseline — the driver's cache
+      survived from the run before, and the test refused to record a warm number as
+      cold. A cold run now clears the cache directory itself.
