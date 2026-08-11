@@ -144,12 +144,18 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
 - **One process.** There is no inter-process lock, deliberately: Horizon runs one
   homebrew title at a time, and a lock file with no way to detect a stale holder would
   turn one crash into a permanently read-only cache.
-- **One writer per file within a process.** Two `VkInstance`s would open the same path
-  twice. Nothing in NVK does this today; if something does, it needs a
-  process-wide registry keyed by path.
+- ~~One writer per file within a process.~~ **Fixed after review.** Two `VkInstance`s
+  do resolve to the same path, and two independent stores over one file would each
+  keep their own append offset and index — the second overwriting the first's records.
+  `disk_cache_horizon.c` now keeps a process-wide registry keyed by path and hands out
+  refcounted references, so one file has one store and one lock. (It would not have
+  returned a *wrong* shader even then: `get()` re-reads the record header and compares
+  the key before it believes the index, so the failure mode was a cache that quietly
+  stopped working.)
 - **The store is not reentrant.** `disk_cache_horizon.c` serialises every call with a
-  `simple_mtx`, which also means `get()` waits behind a `put()` that is writing to the
-  SD card.
+  `simple_mtx` — one per open file, held in the registry entry, so caches sharing a
+  file share the lock. It also means `get()` waits behind a `put()` that is writing to
+  the SD card.
 - **`fsync` per entry.** Measured at ~5.3 ms on a console (run 27). Correct, on a
   background thread, and buying less than it appears to — see the results below.
 - **The ceiling is compiled in at 64 MiB.** Upstream defaults to 1 GiB, which is a
@@ -228,6 +234,9 @@ there are hundreds of pipelines and the per-shader compile is far larger than a
 64-invocation write of a multiply and an XOR — the ratio is a floor rather than a
 figure to quote.
 
+- **A read-only cache needs no write permission.** `read_only` opens with `"rb"`, so
+  a file or a card that genuinely denies writes still serves hits.
+
 ## The driver identity, which is the part that could have been dangerous
 
 On Horizon there is no dynamic loader, so NVK cannot read an ELF build id, and
@@ -242,10 +251,23 @@ mean the previous build's binaries handed to this build's hardware, with no erro
 and no line in any log.
 
 `scripts/gen-driver-id.sh` closes it: a SHA-256 over `MESA_COMMIT`, every patch in
-`mesa-patches/` and every `.c`/`.h` under `horizon/`, passed to Mesa as
-`-Dhorizon-driver-id` and mixed into `driver_build_sha`. It is a digest of sources and
-not a timestamp on purpose — a timestamp would cold-start the cache on every rebuild
-of unchanged source and would break reproducible builds.
+`mesa-patches/`, every `.c`/`.h` under `horizon/` and `compat/`, `toolchain/versions.env`
+(which pins the image and therefore the compiler and the Rust toolchain) and
+`toolchain/*.cross` (which carries `-march`, `-mtune`, `-mtp` and the rest of the
+code-generation flags). Passed to Mesa as `-Dhorizon-driver-id` and mixed into
+`driver_build_sha`. It is a digest of sources and not a timestamp on purpose — a
+timestamp would cold-start the cache on every rebuild of unchanged source and would
+break reproducible builds.
+
+What it still cannot see, said plainly: a toolchain substituted without telling the
+repository — a local `$DEVKITPRO` whose gcc differs from the pinned image's, or an
+image republished under the same tag. Sources, flags and `versions.env` would all be
+identical and the compiler would not. Closing that means either hashing the built
+driver (but the identity is needed to *configure* the build that produces it) or
+running the cross compiler at configure time (a container round-trip per configure).
+Neither is worth it for a hazard that requires deliberately building against an
+unpinned toolchain, and `scripts/print-toolchain-versions.sh` is what a build should be
+reported with.
 
 ## What has been shown, and what has not
 

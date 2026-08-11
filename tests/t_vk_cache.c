@@ -327,14 +327,18 @@ int run_test(test_ctx *t)
 
    if (warm && cold_us > 0) {
       /* THE NUMBER THE WHOLE FEATURE IS FOR, in one line of one log. */
+      /* Both fields guarded, not just the first. A warm run slower than
+       * its recorded cold one — noise, or a regression — makes
+       * cold_us - pipeline_us wrap as an unsigned, and the percentage
+       * would then be the headline number of this whole test reported as
+       * something astronomical. The check below fails either way, but
+       * the evidence beside it has to stay readable. */
+      uint64_t saved = cold_us > pipeline_us ? cold_us - pipeline_us : 0;
+
       t_note(t, "against %llu us when this build's cache was cold: "
                 "%llu us saved, %llu%% of the compile",
-             (unsigned long long)cold_us,
-             (unsigned long long)(cold_us > pipeline_us
-                                     ? cold_us - pipeline_us : 0),
-             (unsigned long long)(cold_us > 0
-                                     ? (cold_us - pipeline_us) * 100 / cold_us
-                                     : 0));
+             (unsigned long long)cold_us, (unsigned long long)saved,
+             (unsigned long long)(saved * 100 / cold_us));
       t_check(t, pipeline_us < cold_us,
               "a warm cache creates the pipeline faster than a cold one "
               "(%llu us against %llu us)",

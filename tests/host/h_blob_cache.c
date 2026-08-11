@@ -205,6 +205,36 @@ int main(void)
      * function to tell a good record from a bad one, so it is checked
      * against numbers that come from outside this repository first.
      * --------------------------------------------------------------- */
+    /* The 256 constants in crc32.c, regenerated here from the polynomial
+     * they are supposed to be and compared one by one.
+     *
+     * The table stopped being built at run time because a lazily built
+     * global is a data race, and the objection to writing it out was that
+     * nobody can check 256 numbers by reading them. Nobody has to: this
+     * is the check, and it runs every time the suite does. It reaches the
+     * table through horizon_crc32_update() one byte at a time — feeding a
+     * single byte b to a crc of 0 yields table[b] ^ 0, which is exactly
+     * the entry. */
+    {
+        uint32_t poly = 0xEDB88320u;
+        bool all = true;
+        uint32_t first_bad = 256;
+
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t want = i;
+            for (unsigned bit = 0; bit < 8; bit++)
+                want = (want & 1u) ? (poly ^ (want >> 1)) : (want >> 1);
+
+            uint8_t b = (uint8_t)i;
+            uint32_t got = horizon_crc32_update(0, &b, 1);
+            if (got != want && first_bad == 256) {
+                first_bad = i;
+                all = false;
+            }
+        }
+        H_CHECK(all, "all 256 table entries match the IEEE 802.3 polynomial");
+    }
+
     H_CHECK(horizon_crc32("", 0) == 0, "crc32 of nothing is 0");
     H_CHECK(horizon_crc32("123456789", 9) == 0xCBF43926u,
             "crc32 check value (the standard \"123456789\")");
@@ -363,6 +393,124 @@ int main(void)
                 "the key-only mark persists");
         H_CHECK(get_is(c, 12, 20), "and the data entry beside it does too");
         horizon_gpu_blob_cache_close(c);
+    }
+
+    /* ---------------------------------------------------------------
+     * ONE KEY CARRYING BOTH, which is where the two namespaces stop
+     * being a claim and start being a property.
+     *
+     * The index used to hold one kind per key, so put_key() then put()
+     * on the same key replaced the mark and has_key() went back to
+     * false — contradicting this module's own header and Mesa's
+     * disk_cache.h, which require the stored-key index to be
+     * independent of the cached entries. Nothing in NVK calls put_key(),
+     * and the earlier tests used a different key for each namespace, so
+     * nothing looked. A reviewer did.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+
+        key_for(77, k);
+
+        H_CHECK(c != NULL, "open for the both-halves case");
+        if (c != NULL) {
+            /* mark, then data */
+            H_CHECK(horizon_gpu_succeeded(
+                        horizon_gpu_blob_cache_put_key(c, k)), "put_key");
+            H_CHECK(put_n(c, 77, 128), "put() under the same key");
+            H_CHECK(horizon_gpu_blob_cache_has_key(c, k),
+                    "put() does not erase the key-only mark");
+            H_CHECK(get_is(c, 77, 128), "and the data is there beside it");
+
+            /* the other order, on a second key */
+            uint8_t k2[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+            key_for(78, k2);
+            H_CHECK(put_n(c, 78, 64), "put() first this time");
+            H_CHECK(horizon_gpu_succeeded(
+                        horizon_gpu_blob_cache_put_key(c, k2)),
+                    "put_key() under the same key");
+            H_CHECK(get_is(c, 78, 64), "put_key() does not erase the data");
+            H_CHECK(horizon_gpu_blob_cache_has_key(c, k2), "and the mark is set");
+
+            {
+                horizon_gpu_blob_cache_stats st;
+                horizon_gpu_blob_cache_get_stats(c, &st);
+                H_CHECK(st.entries == 2 && st.keys == 2,
+                        "two entries and two marks over two keys");
+            }
+
+            /* remove() drops the entry and leaves the mark: it is
+             * disk_cache_remove(), and a mark is not an entry. */
+            H_CHECK(horizon_gpu_succeeded(
+                        horizon_gpu_blob_cache_remove(c, k)), "remove");
+            H_CHECK(is_miss(c, 77), "the entry is gone");
+            H_CHECK(horizon_gpu_blob_cache_has_key(c, k),
+                    "and the key-only mark survived it");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_a();
+            H_CHECK(c != NULL, "reopen");
+            if (c != NULL) {
+                H_CHECK(horizon_gpu_blob_cache_has_key(c, k),
+                        "both halves survive a reopen: the mark");
+                H_CHECK(is_miss(c, 77), "and the removed entry stays removed");
+                H_CHECK(get_is(c, 78, 64) &&
+                            horizon_gpu_blob_cache_has_key(c, k2),
+                        "and the key carrying both comes back with both");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * The same, through a compaction — the rewrite has to carry two
+     * records for a key that has two, not one.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        const uint64_t cap = 16u * 1024u;
+        horizon_gpu_blob_cache *c =
+            open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+        uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+
+        key_for(900, k);
+        H_CHECK(c != NULL, "open with a ceiling, for the compaction case");
+        if (c != NULL) {
+            horizon_gpu_blob_cache_stats st;
+
+            /* Enough to force compactions, then the key that carries
+             * both halves LAST, so newest-first guarantees both of its
+             * records survive the budget. Asserting on a key that might
+             * legitimately have been evicted would be a check that
+             * cannot fail, and this file already has a comment about
+             * one of those. */
+            for (uint32_t i = 0; i < 80; i++)
+                put_n(c, i, 512);
+
+            H_CHECK(put_n(c, 900, 256), "the entry that must survive");
+            H_CHECK(horizon_gpu_succeeded(
+                        horizon_gpu_blob_cache_put_key(c, k)),
+                    "and the mark on the same key");
+
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            H_CHECK(st.compactions > 0, "it compacted");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+            H_CHECK(c != NULL, "and the compacted file reopens");
+            if (c != NULL) {
+                horizon_gpu_blob_cache_get_stats(c, &st);
+                H_CHECK(!st.was_reset && !st.was_truncated, "cleanly");
+                H_CHECK(get_is(c, 900, 256),
+                        "the newest key's entry survived the rewrite");
+                H_CHECK(horizon_gpu_blob_cache_has_key(c, k),
+                        "and so did its key-only mark — two records for "
+                        "one key, both carried");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
     }
 
     /* ---------------------------------------------------------------

@@ -1,4 +1,4 @@
-From 6f7568b260552d8be0c3d7153cf31647b7388624 Mon Sep 17 00:00:00 2001
+From 9eb5d4d5517e11ba2dcd949b45a7e6335d92aaaf Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:51:26 +0000
 Subject: [PATCH 81/81] util/disk_cache: add a Horizon backend
@@ -91,11 +91,11 @@ Upstream: no — it is a platform backend, named for its platform. The
  parts that are not platform-specific were split out into the two
  patches before this one so that they can go upstream on their own.
 ---
- src/util/disk_cache.c         |  65 ++++-
- src/util/disk_cache_horizon.c | 493 ++++++++++++++++++++++++++++++++++
- src/util/disk_cache_os.h      |  39 +++
- src/util/meson.build          |  34 ++-
- 4 files changed, 628 insertions(+), 3 deletions(-)
+ src/util/disk_cache.c         |  65 +++-
+ src/util/disk_cache_horizon.c | 592 ++++++++++++++++++++++++++++++++++
+ src/util/disk_cache_os.h      |  40 +++
+ src/util/meson.build          |  39 ++-
+ 4 files changed, 733 insertions(+), 3 deletions(-)
  create mode 100644 src/util/disk_cache_horizon.c
 
 diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
@@ -232,10 +232,10 @@ index 40bd6e5..0e251f4 100644
     return memcmp(entry, key, CACHE_KEY_SIZE) == 0;
 diff --git a/src/util/disk_cache_horizon.c b/src/util/disk_cache_horizon.c
 new file mode 100644
-index 0000000..4eb1901
+index 0000000..de21523
 --- /dev/null
 +++ b/src/util/disk_cache_horizon.c
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,592 @@
 +/*
 + * Copyright © 2026 mesa-nvk-horizon contributors
 + *
@@ -325,6 +325,40 @@ index 0000000..4eb1901
 +#define HORIZON_CACHE_MAX_SIZE (UINT64_C(64) * 1024 * 1024)
 +
 +/* ---------------------------------------------------------------- */
++/* One store per file, however many caches ask for it                */
++/* ---------------------------------------------------------------- */
++
++/* WHY THIS EXISTS. disk_cache_create() is called per physical device
++ * per instance, and every one of them on this GPU resolves to the same
++ * path. Two stores over one file is not a race that locking inside each
++ * of them can fix: each keeps its own append offset and its own index,
++ * so both append at what each believes is the end and the second
++ * overwrites the first, whose index then points at somebody else's
++ * record. Compaction makes it worse — one handle rewrites the file the
++ * other is indexing.
++ *
++ * It would not have returned a *wrong shader*: disk_cache_horizon_load_item
++ * goes through horizon_gpu_blob_cache_get(), which re-reads the record
++ * header and compares the key before it believes the index. So the
++ * failure mode was a cache that quietly stopped working rather than one
++ * that lied. That is still a defect, and the fix is the ordinary one —
++ * open each path once and hand out references.
++ *
++ * The lock is inside the reference and not in `struct disk_cache`,
++ * because it is the *store* that must be serialised, not the cache
++ * object: two caches sharing a store share its lock. */
++struct horizon_store_ref {
++   char *path;
++   horizon_gpu_blob_cache *store;
++   unsigned refcount;
++   simple_mtx_t lock;
++   struct horizon_store_ref *next;
++};
++
++static simple_mtx_t horizon_registry_lock = SIMPLE_MTX_INITIALIZER;
++static struct horizon_store_ref *horizon_registry;
++
++/* ---------------------------------------------------------------- */
 +/* Lifecycle                                                         */
 +/* ---------------------------------------------------------------- */
 +
@@ -398,8 +432,24 @@ index 0000000..4eb1901
 +   };
 +   horizon_gpu_blob_cache *store = NULL;
 +
++   simple_mtx_lock(&horizon_registry_lock);
++
++   /* Already open for this path? Share it. */
++   for (struct horizon_store_ref *ref = horizon_registry; ref != NULL;
++        ref = ref->next) {
++      if (strcmp(ref->path, cache->path) == 0) {
++         ref->refcount++;
++         cache->horizon_ref = ref;
++         simple_mtx_unlock(&horizon_registry_lock);
++         mesa_logi("disk cache: %s, shared with %u other cache object(s)",
++                   cache->path, ref->refcount - 1);
++         return true;
++      }
++   }
++
 +   horizon_gpu_result r = horizon_gpu_blob_cache_open(&config, &store);
 +   if (horizon_gpu_failed(r)) {
++      simple_mtx_unlock(&horizon_registry_lock);
 +      mesa_logw("disk cache: cannot open %s (%s); cache disabled",
 +                cache->path, horizon_gpu_status_str(r.status));
 +      return false;
@@ -418,20 +468,59 @@ index 0000000..4eb1901
 +   else
 +      mesa_logi("disk cache: %s, %u entries", cache->path, st.entries);
 +
-+   simple_mtx_init(&cache->horizon_lock, mtx_plain);
-+   cache->horizon_store = store;
++   struct horizon_store_ref *ref = calloc(1, sizeof(*ref));
++   char *path_copy = ref != NULL ? strdup(cache->path) : NULL;
++   if (ref == NULL || path_copy == NULL) {
++      free(ref);
++      free(path_copy);
++      horizon_gpu_blob_cache_close(store);
++      simple_mtx_unlock(&horizon_registry_lock);
++      mesa_logw("disk cache: out of memory registering %s; cache disabled",
++                cache->path);
++      return false;
++   }
++
++   ref->path = path_copy;
++   ref->store = store;
++   ref->refcount = 1;
++   simple_mtx_init(&ref->lock, mtx_plain);
++   ref->next = horizon_registry;
++   horizon_registry = ref;
++
++   cache->horizon_ref = ref;
++   simple_mtx_unlock(&horizon_registry_lock);
 +   return true;
 +}
 +
 +void
 +disk_cache_horizon_close(struct disk_cache *cache)
 +{
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return;
 +
-+   horizon_gpu_blob_cache_close(cache->horizon_store);
-+   cache->horizon_store = NULL;
-+   simple_mtx_destroy(&cache->horizon_lock);
++   cache->horizon_ref = NULL;
++
++   simple_mtx_lock(&horizon_registry_lock);
++   if (--ref->refcount > 0) {
++      simple_mtx_unlock(&horizon_registry_lock);
++      return;
++   }
++
++   for (struct horizon_store_ref **pp = &horizon_registry; *pp != NULL;
++        pp = &(*pp)->next) {
++      if (*pp == ref) {
++         *pp = ref->next;
++         break;
++      }
++   }
++   simple_mtx_unlock(&horizon_registry_lock);
++
++   horizon_gpu_blob_cache_close(ref->store);
++   simple_mtx_destroy(&ref->lock);
++   free(ref->path);
++   free(ref);
 +}
 +
 +/* ---------------------------------------------------------------- */
@@ -447,15 +536,17 @@ index 0000000..4eb1901
 +disk_cache_horizon_load_item(struct disk_cache *cache, const cache_key key,
 +                             size_t *size)
 +{
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return NULL;
 +
-+   simple_mtx_lock(&cache->horizon_lock);
++   simple_mtx_lock(&ref->lock);
 +   void *raw = NULL;
 +   size_t raw_size = 0;
 +   horizon_gpu_result r =
-+      horizon_gpu_blob_cache_get(cache->horizon_store, key, &raw, &raw_size);
-+   simple_mtx_unlock(&cache->horizon_lock);
++      horizon_gpu_blob_cache_get(ref->store, key, &raw, &raw_size);
++   simple_mtx_unlock(&ref->lock);
 +
 +   if (horizon_gpu_failed(r))
 +      return NULL;
@@ -505,7 +596,9 @@ index 0000000..4eb1901
 +{
 +   struct disk_cache *cache = dc_job->cache;
 +
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return false;
 +   if (dc_job->size == 0 || dc_job->size > UINT32_MAX)
 +      return false;
@@ -528,11 +621,11 @@ index 0000000..4eb1901
 +      return false;
 +   }
 +
-+   simple_mtx_lock(&cache->horizon_lock);
++   simple_mtx_lock(&ref->lock);
 +   horizon_gpu_result r =
-+      horizon_gpu_blob_cache_put(cache->horizon_store, dc_job->key, entry,
++      horizon_gpu_blob_cache_put(ref->store, dc_job->key, entry,
 +                                 compressed + HORIZON_ENTRY_PREFIX);
-+   simple_mtx_unlock(&cache->horizon_lock);
++   simple_mtx_unlock(&ref->lock);
 +
 +   free(entry);
 +
@@ -548,12 +641,14 @@ index 0000000..4eb1901
 +void
 +disk_cache_horizon_remove_item(struct disk_cache *cache, const cache_key key)
 +{
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return;
 +
-+   simple_mtx_lock(&cache->horizon_lock);
-+   (void)horizon_gpu_blob_cache_remove(cache->horizon_store, key);
-+   simple_mtx_unlock(&cache->horizon_lock);
++   simple_mtx_lock(&ref->lock);
++   (void)horizon_gpu_blob_cache_remove(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
 +}
 +
 +/* disk_cache.c keeps the put_key()/has_key() marks in an mmap'd index
@@ -564,23 +659,27 @@ index 0000000..4eb1901
 +void
 +disk_cache_horizon_put_key(struct disk_cache *cache, const cache_key key)
 +{
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return;
 +
-+   simple_mtx_lock(&cache->horizon_lock);
-+   (void)horizon_gpu_blob_cache_put_key(cache->horizon_store, key);
-+   simple_mtx_unlock(&cache->horizon_lock);
++   simple_mtx_lock(&ref->lock);
++   (void)horizon_gpu_blob_cache_put_key(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
 +}
 +
 +bool
 +disk_cache_horizon_has_key(struct disk_cache *cache, const cache_key key)
 +{
-+   if (cache->horizon_store == NULL)
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
 +      return false;
 +
-+   simple_mtx_lock(&cache->horizon_lock);
-+   bool found = horizon_gpu_blob_cache_has_key(cache->horizon_store, key);
-+   simple_mtx_unlock(&cache->horizon_lock);
++   simple_mtx_lock(&ref->lock);
++   bool found = horizon_gpu_blob_cache_has_key(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
 +
 +   return found;
 +}
@@ -730,7 +829,7 @@ index 0000000..4eb1901
 +
 +#endif /* ENABLE_SHADER_CACHE */
 diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
-index 8950839..0296a66 100644
+index 8950839..ab616d5 100644
 --- a/src/util/disk_cache_os.h
 +++ b/src/util/disk_cache_os.h
 @@ -25,6 +25,7 @@
@@ -754,22 +853,23 @@ index 8950839..0296a66 100644
  };
  
  struct disk_cache {
-@@ -105,6 +112,14 @@ struct disk_cache {
+@@ -105,6 +112,15 @@ struct disk_cache {
  
     /* Internal RO FOZ cache for combined use of RO and RW caches. */
     struct disk_cache *foz_ro_cache;
 +
 +#if DETECT_OS_HORIZON
-+   /* DISK_CACHE_HORIZON. The store is not reentrant by contract, and
-+    * disk_cache.c reaches it from its put queue as well as from the
-+    * calling thread, so every use of it is under this lock. */
-+   struct horizon_gpu_blob_cache *horizon_store;
-+   simple_mtx_t horizon_lock;
++   /* DISK_CACHE_HORIZON. Not the store itself but a reference to one:
++    * two cache objects for the same GPU — two VkInstances is all it
++    * takes — resolve to the same file, and two independent stores over
++    * one file would each keep their own append offset and their own
++    * index. See disk_cache_horizon.c. */
++   struct horizon_store_ref *horizon_ref;
 +#endif
  };
  
  struct cache_entry_file_data {
-@@ -186,6 +201,30 @@ disk_cache_db_load_cache_index(void *mem_ctx, struct disk_cache *cache);
+@@ -186,6 +202,30 @@ disk_cache_db_load_cache_index(void *mem_ctx, struct disk_cache *cache);
  void
  disk_cache_delete_old_cache(void);
  
@@ -801,7 +901,7 @@ index 8950839..0296a66 100644
  }
  #endif
 diff --git a/src/util/meson.build b/src/util/meson.build
-index 30cf227..e83ad50 100644
+index 30cf227..e07b79a 100644
 --- a/src/util/meson.build
 +++ b/src/util/meson.build
 @@ -38,7 +38,6 @@ files_mesa_util = files(
@@ -821,7 +921,7 @@ index 30cf227..e83ad50 100644
 +# getpwuid_r; Horizon's C library has none of them, so that platform
 +# brings its own implementation of the same interface instead. The
 +# generic half, disk_cache.c above, is shared.
-+if host_machine.system() == 'horizon'
++if host_machine.system() == 'horizon' and with_shader_cache
 +  files_mesa_util += files('disk_cache_horizon.c')
 +else
 +  files_mesa_util += files('disk_cache_os.c')
@@ -830,7 +930,7 @@ index 30cf227..e83ad50 100644
  libmesa_util_links = []
  
  if host_machine.cpu_family() == 'aarch64' and cc.get_id() != 'msvc'
-@@ -263,6 +273,27 @@ files_mesa_util += shader_stats_h
+@@ -263,6 +273,32 @@ files_mesa_util += shader_stats_h
  subdir('format')
  files_mesa_util += files_mesa_format
  
@@ -839,8 +939,13 @@ index 30cf227..e83ad50 100644
 +# place that code lives — so it is named by the same build option the
 +# nouveau driver uses, and resolved here as well because src/util is
 +# reached long before src/nouveau.
++# Only when the cache is actually built: disk_cache_horizon.c is wholly
++# inside #ifdef ENABLE_SHADER_CACHE, so a Horizon build with
++# -Dshader-cache=disabled needs none of this, and demanding the option
++# there would break a configuration that was valid before this file
++# changed.
 +idep_horizon_gpu_util = []
-+if host_machine.system() == 'horizon'
++if host_machine.system() == 'horizon' and with_shader_cache
 +  _hz_dir = get_option('horizon-gpu-dir')
 +  if _hz_dir == ''
 +    error('Building for Horizon with the shader cache enabled needs ' +
@@ -858,7 +963,7 @@ index 30cf227..e83ad50 100644
  deps_for_libmesa_util = [
    dep_zlib,
    dep_clock,
-@@ -277,6 +308,7 @@ deps_for_libmesa_util = [
+@@ -277,6 +313,7 @@ deps_for_libmesa_util = [
    idep_blake3,
    idep_mesautilc11,
    idep_mesautilformat,

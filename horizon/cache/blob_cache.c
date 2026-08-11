@@ -195,14 +195,43 @@ static bool align_up_u64(uint64_t v, uint64_t *out)
 /* The index                                                           */
 /* ------------------------------------------------------------------ */
 
+/* One slot per key, holding the two things a key can independently have.
+ *
+ * TWO HALVES AND NOT ONE KIND. The slot used to carry a single `flags`
+ * that was either DATA or KEY, so storing data under a key that had been
+ * marked with put_key() replaced the mark, and has_key() went back to
+ * false. That contradicts what blob_cache.h promises and what Mesa's
+ * disk_cache.h requires — the stored-key index is independent of the
+ * cached entries, and upstream keeps them in genuinely separate storage.
+ * Nothing in NVK calls put_key(), which is why no test had caught it.
+ * The halves are separate now, and a test puts both on one key. */
 typedef struct bc_slot {
     uint8_t  key[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
-    uint64_t offset;   /* file offset of the record header */
-    uint32_t size;     /* payload bytes                    */
-    uint32_t seq;      /* record sequence number           */
-    uint32_t flags;    /* HORIZON_BC_REC_DATA or _KEY      */
-    bool     used;
+
+    /* The data entry, from put(). */
+    uint64_t data_offset;
+    uint32_t data_size;
+    uint32_t data_seq;
+    bool     has_data;
+
+    /* The key-only mark, from put_key(). No payload, so only where its
+     * record is — compaction has to be able to copy it. */
+    uint64_t mark_offset;
+    uint32_t mark_seq;
+    bool     has_mark;
+
+    bool     used;     /* has_data || has_mark */
 } bc_slot;
+
+/* One record's worth of index, which is what compaction moves. A slot
+ * with both halves yields two of these. */
+typedef struct bc_rec {
+    uint8_t  key[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+    uint64_t offset;
+    uint32_t size;
+    uint32_t seq;
+    uint32_t flags;    /* HORIZON_BC_REC_DATA or _KEY */
+} bc_rec;
 
 struct horizon_gpu_blob_cache {
     FILE    *file;
@@ -279,7 +308,8 @@ static bool bc_index_grow(horizon_gpu_blob_cache *c, uint32_t new_cap)
     return true;
 }
 
-/* Insert or replace. `flags` is DATA or KEY; TOMBSTONE removes. */
+/* Insert or replace one half of a key's slot. `flags` is DATA or KEY;
+ * the other half is left exactly as it was. */
 static bool bc_index_set(horizon_gpu_blob_cache *c, const uint8_t *key,
                          uint64_t offset, uint32_t size, uint32_t seq,
                          uint32_t flags)
@@ -301,14 +331,21 @@ static bool bc_index_set(horizon_gpu_blob_cache *c, const uint8_t *key,
         s->used = true;
         c->slot_used++;
     }
-    s->offset = offset;
-    s->size = size;
-    s->seq = seq;
-    s->flags = flags;
+
+    if (flags == HORIZON_BC_REC_DATA) {
+        s->data_offset = offset;
+        s->data_size = size;
+        s->data_seq = seq;
+        s->has_data = true;
+    } else {
+        s->mark_offset = offset;
+        s->mark_seq = seq;
+        s->has_mark = true;
+    }
     return true;
 }
 
-/* Look up a live entry of the given kind. NULL when absent. */
+/* Look up a live half. NULL when the key has nothing of that kind. */
 static bc_slot *bc_index_find(horizon_gpu_blob_cache *c, const uint8_t *key,
                               uint32_t kind)
 {
@@ -316,19 +353,33 @@ static bc_slot *bc_index_find(horizon_gpu_blob_cache *c, const uint8_t *key,
         return NULL;
 
     bc_slot *s = bc_index_probe(c, key);
-    if (s == NULL || !s->used || s->flags != kind)
+    if (s == NULL || !s->used)
+        return NULL;
+    if (kind == HORIZON_BC_REC_DATA ? !s->has_data : !s->has_mark)
         return NULL;
     return s;
 }
 
-/* Deleting from an open-addressed table cannot just clear the slot —
+/* Drop one half of a key's slot, keeping the other.
+ *
+ * Deleting from an open-addressed table cannot just clear the slot —
  * that would cut the probe chains running through it. The slot is
  * cleared and everything after it in the same cluster is reinserted,
- * which is the standard repair and is cheap at this load factor. */
-static void bc_index_erase(horizon_gpu_blob_cache *c, const uint8_t *key)
+ * which is the standard repair and is cheap at this load factor. That
+ * only happens once *both* halves are gone. */
+static void bc_index_erase(horizon_gpu_blob_cache *c, const uint8_t *key,
+                           uint32_t kind)
 {
     bc_slot *s = bc_index_probe(c, key);
     if (s == NULL || !s->used)
+        return;
+
+    if (kind == HORIZON_BC_REC_DATA)
+        s->has_data = false;
+    else
+        s->has_mark = false;
+
+    if (s->has_data || s->has_mark)
         return;
 
     uint32_t mask = c->slot_cap - 1u;
@@ -620,7 +671,9 @@ static horizon_gpu_result bc_scan(horizon_gpu_blob_cache *c,
 
         const uint8_t *key = hdr + 8;
         if (flags == HORIZON_BC_REC_TOMBSTONE) {
-            bc_index_erase(c, key);
+            /* remove() is disk_cache_remove(): it drops the entry, and
+             * a key-only mark is not an entry. */
+            bc_index_erase(c, key, HORIZON_BC_REC_DATA);
         } else if (!bc_index_set(c, key, off, payload, seq, flags)) {
             return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
         }
@@ -661,12 +714,12 @@ static void bc_recompute_live(horizon_gpu_blob_cache *c)
     for (uint32_t i = 0; i < c->slot_cap; i++) {
         if (!c->slots[i].used)
             continue;
-        if (c->slots[i].flags == HORIZON_BC_REC_DATA) {
+        if (c->slots[i].has_data) {
             c->stats.entries++;
-            c->stats.live_bytes += c->slots[i].size;
-        } else {
-            c->stats.keys++;
+            c->stats.live_bytes += c->slots[i].data_size;
         }
+        if (c->slots[i].has_mark)
+            c->stats.keys++;
     }
 }
 
@@ -741,11 +794,16 @@ horizon_gpu_blob_cache_open(const horizon_gpu_blob_cache_config *config,
     c->slot_cap = HORIZON_BC_INDEX_MIN_CAP;
 
     /* "r+b" first so an existing file is not destroyed by the attempt to
-     * open it; only if that fails is a new one created. A read-only
-     * cache never creates. */
+     * open it; only if that fails is a new one created.
+     *
+     * A read-only cache asks for "rb" and never creates. Opening for
+     * update would demand write permission the caller has said it does
+     * not want and may not have — a genuinely read-only file, or a card
+     * mounted read-only, would fail to open at all, and a cache that
+     * advertises read-only service would then serve nothing. */
     bool created = false;
 
-    c->file = fopen(c->path, "r+b");
+    c->file = fopen(c->path, c->read_only ? "rb" : "r+b");
     if (c->file == NULL) {
         if (c->read_only) {
             bc_free(c);
@@ -884,7 +942,7 @@ static horizon_gpu_result bc_append(horizon_gpu_blob_cache *c,
     }
 
     if (flags == HORIZON_BC_REC_TOMBSTONE) {
-        bc_index_erase(c, key);
+        bc_index_erase(c, key, HORIZON_BC_REC_DATA);
     } else if (!bc_index_set(c, key, at, size, seq, flags)) {
         /* On disk and unreachable. Not a lie — the next open will index
          * it — but this handle must say something went wrong. */
@@ -908,7 +966,7 @@ static horizon_gpu_result bc_append(horizon_gpu_blob_cache *c,
 
 static int bc_slot_cmp_newest_first(const void *a, const void *b)
 {
-    const bc_slot *x = a, *y = b;
+    const bc_rec *x = a, *y = b;
 
     if (x->seq > y->seq)
         return -1;
@@ -920,7 +978,7 @@ static int bc_slot_cmp_newest_first(const void *a, const void *b)
 /* Order two snapshot slots by file offset, ascending. */
 static int bc_slot_cmp_offset(const void *a, const void *b)
 {
-    const bc_slot *x = a, *y = b;
+    const bc_rec *x = a, *y = b;
 
     if (x->offset < y->offset)
         return -1;
@@ -977,7 +1035,7 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
                                      uint64_t incoming)
 {
     uint8_t fhdr[HORIZON_BC_FILE_HDR_SIZE];
-    bc_slot *live = NULL;
+    bc_rec *live = NULL;
     uint32_t live_n = 0;
 
     if (c->read_only)
@@ -1002,15 +1060,37 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     uint64_t budget = watermark > incoming ? watermark - incoming : 0;
 
     if (c->slot_used > 0) {
-        live = calloc(c->slot_used, sizeof(*live));
+        /* Two per slot at most: a key can carry both an entry and a
+         * key-only mark, and each is its own record on disk. */
+        live = calloc((size_t)c->slot_used * 2u, sizeof(*live));
         if (live == NULL)
             return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
-        for (uint32_t i = 0; i < c->slot_cap; i++)
-            if (c->slots[i].used)
-                live[live_n++] = c->slots[i];
 
-        /* Newest first, so that what survives is what was used most
-         * recently written. */
+        for (uint32_t i = 0; i < c->slot_cap; i++) {
+            const bc_slot *sl = &c->slots[i];
+
+            if (!sl->used)
+                continue;
+            if (sl->has_data) {
+                bc_rec *r = &live[live_n++];
+                memcpy(r->key, sl->key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+                r->offset = sl->data_offset;
+                r->size = sl->data_size;
+                r->seq = sl->data_seq;
+                r->flags = HORIZON_BC_REC_DATA;
+            }
+            if (sl->has_mark) {
+                bc_rec *r = &live[live_n++];
+                memcpy(r->key, sl->key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
+                r->offset = sl->mark_offset;
+                r->size = 0;
+                r->seq = sl->mark_seq;
+                r->flags = HORIZON_BC_REC_KEY;
+            }
+        }
+
+        /* Newest first, so that what survives is what was written most
+         * recently. */
         qsort(live, live_n, sizeof(*live), bc_slot_cmp_newest_first);
     }
 
@@ -1152,8 +1232,8 @@ horizon_gpu_blob_cache_get(horizon_gpu_blob_cache *cache, const uint8_t *key,
     }
 
     uint8_t hdr[HORIZON_BC_REC_HDR_SIZE];
-    uint32_t size = s->size;
-    uint64_t off = s->offset;
+    uint32_t size = s->data_size;
+    uint64_t off = s->data_offset;
 
     /* Re-read and re-validate the record header rather than trusting the
      * index. The index is memory; the file is what somebody else's
@@ -1164,7 +1244,7 @@ horizon_gpu_blob_cache_get(horizon_gpu_blob_cache *cache, const uint8_t *key,
         get_u32le(hdr + 4) != HORIZON_BC_REC_DATA ||
         get_u32le(hdr + 40) != size ||
         memcmp(hdr + 8, key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE) != 0) {
-        bc_index_erase(cache, key);
+        bc_index_erase(cache, key, HORIZON_BC_REC_DATA);
         bc_recompute_live(cache);
         cache->stats.misses++;
         return horizon_gpu_err(HORIZON_GPU_ERR_NOT_FOUND);
@@ -1180,7 +1260,7 @@ horizon_gpu_blob_cache_get(horizon_gpu_blob_cache *cache, const uint8_t *key,
          * It is also dropped from the index so the next lookup does not
          * pay for the same disappointment. */
         free(buf);
-        bc_index_erase(cache, key);
+        bc_index_erase(cache, key, HORIZON_BC_REC_DATA);
         bc_recompute_live(cache);
         cache->stats.misses++;
         return horizon_gpu_err(HORIZON_GPU_ERR_NOT_FOUND);
@@ -1226,8 +1306,10 @@ horizon_gpu_blob_cache_remove(horizon_gpu_blob_cache *cache,
     /* Absent is not an error, and it is also not a write: a tombstone
      * for something that was never there would grow the file for
      * nothing. */
+    /* Absent is not an error, and it is also not a write. A key that
+     * only carries a mark has no entry to remove. */
     bc_slot *s = bc_index_probe(cache, key);
-    if (s == NULL || !s->used)
+    if (s == NULL || !s->used || !s->has_data)
         return horizon_gpu_ok();
 
     return bc_append(cache, key, HORIZON_BC_REC_TOMBSTONE, NULL, 0);
