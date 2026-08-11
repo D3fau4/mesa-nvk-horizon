@@ -146,6 +146,21 @@ static uint64_t now_us(void)
     return armTicksToNs(armGetSystemTick()) / 1000u;
 }
 
+/* The size of the file on the card, or -1.
+ *
+ * ONLY VALID WITH THE STORE CLOSED, and run 26 is why this comment
+ * exists. Opening a file that is already open for writing fails on this
+ * platform — the SD card's device layer refuses it, which STATUS.md
+ * already records for the test framework's own log file. This helper
+ * then returned -1, and the two callers that used it while the cache was
+ * open both got it wrong in opposite directions: one compared it as a
+ * signed long (`-1 < 4096`, true, a check that could not fail and
+ * reported success anyway) and the other cast it to uint64_t (2^64-1,
+ * the single FAIL in the log).
+ *
+ * So: callers assert on it through file_size_checked() below, and while
+ * the store is open they read horizon_gpu_blob_cache_stats::file_size
+ * instead, which the host suite already checks against the real size. */
 static long file_size_of(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -159,6 +174,17 @@ static long file_size_of(const char *path)
     }
     n = ftell(f);
     fclose(f);
+    return n;
+}
+
+/* file_size_of() plus the check that it worked, so that a -1 fails the
+ * test rather than being compared as if it were a size. Returns -1 on
+ * failure, having already recorded the failure. */
+static long file_size_checked(test_ctx *t, const char *path, const char *what)
+{
+    long n = file_size_of(path);
+
+    t_check(t, n >= 0, "%s (the file could be measured at all)", what);
     return n;
 }
 
@@ -217,8 +243,11 @@ static void section_a(test_ctx *t)
         return;
 
     horizon_gpu_blob_cache_get_stats(c, &st);
-    t_note(t, "A4 open with %u entries took %llu us, file %ld bytes",
-           st.entries, (unsigned long long)open_us, file_size_of(STORE_PATH));
+    t_note(t, "A4 open with %u entries took %llu us (%llu us/entry), "
+              "file %llu bytes",
+           st.entries, (unsigned long long)open_us,
+           (unsigned long long)(st.entries ? open_us / st.entries : open_us),
+           (unsigned long long)st.file_size);
     t_check(t, st.entries == 201, "A4 all 201 entries came back");
     t_check(t, !st.was_reset && !st.was_truncated,
             "A4 the file the SD card returned needed no repair");
@@ -247,10 +276,19 @@ static void section_a(test_ctx *t)
         t_check(t, st.was_reset, "A6 the other build's file is reset");
         t_check(t, st.entries == 0 && is_miss(c, 7),
                 "A6 and none of its entries is served");
-        t_check(t, file_size_of(STORE_PATH) < 4096,
+        /* Measured with the store CLOSED. Run 26 made this check while
+         * it was open, got -1 back, compared it as a signed long and
+         * announced a pass for something it had never looked at. */
+        uint64_t after_reset = st.file_size;
+        horizon_gpu_blob_cache_close(c);
+
+        long on_card = file_size_checked(t, STORE_PATH,
+                                         "A6 the reset file is readable");
+        t_check(t, on_card >= 0 && (uint64_t)on_card == after_reset,
+                "A6 the store's own size is the size on the card");
+        t_check(t, on_card >= 0 && on_card < 4096,
                 "A6 ftruncate() actually shortened the file on this "
                 "filesystem");
-        horizon_gpu_blob_cache_close(c);
     }
 
     /* A7. Truncation, produced here rather than simulated: write, close,
@@ -262,7 +300,8 @@ static void section_a(test_ctx *t)
             put_n(c, i, 100);
         horizon_gpu_blob_cache_close(c);
 
-        long size = file_size_of(STORE_PATH);
+        long size = file_size_checked(t, STORE_PATH,
+                                      "A7 the written file is readable");
         bool cut = false;
         if (size > 40) {
             uint8_t *buf = malloc((size_t)size - 40);
@@ -309,14 +348,26 @@ static void section_a(test_ctx *t)
             all = put_n(c, i, 1024) && all;
         t_check(t, all, "A8 100 KiB of entries into a 32 KiB cache");
         horizon_gpu_blob_cache_get_stats(c, &st);
-        t_note(t, "A8 %u compactions over %llu us, file %ld bytes",
+        t_note(t, "A8 %u compactions over %llu us, file %llu bytes",
                st.compactions, (unsigned long long)(now_us() - t0),
-               file_size_of(STORE_PATH));
+               (unsigned long long)st.file_size);
         t_check(t, st.compactions > 0, "A8 it compacted rather than grew");
-        t_check(t, (uint64_t)file_size_of(STORE_PATH) <= 32u * 1024u,
+        /* Run 26 measured 70 compactions for 100 puts, because compaction
+         * used to refill the file to the ceiling and the very next put
+         * crossed it again. It now compacts to a watermark below the
+         * ceiling, so a compaction has to buy many puts. 100 KiB into a
+         * 32 KiB cache cannot need more than a handful. */
+        t_check(t, st.compactions <= 10,
+                "A8 and did not compact on nearly every put");
+        t_check(t, st.file_size <= 32u * 1024u,
                 "A8 and stayed inside the ceiling");
         t_check(t, get_is(c, 99, 1024), "A8 the newest entry is still there");
         horizon_gpu_blob_cache_close(c);
+
+        long on_card = file_size_checked(t, STORE_PATH,
+                                         "A8 the compacted file is readable");
+        t_check(t, on_card >= 0 && (uint64_t)on_card <= 32u * 1024u,
+                "A8 and the card agrees it is inside the ceiling");
 
         c = store_open(STORE_PATH, drv_a, sizeof(drv_a), 32u * 1024u);
         if (t_check(t, c != NULL, "A8 a compacted cache reopens")) {

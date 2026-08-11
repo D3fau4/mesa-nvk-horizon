@@ -145,15 +145,17 @@ the `fopen` inside `disk_cache_create`, on the caller's thread.
 - **The store is not reentrant.** `disk_cache_horizon.c` serialises every call with a
   `simple_mtx`, which also means `get()` waits behind a `put()` that is writing to the
   SD card.
-- **`fsync` per entry.** Correct, and unmeasured. `t_shader_cache` section A reports
-  the cost so the decision to batch it can be made with a number.
+- **`fsync` per entry.** Measured at ~5.3 ms on a console (run 26). Correct, on a
+  background thread, and buying less than it appears to — see the results below.
 - **The ceiling is compiled in at 64 MiB.** Upstream defaults to 1 GiB, which is a
   desktop number for a card that also holds somebody's games. `MESA_SHADER_CACHE_DIR`,
   `MESA_SHADER_CACHE_MAX_SIZE` and friends are still honoured, but libnx does not
   populate `environ`, so on a console they are only reachable from inside the process
   (which is how the tests drive them).
 - **Compaction keeps the newest entries, not the most recently used.** There is no
-  access time in the format.
+  access time in the format. It compacts to half the ceiling rather than to the
+  ceiling, so a full cache holds about half of what `max_size` allows — the price of
+  not rewriting the file on nearly every write.
 - **`put_key`/`has_key` are durable here, and upstream's are not.** Upstream keeps them
   in an mmap'd 64 K-slot table where a collision silently overwrites; there is no mmap
   here, so they are records. Nothing in NVK calls either.
@@ -198,7 +200,62 @@ $ nm -u build/mesa-probe/src/util/libmesa_util.a | sort -u \
 (no output)
 ```
 
-**Hardware — nothing.** No console has run any of this. `tests/t_shader_cache.c` is
-built and shipped for exactly that purpose; see `tests/README.md` for the run order
-and note that **section C needs two launches** — the first one on any console reports
-a cold cache, which is a pass and is not the measurement.
+**Hardware — run 26, 2026-08-11**, `t_shader_cache`, build
+`2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`, `RESULT: FAIL (46/47)`
+(`docs/hw-logs/t_shader_cache-run26-FAIL.log`).
+
+What it established, and none of it was known before:
+
+- `disk_cache_create()` returns a live cache on a Switch, and the driver says so
+  itself — `disk cache: …/t_shader_cache.hzc, 0 entries`, then `2 entries`, then
+  `disk shader cache: hits = 2, misses = 1`. Mesa's API works end to end, including a
+  **256 KiB entry**, which is what permanently rules out the 64 KiB ceiling of the
+  blob-callback path.
+- A file cut short mid-payload recovers on the real card: the tear is noticed, the
+  four whole entries survive, the torn one is a miss and not a wrong answer, and the
+  repaired file takes new writes.
+- A different driver identity resets the file and serves nothing from it —
+  `did not match this driver build …; started over (624 bytes discarded)`.
+- An in-place compaction leaves a file that reopens clean, with the newest entry
+  intact.
+
+The one failure was **in the test, not the store**, and it had a twin that was worse:
+`file_size_of()` opened the cache file a second time while the store still held it
+open, which this platform refuses, and returned −1. One caller compared that as a
+signed `long` (`-1 < 4096` — a check that could not fail, and it reported a pass); the
+other cast it to `uint64_t` and got the FAIL. Both are fixed, and callers now assert
+that the measurement happened at all.
+
+**Section C reported a cold cache**, which is what a first launch is meant to report.
+Nothing yet shows that entries outlive the process that wrote them; that needs a
+second run, and the file is already on the card for it.
+
+### The numbers, and what changed because of them
+
+| | run 26 | after |
+|---|---|---|
+| `put` of 4 KiB | 8148 µs | — |
+| 200 `put`s of ~50 B | 5292 µs each | — |
+| `get` of 4 KiB | 3408 µs | — |
+| Mesa `disk_cache_put` + `wait_for_idle` | 4606 µs | — |
+| Mesa `disk_cache_get` | 291 µs | — |
+| open with 201 entries | **40498 µs — 201 µs/entry** | scan rewritten; to be re-measured |
+| 100 `put`s into a 32 KiB ceiling | **70 compactions, 2.58 s** | 200 puts → **11 compactions** on host |
+
+Two of those were structural defects rather than costs:
+
+- **201 µs per entry to open** is one I/O per record, not a sequential read. The scan
+  seeked to every record header, and whether a C library keeps its buffer across a
+  seek is a property of that library — so the scan now never seeks: it reads forward,
+  and steps over a payload by consuming it unless the payload is larger than one
+  buffer refill, in which case seeking moves fewer bytes.
+- **70 compactions for 100 puts** was in the arithmetic: compaction filled the file to
+  the ceiling, so the next put crossed it again. It now compacts to a watermark at
+  half the ceiling, which on the host takes 200 puts into a 32 KiB cache from ~140
+  rewrites to 11.
+
+`fsync` per entry, at ~5 ms, is a cost and not a defect — it is on a background thread
+and compiling a shader takes far longer. It is worth saying plainly that it buys less
+than it looks: the format already recovers from an unflushed tail by truncating it,
+which is exactly what a missing `fsync` would cost. Changing it is a decision with a
+measurement attached, not a tidy-up, and it has not been taken.

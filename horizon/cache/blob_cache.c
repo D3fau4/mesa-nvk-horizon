@@ -124,6 +124,16 @@ static const uint8_t horizon_bc_file_magic[8] = {
 /* Index load factor, as a percentage, above which the table doubles. */
 #define HORIZON_BC_INDEX_MAX_LOAD 70u
 
+/* How full, as a percentage of max_size, a compaction leaves the file.
+ *
+ * 50: each rewrite hands back half the ceiling, so the next one is half
+ * a file's worth of puts away instead of one put away. The cost is that
+ * a cache in its steady state holds about half of what the ceiling
+ * allows, which for a shader cache is entries that would have been
+ * evicted soon anyway — the alternative measured 70 compactions for 100
+ * puts on a console (run 26). */
+#define HORIZON_BC_COMPACT_WATERMARK 50u
+
 /* Smallest index the store ever allocates. Power of two. */
 #define HORIZON_BC_INDEX_MIN_CAP 64u
 
@@ -132,11 +142,13 @@ static const uint8_t horizon_bc_file_magic[8] = {
  * WHY IT IS SET AND NOT LEFT TO THE C LIBRARY. Opening a cache means
  * walking every record header in the file, and newlib's default BUFSIZ
  * is 1024 — so a scan of a few thousand entries becomes a few thousand
- * fsFileRead calls to the FS sysmodule. 64 KiB turns the same walk into
- * a sequential read, because newlib's fseek keeps the buffer when the
- * target is already inside it. The number is a guess until a console
- * measures it; tests/t_shader_cache.c reports the open time so it can
- * stop being one. */
+ * fsFileRead calls into the FS sysmodule.
+ *
+ * IT IS ALSO THE THRESHOLD IN bc_skip_forward(). A buffer only helps a
+ * scan that reads forward; run 26 measured the version that seeked to
+ * every record at 201 us per entry, which is one I/O each and the exact
+ * opposite of what this buffer is for. The scan now walks forward and
+ * only seeks over a payload larger than one refill. */
 #define HORIZON_BC_STREAM_BUF (64u * 1024u)
 
 /* ------------------------------------------------------------------ */
@@ -359,6 +371,51 @@ static bool bc_read_at(FILE *f, uint64_t off, void *buf, size_t len)
     return fread(buf, 1, len, f) == len;
 }
 
+/* Read the next `len` bytes from wherever the stream already is.
+ *
+ * WHY THE SCAN USES THIS AND NOT bc_read_at(). Run 26 opened a 201-entry
+ * cache on a console in 40498 us — 201 us per record, to read a 56-byte
+ * header out of a 50 KB file. That is one I/O per record, not a
+ * sequential read, and the reason is the fseek in bc_read_at(): whether
+ * a C library keeps its buffer across a seek is a property of that
+ * library, and newlib gates the optimisation on its own seek function
+ * and on fstat describing a regular file with a block size — libnx's
+ * fstat sets S_IFREG and leaves st_blksize alone. Rather than depend on
+ * how that resolves, the scan never seeks: it reads forward, and the
+ * buffer beneath it is used the way a buffer is meant to be. */
+static bool bc_read_next(FILE *f, void *buf, size_t len)
+{
+    return fread(buf, 1, len, f) == len;
+}
+
+/* Step `len` bytes forward, consuming them or seeking over them —
+ * whichever moves fewer bytes.
+ *
+ * Consuming keeps the stream buffer, and for a payload smaller than the
+ * buffer it is strictly cheaper: the bytes were going to be fetched
+ * anyway as part of the block the *next* header sits in. A seek throws
+ * the buffer away and the next read refills all of it, so it only pays
+ * once the payload is larger than a refill — at which point consuming
+ * would mean reading a whole shader binary just to get past it. The
+ * threshold is therefore the buffer size, and it is a comparison and not
+ * a guess. */
+static bool bc_skip_forward(FILE *f, uint64_t at, uint64_t len)
+{
+    uint8_t sink[512];
+
+    if (len > HORIZON_BC_STREAM_BUF)
+        return bc_seek(f, at + len);
+
+    while (len > 0) {
+        size_t chunk = len < sizeof(sink) ? (size_t)len : sizeof(sink);
+
+        if (fread(sink, 1, chunk, f) != chunk)
+            return false;
+        len -= chunk;
+    }
+    return true;
+}
+
 static bool bc_file_size(FILE *f, uint64_t *out)
 {
     if (fseek(f, 0, SEEK_END) != 0)
@@ -519,6 +576,11 @@ static horizon_gpu_result bc_scan(horizon_gpu_blob_cache *c,
 
     c->next_seq = 1;
 
+    /* The one seek in the whole scan: to its start. Everything after
+     * this walks forward. */
+    if (!bc_seek(c->file, off))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
     for (;;) {
         uint64_t hdr_end;
 
@@ -526,7 +588,7 @@ static horizon_gpu_result bc_scan(horizon_gpu_blob_cache *c,
             break;
         if (hdr_end > file_size)
             break;
-        if (!bc_read_at(c->file, off, hdr, sizeof(hdr)))
+        if (!bc_read_next(c->file, hdr, sizeof(hdr)))
             break;
 
         if (get_u32le(hdr + 0) != HORIZON_BC_REC_MAGIC)
@@ -565,6 +627,12 @@ static horizon_gpu_result bc_scan(horizon_gpu_blob_cache *c,
 
         if (seq >= c->next_seq)
             c->next_seq = seq + 1u;
+
+        /* Step over the payload without giving up the buffer when the
+         * payload is small enough for that to be the cheaper move. */
+        if (!bc_skip_forward(c->file, off + HORIZON_BC_REC_HDR_SIZE,
+                             span - HORIZON_BC_REC_HDR_SIZE))
+            break;
 
         off = rec_end;
     }
@@ -915,11 +983,23 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     if (c->read_only)
         return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
 
-    /* Budget: max_size less the record about to be appended. A single
-     * entry larger than the whole budget is still written by the caller
-     * afterwards — the ceiling is a policy on accumulation, not a reason
-     * to refuse the one thing somebody asked to store. */
-    uint64_t budget = c->max_size > incoming ? c->max_size - incoming : 0;
+    /* Budget: a WATERMARK BELOW THE CEILING, less the record about to be
+     * appended.
+     *
+     * Not the ceiling itself, and run 26 is why. Compacting to the
+     * ceiling leaves the file exactly at it, so the very next put
+     * crosses it and compacts again: 100 puts into a 32 KiB cache
+     * measured 70 compactions and 2.58 s on a console, ~36 ms each. That
+     * is the steady state of any full cache, not a corner of the test.
+     * Compacting to a fraction of the ceiling means each rewrite buys
+     * back that much room and the next one is (1 - fraction) of the file
+     * away.
+     *
+     * A single entry larger than the whole budget is still written by
+     * the caller afterwards — the ceiling is a policy on accumulation,
+     * not a reason to refuse the one thing somebody asked to store. */
+    uint64_t watermark = c->max_size / 100u * HORIZON_BC_COMPACT_WATERMARK;
+    uint64_t budget = watermark > incoming ? watermark - incoming : 0;
 
     if (c->slot_used > 0) {
         live = calloc(c->slot_used, sizeof(*live));

@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-62e21e79158e1d7e066548e7b391bd858d677a073e4124ae9b603c943fb185ef  README.md
+5ee6f0ff912ba50fc1bce38ef0bffedd8b5299f5efda327b9a3e744d0d261beb  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log
@@ -57,6 +57,7 @@ e4fb2139a1c8fc11495ba7093cb0e42682a89b9f2e29a50b270cde2b1b1f8b43  t_pbsize-run1-
 59f1c028cc98d0245b91eafdaf845113351c870e60aa2fa74490c56e0eed0d5e  t_pbsize-run14-PASS.log
 3df83b43d5f28b91565cd5c6860b7c3e7ff117db9d28c0f8f887e792fb72a065  t_pbsize-run2-payload-PASS.log
 f9cddacf5bb763f26dd7e0662b085b6c5289a5f67c0361aad91ad2f30a300642  t_pbsize-run3-pr7-rerun-PASS.log
+8121ad44e924e3ad01b824e9c3c3672ac8c8a7e12bac9248186469c07e93ccd3  t_shader_cache-run26-FAIL.log
 ae1042de00fb14d2cc8032ab747c8ce82cec675ff038c73c4a9f1d6657c29a06  t_submit-run-phase6-samechannel-PASS.log
 4a60299af3a12efac21733484c80efc9514b84af9e0180b6f06fe4aa1dd7d97f  t_submit-run14-PASS.log
 f1c3b6591cd4bb7cb3ffbadea19403ea1a2503635dbc5b44eacd904093541fff  t_submit-run3-l2fix.log

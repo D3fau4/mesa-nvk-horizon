@@ -797,6 +797,14 @@ int main(void)
             horizon_gpu_blob_cache_get_stats(c, &st);
             H_CHECK(st.compactions > 0, "it compacted rather than grew");
             H_CHECK(st.file_size <= cap, "and stayed inside the ceiling");
+            /* Run 26 measured 70 compactions for 100 puts on a console,
+             * because compaction used to refill the file to the ceiling
+             * and the next put crossed it again. 200 puts of 1 KiB into
+             * 32 KiB, compacting to half of it, needs on the order of
+             * 200/16 rewrites; 30 is a bound that a return to the old
+             * behaviour cannot slip under. */
+            H_CHECK(st.compactions <= 30,
+                    "and did not compact on nearly every put");
             H_CHECK(st.entries > 0, "keeping something rather than nothing");
             H_CHECK(get_is(c, 199, 1024), "the newest entry is still there");
             horizon_gpu_blob_cache_close(c);
@@ -811,6 +819,50 @@ int main(void)
                         "and the newest entry survived the rewrite");
                 H_CHECK((long)st.file_size == file_size_of(BC_PATH),
                         "the reported size is the size on disk");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * Entries larger than the scan's stream buffer. The open scan walks
+     * forward and steps over payloads, choosing between consuming them
+     * and seeking past them at a threshold of one buffer refill — so an
+     * entry either side of that threshold takes a different path through
+     * bc_skip_forward(), and both have to land on the next record header
+     * exactly. Sizes here straddle 64 KiB on purpose.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        const size_t sizes[] = { 100, 64u * 1024u - 8, 64u * 1024u,
+                                 64u * 1024u + 8, 200u * 1024u, 64 };
+        const uint32_t n_sizes = (uint32_t)(sizeof(sizes) / sizeof(sizes[0]));
+        horizon_gpu_blob_cache *c = open_at(BC_PATH, drv_a, sizeof(drv_a),
+                                            8u * 1024u * 1024u, false);
+        bool all = true;
+
+        H_CHECK(c != NULL, "open for the large-entry scan");
+        if (c != NULL) {
+            for (uint32_t i = 0; i < n_sizes; i++)
+                all = put_n(c, i, sizes[i]) && all;
+            H_CHECK(all, "entries either side of one buffer refill stored");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_at(BC_PATH, drv_a, sizeof(drv_a), 8u * 1024u * 1024u,
+                        false);
+            H_CHECK(c != NULL, "and the file reopens");
+            if (c != NULL) {
+                horizon_gpu_blob_cache_stats st;
+
+                horizon_gpu_blob_cache_get_stats(c, &st);
+                H_CHECK(!st.was_reset && !st.was_truncated,
+                        "with no record lost stepping over a large payload");
+                H_CHECK(st.entries == n_sizes, "and every entry indexed");
+
+                all = true;
+                for (uint32_t i = 0; i < n_sizes; i++)
+                    all = get_is(c, i, sizes[i]) && all;
+                H_CHECK(all, "and every one of them reads back");
                 horizon_gpu_blob_cache_close(c);
             }
         }

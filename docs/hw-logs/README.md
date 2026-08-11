@@ -5,6 +5,41 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## The shader disk cache, and a check that could not fail
+
+### `t_shader_cache-run26-FAIL.log`
+
+Run 26, 2026-08-11, `2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`,
+`RESULT: FAIL (46/47)`. The first console run of the shader cache, and the first
+evidence that `disk_cache_create()` returns anything but NULL on this platform.
+
+**Read two lines of this log carefully, and neither is the FAIL.**
+
+`FAIL A8 and stayed inside the ceiling` is the test's fault, not the store's:
+`file_size_of()` opened the cache file a second time while the store still held it
+open, which this platform refuses, and the −1 it returned was cast to `uint64_t`.
+
+The line that matters is four lines above it and says `ok`:
+
+```
+ok   A6 ftruncate() actually shortened the file on this filesystem
+```
+
+Same −1, compared as a signed `long` against 4096. **That check could not fail**, and
+it reported success for something it never looked at. `ftruncate` on this filesystem
+is therefore *not* evidenced by this log, despite the `ok`. It is on the unverified
+list until a run with the fixed test says otherwise.
+
+What the log does establish: Mesa's `disk_cache_*` API working end to end on a Switch
+including a 256 KiB entry; recovery from a file cut short mid-payload on the real
+card; another driver build's file being reset rather than read; and an in-place
+compaction reopening clean. It also carries the first latencies, two of which were
+structural defects — 201 µs per entry to open, and 70 compactions for 100 writes —
+both since fixed. See `docs/shader-cache.md` and `STATUS.md`.
+
+Section C reported a cold cache, which a first run must. Nothing here shows that
+entries outlive the process that wrote them.
+
 ## `VK_SUBOPTIMAL_KHR`, and the half of it a console cannot show
 
 ### `t_vk_suboptimal-run21-PASS.log`
