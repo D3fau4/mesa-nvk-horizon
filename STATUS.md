@@ -14,7 +14,7 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Run 26, 2026-08-11:* **a frame a graphics pipeline drew, presented at the refresh** — `t_vk_present_draw` **PASS 183/183**, three fullscreen textured draws into the scanout image at 1280x720/B8G8R8A8_UNORM/three images/zero-copy, mean **16527 us** between the clear control's 16549 and 16553, and **8253 us** under IMMEDIATE. Submit-to-fence on that image: 1193 us clear, 1814 us one draw, 3022 us three. This was the last untested shape in Phase 6 and the one the 6.4 Hz report needed; see the run 26 entry. *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** `t_vk_present_draw` has left this list: run 26 (2026-08-11) is **PASS 183/183** on hardware, three fullscreen textured draws into a scanout image presenting at **16527 us** against the clear control's 16549/16553 us, and patch 0076's meter output is on record. The 157 ms report did not reproduce and the driver is out of the picture for it; the ball is in the application's court. Run 21 passed 273/273 and section D was the one part that did not execute Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** `t_vk_present_draw` has left this list: run 26 (2026-08-11) is **PASS 183/183** on hardware, three fullscreen textured draws into a scanout image presenting at **16527 us** against the clear control's 16549/16553 us, and patch 0076's meter output is on record. The 157 ms report did not reproduce and the driver is out of the picture for it; the ball is in the application's court, and patch **0077** is the instrument it needs — both meters on, read against run 26's baseline. Run 21 passed 273/273 and section D was the one part that did not execute Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); GitHub Actions CI now
 cross-builds on every push, and a `v*` tag publishes a package (2026-08-10, see the entry
 below this table). **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
@@ -25,10 +25,115 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Exit criteria** | **1. Met** (89 of 89 intervals within 10% of 16666 us, run 13). **3. Met.** **4. Met**, and since run 13 the check that proves it is no longer gated on zero-copy succeeding. **2. Met as throughput, and only as throughput** — the structural half stands (3 concurrent slots against 2) and the pacing half is a 50% difference in throughput (25170 us against 16837 us, run 13), *not* the burst absorption the tests originally claimed: `over_1p5_refresh` is **45 with three images and 45 with two**, twice measured |
 | **THE LAYOUT IS CONFIRMED** | **The operator reports the pattern renders correctly on the console, every time it has been shown** (2026-08-08). Four coloured bars, the 16px border, the black diagonal corner to corner, the yellow square — the appearance a wrong stride, a wrong block height or a wrong GOB sector ordering would each destroy in a way that is not subtle. This is the only evidence in the phase that is about *what was in* the frames rather than that they arrived, and it is human by necessity: nothing can read a presented frame back, and a GPU readback would write and read with the same layout and agree with itself. **The zero-copy path is closed** — showing 1 ran in runs 14, 15 and 16. Showing 2, on the copy fallback, has only existed since run 16, so whether "every time" covers it is worth one word from the operator |
 | **What is still unverified** | Any display mode change and docked resolution — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those. **`VK_PRESENT_MODE_IMMEDIATE_KHR` is no longer on this list**: run 25 measured it end to end through `vkCreateSwapchainKHR` — 8264 us against FIFO's 16577 us over 240 frames each, with a FIFO run either side of it, and run 24 said the same a build earlier |
-| **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead |
+| **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead. `nvkmd_horizon_ctx_wait`'s cross-channel CPU wait, which patch 0056 already reduced to cross-channel only and patch **0077** now measures rather than reasons about |
+| **The 140 ms fence** | **Not this driver's fence, and that was measured before the question was asked.** A follow-up to the 6.4 Hz report puts 140.7 ms in one `vkWaitForFences` on an empty submission. `t_vk_submits` runs exactly that harness — sixteen empty command buffers, each submitted with a fence and waited for before the next — and has measured **100, 115, 126 and 137 us** per submit-to-signal round trip in four console runs, with run 26 adding 1193 us for a clear and 3022 us for three fullscreen draws. There is no poll thread and no poll interval anywhere in `horizon/`; the wait is the nvhost `SYNCPT_WAIT` ioctl, woken by the syncpoint. Patch **0077** is the meter that can attribute the reporter's number from inside their own process — cross build only, no console has run it. See the entry below the table |
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
-| **Never verified on hardware** | Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## The 140 ms fence: it is not the fence, and patch 0077 is how to find out what it is (2026-08-11)
+
+A follow-up to the 6.4 Hz report narrows the 157 ms frame to **one call**:
+`vkWaitForFences(device, n, fences, VK_TRUE, UINT64_MAX)` at **140.7 ms**, on the
+fence of a submission the application believes is three frames old, with the
+present path cut down to acquire → clear → submit → present and every guest
+draw returning without recording anything. The GPU has essentially nothing to
+execute. The question asked of this driver: **why does the fence of an empty
+submission take ~140 ms to signal?**
+
+**It does not, and that was already measured on hardware four times before the
+question was asked.** `t_vk_submits` measurement 2 is exactly the harness the
+report proposes: sixteen empty command buffers, each `vkQueueSubmit`ed with a
+fence and then waited for with `vkWaitForFences(…, VK_TRUE, …)` before the next
+one is submitted, no swapchain anywhere near it.
+
+| run | per submit-to-signal round trip |
+|---|---|
+| run 14 | **100 us** |
+| run 6 (PR 7 rerun) | **115 us** |
+| run 5 (batch 5) | **126 us** |
+| run (Phase 6, same channel) | **137 us** |
+
+Logs: [`t_vk_submits-run14-PASS.log`](hw-logs/t_vk_submits-run14-PASS.log) and the
+three beside it. Run 26 says the same thing with real work in the submission:
+submit-to-fence on the scanout image was **1193 us** for a clear, **1814 us** for
+one fullscreen draw and **3022 us** for three. **~140 ms is three orders of
+magnitude away from anything this driver has ever produced.**
+
+### The four things the report asked to check
+
+1. **Is the fence tied to a syncpoint the driver polls, and at what interval?**
+   No. There is no poll thread and no poll interval — no thread of any kind in
+   `horizon/channel/`, `horizon/submit/` or `horizon/sync/`. A fence is a
+   `(syncpt_id, threshold)` pair recorded at submit time;
+   `horizon_gpu_channel_wait_fence` blocks in `nvFenceWait`, the nvhost
+   `SYNCPT_WAIT` ioctl, which the kernel wakes on the syncpoint interrupt. There
+   *is* a 100 ms bound on each iteration, but it is a re-check pulse for the
+   error notifier (§ 6), not the wake mechanism — and the measurements prove it:
+   waits that return at 100, 137, 1193 and 3022 us are not quantised to a 100 ms
+   chunk. A driver that only noticed at chunk expiry could not produce those
+   numbers.
+2. **Does the fence path share `nvkmd_horizon_ctx_wait`'s CPU wait, and does it
+   serialise submissions?** The CPU wait is real and is still there, but it is
+   not on the fence path and it is not on the ordinary path either. Patch 0056
+   skips any wait already pending on the same channel — a GPFIFO channel
+   executes in order, so a present waiting on the render submit's semaphore
+   needs no wait at all — and what remains is cross-channel only. The one that
+   does fire routinely is `nvk_queue_submit_exec`'s wait on the upload queue's
+   time point, which is a different channel. **It runs inside `vkQueueSubmit`**,
+   which the reporting application measures at 0.1 ms, so it cannot be where
+   140 ms is hiding for this application. It can serialise submissions behind it
+   and that is worth measuring, which is what patch 0077 now does.
+3. **Per submission or per frame?** Not answerable from outside the driver, which
+   is the gap patch 0077 closes: it counts submits per channel per second, so
+   the application's frames-per-second divides straight into it.
+4. **Does a trivial harness reproduce it?** Answered above: no, four times, on
+   hardware, with no swapchain involved.
+
+### Patch 0077 — the submit and fence-wait meter
+
+`MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`, the nvkmd counterpart of 0076's acquire
+meter and the same shape: two lines a second, per channel, off by default.
+`docs/synchronization.md` § 10 is the reading guide.
+
+It splits the one number the report is stuck on into the four things that
+produce it: time **on the syncpoint** (the GPU really was that slow), time
+**before a fence existed** (the D16 condition-variable wait — the caller waited
+on a `VkFence` nothing had submitted with yet), **CPU waits for another channel**
+(item 2 above, with the count it skipped as already ordered), and the **age of
+the fence when the wait returned**. That last one tests the report's own premise
+directly: an application that believes it is waiting for work from three frames
+ago, against a mean fence age of a millisecond, is not pipelining at all.
+
+Per context rather than per device, so the exec channel and the upload channel
+report separately. A cross-channel wait therefore appears twice — as a CPU wait
+on the channel that performed it, as a fence wait on the channel that owned the
+fence — which is two true statements about one event, not double counting.
+
+**Cross build only. No console has run it.** `scripts/build-mesa-nvk.sh` in the
+`mesa-nvk-horizon/nx-dev-mesa` image compiles both changed files, links
+`libnvk.a` clean and relinks the 33 test `.nro`; `check-tls-relocs` reports 0 TLS
+relocations. `check-layering.sh` and `check-no-abs-paths.sh` pass.
+
+**What would settle it:** the reporting application run with both meters on —
+`MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1` and `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`,
+set before `vkCreateSwapchainKHR` — read against run 26's baseline. Nothing
+short of that can attribute the 140.7 ms, because every candidate inside this
+driver has now been measured at a thousandth of it.
+
+### One thing found while doing this, and it is about the checkout, not the code
+
+`scripts/apply-mesa-patches.sh` refuses on this working copy: the local `mesa/`
+is a shallow clone based at `6a02618` ("VERSION: bump for 26.1.5") while
+`toolchain/versions.env` pins `ffa422e` (`mesa-26.1.6`). The checkout predates
+the pin bump; nothing about patch 0077 caused it and nothing about it was
+worked around. `scripts/fetch-mesa.sh` is the fix, and it has not been run here
+because it would discard the local history the series is exported from. **0077
+was therefore exported with `format-patch -1 --start-number 77`, appending one
+file and leaving the other 76 untouched**, rather than regenerating the series
+against a base this checkout does not have.
 
 ---
 
