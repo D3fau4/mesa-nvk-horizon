@@ -547,9 +547,17 @@ if nvk_libs_present
     # is turned off again immediately: whole-archiving the rest costs
     # size for nothing, and whole-archiving two archives built from the
     # same sources collides on every symbol in them.
+    #
+    # -lzstd -lz: enabling the shader cache put compress.c on the
+    # reachable side of libmesa_util.a, and Mesa's own configure enabled
+    # it through devkitPro's portlibs. Same libraries idep_mesa_core
+    # names, for the same reason.
     link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
                 ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
-                ['-lstdc++'],
+                ['-lstdc++',
+                 '-L' + meson.get_external_property('devkitpro_prefix') /
+                        'portlibs/switch/lib',
+                 '-lzstd', '-lz'],
     # The same platform define the driver was built with. Without it
     # <vulkan/vulkan.h> hides VK_NN_vi_surface — VkViSurfaceCreateInfoNN,
     # PFN_vkCreateViSurfaceNN, the extension's name macro — so a test

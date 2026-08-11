@@ -135,7 +135,11 @@ gives homebrew three cores. One thread on Horizon.
 | the record | `scripts/check-history-intact.sh` | OK |
 | the series | `scripts/apply-mesa-patches.sh --list` | **79 applied, 0 pending** |
 | core, cross | `scripts/configure-mesa.sh && scripts/build-mesa.sh` | `shader-cache: enabled`, `check-tls-relocs` OK |
-| the .nro set | `scripts/build-switch.sh` | 21, `t_shader_cache` among them |
+| the .nro set, Makefile path | `scripts/build-switch.sh` | 21, `t_shader_cache` among them |
+| **the driver, cross** | `scripts/configure-mesa-nvk.sh && scripts/build-mesa-nvk.sh` | `shader-cache: enabled`, driver id `02fce8cb…` |
+| every archive | `scripts/ci-build-archives.sh` | **OK — every archive built, 35 `.nro` link them**, `check-dispatch-complete` OK (825 entry points named, 234 core, 1 allowed absence), `check-tls-relocs` OK (3 objects use TLS, all with relocations, 351 scanned) |
+| the package | `scripts/package-horizon.sh` | 35 `.nro`, 17 NVK archives, one build id |
+| the series on a pristine tree | `git am mesa-patches/*.patch` onto `MESA_COMMIT` | **79 of 79, no fuzz, no rejects** |
 
 `h_status` goes 14 → 16 because `result.h` gained two statuses, appended
 and never inserted: those numbers are printed in logs kept under
@@ -157,6 +161,34 @@ mesa_cache_db.c.o           1432 bytes   0 defined symbols
 The only symbol of that family still unresolved is `fcntl`, from
 `os_file.c`'s `os_create_anonymous_file` — unreachable, unrelated, and
 exactly where Phase 4 left it.
+
+The same audit over the **shipping driver's** archives (`build/mesa-nvk`)
+says the same thing, and it is the one that discharges the pagaré:
+
+```
+$ for a in $(find build/mesa-nvk -name '*.a'); do nm -u "$a" | grep -E \
+    '\b(mmap|flock|posix_fallocate|memfd_create|getpwuid_r|nftw)\b'; done
+libsanity_check_for_rust.a: flock getpwuid_r
+```
+
+— one archive, and it is Mesa's build-time Rust sanity check, which no
+`.nro` links. `getuid` survives in `anon_file.c`, which is where Phase 4
+found it and is not the cache's. **`flock` is gone from everything the
+console will run**, and `nm -u build/meson/t_vulkan.elf` reports none of
+that family undefined at all.
+
+  disk_cache.c.o             79960 bytes  42 defined symbols
+  disk_cache_horizon.c.o     64024 bytes  53 defined symbols
+  disk_cache_os.c.o          not built
+  mesa_cache_db.c.o           1424 bytes   0 defined symbols
+
+Three link-order facts the build found, all recorded on the link line
+rather than worked around: `libmesa_util.a` now needs `libhorizon_gpu.a`
+(the backend), `libblake3.a` (`disk_cache_compute_key`) and zstd + zlib
+(`compress.c`, which Mesa's configure enabled through portlibs). The
+archive list moved in all three places that declare it, which is what
+`check-mesa-test-parity.sh` is for, and a fourth site — `idep_nvk_driver`
+— needed the libraries too.
 
 ### What the host tests found
 
