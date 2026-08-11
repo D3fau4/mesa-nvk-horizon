@@ -1,7 +1,3 @@
-# Digests of the hardware logs. Checked by scripts/check-history-intact.sh.
-# A new log is declared by running scripts/split-status.py --record-logs,
-# which shows up as added lines; a CHANGED line for a log that already
-# existed is the thing this exists to make visible.
 62e21e79158e1d7e066548e7b391bd858d677a073e4124ae9b603c943fb185ef  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
@@ -171,3 +167,9 @@ f6c339545470dd122cfbdb5835d44a658b95e5b31ffa5bdba99fbfd5664e7cca  t_vulkan-run5-
 f8232f1d35e23ac4913d3ed4dd59cd011ddc5a473a4696b2cf010a00562895f2  t_vulkan-run8-window-blocked-PASS.log
 787566b2ec4f7f510e40fa1654cb8c18a19d73af8bb9d21deb18ec890843cfdc  t_vulkan-run9-pr7-rerun-PASS.log
 2fe162f6f21280e3b6696439b582d0d8bad75c330b1e13d49a56087245f28f41  t_vulkan.log
+7fc05eefb7c79330c42b7f04bdfdd807426a3074f6f1b90cab42c817cf99b69f  t_vk_present_draw-run26-PASS.log
+df09439812b4111170e1933f78acfd5caa80570fd7de07194cc65885ef251a46  t_vk_swapchain-run26-0076-PASS.log
+# A new log is declared by running scripts/split-status.py --record-logs,
+# Digests of the hardware logs. Checked by scripts/check-history-intact.sh.
+# existed is the thing this exists to make visible.
+# which shows up as added lines; a CHANGED line for a log that already

@@ -1138,18 +1138,37 @@ int run_test(test_ctx *t)
               PD_FRAME_DRAW, PD_DRAWS_APP, PD_GPU_FRAMES, PD_GPU_BUDGET_NS,
               true, "B3 GPU cost, three draws", &gpu_draw3);
 
-   /* Is the cost per frame or per pixel? Printed rather than asserted:
-    * this file does not know what the right answer is, and a threshold
-    * invented here would be the wrong way to find out. */
-   if (gpu_draw1.gpu_samples != 0 && gpu_draw3.gpu_samples != 0) {
+   /* HOW MUCH OF A DRAWN FRAME IS THE DRAWING, and the comparison has to
+    * be against the clear or it answers the wrong question. Run 26 is
+    * why this is spelled out: clear 1193 us, one draw 1814 us, three
+    * draws 3022 us. Comparing 3022 against 1814 says "it barely
+    * doubled", which is arithmetically true and means nothing — the
+    * fixed part of a frame is in both numbers. Subtract it and the
+    * drawing is 621 us and 1829 us, i.e. almost exactly three times one
+    * draw, and the frame is 1193 us of fixed cost plus 610 us a draw.
+    *
+    * So the per-draw cost is what is reported, and the baseline it was
+    * taken against is printed beside it. Nothing is asserted: this file
+    * does not know what the right number is, and a threshold invented
+    * here would be the wrong way to find out. */
+   if (gpu_draw1.gpu_samples != 0 && gpu_draw3.gpu_samples != 0 &&
+       gpu_clear.gpu_samples != 0) {
+      const uint64_t base = pd_gpu_mean_ns(&gpu_clear);
       const uint64_t one = pd_gpu_mean_ns(&gpu_draw1);
       const uint64_t three = pd_gpu_mean_ns(&gpu_draw3);
-      t_note(t, "B: three draws cost %" PRIu64 " us against one draw's %"
-                PRIu64 " us — %s", three / 1000u, one / 1000u,
-             one != 0 && three >= one * 2u
-                ? "it scales with the fill, so the cost is per pixel"
-                : "it barely scales, so the cost is per frame and not in "
-                  "the drawing");
+      /* A draw cannot cost less than nothing; a clear that came out
+       * dearer than a drawn frame means the two runs are not comparable
+       * and the subtraction is not performed on that reading. */
+      const uint64_t one_draw = one > base ? one - base : 0;
+      const uint64_t three_draws = three > base ? three - base : 0;
+      t_note(t, "B: over a %" PRIu64 " us clear, one draw adds %" PRIu64
+                " us and three add %" PRIu64 " us — %s", base / 1000u,
+             one_draw / 1000u, three_draws / 1000u,
+             one_draw != 0 && three_draws >= one_draw * 2u
+                ? "the drawing scales with the fill, and what is left is "
+                  "the frame's fixed cost"
+                : "the drawing does not scale, so the cost is fixed per "
+                  "frame and is not in the drawing");
    }
 
    /* ---------------------------------------------------------------- */
