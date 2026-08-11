@@ -1,0 +1,1132 @@
+From bd14ab777de7a9119963b552f9e527a8c436386e Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <noreply@invalid>
+Date: Tue, 11 Aug 2026 19:50:01 +0000
+Subject: [PATCH 78/78] nouveau/vk: nvkmd_horizon, an unmap waits for the work
+ that can still reach it
+
+mesa-nvk-horizon: Phase 4 item 5 (bind / unbind)
+Why: on every other nvkmd backend an unbind goes through the kernel's
+ VM_BIND queue and comes out ordered after the channel's in-flight work.
+ NVGPU has no such queue, and this backend said so in a comment and then
+ drew the wrong conclusion from it: "the mapping is in place before this
+ call returns, so anything submitted afterwards sees it". That holds for
+ a bind. For an unmap the same immediacy is the opposite of safe --
+ NVGPU_AS_IOCTL_UNMAP_BUFFER takes effect when it returns and the GPU
+ runs behind the CPU, so an unmap removed pages from under submits that
+ were still executing. horizon_gpu states whose job the ordering is, in
+ the imperative -- "The caller must ensure submits referencing the VA
+ have retired" (horizon_gpu/vm.h) -- and nothing in this backend did it.
+ It is not the unbind path, which is why fixing only that would have
+ changed nothing. nvkmd_horizon_va_unbind is reached only from
+ nvkmd_horizon_ctx_bind, whose four callers all use queue->bind_ctx,
+ which nvk_queue.c creates only for a queue family carrying
+ VK_QUEUE_SPARSE_BINDING_BIT -- and nvkmd_horizon_pdev.c sets
+ has_sparse to false, so that family does not exist here and neither
+ function runs. The reachable unmap is nvkmd_horizon_va_free, which
+ tears its bindings down directly: every nvkmd_mem carries a VA of its
+ own bound at offset 0, released by nvkmd_horizon_mem_free before the
+ object is destroyed, so every vkFreeMemory that drops the last
+ reference unmapped the address NVK bakes into every buffer device
+ address, and vkDestroyImage and vkDestroyBuffer did the same through
+ their plane and buffer VAs. Both paths now go through one deferral.
+ Every live channel is waited on, not just one: two contexts exist on
+ this device -- the queue's exec context and nvk_upload_queue's -- and
+ either can have referenced the memory, so ordering against one of them
+ would be the same bug, halved. The fences are snapshotted from nvkmd's
+ own ctx->last_fence under a new per-context mutex rather than from
+ horizon_gpu_channel_last_fence, because horizon_gpu_channel keeps no
+ lock of its own -- channel.c reads chan->shadow_target unlocked while
+ horizon_gpu_submit writes it -- and this runs on whichever thread
+ called vkFreeMemory. Same number, no data race pushed down into
+ horizon/.
+ A lost channel counts as passed. A reached threshold on a faulted
+ channel proves nothing about the work, because nvgpu's recovery
+ force-increments the syncpoint, and a wait must keep reporting
+ CHANNEL_LOST -- it does. But the question here is whether the GPU can
+ still reach the address, and a lost channel never executes again.
+ Deferring for ever instead would strand the mapping, the memory and
+ the reservation for the life of the process, which is the leak patch
+ 0043 exists to prevent.
+ Nothing is queued in a conformant application. VUID-vkFreeMemory-
+ memory-00677 and VUID-vkDestroyImage-image-01000 both require every
+ submitted command referring to the object to have completed before the
+ call, so the fences are already signalled, the unmap happens inline and
+ the reference is dropped inline, exactly as before. What is bought is
+ that an application which does not obey them -- or a driver-internal
+ free that races the GPU -- waits instead of faulting.
+ The reaper is deliberately absent from nvkmd_horizon_ctx_exec.
+ Completing a deferred unmap drops a memory reference, which can be the
+ last one, which runs nvkmd_horizon_mem_free -> nvkmd_va_free -> a wait
+ for the GPU. On the submit thread that would be the unconditional stall
+ rejected design 6 forbids, arrived at sideways.
+Evidence: HOST AND STATIC ONLY -- NO CONSOLE HAS RUN THIS, and the full
+ cross link had not finished when this was committed.
+ The defect is visible by reading: before this patch,
+ `grep -n 'fence\|retire\|reap' nvkmd/horizon/nvkmd_horizon_va.c`
+ returned nothing -- the file that unmaps had no reference to completion
+ of any kind, while horizon_gpu/vm.h:95-98 requires one of its caller.
+ The reachability that decides where the fix goes was read out of the
+ tree at mesa-26.1.6 + the 77-patch series: nvkmd_horizon_pdev.c:435
+ `.has_sparse = false`, nvk_physical_device.c:1634 derives
+ VK_QUEUE_SPARSE_BINDING_BIT from it, nvk_queue.c:436 creates bind_ctx
+ only under that bit, and all four nvkmd_ctx_bind callers
+ (nvk_image.c:1837,1935,2005 and nvk_buffer.c:336) use queue->bind_ctx
+ -- so nvkmd_horizon_ctx_bind and nvkmd_horizon_va_unbind do not run
+ here at all, and nvkmd_horizon_va_free is the path that does.
+ `scripts/run-host-tests.sh`: RESULT: PASS on all six suites, 132/132
+ (h_align 20/20, h_va_space 21/21, h_syncpt_math 30/30, h_cmds 39/39,
+ h_status 14/14, h_log 8/8) -- a no-regression gate, not coverage of
+ this code, which lives in Mesa and cannot be reached from there.
+ check-layering, check-no-abs-paths, check-history-intact and
+ check-mesa-test-parity all report OK.
+Upstream: no -- every other backend gets this ordering from the kernel's
+ VM_BIND queue, which this platform does not have.
+---
+ src/nouveau/vulkan/meson.build                |   1 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 130 +++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  |  62 +-
+ .../nvkmd/horizon/nvkmd_horizon_defer.c       | 548 ++++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  14 +
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   |  94 +--
+ 6 files changed, 811 insertions(+), 38 deletions(-)
+ create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_defer.c
+
+diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
+index 537d0ea..a38ed8e 100644
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -84,6 +84,7 @@ nvk_files = files(
+ if host_machine.system() == 'horizon'
+   nvk_files += files(
+     'nvkmd/horizon/nvkmd_horizon.h',
++    'nvkmd/horizon/nvkmd_horizon_defer.c',
+     'nvkmd/horizon/nvkmd_horizon_dev.c',
+     'nvkmd/horizon/nvkmd_horizon_enumerate.c',
+     'nvkmd/horizon/nvkmd_horizon_mem.c',
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 54afe5b..69b4f5b 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -114,6 +114,34 @@ struct nvkmd_horizon_dev {
+     * clock that stalls is wrong in a way a caller can notice while one
+     * that jumps to zero is not. */
+    uint64_t last_gpu_timestamp;
++
++   /* Unmaps that cannot be performed yet, and the channels they are
++    * waiting on. See nvkmd_horizon_defer.c for what this is for.
++    *
++    * One mutex covers both lists because an unmap does both things in
++    * one step: it walks `ctxs` to snapshot their fences and appends the
++    * result to `deferred_unmaps`. Splitting them would buy nothing and
++    * would add an ordering to get wrong.
++    *
++    * IT IS ITS OWN MUTEX, not va_list_mutex. nvkmd_horizon_va_unbind
++    * holds va->mutex to unlink a binding and then needs this one, while
++    * nvkmd_horizon_describe_addr takes va_list_mutex and then va->mutex.
++    * Reusing va_list_mutex here would close that cycle. The lock order
++    * is va_list_mutex < va->mutex < defer_mutex < ctx->fence_mutex, and
++    * no site takes them the other way round.
++    */
++   simple_mtx_t defer_mutex;
++   struct list_head ctxs;
++   struct list_head deferred_unmaps;
++
++   /* Counters, reported once at device destroy. Kept because the thing
++    * they measure is invisible otherwise: a run in which nothing was
++    * ever deferred and a run in which the deferral saved a fault look
++    * identical from outside. */
++   uint32_t defer_queued;
++   uint32_t defer_completed;
++   uint32_t defer_lost;
++   uint64_t defer_blocked_ns_max;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(dev, horizon);
+@@ -248,11 +276,113 @@ struct nvkmd_horizon_ctx {
+    horizon_gpu_fence last_fence;
+    bool has_fence;
+ 
++   /* Guards last_fence/has_fence, which are read from threads that do
++    * not own this context: nvkmd_horizon_defer.c snapshots them from
++    * whichever thread called vkFreeMemory or vkDestroyImage.
++    *
++    * The alternative — horizon_gpu_channel_last_fence() — is the same
++    * number, but horizon_gpu_channel keeps no lock of its own
++    * (horizon/channel/channel.c reads chan->shadow_target unlocked
++    * while horizon_gpu_submit writes it), so reading it from a foreign
++    * thread would put a data race into horizon/. This copy is nvkmd's,
++    * and every submit that advances it is one of ours — ctx_exec,
++    * ctx_signal and the bind_engines submit stored at creation are the
++    * only callers of horizon_gpu_submit in the driver — so it can be
++    * locked on this side of the layer boundary instead.
++    */
++   simple_mtx_t fence_mutex;
++
++   /* Into nvkmd_horizon_dev::ctxs, so a deferred unmap can find every
++    * channel that might still reach the address it is about to remove. */
++   struct list_head dev_link;
++
+    struct nvkmd_horizon_meter meter;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(ctx, horizon);
+ 
++/*
++ * DEFERRED UNMAP — nvkmd_horizon_defer.c.
++ *
++ * An unmap takes effect the moment NVGPU_AS_IOCTL_UNMAP_BUFFER returns,
++ * and the GPU runs behind the CPU, so an unmap issued while a submit
++ * that references the address is still executing takes the pages out
++ * from under it. On a DRM backend the kernel's VM_BIND queue orders the
++ * unbind after the channel's work; this platform has no such queue, so
++ * the ordering is built here.
++ */
++struct nvkmd_horizon_deferred_unmap {
++   struct list_head link;
++
++   /* Identity only — compared against, never dereferenced. The VA may
++    * already be freed by the time this entry completes. */
++   const struct nvkmd_horizon_va *va;
++   uint64_t va_offset_B;
++   uint64_t range_B;
++
++   horizon_gpu_mapping *mapping;
++
++   /* The reference the binding held, dropped after the unmap and never
++    * before it. NULL for a memory object's own VA — see
++    * nvkmd_horizon_va_bind_mem for why that exception is not optional. */
++   struct nvkmd_mem *mem;
++
++   uint32_t fence_count;
++   struct {
++      /* NULL once the context that owned it is gone, which means
++       * nothing can execute on it any more. */
++      horizon_gpu_channel *chan;
++      horizon_gpu_fence fence;
++   } fences[];
++};
++
++void nvkmd_horizon_dev_register_ctx(struct nvkmd_horizon_dev *dev,
++                                    struct nvkmd_horizon_ctx *ctx);
++void nvkmd_horizon_dev_unregister_ctx(struct nvkmd_horizon_dev *dev,
++                                      struct nvkmd_horizon_ctx *ctx);
++
++/* Unmaps `mapping` once every channel that could still reach it has
++ * passed the fence it was at when this was called, dropping `mem` after
++ * the unmap. Takes ownership of both.
++ *
++ * `block` waits for that moment; otherwise the entry is queued and the
++ * work happens at a later reap. Never fails: on an allocation failure it
++ * falls back to blocking, which is slower and never wrong.
++ */
++void nvkmd_horizon_defer_unmap(struct nvkmd_horizon_dev *dev,
++                               const struct nvkmd_horizon_va *va,
++                               uint64_t va_offset_B, uint64_t range_B,
++                               horizon_gpu_mapping *mapping,
++                               struct nvkmd_mem *mem, bool block);
++
++/* Completes every queued unmap whose fences have passed. Non-blocking,
++ * and cheap when there is nothing queued.
++ *
++ * NOT TO BE CALLED FROM THE SUBMIT PATH: completing an entry drops a
++ * memory reference, which may be the last one, which runs
++ * nvkmd_horizon_mem_free -> nvkmd_va_free -> the blocking drain below.
++ * On the submit path that would be a CPU stall behind the queue, which
++ * is rejected design 6.
++ */
++void nvkmd_horizon_dev_reap_unmaps(struct nvkmd_horizon_dev *dev);
++
++/* Completes every queued unmap of `va` overlapping [off, off+range),
++ * waiting for its fences. `va` NULL matches every entry, and a `range`
++ * of zero with `va` non-NULL matches all of that VA's entries. */
++void nvkmd_horizon_dev_drain_unmaps(struct nvkmd_horizon_dev *dev,
++                                    const struct nvkmd_horizon_va *va,
++                                    uint64_t va_offset_B, uint64_t range_B);
++
++/* Drops every reference to `chan` from queued entries, after waiting for
++ * their fences on it. Called before the channel is destroyed so no entry
++ * is left holding a dangling pointer. */
++void nvkmd_horizon_dev_retire_channel(struct nvkmd_horizon_dev *dev,
++                                      horizon_gpu_channel *chan);
++
++/* One line at device destroy, or nothing at all if nothing was ever
++ * deferred. */
++void nvkmd_horizon_dev_report_unmaps(struct nvkmd_horizon_dev *dev);
++
+ /* The vk_sync type — decision D11, native over syncpoints. See
+  * nvkmd_horizon_sync.c for why, and for how D8's clock question is
+  * handled in one place.
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index 07f8c05..92bccb6 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -200,6 +200,7 @@ static void
+ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_ctx->dev);
+ 
+    /* First, and before the channel goes away: the last window is
+     * reported here, and the error path below returns without freeing
+@@ -207,6 +208,17 @@ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+     * exactly the run that most wants explaining. */
+    nvkmd_horizon_meter_finish(&ctx->meter);
+ 
++   /* Out of the device's list before anything else, so no unmap
++    * starting now snapshots a channel that is on its way out. */
++   nvkmd_horizon_dev_unregister_ctx(dev, ctx);
++
++   /* Then let go of the channel everywhere it is still recorded. A
++    * deferred unmap holds a borrowed horizon_gpu_channel pointer, and
++    * this is the moment that pointer stops being valid; the channel is
++    * idle by now (horizon_gpu_channel_destroy below refuses while
++    * submits are in flight), so this completes rather than waits. */
++   nvkmd_horizon_dev_retire_channel(dev, ctx->chan);
++
+    /* horizon_gpu_channel_destroy fails with ERR_BUSY while submits are
+     * in flight. nvkmd's contract is that the queue is idle before the
+     * context goes away — vkDestroyDevice waits — so waiting again here
+@@ -221,6 +233,7 @@ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+       return;
+    }
+ 
++   simple_mtx_destroy(&ctx->fence_mutex);
+    FREE(ctx);
+ }
+ 
+@@ -440,13 +453,21 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+                        (int)res.status, res.nv);
+    }
+ 
++   simple_mtx_lock(&ctx->fence_mutex);
+    ctx->last_fence = fence;
+    ctx->has_fence = true;
++   simple_mtx_unlock(&ctx->fence_mutex);
+    nvkmd_horizon_meter_submit(&ctx->meter);
+ 
+    /* No wait here. The submit is asynchronous and stays that way:
+     * rejected design 6 is a property held from the first line, not
+     * retrofitted.
++    *
++    * And nothing is reaped here either. Completing a deferred unmap
++    * drops a memory reference, which can be the last one, which runs
++    * nvkmd_horizon_mem_free -> nvkmd_va_free -> a wait for the GPU —
++    * on this thread, with the queue behind it. That would be exactly
++    * the stall rejected design 6 forbids, arrived at sideways.
+     */
+    return VK_SUCCESS;
+ }
+@@ -457,16 +478,28 @@ nvkmd_horizon_ctx_bind(struct nvkmd_ctx *_ctx,
+                        uint32_t bind_count,
+                        const struct nvkmd_ctx_bind *binds)
+ {
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_ctx->dev);
++
+    /* On a DRM backend a bind goes through the kernel's VM_BIND queue and
+     * is ordered against the channel's work. Horizon has no such queue:
+     * NVGPU_AS_IOCTL_MAP_BUFFER_EX is synchronous and takes effect when
+     * it returns. So a bind is performed immediately, through the same
+     * VA operations nvkmd_va exposes.
+     *
+-    * That is stricter than the interface requires, not looser: the
+-    * mapping is in place before this call returns, so anything
+-    * submitted afterwards sees it.
++    * For a BIND that is stricter than the interface requires, not
++    * looser: the mapping is in place before this call returns, so
++    * anything submitted afterwards sees it.
++    *
++    * For an UNBIND the same immediacy is the opposite of strict, and an
++    * earlier version of this comment claimed the property for both.
++    * Removing a mapping the instant the ioctl returns takes the pages
++    * away from submits that are still executing — the GPU runs behind
++    * the CPU, and nothing here ordered the two. That is now handled
++    * where every unmap on this backend passes, in
++    * nvkmd_horizon_defer.c; this loop no longer has to reason about it.
+     */
++   nvkmd_horizon_dev_reap_unmaps(dev);
++
+    for (uint32_t i = 0; i < bind_count; i++) {
+       const struct nvkmd_ctx_bind *b = &binds[i];
+       VkResult result;
+@@ -514,8 +547,10 @@ nvkmd_horizon_ctx_signal(struct nvkmd_ctx *_ctx,
+                           "status %d, nv 0x%08" PRIx32,
+                           (int)res.status, res.nv);
+       }
++      simple_mtx_lock(&ctx->fence_mutex);
+       ctx->last_fence = fence;
+       ctx->has_fence = true;
++      simple_mtx_unlock(&ctx->fence_mutex);
+       nvkmd_horizon_meter_submit(&ctx->meter);
+    }
+ 
+@@ -568,6 +603,13 @@ nvkmd_horizon_ctx_sync(struct nvkmd_ctx *_ctx,
+                        "nv 0x%08" PRIx32, (int)res.status, res.nv);
+    }
+ 
++   /* Free reclamation: the caller has just waited for the channel, so
++    * anything queued against it can be completed without a wait of its
++    * own. This is the cheapest place in the driver to give the deferred
++    * unmaps back, and it is on a path that is already allowed to block.
++    */
++   nvkmd_horizon_dev_reap_unmaps(nvkmd_horizon_dev(_ctx->dev));
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -615,6 +657,13 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+     */
+    nvkmd_horizon_meter_init(&ctx->meter, ctx->chan);
+ 
++   simple_mtx_init(&ctx->fence_mutex, mtx_plain);
++
++   /* Registered before the first submit, so no unmap can start between
++    * this channel running work and this channel being something an
++    * unmap knows to wait for. */
++   nvkmd_horizon_dev_register_ctx(dev, ctx);
++
+    /* Asynchronous: bind_engines submits and returns a fence rather than
+     * waiting for it. The next submit on this channel is ordered after
+     * it by the channel itself, so there is nothing to wait for here.
+@@ -622,8 +671,9 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+    horizon_gpu_fence bind_fence;
+    res = horizon_gpu_channel_bind_engines(ctx->chan, &bind_fence);
+    if (res.status != HORIZON_GPU_OK) {
+-      /* Torn down in the reverse of the order it was built: the meter
+-       * was the last thing initialised, so it is the first to go. */
++      /* Torn down in the reverse of the order it was built. */
++      nvkmd_horizon_dev_unregister_ctx(dev, ctx);
++      simple_mtx_destroy(&ctx->fence_mutex);
+       nvkmd_horizon_meter_finish(&ctx->meter);
+       horizon_gpu_channel_destroy(ctx->chan);
+       FREE(ctx);
+@@ -632,8 +682,10 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+                        "nv 0x%08" PRIx32, (int)res.status, res.nv);
+    }
+ 
++   simple_mtx_lock(&ctx->fence_mutex);
+    ctx->last_fence = bind_fence;
+    ctx->has_fence = true;
++   simple_mtx_unlock(&ctx->fence_mutex);
+ 
+    ctx->base.ops = &nvkmd_horizon_ctx_ops;
+    ctx->base.dev = _dev;
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_defer.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_defer.c
+new file mode 100644
+index 0000000..78cf307
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_defer.c
+@@ -0,0 +1,548 @@
++/*
++ * Copyright (c) mesa-nvk-horizon contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_horizon.h"
++
++#include "util/list.h"
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_time.h"
++#include "util/u_memory.h"
++
++#include <assert.h>
++#include <inttypes.h>
++
++/*
++ * ORDERING AN UNMAP AGAINST THE WORK THAT CAN STILL REACH IT.
++ *
++ * horizon_gpu_vm_unmap issues NVGPU_AS_IOCTL_UNMAP_BUFFER and the pages
++ * are gone when it returns. The GPU runs behind the CPU, so an unmap
++ * issued while a submit that references the address is still executing
++ * removes that submit's pages mid-flight. On every other nvkmd backend
++ * the unbind goes through the kernel's VM_BIND queue and comes out
++ * ordered after the channel's work; NVGPU has no such queue, so the
++ * ordering has to be built, and horizon_gpu says whose job that is in
++ * the imperative: "The caller must ensure submits referencing the VA
++ * have retired" (horizon_gpu/vm.h).
++ *
++ * WHAT IS WAITED ON. Every live context's channel, not just one. Two are
++ * live on this device during a vkQueueSubmit — the queue's exec context
++ * and nvk_upload_queue's — and either can have referenced the memory, so
++ * ordering against only one of them would be the same bug, halved. A
++ * context created after the snapshot cannot have referenced the address
++ * because it did not exist, and no future submit may reference it
++ * because the caller has told us the binding is finished, so one
++ * snapshot is enough and there is nothing to re-snapshot.
++ *
++ * WHY NOT horizon_gpu_channel_add_retirement, which already exists and
++ * does exactly this shape of thing. Four reasons, and the first is
++ * decisive: it appends to chan->retire[] with no lock, and may realloc
++ * it, while horizon_gpu_channel_reap walks and compacts the same array
++ * from inside every horizon_gpu_submit — registering from a
++ * vkDestroyImage thread would corrupt it. Then: the callback runs from
++ * inside the submit path and "must not submit", while ours calls an
++ * unmap ioctl and drops a memory reference that can re-enter
++ * nvkmd_va_free; there is no cancellation path, so a lost channel's
++ * horizon_gpu_channel_destroy runs the callback against an owner that
++ * may be gone; and nothing runs at all on a lost channel until destroy,
++ * which is when the unmap is most needed. Explicit polling has none of
++ * those properties.
++ *
++ * THE FAST PATH IS THE CONFORMANT ONE. VUID-vkFreeMemory-memory-00677
++ * and VUID-vkDestroyImage-image-01000 both require every submitted
++ * command that refers to the object to have completed before the call,
++ * so in an application that obeys Vulkan every fence below is already
++ * signalled, nothing is ever queued, and the unmap happens inline
++ * exactly as it did before this file existed. What is bought is that an
++ * application which does not obey it — or a driver-internal free that
++ * races the GPU — waits instead of faulting.
++ */
++
++/* How long a blocking drain waits for one fence before giving up and
++ * reporting. Run 26 measured 3022 us from submit to fence for three
++ * fullscreen draws, and t_vk_submits measures 100-137 us for an empty
++ * submit; its calibrated compute jobs are the longest thing this project
++ * has run, at tens of milliseconds. Two seconds is far above any of
++ * them and far below the ~30 s that tests/README.md calls a hang, so it
++ * separates "the GPU is busy" from "the GPU is never coming back"
++ * without having to guess at either. */
++#define NVKMD_HORIZON_DRAIN_TIMEOUT_NS UINT64_C(2000000000)
++
++void
++nvkmd_horizon_dev_register_ctx(struct nvkmd_horizon_dev *dev,
++                               struct nvkmd_horizon_ctx *ctx)
++{
++   simple_mtx_lock(&dev->defer_mutex);
++   list_addtail(&ctx->dev_link, &dev->ctxs);
++   simple_mtx_unlock(&dev->defer_mutex);
++}
++
++void
++nvkmd_horizon_dev_unregister_ctx(struct nvkmd_horizon_dev *dev,
++                                 struct nvkmd_horizon_ctx *ctx)
++{
++   simple_mtx_lock(&dev->defer_mutex);
++   list_del(&ctx->dev_link);
++   simple_mtx_unlock(&dev->defer_mutex);
++}
++
++/* True when nothing on `chan` can reach the mapping any more.
++ *
++ * LOST IS CHECKED BEFORE THE FENCE, and that order is the decision.
++ * horizon_gpu is emphatic that a reached threshold on a faulted channel
++ * proves nothing about the work, because nvgpu's recovery force-
++ * increments the syncpoint — so a *wait* must keep reporting
++ * CHANNEL_LOST, and it does. But the question here is not whether the
++ * work ran. It is whether the GPU can still reach this address, and a
++ * lost channel never executes again (docs/architecture.md § 6: it is
++ * marked lost and every later submit fails fast). Deferring for ever
++ * instead would strand the mapping, the memory object behind it and the
++ * reservation for the life of the process — the leak patch 0043 exists
++ * to prevent, and the "device destroy refused: live mem=" shape that
++ * 0058 measured.
++ *
++ * The residual assumption, which this patch does not prove: nvgpu stops
++ * the channel before it delivers the notifier. That is nvgpu's contract.
++ */
++static bool
++fence_passed(struct nvkmd_horizon_dev *dev, horizon_gpu_channel *chan,
++             horizon_gpu_fence fence, bool *out_lost)
++{
++   if (chan == NULL)
++      return true;
++
++   if (horizon_gpu_channel_is_lost(chan)) {
++      *out_lost = true;
++      return true;
++   }
++
++   /* No threshold arithmetic here, deliberately. horizon_gpu_fence_poll
++    * compares with horizon_gpu_syncpt_reached, which is wrap-safe and
++    * host-tested (tests/host/h_syncpt_math.c); open-coding the
++    * comparison would be a second copy of the one piece of arithmetic
++    * this project forbids getting wrong. */
++   bool signalled = false;
++   horizon_gpu_result res = horizon_gpu_fence_poll(dev->gpu, fence,
++                                                   &signalled);
++   if (horizon_gpu_failed(res)) {
++      /* Not passed. Of the two ways to be wrong about a syncpoint that
++       * cannot be read, the one that does not unmap is the safe one —
++       * the same choice, for the same reason, that
++       * docs/synchronization.md § 9.1 makes for a degraded channel. */
++      mesa_loge("nvkmd_horizon: horizon_gpu_fence_poll(syncpt %" PRIu32
++                ", threshold %" PRIu32 ") failed: status %d, "
++                "nv 0x%08" PRIx32, fence.syncpt_id, fence.threshold,
++                (int)res.status, res.nv);
++      return false;
++   }
++
++   return signalled;
++}
++
++/* Blocking form. HORIZON_GPU_ERR_CHANNEL_LOST means proceed, for the
++ * reason above — it is not a failure here even though it is one
++ * everywhere else. */
++static bool
++fence_wait_passed(struct nvkmd_horizon_dev *dev, horizon_gpu_channel *chan,
++                  horizon_gpu_fence fence, bool *out_lost)
++{
++   if (fence_passed(dev, chan, fence, out_lost))
++      return true;
++
++   horizon_gpu_result res =
++      horizon_gpu_channel_wait_fence(chan, fence,
++                                     NVKMD_HORIZON_DRAIN_TIMEOUT_NS);
++   if (res.status == HORIZON_GPU_ERR_CHANNEL_LOST) {
++      *out_lost = true;
++      return true;
++   }
++   if (horizon_gpu_failed(res)) {
++      mesa_loge("nvkmd_horizon: waiting for syncpt %" PRIu32 " to reach %"
++                PRIu32 " before an unmap failed: status %d, nv 0x%08" PRIx32
++                " — the mapping is kept rather than removed under work "
++                "that may still be running",
++                fence.syncpt_id, fence.threshold, (int)res.status, res.nv);
++      return false;
++   }
++
++   return true;
++}
++
++/* Runs the unmap and drops the reference. Called with NO lock held: the
++ * unref may be the last one, and nvkmd_mem_unref re-enters
++ * nvkmd_horizon_mem_free -> nvkmd_va_free -> the drain below.
++ *
++ * Returns false when the unmap failed and the entry must be kept. */
++static bool
++deferred_unmap_run(struct nvkmd_horizon_dev *dev,
++                   struct nvkmd_horizon_deferred_unmap *e)
++{
++   horizon_gpu_result res = horizon_gpu_vm_unmap(e->mapping);
++   if (horizon_gpu_failed(res)) {
++      /* Patch 0043's rule, one level along: horizon_gpu_vm_unmap leaves
++       * the mapping alive when it fails, precisely so it can be retried,
++       * and this entry is now the only pointer to it. Dropping the entry
++       * would make the mapping unreachable, the VA unreleasable and the
++       * memory behind it lost for the process's lifetime. It stays
++       * queued and is retried at the next reap. */
++      mesa_loge("nvkmd_horizon: deferred unmap at +0x%" PRIx64 " for 0x%"
++                PRIx64 " failed: status %d, nv 0x%08" PRIx32
++                " — kept queued for retry",
++                e->va_offset_B, e->range_B, (int)res.status, res.nv);
++      return false;
++   }
++
++   if (e->mem != NULL)
++      nvkmd_mem_unref(e->mem);
++
++   FREE(e);
++   return true;
++}
++
++/* Does this entry match the (va, offset, range) selector? A NULL va
++ * matches everything; a non-NULL va with range 0 matches all of that
++ * VA's entries. */
++static bool
++entry_selected(const struct nvkmd_horizon_deferred_unmap *e,
++               const struct nvkmd_horizon_va *va,
++               uint64_t va_offset_B, uint64_t range_B)
++{
++   if (va == NULL)
++      return true;
++   if (e->va != va)
++      return false;
++   if (range_B == 0)
++      return true;
++
++   /* Overlap, not containment: a rebind at an offset whose unmap is
++    * still queued has to wait for exactly the entries in its way. */
++   return e->va_offset_B < va_offset_B + range_B &&
++          va_offset_B < e->va_offset_B + e->range_B;
++}
++
++/* The one loop both the reap and the drain are made of.
++ *
++ * Entries are spliced off the device list under the lock and processed
++ * with it released, which is what makes nvkmd_mem_unref's re-entry into
++ * nvkmd_va_free safe: the re-entrant call takes the lock and sees a list
++ * that no longer holds the entries being worked on. Anything not
++ * completed goes back.
++ */
++static void
++process_unmaps(struct nvkmd_horizon_dev *dev, bool block,
++               const struct nvkmd_horizon_va *va,
++               uint64_t va_offset_B, uint64_t range_B)
++{
++   struct list_head taken, keep;
++   list_inithead(&taken);
++   list_inithead(&keep);
++
++   simple_mtx_lock(&dev->defer_mutex);
++   if (list_is_empty(&dev->deferred_unmaps)) {
++      simple_mtx_unlock(&dev->defer_mutex);
++      return;
++   }
++   list_for_each_entry_safe(struct nvkmd_horizon_deferred_unmap, e,
++                            &dev->deferred_unmaps, link) {
++      if (!entry_selected(e, va, va_offset_B, range_B))
++         continue;
++      list_del(&e->link);
++      list_addtail(&e->link, &taken);
++   }
++   simple_mtx_unlock(&dev->defer_mutex);
++
++   uint32_t completed = 0, lost = 0;
++   uint64_t blocked_ns = 0;
++
++   list_for_each_entry_safe(struct nvkmd_horizon_deferred_unmap, e,
++                            &taken, link) {
++      list_del(&e->link);
++
++      bool ready = true, was_lost = false;
++      const uint64_t t0 = block ? os_time_get_nano() : 0;
++
++      for (uint32_t i = 0; i < e->fence_count && ready; i++) {
++         ready = block
++            ? fence_wait_passed(dev, e->fences[i].chan, e->fences[i].fence,
++                                &was_lost)
++            : fence_passed(dev, e->fences[i].chan, e->fences[i].fence,
++                           &was_lost);
++      }
++
++      if (block) {
++         const uint64_t dt = os_time_get_nano() - t0;
++         if (dt > blocked_ns)
++            blocked_ns = dt;
++      }
++
++      if (!ready || !deferred_unmap_run(dev, e)) {
++         list_addtail(&e->link, &keep);
++         continue;
++      }
++
++      completed++;
++      if (was_lost)
++         lost++;
++   }
++
++   simple_mtx_lock(&dev->defer_mutex);
++   list_splicetail(&keep, &dev->deferred_unmaps);
++   dev->defer_completed += completed;
++   dev->defer_lost += lost;
++   if (blocked_ns > dev->defer_blocked_ns_max)
++      dev->defer_blocked_ns_max = blocked_ns;
++   simple_mtx_unlock(&dev->defer_mutex);
++
++   if (lost > 0) {
++      mesa_loge("nvkmd_horizon: %" PRIu32 " deferred unmap(s) went ahead "
++                "because their channel was lost — the work that referenced "
++                "them was abandoned, not completed", lost);
++   }
++}
++
++void
++nvkmd_horizon_dev_reap_unmaps(struct nvkmd_horizon_dev *dev)
++{
++   process_unmaps(dev, false /* block */, NULL, 0, 0);
++}
++
++void
++nvkmd_horizon_dev_drain_unmaps(struct nvkmd_horizon_dev *dev,
++                               const struct nvkmd_horizon_va *va,
++                               uint64_t va_offset_B, uint64_t range_B)
++{
++   process_unmaps(dev, true /* block */, va, va_offset_B, range_B);
++}
++
++void
++nvkmd_horizon_dev_retire_channel(struct nvkmd_horizon_dev *dev,
++                                 horizon_gpu_channel *chan)
++{
++   /* Everything first, blocking: horizon_gpu_channel_destroy refuses
++    * with ERR_BUSY while submits are in flight, so by the time a channel
++    * is being destroyed its fences have passed and this completes rather
++    * than waits. */
++   nvkmd_horizon_dev_drain_unmaps(dev, NULL, 0, 0);
++
++   /* Whatever survived that — an unmap that failed and is queued for
++    * retry — must stop pointing at a channel that is about to go away.
++    * A NULL channel reads as "nothing can execute on it any more", which
++    * is exactly true of one that has been destroyed. */
++   simple_mtx_lock(&dev->defer_mutex);
++   list_for_each_entry(struct nvkmd_horizon_deferred_unmap, e,
++                       &dev->deferred_unmaps, link) {
++      for (uint32_t i = 0; i < e->fence_count; i++) {
++         if (e->fences[i].chan == chan)
++            e->fences[i].chan = NULL;
++      }
++   }
++   simple_mtx_unlock(&dev->defer_mutex);
++}
++
++/* Allocates an entry with room for exactly the contexts this device has,
++ * and fills it in — both under one hold of defer_mutex, so the count
++ * cannot change between sizing and filling. There is deliberately no
++ * fixed cap: an entry with room for fewer channels than exist would be
++ * an entry that completes while an unrecorded channel is still running,
++ * which is the bug this file exists to prevent.
++ *
++ * NULL only on an allocation failure. The caller then has nowhere to
++ * record the fences and must wait for them instead.
++ */
++static struct nvkmd_horizon_deferred_unmap *
++alloc_and_snapshot(struct nvkmd_horizon_dev *dev,
++                   const struct nvkmd_horizon_va *va,
++                   uint64_t va_offset_B, uint64_t range_B,
++                   horizon_gpu_mapping *mapping, struct nvkmd_mem *mem)
++{
++   simple_mtx_lock(&dev->defer_mutex);
++
++   uint32_t n_ctxs = 0;
++   list_for_each_entry(struct nvkmd_horizon_ctx, ctx, &dev->ctxs, dev_link)
++      n_ctxs++;
++
++   struct nvkmd_horizon_deferred_unmap *e =
++      calloc(1, sizeof(*e) + n_ctxs * sizeof(e->fences[0]));
++   if (e == NULL) {
++      simple_mtx_unlock(&dev->defer_mutex);
++      return NULL;
++   }
++
++   e->va = va;
++   e->va_offset_B = va_offset_B;
++   e->range_B = range_B;
++   e->mapping = mapping;
++   e->mem = mem;
++
++   list_for_each_entry(struct nvkmd_horizon_ctx, ctx, &dev->ctxs, dev_link) {
++      assert(e->fence_count < n_ctxs);
++      simple_mtx_lock(&ctx->fence_mutex);
++      if (ctx->has_fence) {
++         e->fences[e->fence_count].chan = ctx->chan;
++         e->fences[e->fence_count].fence = ctx->last_fence;
++         e->fence_count++;
++      }
++      simple_mtx_unlock(&ctx->fence_mutex);
++   }
++
++   simple_mtx_unlock(&dev->defer_mutex);
++   return e;
++}
++
++/* Waits until nothing on any live channel can still reach an address of
++ * this device, without recording anything. Reached only when an entry
++ * could not be allocated, so there is nowhere to put a snapshot and the
++ * only remaining way to be correct is to wait now.
++ *
++ * defer_mutex is held across the waits, which is normally the wrong
++ * thing to do. It is right here: with no memory to record the fences in,
++ * letting go of the list would mean waiting on a set of channels that
++ * could have changed underneath us. On an out-of-memory path, correct
++ * and slow beats clever.
++ */
++static void
++wait_for_all_channels(struct nvkmd_horizon_dev *dev)
++{
++   simple_mtx_lock(&dev->defer_mutex);
++   const uint64_t t0 = os_time_get_nano();
++
++   list_for_each_entry(struct nvkmd_horizon_ctx, ctx, &dev->ctxs, dev_link) {
++      simple_mtx_lock(&ctx->fence_mutex);
++      const bool has = ctx->has_fence;
++      horizon_gpu_channel *chan = ctx->chan;
++      const horizon_gpu_fence fence = ctx->last_fence;
++      simple_mtx_unlock(&ctx->fence_mutex);
++
++      if (has) {
++         bool was_lost = false;
++         fence_wait_passed(dev, chan, fence, &was_lost);
++      }
++   }
++
++   const uint64_t dt = os_time_get_nano() - t0;
++   if (dt > dev->defer_blocked_ns_max)
++      dev->defer_blocked_ns_max = dt;
++   simple_mtx_unlock(&dev->defer_mutex);
++}
++
++void
++nvkmd_horizon_defer_unmap(struct nvkmd_horizon_dev *dev,
++                          const struct nvkmd_horizon_va *va,
++                          uint64_t va_offset_B, uint64_t range_B,
++                          horizon_gpu_mapping *mapping,
++                          struct nvkmd_mem *mem, bool block)
++{
++   /* Allocated even when blocking, so the fences can be copied out and
++    * waited on with the device lock released. Out of memory is not
++    * reportable here — every caller is a destroy path that returns void
++    * — so it falls through to the lock-held wait instead. */
++   struct nvkmd_horizon_deferred_unmap *e =
++      alloc_and_snapshot(dev, va, va_offset_B, range_B, mapping, mem);
++
++   if (e != NULL) {
++      bool ready = true, was_lost = false;
++      uint64_t blocked_ns = 0;
++
++      const uint64_t t0 = block ? os_time_get_nano() : 0;
++      for (uint32_t i = 0; i < e->fence_count && ready; i++) {
++         ready = block
++            ? fence_wait_passed(dev, e->fences[i].chan, e->fences[i].fence,
++                                &was_lost)
++            : fence_passed(dev, e->fences[i].chan, e->fences[i].fence,
++                           &was_lost);
++      }
++      if (block)
++         blocked_ns = os_time_get_nano() - t0;
++
++      if (!ready) {
++         /* Only reachable without `block`: the blocking form returns
++          * false solely on a wait that failed outright, which leaves the
++          * mapping queued for a later attempt just the same. */
++         simple_mtx_lock(&dev->defer_mutex);
++         list_addtail(&e->link, &dev->deferred_unmaps);
++         dev->defer_queued++;
++         if (blocked_ns > dev->defer_blocked_ns_max)
++            dev->defer_blocked_ns_max = blocked_ns;
++         simple_mtx_unlock(&dev->defer_mutex);
++         return;
++      }
++
++      /* Every fence has passed, which is what a conformant application
++       * always produces: complete inline, exactly as this code did
++       * before the deferral existed. */
++      if (blocked_ns > 0) {
++         simple_mtx_lock(&dev->defer_mutex);
++         if (blocked_ns > dev->defer_blocked_ns_max)
++            dev->defer_blocked_ns_max = blocked_ns;
++         simple_mtx_unlock(&dev->defer_mutex);
++      }
++      FREE(e);
++   } else {
++      wait_for_all_channels(dev);
++   }
++
++   horizon_gpu_result res = horizon_gpu_vm_unmap(mapping);
++   if (horizon_gpu_failed(res)) {
++      /* horizon_gpu_vm_unmap leaves the mapping alive when it fails so
++       * it can be retried, and after this call nothing else points at
++       * it. Queue it so a later reap retries; if even that allocation
++       * fails, say plainly that the mapping is now unreachable rather
++       * than let it disappear quietly. */
++      mesa_loge("nvkmd_horizon: horizon_gpu_vm_unmap(+0x%" PRIx64 ") failed: "
++                "status %d, nv 0x%08" PRIx32, va_offset_B,
++                (int)res.status, res.nv);
++
++      struct nvkmd_horizon_deferred_unmap *retry =
++         calloc(1, sizeof(*retry));
++      if (retry != NULL) {
++         retry->va = va;
++         retry->va_offset_B = va_offset_B;
++         retry->range_B = range_B;
++         retry->mapping = mapping;
++         retry->mem = mem;
++         retry->fence_count = 0;   /* nothing left to wait for */
++         simple_mtx_lock(&dev->defer_mutex);
++         list_addtail(&retry->link, &dev->deferred_unmaps);
++         dev->defer_queued++;
++         simple_mtx_unlock(&dev->defer_mutex);
++         return;
++      }
++
++      mesa_loge("nvkmd_horizon: and it could not be queued for retry — the "
++                "mapping at +0x%" PRIx64 " is unreachable for the life of "
++                "the process", va_offset_B);
++   }
++
++   if (mem != NULL)
++      nvkmd_mem_unref(mem);
++}
++
++void
++nvkmd_horizon_dev_report_unmaps(struct nvkmd_horizon_dev *dev)
++{
++   uint32_t pending = 0;
++   list_for_each_entry(struct nvkmd_horizon_deferred_unmap, e,
++                       &dev->deferred_unmaps, link) {
++      (void)e;
++      pending++;
++   }
++
++   /* Nothing to say when nothing was ever deferred, which is the
++    * conformant case and should not print a line. */
++   if (dev->defer_queued == 0 && pending == 0)
++      return;
++
++   mesa_logi("nvkmd_horizon: deferred unmaps: %" PRIu32 " queued, %" PRIu32
++             " completed, %" PRIu32 " on a lost channel, %" PRIu32
++             " still pending; longest wait %" PRIu64 " us",
++             dev->defer_queued, dev->defer_completed, dev->defer_lost,
++             pending, dev->defer_blocked_ns_max / 1000);
++
++   if (pending > 0) {
++      mesa_loge("nvkmd_horizon: %" PRIu32 " unmap(s) never completed — their "
++                "mappings, memory and reservations are leaked for the life "
++                "of the process", pending);
++   }
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index 8c01a74..5b41577 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -19,8 +19,18 @@ nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)
+    struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
+    struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_dev->pdev);
+ 
++   /* Anything still waiting on a fence is completed here, blocking:
++    * nvkmd destroys every context before the device, so the channels are
++    * already gone and their entries no longer reference them, which
++    * makes this a completion rather than a wait. Whatever survives is
++    * reported — a queued unmap that outlives its device is a leak, and
++    * it is the last moment anyone can say so. */
++   nvkmd_horizon_dev_drain_unmaps(dev, NULL, 0, 0);
++   nvkmd_horizon_dev_report_unmaps(dev);
++
+    simple_mtx_destroy(&_dev->mems_mutex);
+    simple_mtx_destroy(&dev->va_list_mutex);
++   simple_mtx_destroy(&dev->defer_mutex);
+ 
+    simple_mtx_lock(&pdev->mutex);
+    assert(pdev->dev_refcnt > 0);
+@@ -115,6 +125,10 @@ nvkmd_horizon_create_dev(struct nvkmd_pdev *_pdev,
+    list_inithead(&dev->va_list);
+    simple_mtx_init(&dev->va_list_mutex, mtx_plain);
+ 
++   list_inithead(&dev->ctxs);
++   list_inithead(&dev->deferred_unmaps);
++   simple_mtx_init(&dev->defer_mutex, mtx_plain);
++
+    /* The usable GPU VA range, taken from what the address space
+     * actually reported rather than from a constant. horizon_gpu returns
+     * two regions — small-page and big-page — and nvkmd wants one
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index 9ffe7c4..c7dcfbd 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -178,16 +178,35 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+     * thing printed on a failed vkCreateDevice, so it read as the cause
+     * while the real failure was silent.
+     */
++   /* Anything this VA already has queued has to be finished before the
++    * reservation can go: horizon_gpu_vm_release refuses with ERR_BUSY
++    * while a mapping is alive. Blocking, and it is the right place to
++    * block — see nvkmd_horizon_defer.c on why a destroy is not the
++    * stall rejected design 6 forbids. */
++   nvkmd_horizon_dev_drain_unmaps(dev, va, 0, 0);
++
+    list_for_each_entry_safe(struct nvkmd_horizon_binding, b,
+                             &va->bindings, link) {
+-      horizon_gpu_vm_unmap(b->mapping);
+       list_del(&b->link);
+-      /* Last, and after the unmap: this may be the reference that
+-       * destroys the object, and horizon_gpu_mem_destroy refuses while
+-       * the mapping is still alive. NULL for a memory object's own VA,
+-       * which holds no reference — see bind_mem. */
+-      if (b->mem != NULL)
+-         nvkmd_mem_unref(b->mem);
++
++      /* THE PATH THAT MATTERS, and it is not the unbind one. Every
++       * nvkmd_mem here carries a VA of its own, bound at offset 0 and
++       * released by nvkmd_horizon_mem_free before the object is
++       * destroyed (patch 0031), so every vkFreeMemory that drops the
++       * last reference arrives here — as does every vkDestroyImage and
++       * vkDestroyBuffer, through their plane and buffer VAs. Sparse is
++       * not advertised (D12), so nvkmd_horizon_va_unbind, the other
++       * caller, is not even reachable at run time.
++       *
++       * Blocking rather than queueing: the reservation is released a few
++       * lines below and cannot be while a mapping is alive, so there is
++       * nothing to gain by deferring past this point. The reference is
++       * dropped after the unmap, which is the order patch 0058 needs —
++       * horizon_gpu_mem_destroy refuses while the mapping lives — and
++       * b->mem is NULL for the memory object's own VA (patch 0060).
++       */
++      nvkmd_horizon_defer_unmap(dev, va, b->va_offset_B, b->range_B,
++                                b->mapping, b->mem, true /* block */);
+       FREE(b);
+     }
+ 
+@@ -227,6 +246,26 @@ nvkmd_horizon_va_bind_mem(struct nvkmd_va *_va,
+       horizon_gpu_vm_map(va->range, va_offset_B, mem->gpu_mem,
+                          mem_offset_B, range_B, _va->pte_kind,
+                          true /* gpu_cacheable */, &b->mapping);
++
++   if (res.status == HORIZON_GPU_ERR_BUSY) {
++      /* An unmap of this range may be queued and not yet performed, in
++       * which case the mapping horizon_gpu is refusing to overlap is one
++       * this driver has already been told to remove. Finish it and try
++       * once more.
++       *
++       * Only on ERR_BUSY, and only for entries that actually overlap: a
++       * genuine double-bind still fails, with the same message it always
++       * gave. Costs nothing when nothing is queued, which is the usual
++       * case — the drain returns on an empty list.
++       */
++      struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_va->dev);
++      nvkmd_horizon_dev_drain_unmaps(dev, va, va_offset_B, range_B);
++
++      res = horizon_gpu_vm_map(va->range, va_offset_B, mem->gpu_mem,
++                               mem_offset_B, range_B, _va->pte_kind,
++                               true /* gpu_cacheable */, &b->mapping);
++   }
++
+    if (res.status != HORIZON_GPU_OK) {
+       FREE(b);
+       /* The page size is in the message because it is the number that
+@@ -286,6 +325,7 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+                         uint64_t range_B)
+ {
+    struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_va->dev);
+ 
+    struct nvkmd_horizon_binding *found = NULL;
+ 
+@@ -310,32 +350,20 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+                        " for 0x%" PRIx64, va_offset_B, range_B);
+    }
+ 
+-   horizon_gpu_result res = horizon_gpu_vm_unmap(found->mapping);
+-   if (res.status != HORIZON_GPU_OK) {
+-      /* horizon_gpu_vm_unmap keeps the mapping object and the kernel
+-       * mapping alive when it fails, precisely so the operation can be
+-       * retried. Freeing the binding here would throw away the only
+-       * pointer to that still-live mapping: the next unbind would
+-       * report nothing bound, the VA could never be released because
+-       * horizon_gpu still counts the mapping against it, and the memory
+-       * behind it would be unreachable for the process's lifetime.
+-       *
+-       * So it goes back on the list it was taken off, in the same
+-       * position-independent way it was found, and the caller gets the
+-       * failure with the binding still tracked and still unbindable.
+-       */
+-      simple_mtx_lock(&va->mutex);
+-      list_addtail(&found->link, &va->bindings);
+-      simple_mtx_unlock(&va->mutex);
+-
+-      return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-                       "horizon_gpu_vm_unmap(+0x%" PRIx64 ") failed: "
+-                       "status %d, nv 0x%08" PRIx32,
+-                       va_offset_B, (int)res.status, res.nv);
+-   }
+-
+-   if (found->mem != NULL)
+-      nvkmd_mem_unref(found->mem);
++   /* Queued rather than performed, unless every channel has already
++    * passed the point where it could reach this address — in which case
++    * nvkmd_horizon_defer_unmap does it inline and this behaves as it
++    * always did. Ownership of the mapping and of the memory reference
++    * passes with the call.
++    *
++    * The failure handling that used to live here has moved with the
++    * unmap. Patch 0043's rule is unchanged and is now stronger: a failed
++    * unmap keeps the mapping reachable, and the retry actually happens
++    * at the next reap instead of depending on a caller that never
++    * retried.
++    */
++   nvkmd_horizon_defer_unmap(dev, va, va_offset_B, range_B, found->mapping,
++                             found->mem, false /* block */);
+    FREE(found);
+    return VK_SUCCESS;
+ }
+-- 
+2.43.0
+

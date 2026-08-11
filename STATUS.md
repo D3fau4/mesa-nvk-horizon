@@ -14,11 +14,11 @@ long. This block is the state itself, and it is the part that must be true.*
 |---|---|
 | **Phase** | **PHASE 6 IS COMPLETE, layout included.** The operator confirms the pattern renders correctly on the console — the one thing no measurement in this phase could produce, because every number here is about frames arriving and none about what was inside them. Run 16 is the run in which every piece of coverage this branch built actually executed. `t_vk_swapchain` **PASS 125/125** and `t_nwindow` **PASS 119/119** on one build. Three images present 90 of 90 at a mean of exactly **16666 us with 89 of 89 intervals inside 10%**; the infinite-timeout session ran for the first time at **20 of 20, 19 of 19 within 10%**; the copy fallback presented the pattern for the first time; both `VK_TIMEOUT` and `VK_NOT_READY` were produced and asserted. No MMU fault, no hang. A `VK_KHR_swapchain` presents on a Nintendo Switch through NVK over Horizon's VI compositor, zero-copy, at 89 of 89 intervals inside 10% of a 60 Hz refresh |
 | **What runs on a Switch** | *Run 26, 2026-08-11:* **a frame a graphics pipeline drew, presented at the refresh** — `t_vk_present_draw` **PASS 183/183**, three fullscreen textured draws into the scanout image at 1280x720/B8G8R8A8_UNORM/three images/zero-copy, mean **16527 us** between the clear control's 16549 and 16553, and **8253 us** under IMMEDIATE. Submit-to-fence on that image: 1193 us clear, 1814 us one draw, 3022 us three. This was the last untested shape in Phase 6 and the one the 6.4 Hz report needed; see the run 26 entry. *Runs 11 and 12, 2026-08-08.* **A VK_KHR_swapchain presenting zero-copy**: `vkCreateViSurfaceNN` over the default window; 90 frames at mean 16664 us with **89 of 89 intervals inside 10% of a refresh**; two images and three both presenting 90 of 90, pacing **25169 us against 16807 us** under the same bursty load; two swapchains coexisting over one window with the superseded one reporting `VK_ERROR_OUT_OF_DATE_KHR`; either present path on request, each named by the driver; 120 pattern frames whose layout the operator confirmed. `t_nwindow` measures the same through raw `bq*` with no Vulkan present. *Run 17, 2026-08-09:* **and it does all of that from more than one thread.** `t_vk_wsi_mt` **PASS 50/50** — a render thread on core 1 and a present thread on core 2 driving one swapchain for 600 frames at a mean of **16608 us**; 50 swapchain generations whose predecessor is destroyed on another thread while the survivor presents; 3000 frames over 14 generations with a thread allocating, creating images and querying the surface throughout (10610 of each). *Run 19* repeats it in **full-memory mode** (3155 MiB against applet mode's 237 MiB) at PASS 50/50 with the same numbers. *Run 20, after the first round of PR 9 review fixes*, is the same test with its own teardown made spec-correct: **PASS 52/52**, full memory. **Run 20 is the newest hardware evidence and the tree has moved past it**: patches 0072 and 0073 and the `t_vk_wsi_mt` corrections from the full review are cross-build-verified only, and 52/52 is not the count the corrected test will report |
-| **Next concrete task** | **Run `t_vk_suboptimal` section D with somebody docking the console.** `t_vk_present_draw` has left this list: run 26 (2026-08-11) is **PASS 183/183** on hardware, three fullscreen textured draws into a scanout image presenting at **16527 us** against the clear control's 16549/16553 us, and patch 0076's meter output is on record. The 157 ms report did not reproduce and the driver is out of the picture for it; the ball is in the application's court, and patch **0077** is the instrument it needs — both meters on, read against run 26's baseline. Run 21 passed 273/273 and section D was the one part that did not execute Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
+| **Next concrete task** | **Run the Vulkan suite with patch 0078 in, starting with `t_vk_swapchain`** — it is the newest thing in the tree, it is cross build only, and it sits on the teardown path of every buffer, image and allocation. What to read: no `fault notification 31 (MMU fault)` across the create/destroy cycles, and the new `nvkmd_horizon: deferred unmaps: …` line at device destroy, which is a positive observation rather than an absence. Then: **run `t_vk_suboptimal` section D with somebody docking the console.** `t_vk_present_draw` has left this list: run 26 (2026-08-11) is **PASS 183/183** on hardware, three fullscreen textured draws into a scanout image presenting at **16527 us** against the clear control's 16549/16553 us, and patch 0076's meter output is on record. The 157 ms report did not reproduce and the driver is out of the picture for it; the ball is in the application's court, and patch **0077** is the instrument it needs — both meters on, read against run 26's baseline. Run 21 passed 273/273 and section D was the one part that did not execute Run 21 passed 273/273 and section D was the one part that did not execute: nothing in the process can resize a VI layer, so `VK_SUBOPTIMAL_KHR` has still never been *returned* on hardware — only the rule around it measured, over 2303 frames with zero false positives. Thirty seconds of somebody's hand closes it. What remains besides that is either not Phase 6 (`t_fault` on exit, `t_vk_texture`'s one occurrence, D7), still has no test (docked resolution), or is unreachable by design (patch **0068**, which needs a lost device and nothing provokes one any more). **`IMMEDIATE` through Vulkan has left this list**: run 25 measured it, `t_vk_immediate` **PASS 442/442**. **`docs/milestones.md` ends at Phase 6**: what comes after is a decision, not a task |
 | **Publication** | **The repository is ready to be published and is still private** (2026-08-10). `README.md` describes what actually runs and what does not, with a log behind every claim; `docs/BUILDING.md`, `docs/USAGE.md` and `docs/RELEASING.md` exist; `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the code of conduct and the issue/PR templates are in; `.claude/` and `_bmad/` are untracked (659 tracked files → 408); GitHub Actions CI now
 cross-builds on every push, and a `v*` tag publishes a package (2026-08-10, see the entry
 below this table). **What is left is not code**: flipping visibility, and setting a description and topics. Two real defects were found doing it — `-Dnvk_build_dir` never passed, and a build id that named our own commit as Mesa's — both fixed, both host-level only |
-| **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
+| **Known failures** | **1. One unexplained MMU fault, in run 14, never reproduced** — runs 15 and 16 were clean through the identical sequence. It stays on the record as an unexplained single occurrence and is **not being investigated further**: the only correlated variable was nxlink, and nxlink has been removed at the user's direction. *Patch 0078 (2026-08-11) removes **a** mechanism that produces this shape of failure — an unmap that did not wait for the GPU — and it was present in every build up to that one. That is not an attribution and the row does not become closed: nothing tied run 14 to it, and it never recurred.* **2.** `t_fault` and the console on exit: run 14 has it PASS 20/20 and running last, so whether the console survived is unconfirmed. **3.** `t_vk_texture`'s one unexplained occurrence stays on the record, though run 14 put it at 1685/1685 |
 | **Closed by run 4** | **The leak (0058's reference cycle) — fixed by 0060**, `device destroy refused` absent from the whole log. **The exit crash — it was the leak**, and the console now returns to the homebrew menu on `+`. That hypothesis was written after run 1 and run 4 is the first run in which it could be tested, because runs 2 and 3 both still leaked |
 | **The check that lied, and it was mine** | `t_log_scan`'s predecessor read the log back to fail the test if the driver said it could not destroy something. It opened the file a second time while it was still open for writing, the SD card's device layer refused, and the helper answered "not found" — so run 2 printed **"ok the driver tore down every object it created"** four lines after `device destroy refused: live mem=33`. It now reads through the log's own handle (`"w+"`) and returns *whether the scan happened* separately from what it found; a scan that could not run fails the test. **Run 4 is the first run it executed in**, and its `ok` there is the evidence the leak is gone |
 | **The artefact now names itself** | Run 3 cost an afternoon because a `.nro` on an SD card looks exactly like the one it replaced and nothing in the log said otherwise. `scripts/gen-build-id.sh` stamps every build in both build paths, `testfw` prints `note horizon-build-id <stamp>` as the second line of every log, and `scripts/package-horizon.sh` reads the stamp back **out of the binaries** into the manifest and refuses a package holding more than one build or an artefact carrying none. Both refusals were provoked and observed before the gate was believed |
@@ -28,8 +28,168 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead. `nvkmd_horizon_ctx_wait`'s cross-channel CPU wait, which patch 0056 already reduced to cross-channel only and patch **0077** now measures rather than reasons about |
 | **The 140 ms fence** | **Not this driver's fence, and that was measured before the question was asked.** A follow-up to the 6.4 Hz report puts 140.7 ms in one `vkWaitForFences` on an empty submission. `t_vk_submits` runs exactly that harness — sixteen empty command buffers, each submitted with a fence and waited for before the next — and has measured **100, 115, 126 and 137 us** per submit-to-signal round trip in four console runs, with run 26 adding 1193 us for a clear and 3022 us for three fullscreen draws. There is no poll thread and no poll interval anywhere in `horizon/`; the wait is the nvhost `SYNCPT_WAIT` ioctl, woken by the syncpoint. Patch **0077** is the meter that can attribute the reporter's number from inside their own process — cross build only, no console has run it. See the entry below the table |
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
-| **Never verified on hardware** | Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | Patch **0078**, the deferred unmap, is the newest and is cross build only — see the entry directly below this table. It changes the reachable teardown path of every `vkFreeMemory`, `vkDestroyImage` and `vkDestroyBuffer`, so the regression surface is the whole Vulkan suite and none of it has been re-run on a console. Patch **0077**, the submit and fence-wait meter, is cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## An unmap that did not wait for the GPU, and the path it was actually on (2026-08-11)
+
+Patch **0078**. `nvkmd_horizon` removed a GPU mapping the instant it was asked
+to, with nothing ordering that against work the GPU was still executing. This is
+a correctness fix for any application.
+
+**Evidence class at the time of this commit: host and static only.** The six host
+suites pass (132/132) and the four fast gates are OK, but neither covers this
+code, which lives in Mesa; `scripts/ci-build-archives.sh` had not finished when
+the commit was written, so **not even the cross link is claimed here yet**, and
+no console has run it. The build result is recorded in the follow-up entry when
+it lands.
+
+### What was wrong
+
+`nvkmd_horizon_ctx_bind` carried the reasoning, and half of it was right:
+
+> On a DRM backend a bind goes through the kernel's VM_BIND queue and is ordered
+> against the channel's work. Horizon has no such queue: `NVGPU_AS_IOCTL_MAP_BUFFER_EX`
+> is synchronous and takes effect when it returns. […] That is stricter than the
+> interface requires, not looser: the mapping is in place before this call returns,
+> so anything submitted afterwards sees it.
+
+For a **bind** that is exactly true. For an **unmap** the same immediacy is the
+opposite of strict: the pages leave the page tables when the ioctl returns, the
+GPU runs behind the CPU, and a submit still executing loses its memory
+underneath it. On every other nvkmd backend the kernel's VM_BIND queue supplies
+the ordering. Here nothing did — and `horizon_gpu` states whose job it is, in
+the imperative, in the header of the function being called:
+
+> The caller must ensure submits referencing the VA have retired.
+> — `horizon/include/horizon_gpu/vm.h`
+
+`docs/memory-model.md` § 3.2 and `docs/synchronization.md` § 3 say the same, and
+§ 3 describes the machinery to do it — the per-channel retirement list, reaped
+at submit. **nvkmd had never called it.** Before this patch,
+`grep -n 'fence\|retire\|reap' nvkmd_horizon_va.c` returned nothing: the file
+that unmaps had no reference to completion of any kind.
+
+### The part that would have made a fix useless
+
+The obvious repair — defer inside `nvkmd_horizon_va_unbind` — **would have
+changed nothing at run time**, and that was worth finding before writing it.
+
+- `nvkmd_horizon_va_unbind` is reached only from `nvkmd_horizon_ctx_bind`.
+- All four `nvkmd_ctx_bind` callers (`nvk_image.c` ×3, `nvk_buffer.c`) use
+  `queue->bind_ctx`.
+- `nvk_queue.c` creates `bind_ctx` only for a queue family carrying
+  `VK_QUEUE_SPARSE_BINDING_BIT`.
+- `nvk_physical_device.c:1634` sets that bit from `kmd_info.has_sparse`, and
+  `nvkmd_horizon_pdev.c:435` sets `has_sparse = false` (decision D12).
+
+So the sparse-binding queue family does not exist on this backend, and neither
+of those two functions runs. The **reachable** unmap is
+`nvkmd_horizon_va_free`, which tears its bindings down directly: patch 0031
+gives every `nvkmd_mem` a VA of its own bound at offset 0, released by
+`nvkmd_horizon_mem_free` *before* the object is destroyed — so every
+`vkFreeMemory` dropping the last reference unmapped the address NVK bakes into
+every buffer device address, and `vkDestroyImage`/`vkDestroyBuffer` did the same
+through their plane and buffer VAs. Both paths now go through one deferral.
+
+### The design, and the four things it turns on
+
+New file `nvkmd_horizon_defer.c`; a device-owned queue of pending unmaps, each
+carrying the mapping, the memory reference patch 0058 added, and a snapshot of
+every live channel's fence.
+
+1. **Every live channel, not one.** Two contexts exist here — the queue's exec
+   context and `nvk_upload_queue`'s — and either can have referenced the memory.
+   Ordering against only the binding context's channel would be the same bug,
+   halved. A context created after the snapshot cannot have referenced the
+   address, so one snapshot is enough.
+2. **`ctx->last_fence`, not `horizon_gpu_channel_last_fence()`.** Same number;
+   the difference is that `horizon_gpu_channel` keeps no lock of its own —
+   `channel.c` reads `chan->shadow_target` unlocked while `horizon_gpu_submit`
+   writes it — and this code runs on whichever thread called `vkFreeMemory`.
+   Reading the channel's copy would have pushed a data race down into
+   `horizon/`; nvkmd's own copy can be locked on this side of the boundary.
+3. **Explicit polling, not `horizon_gpu_channel_add_retirement`.** The existing
+   retirement list is the right shape and the wrong mechanism for this caller:
+   it appends to `chan->retire[]` with no lock, and may `realloc` it, while
+   `horizon_gpu_channel_reap` walks and compacts the same array from inside
+   every `horizon_gpu_submit` — registering from a `vkDestroyImage` thread would
+   corrupt it. Also: the callback runs on the submit path and "must not submit",
+   while ours drops a reference that can re-enter `nvkmd_va_free`; there is no
+   cancellation path; and nothing runs at all on a lost channel until destroy,
+   which is when the unmap is most needed.
+4. **A lost channel counts as passed.** A reached threshold on a faulted channel
+   proves nothing about the work — nvgpu's recovery force-increments the
+   syncpoint, and `horizon_gpu_channel_wait_fence` keeps reporting
+   `CHANNEL_LOST` for exactly that reason. But the question here is not whether
+   the work ran; it is whether the GPU can still reach the address, and a lost
+   channel never executes again. Deferring for ever would strand the mapping,
+   the memory and the reservation for the life of the process — the leak patch
+   0043 exists to prevent. It is logged when it happens.
+
+**Nothing is queued in a conformant application.**
+`VUID-vkFreeMemory-memory-00677` and `VUID-vkDestroyImage-image-01000` both
+require every submitted command referring to the object to have completed before
+the call, so the fences are already signalled, the unmap happens inline and the
+reference is dropped inline — exactly the old behaviour, patch 0043's retry
+included. What is bought is that an application which does not obey them, or a
+driver-internal free that races the GPU, waits instead of faulting.
+
+**The reaper is deliberately absent from `nvkmd_horizon_ctx_exec.`** Completing a
+deferred unmap drops a memory reference, which can be the last one, which runs
+`nvkmd_horizon_mem_free` → `nvkmd_va_free` → a wait for the GPU. On the submit
+thread that is the unconditional stall rejected design 6 forbids, arrived at
+sideways. It is reaped from `ctx_bind`, `ctx_sync`, the VA paths and device
+destroy — every one of them already an allocation or teardown path.
+
+Lock order is `va_list_mutex` < `va->mutex` < `defer_mutex` < `ctx->fence_mutex`,
+a strict total order with no site taking them the other way. `defer_mutex` is
+never held across an unmap or an unref, because `nvkmd_mem_unref` can re-enter
+`nvkmd_va_free`; entries are spliced to a local list first, so the re-entrant
+call sees a list that no longer holds them.
+
+### One known cost, stated rather than hidden
+
+The wait is against each channel's **last** fence, which over-approximates: a
+mapping no in-flight submit actually touches still waits. `docs/synchronization.md`
+§ 3 already names the refinement — "a memory object records the highest fence
+that referenced it" — but that is a separate change with its own evidence, not a
+drive-by here.
+
+### There is no host test for this, and that is the layer rule working
+
+`scripts/run-host-tests.sh` compiles only `horizon/` sources and links no Mesa,
+deliberately: CLAUDE.md requires `horizon/` to build and test without Mesa
+present. This code is in `mesa-patches/` and includes `nvkmd/nvkmd.h` and
+`vk_log.h`, so it cannot be reached from there. The one piece of arithmetic that
+would have needed a host test — the wrap-safe threshold comparison — this patch
+deliberately does not duplicate: it calls `horizon_gpu_fence_poll`, whose
+comparison is `horizon_gpu_syncpt_reached`, already covered by
+`tests/host/h_syncpt_math.c` (30/30, every wrap corner). The suite was run as a
+no-regression gate: **PASS 132/132 across the six suites.**
+
+### What would prove it, and has not been done
+
+The console is unreachable in this session. The evidence class is **X**.
+
+The run that would close it is `t_vk_swapchain`, whose destroy-with-presents-in-flight
+sequence is the documented trigger (patch 0058's evidence: `wsi_destroy_image`
+calls `FreeMemory` before `DestroyImage`, and images were being freed with
+presents outstanding). Two things to read from it:
+
+- no `fault notification 31 (MMU fault)` across the swapchain create/destroy
+  cycles, against run 14's single unexplained one;
+- the new summary line at device destroy, which is the positive observation
+  rather than an absence:
+  `nvkmd_horizon: deferred unmaps: N queued, N completed, 0 on a lost channel, 0 still pending; longest wait U us`.
+  Nothing was ever deferred if the line is absent, which is also a result.
+
+**Run 14's MMU fault is not offered as proof of this defect.** Nothing attributed
+it, it never recurred, and it is still recorded as unexplained. What can be said
+is that this is a mechanism that produces that shape of failure, and it was
+present in every build up to this one.
 
 ---
 
