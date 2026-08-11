@@ -182,6 +182,24 @@ that family undefined at all.
   disk_cache_os.c.o          not built
   mesa_cache_db.c.o           1424 bytes   0 defined symbols
 
+And the chain end to end, in the artefact that would go on a card —
+because "it compiles" and "the driver calls it" are different claims:
+
+```
+$ nm -u build/mesa-nvk/.../nvk_physical_device.c.o | grep disk_cache
+                 U disk_cache_create
+                 U disk_cache_destroy
+$ nm build/meson/t_vulkan.elf | grep -E ' t (disk_cache_(create|get|put)|disk_cache_horizon_open)$'
+0000000000483620 t disk_cache_create
+0000000000483860 t disk_cache_put
+00000000004838d0 t disk_cache_get
+000000000048dfa0 t disk_cache_horizon_open
+```
+
+That is NVK's `#ifdef ENABLE_SHADER_CACHE` block live, and the Horizon
+backend in the same binary. What it is *not* is evidence that any of it
+executes correctly on a console.
+
 Three link-order facts the build found, all recorded on the link line
 rather than worked around: `libmesa_util.a` now needs `libhorizon_gpu.a`
 (the backend), `libblake3.a` (`disk_cache_compute_key`) and zstd + zlib
