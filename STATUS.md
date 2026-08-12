@@ -1,7 +1,7 @@
 # STATUS
 
 **Last updated:** 2026-08-12
-**Branch:** `claude/focused-dijkstra-yxfog5`
+**Branch:** `main`
 
 ---
 
