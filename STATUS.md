@@ -91,7 +91,18 @@ exact — checked file by file rather than by area.
 | and reports itself so | `scripts/apply-mesa-patches.sh --list` | `77 applied, 0 pending (77 in mesa-patches/)` |
 | four source gates | `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all PASS |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 14/14, 8/8 |
-| every archive, cross | `scripts/ci-build-archives.sh` | **still running when this was written** — recorded in the commit that follows |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK — every archive built, 35 `.nro` link them**, `check-dispatch-complete` OK (825 entry points named, 234 core, 1 allowed absence) and `check-tls-relocs` OK (3 objects use TLS, all with relocations, 350 scanned) against the built artefacts |
+
+The chain ran end to end in container mode — derived toolchain image, `mesa_clc`
+and `vtn_bindgen2` native, Mesa's non-driver core, the nouveau Vulkan driver,
+every archive the tests link, then the 35 `.nro` rebuilt against them. Nothing
+in `mesa-patches/` needed touching at any step, which is the result the
+six-file intersection was read to predict rather than assumed.
+
+One thing the build confirms that the reading could only argue: the native
+`mesa_clc` still builds and runs with 26.1.7's `dep_clc` gating, so dropping
+libclc out of that configuration is the relaxation it looked like and not a
+silent loss.
 
 **Whatever the cross build says, this says nothing about a console.** No
 hardware run carries 26.1.7; every number in the rest of this file was measured
