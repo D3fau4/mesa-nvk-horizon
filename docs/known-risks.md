@@ -323,6 +323,27 @@ neither large — `nvk: free copy_memory_indirect_temps on command buffer destro
 on the command-buffer destroy path) and `nvk: report fills from memory correctly`
 (`VK_KHR_pipeline_executable_properties` reported spills where it meant fills).
 
+**Point release taken, 2026-08-12: `mesa-26.1.6` → `mesa-26.1.7`**, commit
+`e8617e4ca95fc655b0f13fd115c224d27eba2441` (tag object `09741f24d171`, released
+2026-08-12, [release notes](https://docs.mesa3d.org/relnotes/26.1.7.html)). Again inside
+the series D2 chose, again "New features: None" — but unlike 26.1.6 it is **not** a clean
+miss: of the 121 files it changes, **six are among the 121 `mesa-patches/` writes to**.
+The series still applies unmodified, 77 of 77, no fuzz and no rejects, and the six were
+read rather than assumed:
+
+| file | what 26.1.7 does to it | reaches a Switch? |
+|---|---|---|
+| `meson.build` | `dep_clc` is now looked up only for rusticl / microsoft_clc, and prefers a `mesa-libclc` fork over `libclc` | no — our native `mesa_clc` build enables neither, so it stops needing libclc at all |
+| `src/util/os_misc.c` | a macOS `MAP_JIT` probe, all of it inside `DETECT_OS_APPLE` | no |
+| `src/nouveau/compiler/nak/ir.rs` | adds `Dst::is_carry()` | only through the fix below |
+| `src/nouveau/compiler/nak/opt_instr_sched_prepass.rs` | serialises carry-register access in the scheduler's dependency graph | **yes** — shader-model-independent, so it is live on GM20B's SM50 |
+| `src/nouveau/compiler/nak/sm70_encode.rs` | `OpFMnMx` stops encoding `RZ` as src2 | no — SM70+ encoder, GM20B is SM50 |
+| `src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c` | Turing compression re-enabled on nouveau 1.4.3 | no — the nouveau KMD backend, not `nvkmd_horizon` |
+
+So exactly one upstream change in this release can alter code generated for a Switch, and
+it is a correctness fix in the instruction scheduler. **Verified as a cross build, not on
+hardware** — no console has run 26.1.7.
+
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
 is a development release whose own notes tell stability-minded users to wait for 26.2.1,
 and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121

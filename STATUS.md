@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-11
-**Branch:** `main`
+**Last updated:** 2026-08-12
+**Branch:** `claude/focused-dijkstra-yxfog5`
 
 ---
 
@@ -27,9 +27,76 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **What is still unverified** | Any display mode change and docked resolution — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those. **`VK_PRESENT_MODE_IMMEDIATE_KHR` is no longer on this list**: run 25 measured it end to end through `vkCreateSwapchainKHR` — 8264 us against FIFO's 16577 us over 240 frames each, with a FIFO run either side of it, and run 24 said the same a build earlier |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead. `nvkmd_horizon_ctx_wait`'s cross-channel CPU wait, which patch 0056 already reduced to cross-channel only and patch **0077** now measures rather than reasons about |
 | **The 140 ms fence** | **Not this driver's fence, and that was measured before the question was asked.** A follow-up to the 6.4 Hz report puts 140.7 ms in one `vkWaitForFences` on an empty submission. `t_vk_submits` runs exactly that harness — sixteen empty command buffers, each submitted with a fence and waited for before the next — and has measured **100, 115, 126 and 137 us** per submit-to-signal round trip in four console runs, with run 26 adding 1193 us for a clear and 3022 us for three fullscreen draws. There is no poll thread and no poll interval anywhere in `horizon/`; the wait is the nvhost `SYNCPT_WAIT` ioctl, woken by the syncpoint. Patch **0077** is the meter that can attribute the reporter's number from inside their own process — cross build only, no console has run it. See the entry below the table |
-| **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
+| **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 77 of 77. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Mesa 26.1.7, the first point release that touches files we patch (2026-08-12)
+
+`mesa-26.1.7` was tagged on 2026-08-12, above the pinned `mesa-26.1.6`. It is a
+point release *inside* the pinned series —
+[notes](https://docs.mesa3d.org/relnotes/26.1.7.html): "New features: None",
+89 commits from 34 authors closing 13 reported bugs, 121 files changed,
++8624/-587. **Taken.** The 26.2 series is still D21, still not taken, and the
+26.2.1 its own notes tell stability users to wait for has still not been tagged
+(`git ls-remote --tags … 'mesa-26.*'`, 2026-08-12).
+
+### What is different about this one
+
+26.1.6 was a clean miss: not one of the files it changed was among the 121
+`mesa-patches/` writes to. 26.1.7 is the first point release where that
+intersection is **not** empty — six files, computed rather than eyeballed:
+
+```
+grep -h '^+++ b/' mesa-patches/*.patch | sed 's|^+++ b/||' | sort -u   # 121
+git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{} | sort -u   # 121
+comm -12 <those two>                                                   # 6
+```
+
+Six overlapping files is a reason to read them, not a reason to stop:
+
+| file | what 26.1.7 does to it | can it reach a Switch? |
+|---|---|---|
+| `meson.build` | `dep_clc` is now looked up only for rusticl / microsoft_clc, and prefers a `mesa-libclc` fork over `libclc` | **no** — `scripts/build-mesa-clc.sh` enables neither, so the native `mesa_clc` build stops needing libclc at all. A relaxation of our build, not a break |
+| `src/util/os_misc.c` | a macOS `MAP_JIT` probe for processes without the JIT entitlement | **no**, all of it inside `DETECT_OS_APPLE` |
+| `src/nouveau/compiler/nak/ir.rs` | adds `Dst::is_carry()` | only as the helper the next row uses |
+| `src/nouveau/compiler/nak/opt_instr_sched_prepass.rs` | serialises carry-register access when building the scheduler's dependency graph | **yes** — no shader-model guard, so it is live on GM20B's SM50 |
+| `src/nouveau/compiler/nak/sm70_encode.rs` | `OpFMnMx` stops encoding `RZ` as src2, and clears the SM90 `.IS_A` bit | **no**, SM70+ encoder; GM20B is SM50 and goes through `sm50_encode.rs` |
+| `src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c` | Turing compression re-enabled against nouveau 1.4.3 | **no**, the nouveau KMD backend; ours is `nvkmd_horizon` |
+
+So exactly one upstream change in this release can alter the code generated for
+a Switch, and it is a correctness fix in the instruction scheduler — the class
+of change worth taking rather than avoiding. The rest of the release is other
+drivers: anv, radv, tu, freedreno, etnaviv, v3d, zink, d3d12, radeonsi, venus.
+
+All 77 patches applied **unmodified — no fuzz, no rejects, and nothing in
+`mesa-patches/` needed touching**, including the two that write to
+`nvkmd_nouveau_pdev.c` (0029, 0038), the one that writes to all three NAK files
+(0017) and the nine that write to the root `meson.build`.
+
+Three files under `src/nouveau/compiler/` moved, which makes
+`docs/rust-toolchain.md`'s blanket "nothing quoted here moved" claim from 26.1.6
+untrue as written. It now says the precise thing instead: the three that moved
+are not among the files that document cites, so its file:line evidence is still
+exact — checked file by file rather than by area.
+
+### What was actually run
+
+| what | command | result |
+|---|---|---|
+| the pin resolves and verifies | `scripts/fetch-mesa.sh` | `checked out mesa-26.1.7, verified HEAD = e8617e4c…` |
+| the series still applies | `scripts/apply-mesa-patches.sh` | **77 of 77, no fuzz, no rejects** |
+| and reports itself so | `scripts/apply-mesa-patches.sh --list` | `77 applied, 0 pending (77 in mesa-patches/)` |
+| four source gates | `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all PASS |
+| host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 14/14, 8/8 |
+| every archive, cross | `scripts/ci-build-archives.sh` | **still running when this was written** — recorded in the commit that follows |
+
+**Whatever the cross build says, this says nothing about a console.** No
+hardware run carries 26.1.7; every number in the rest of this file was measured
+against 26.1.5 or 26.1.6, and the NAK scheduler fix above is the only change
+between them that can reach a shader this driver compiles.
 
 ---
 
@@ -3905,7 +3972,7 @@ other change shows up as a failing gate.
 |---|---|---|
 | D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
 | D4 | Switch available | **yes — closed.** Full run, confirmation re-run, and the Phase 4 hardware run all done |
-| D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592`. **The pin is now `mesa-26.1.6`** @ `ffa422e53d59a4938b38abd5c3fc319555da31dd` (2026-08-10) — a point release *inside* the series this row chose, taken because it costs nothing (75 of 75 patches apply unmodified, no file we patch was touched) and carries two NVK fixes. That is not a reopening of D2; **which series to be on is D21** |
+| D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592`. **The pin is now `mesa-26.1.7`** @ `e8617e4ca95fc655b0f13fd115c224d27eba2441` (2026-08-12), by way of `mesa-26.1.6` @ `ffa422e53d59a4938b38abd5c3fc319555da31dd` (2026-08-10) — point releases *inside* the series this row chose. 26.1.6 cost nothing measurable (no file we patch was touched); 26.1.7 touches six of them and still applies unmodified, 77 of 77, with one change — NAK's carry-access serialisation — that can reach a Switch shader. That is not a reopening of D2; **which series to be on is D21** |
 | D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
 | D5 | Cache policy per memory type | **closed by the hardware, and not the way it was framed** — one policy per advertised type: type 0 (`DEVICE_LOCAL HOST_VISIBLE HOST_CACHED`) is `HORIZON_GPU_MEM_CACHED` with nvkmd's own maintenance, which it performs because `util_has_cache_ops()` is true on AArch64; type 1 (`HOST_VISIBLE HOST_COHERENT`) is UNCACHED, see D14. The framing that was wrong: this row assumed the first GPU write would be made visible *by* CPU cache maintenance. R6 measured the opposite — the four-arm `t_gpuwrite` matrix failed identically with the CPU mapping cached and uncached, and what made the write appear was a GPU-side L2 writeback. The policy is real and still required; it was never what blocked the readback. Was: — blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | **closed: advertise, by emulation (patch 0022)** — the runtime's `vk_sync_timeline` is registered over the binary syncpoint fence D11 settled on, so timelines are advertised without touching the upload queue. Was: — Phase 4. Original wording, `docs/known-risks.md:403`: advertise timeline semaphores, or fix the upload queue instead |
@@ -3921,7 +3988,7 @@ other change shows up as a failing gate.
 | D17 | Split this file: state in `STATUS.md`, narrative in `docs/history/` | **CLOSED 2026-08-04.** `scripts/split-status.py` cut the file at section boundaries into contiguous chunks, **verified that the chunks reassemble into the original byte for byte before writing anything**, and wrote `docs/history/` plus `MANIFEST.sha256`. 7749 lines became 171 here and nine files there. That answers "what guarantees nothing is edited in transit". For afterwards, `scripts/check-history-intact.sh` compares every history file against its digest — broken three ways to confirm it fails: an undeclared edit, an undeclared file, a declared file gone. History may still be appended to; the manifest update in the same commit is what declares it, and puts old and new digests side by side in the diff |
 | D20 | The Mesa commit `ebf2e31` that `mesa-patches/` did not carry (was numbered D18 — see the collision note below) | **CLOSED 2026-08-09 by exporting it as patch 0071.** The commit is now tracked, `scripts/apply-mesa-patches.sh --list` reports **73 applied, 0 pending, 73 in `mesa-patches/`**, and a clean checkout rebuilt from the series reproduces the tree run 20 was measured on. Two things about it were not fit to track and were fixed in the export rather than carried: it had none of the four header fields `mesa-patches/README.md` requires, and its `Evidence` line cited `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — **a test and a log that do not exist in this tree**, so the one field this project treats as non-optional pointed at nothing. The citation was replaced with `docs/hw-logs/t_vk_wsi_mt-run20-review-fixes-PASS.log`, which carries the identical measurement (stride 5120 B, block height 32 GOBs log2 5, kind 0xfe, allocation 3932160 B) and has its digest in `MANIFEST.sha256`. **`tests/t_vk_mode.c` was not reconstructed** — it is somebody's deleted work and rebuilding it on a guess would be worse than recording that it went. Was: **open, raised with the owner.** The `mesa/` checkout is at `ebf2e31` ("vulkan/wsi: Horizon, report the layout that was registered"); `mesa-patches/` holds 70 patches and `85638f8` (patch 0070) is its parent. So the checkout has 71 commits against 70 tracked patches, and `mesa/` is ignored by this repository, which is why nothing in `git status` shows it. The commit's own message cites `t_vk_mode, 2026-08-09, handheld, PASS 56/56` — and **`tests/t_vk_mode.c` does not exist in this tree**, nor does a log for it under `docs/hw-logs/`. A clean checkout rebuilt from `mesa-patches/` does not reproduce the binary run 20 was measured on, which is the rule in CLAUDE.md this breaks. Three ways out: export it as patch 0071 and restore the test and its log, drop it from the checkout and re-run, or keep it and say so at every run. Not chosen here — it is unfinished work belonging to whoever wrote it, and reconstructing a file that was deleted is not something to do on a guess |
 | D15 | Adopt `nxvk`'s channel warm-up/calibration ramp (`docs/reference-analysis.md` § 12.5.2) in `horizon/channel/` | **CLOSED 2026-08-04: no, and here is the number.** The ramp diagnoses a ring-size fault by kicking synthetic push buffers of increasing size at every channel creation, CPU-waiting each rung. The entry *count* was already bounded by construction — `horizon_gpu_submit` refuses what will not fit `GPFIFO_QUEUE_SIZE` — so the open question was the *size of one entry*, which was checked only for being non-zero. `t_pbsize` walked it on hardware: **every rung from 32 up to 524288 dwords (2 MiB) executed to its last dword**, each verified by a semaphore release at the END of the entry rather than by the submit being accepted. There is no limit to bound in that range, so nothing is added to `horizon_gpu_submit` and nothing is paid at channel creation. Should a limit ever appear it is a number to enforce, not a ramp to run |
-| D21 | Move the pin off the 26.1 series onto Mesa 26.2 | **open, raised with the owner (2026-08-10).** `mesa-26.2.0` @ `9f0a761020bca92f2b07156a0621e5360cb8eca5`, released 2026-08-05, [notes](https://docs.mesa3d.org/relnotes/26.2.0.html). What is on offer for *this* port: `VK_EXT_mesh_shader` on NVK, `VK_KHR_shader_fma`, `VK_EXT_shader_atomic_float`, `VK_NV_shader_atomic_float16_vector`, `VK_NVX_binary_import`, `VK_GOOGLE_display_timing` (which is a WSI-shaped feature and would meet our backend), and 159 nvk/nak/nil/nouveau commits including a zcull crash fix and a UBO bounds-check signedness fix. What it costs: 3588 files changed since 26.1.6, **53 of the 121 `mesa-patches/` writes to among them** — 20 NAK files, 8 under `src/nouveau/vulkan/` (including `nvk_wsi.c`, `nvk_physical_device.{c,h}`, `nvk_device.c`), 4 in `src/vulkan/wsi/` (`wsi_common.{c,h}`, `wsi_common_private.h`, `meson.build`), `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates NAK sits on, which 26.2 refactored hard (`as_slice`, `smallvec`, the proc macro NAK stopped using). So the 75-patch series does **not** carry over mechanically, and every hardware number in this file was measured against 26.1. Not decided here: a series move is a decision under R14/D2, and the honest form of it is a rebase branch with its own console run, not a one-line edit to `versions.env` |
+| D21 | Move the pin off the 26.1 series onto Mesa 26.2 | **open, raised with the owner (2026-08-10), still open on 2026-08-12** — and the release its own notes tell stability users to wait for, `26.2.1`, has not been tagged yet, so nothing about this row has changed except that the pin under it is now 26.1.7 and the file counts below were measured against 26.1.6. `mesa-26.2.0` @ `9f0a761020bca92f2b07156a0621e5360cb8eca5`, released 2026-08-05, [notes](https://docs.mesa3d.org/relnotes/26.2.0.html). What is on offer for *this* port: `VK_EXT_mesh_shader` on NVK, `VK_KHR_shader_fma`, `VK_EXT_shader_atomic_float`, `VK_NV_shader_atomic_float16_vector`, `VK_NVX_binary_import`, `VK_GOOGLE_display_timing` (which is a WSI-shaped feature and would meet our backend), and 159 nvk/nak/nil/nouveau commits including a zcull crash fix and a UBO bounds-check signedness fix. What it costs: 3588 files changed since 26.1.6, **53 of the 121 `mesa-patches/` writes to among them** — 20 NAK files, 8 under `src/nouveau/vulkan/` (including `nvk_wsi.c`, `nvk_physical_device.{c,h}`, `nvk_device.c`), 4 in `src/vulkan/wsi/` (`wsi_common.{c,h}`, `wsi_common_private.h`, `meson.build`), `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates NAK sits on, which 26.2 refactored hard (`as_slice`, `smallvec`, the proc macro NAK stopped using). So the 75-patch series does **not** carry over mechanically, and every hardware number in this file was measured against 26.1. Not decided here: a series move is a decision under R14/D2, and the honest form of it is a rebase branch with its own console run, not a one-line edit to `versions.env` |
 
 ### Note on the D18 collision (found in the PR 9 review, 2026-08-09)
 
