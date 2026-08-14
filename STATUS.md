@@ -132,6 +132,19 @@ longer compiles `nir_load_libclc.c`. The `libclc-15-dev` in
 in place**: it is harmless, and dropping a toolchain input is a separate
 decision from taking a point release.
 
+That was read off `meson.build` first and then **confirmed against the build
+that actually ran**, which is the difference between a prediction and a
+result:
+
+```
+build/mesa-clc/src/compiler/clc/liblibmesaclc.a.p/
+    clc.c.o
+    clc_helpers.cpp.o          # and no nir_load_libclc.c.o
+```
+
+`mesa_clc` still built, still compiled NVK's `cl/*.cl`, and the whole chain
+still linked — so the dropped file costs us nothing on this path.
+
 ### What was actually run
 
 | what | command | result |
@@ -142,15 +155,26 @@ decision from taking a point release.
 | and reports itself so | `scripts/apply-mesa-patches.sh --list` | `77 applied, 0 pending (77 in mesa-patches/)` |
 | the five gates | `check-{layering,no-abs-paths,mesa-test-parity,dispatch-complete,history-intact}.sh` | all PASS |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 14/14, 8/8 |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK — every archive built, 35 `.nro` link them** (meson.build names 35), exit 0 |
+| dispatch, against the artefacts | `check-dispatch-complete.sh` | OK (825 entry points named, 234 core, 1 allowed absence) |
+| TLS, against the artefacts | `check-tls-relocs.sh` | OK (3 objects use TLS, all with relocations, 350 scanned: 349 loose + members of 1 archive with none) |
 
-`check-dispatch-complete` passed vacuously (`no driver-linking ELF in
-build/meson; nothing to check`) — it is only meaningful against built
-artefacts, which is what the cross build below is for.
+The chain ran end to end in container mode on a machine with neither
+`$DEVKITPRO` nor a local image — base image pulled, derived toolchain image
+built (bindgen, cbindgen, the Rust sysroot, LLVM 15 and SPIRV-Tools),
+`mesa_clc` and `vtn_bindgen2` native, Mesa's non-driver core, the nouveau
+Vulkan driver, every archive the tests link, then the 35 `.nro` rebuilt
+against them. **Nothing in `mesa-patches/` needed touching at any step.**
+
+`check-dispatch-complete` had passed vacuously in the host-only pass
+(`no driver-linking ELF in build/meson; nothing to check`); the row above is
+the run that had artefacts to check.
 
 **This is a host-side verification and a cross build. It says nothing about a
 console.** No hardware run carries 26.1.7. Every number in the rest of this
 file was measured against 26.1.5 or 26.1.6, and the carry fix above is the
-only driver code on our shader model that differs.
+only driver code on our shader model that differs — so the next console run,
+whenever it happens, is what would turn any of this into a hardware claim.
 
 ---
 
