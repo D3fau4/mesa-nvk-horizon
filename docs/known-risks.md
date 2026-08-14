@@ -340,9 +340,17 @@ carry access in instr_sched_prepass` adds the missing dependency edges for
 integer adds on every SM below 70 — which is SM53, GM20B. The prepass runs ungated
 (`api.rs:499`) and previously could reorder a carry producer away from its consumer. The
 release's other NAK fix (`Do not encode a RZ for src2 on FMNMX`) is in `sm70_encode.rs`,
-Volta and later, and does not reach this hardware. Nothing here has *observed* a
-miscompiled 64-bit add; the claim is only that the class of bug is on our path and is now
-closed upstream. See `STATUS.md` for the full reading.
+Volta and later, and does not reach this hardware.
+
+The symptom is a **compile-time panic, not a silent miscompile**: `sm50.rs:73` gives
+`RegFile::Carry` exactly one register, so two simultaneously-live carry values cannot be
+assigned. Upstream's reported case is *"[NVK/Kepler] NAK compiler panic in assign_regs.rs:
+`Failed to find free register` when launching wgpu application (Zed)"* — Kepler's
+`sm32.rs` declares `Carry => 1` as well, and SM53 takes the same path. On GM20B it would
+surface as pipeline creation panicking inside NAK on a shader doing 64-bit integer
+arithmetic. Nothing here has observed it, and no test shader under `tests/shaders/` does
+64-bit integer maths, which is the likely reason. The claim is only that it is reachable
+on our path and is now closed upstream. See `STATUS.md` for the full reading.
 
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
 is a development release whose own notes tell stability-minded users to wait for 26.2.1,

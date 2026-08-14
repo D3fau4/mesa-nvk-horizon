@@ -96,10 +96,28 @@ uses.
   `Dst::is_carry()` (`ir.rs:525`), so the scheduler can no longer separate or
   interleave those pairs.
 
-  Nothing in this repository has *observed* a miscompiled 64-bit add, and the
-  claim here is not that one was ever hit — only that the class of bug is on
-  our shader model and this release closes it. It is the reason to take 26.1.7
-  rather than sit on 26.1.6.
+  **The symptom is a compile-time panic, not a silent miscompile**, and that
+  is worth stating precisely because the two would need very different
+  responses. `sm50.rs:73` gives `RegFile::Carry` exactly **one** register. If
+  the scheduler interleaves two carry producer/consumer pairs, two carry
+  values are live at once, the one physical register cannot hold both, and
+  register assignment fails. That is the reported bug this release closes:
+  *"[NVK/Kepler] NAK compiler panic in assign_regs.rs: `Failed to find free
+  register` when launching wgpu application (Zed)"*. Kepler is `sm32.rs`,
+  which also declares `Carry => 1`; the reporter hit it there, and the code
+  path is the same one SM53 takes.
+
+  So the failure mode to expect on GM20B is `vkCreateGraphicsPipelines` or
+  `vkCreateComputePipelines` panicking inside NAK on a shader that does 64-bit
+  integer arithmetic — loud, not subtle. Nothing in this repository has
+  observed it, and there is a plain reason why: all **15** shaders under
+  `tests/shaders/` declare `OpCapability Shader` and nothing else, and not one
+  of them mentions `Int64` or `OpTypeInt 64`. This tree has never asked NAK to
+  emit a 64-bit integer add, so it could not have hit the bug. The claim is
+  only that the bug is reachable on our shader model and is now fixed
+  upstream. It is the reason to take 26.1.7 rather than sit on 26.1.6 — and it
+  is also a gap in this project's own coverage, since nothing here would have
+  caught it either.
 
 The other two `src/nouveau` changes are `drm-shim/nouveau_noop.c` and the
 nouveau-KMD compression line above: both Linux-side, neither on the Horizon
