@@ -323,6 +323,27 @@ neither large — `nvk: free copy_memory_indirect_temps on command buffer destro
 on the command-buffer destroy path) and `nvk: report fills from memory correctly`
 (`VK_KHR_pipeline_executable_properties` reported spills where it meant fills).
 
+**Second point release taken, 2026-08-14: `mesa-26.1.6` → `mesa-26.1.7`**, commit
+`e8617e4ca95fc655b0f13fd115c224d27eba2441` (tag object `09741f24d1712840`, released
+2026-08-12, [release notes](https://docs.mesa3d.org/relnotes/26.1.7.html)). Again inside
+the series D2 chose — "New features: None", 14 reported bugs — but **unlike 26.1.6 the
+intersection with `mesa-patches/` is not empty**: of the 121 files it changes, six are
+also files we patch (`meson.build`, `src/util/os_misc.c`,
+`nvkmd/nouveau/nvkmd_nouveau_pdev.c`, and `nak/{ir,opt_instr_sched_prepass,
+sm70_encode}.rs`). None of the six collides — the hunks are in different places — and the
+series applies unmodified, **77 of 77 onto both the old and the new tag**, the old tag
+being run first as a control.
+
+The reason to take it is one NAK commit that is on *our* shader model: `nak: Serialize
+carry access in instr_sched_prepass` adds the missing dependency edges for
+`RegFile::Carry`, the single physical carry flag that `builder.rs` uses for 64-bit
+integer adds on every SM below 70 — which is SM53, GM20B. The prepass runs ungated
+(`api.rs:499`) and previously could reorder a carry producer away from its consumer. The
+release's other NAK fix (`Do not encode a RZ for src2 on FMNMX`) is in `sm70_encode.rs`,
+Volta and later, and does not reach this hardware. Nothing here has *observed* a
+miscompiled 64-bit add; the claim is only that the class of bug is on our path and is now
+closed upstream. See `STATUS.md` for the full reading.
+
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
 is a development release whose own notes tell stability-minded users to wait for 26.2.1,
 and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121

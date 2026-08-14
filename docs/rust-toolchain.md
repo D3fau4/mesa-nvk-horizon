@@ -15,6 +15,28 @@ touches 114 files and not one of them is under `src/nouveau/compiler/` or
 than approximate. Checked with
 `git -C mesa diff --name-only mesa-26.1.5^{} mesa-26.1.6^{}`.
 
+The pin moved again to `mesa-26.1.7`
+(`e8617e4ca95fc655b0f13fd115c224d27eba2441`) on 2026-08-14, and this time the
+blanket statement above would be false, so it is not repeated. Three files
+under `src/nouveau/compiler/` did move:
+
+```
+src/nouveau/compiler/nak/ir.rs                     (+4)
+src/nouveau/compiler/nak/opt_instr_sched_prepass.rs (+23)
+src/nouveau/compiler/nak/sm70_encode.rs            (+6/-1)
+```
+
+**None of the three is quoted anywhere below** — the files this document
+cites are `nak/{api,union_find,opt_instr_sched_common,lib}.rs`,
+`src/nouveau/compiler/meson.build` and `src/compiler/rust/{memstream,
+nir_instr_printer}.rs`, and every one of them is byte-identical across
+26.1.6 → 26.1.7. Note `opt_instr_sched_common.rs` (cited, unchanged) is a
+different file from `opt_instr_sched_prepass.rs` (changed, not cited). So the
+file:line references below remain **exact**, for a narrower reason than last
+time: not "nothing in the Rust tree moved", but "nothing this document points
+at moved". Checked with
+`git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
+
 ---
 
 ## 1. The question
