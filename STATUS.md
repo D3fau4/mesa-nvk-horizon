@@ -120,12 +120,17 @@ tags.
 | and reports itself so | `scripts/apply-mesa-patches.sh --list` | `77 applied, 0 pending (77 in mesa-patches/)` |
 | the five gates | `check-{layering,no-abs-paths,mesa-test-parity,dispatch-complete,history-intact}.sh` | all PASS (`dispatch-complete` had no driver-linking ELF to read at that point and said so) |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20 `h_align`, 21/21 `h_va_space`, 30/30 `h_syncpt_math`, 39/39 `h_cmds`, 14/14 `h_status`, 8/8 `h_log` |
-| every archive, cross | `scripts/ci-build-archives.sh` | **running when this entry was committed** — a follow-up commit records the result and re-runs `check-dispatch-complete` and `check-tls-relocs` against the built artefacts |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK — every archive built, 35 `.nro` link them** (`meson.build` names 35), in container mode: derived toolchain image, `mesa_clc` and `vtn_bindgen2` native, Mesa's non-driver core, the nouveau Vulkan driver, then the tests. Nothing in `mesa-patches/` needed touching |
+| and it is really 26.1.7 that got built | `grep PACKAGE_VERSION build/mesa-nvk/build.ninja`, `git -C mesa describe --tags` | `PACKAGE_VERSION="26.1.7"`, tree at `mesa-26.1.7-77-g5d8a64a`. The stale-checkout trap from the 26.1.6 entry — where the pin moved and this working copy did not — **did not recur**; `fetch-mesa.sh` ran before the build, not after it |
+| the two gates that need artefacts | `check-dispatch-complete.sh`, `check-tls-relocs.sh` | OK (825 entry points named, 234 core, 1 allowed absence) and OK (3 objects use TLS, all with relocations, 350 scanned) |
 
-**Nothing here is a console.** This is a fetch, a patch application, five gates and
-six host suites; the cross build is the next line and even that is a compile.
-Every hardware number in this file was measured against 26.1.5 or 26.1.6, and the
-carry fix above is the only driver-code difference that can reach GM20B.
+**Nothing here is a console.** This is a fetch, a patch application, seven gates,
+six host suites and a cross build — and a cross build is a compile. Every hardware
+number in this file was measured against 26.1.5 or 26.1.6, and the carry fix above
+is the only driver-code difference between those and this that can reach GM20B.
+What that fix does to a shader NAK compiles for GM20B is unmeasured: it changes
+scheduling, so the code generated for anything using carry may differ, and no
+console has executed it.
 
 ---
 
