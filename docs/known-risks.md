@@ -323,9 +323,30 @@ neither large — `nvk: free copy_memory_indirect_temps on command buffer destro
 on the command-buffer destroy path) and `nvk: report fills from memory correctly`
 (`VK_KHR_pipeline_executable_properties` reported spills where it meant fills).
 
+**Second point release taken, 2026-08-15: `mesa-26.1.6` → `mesa-26.1.7`**, commit
+`e8617e4ca95fc655b0f13fd115c224d27eba2441` (tag object `09741f24d1712840`, released
+2026-08-12, [release notes](https://docs.mesa3d.org/relnotes/26.1.7.html)). Also *inside*
+the series D2 chose — "New features: None", 71 commits from 40 authors closing 13 bugs —
+but unlike 26.1.6 it is **not** disjoint from what we patch: of the 121 files changed,
+**six are among the 121 `mesa-patches/` writes to** — the root `meson.build`,
+`src/nouveau/compiler/nak/{ir.rs,opt_instr_sched_prepass.rs,sm70_encode.rs}`,
+`src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c` and `src/util/os_misc.c`. The
+series applies anyway, **77 of 77 with no fuzz and no rejects**, because in each case
+upstream's hunk and ours are in different parts of the file. One of the six matters to this
+port on its merits: `nak: Serialize carry access in instr_sched_prepass` adds carry-register
+dependency edges the prepass scheduler was missing, and the carry file *is* a Maxwell
+register file (`sm50.rs:45`, `sm50.rs:1250`) with the pass running for every SM
+(`api.rs:466`, above the `if nak.sm >= 70` gate at `api.rs:470`). The FMNMX encoding fix
+beside it is `sm70_encode.rs`, i.e. Volta and later (`sm50.rs:56` asserts
+`sm >= 50 && sm < 70`), so it cannot reach GM20B. The other four are
+inert here: the `meson.build` hunk is a `libclc` lookup for rusticl/microsoft-clc, the
+`nvkmd_nouveau_pdev.c` hunk re-enables compression on Turing under the *nouveau* KMD, and
+the `os_misc.c` addition is `DETECT_OS_APPLE`-gated.
+
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
 is a development release whose own notes tell stability-minded users to wait for 26.2.1,
-and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
+and it moves the ground under this port: 3588 files changed since 26.1.6 (measured at that
+pin; 26.1.7 does not narrow the gap), **53 of the 121
 we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/`, 4 in
 `src/vulkan/wsi/`, both `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates
 NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,

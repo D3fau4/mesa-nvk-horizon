@@ -15,6 +15,20 @@ touches 114 files and not one of them is under `src/nouveau/compiler/` or
 than approximate. Checked with
 `git -C mesa diff --name-only mesa-26.1.5^{} mesa-26.1.6^{}`.
 
+The pin moved again to `mesa-26.1.7` (`e8617e4ca95fc655b0f13fd115c224d27eba2441`)
+on 2026-08-15, and this time `src/nouveau/compiler/` **did** move — three files:
+`nak/ir.rs` (+4, a `Dst::is_carry` helper), `nak/opt_instr_sched_prepass.rs`
+(+23, the carry-serialisation fix) and `nak/sm70_encode.rs` (+5/-1, an FMNMX
+encoding fix that is Volta-and-later and so cannot reach GM20B). Nothing under
+`src/compiler/rust/` moved. **Every file:line quoted below was re-checked against
+the 26.1.7 tag and is still exact** — none of the three files above is quoted
+here, and the sections that are (`nak/api.rs`, `nak/union_find.rs`,
+`nak/opt_instr_sched_common.rs`, `nil/image.rs`, `compiler/meson.build`,
+`compiler/rust/memstream.rs`, `nir_instr_printer.rs`, `nak/lib.rs`) are
+byte-identical between 26.1.6 and 26.1.7. Checked with
+`git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}` and by reading each
+quoted line back out of `git show mesa-26.1.7^{commit}:<file>`.
+
 ---
 
 ## 1. The question
