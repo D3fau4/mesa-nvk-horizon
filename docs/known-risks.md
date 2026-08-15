@@ -336,7 +336,10 @@ upstream's hunk and ours are in different parts of the file. One of the six matt
 port on its merits: `nak: Serialize carry access in instr_sched_prepass` adds carry-register
 dependency edges the prepass scheduler was missing, and the carry file *is* a Maxwell
 register file (`sm50.rs:45`, `sm50.rs:1250`) with the pass running for every SM
-(`api.rs:466`, above the `if nak.sm >= 70` gate at `api.rs:470`). The FMNMX encoding fix
+(`api.rs:466`, above the `if nak.sm >= 70` gate at `api.rs:470`). The failure it removes is
+a compile-time panic rather than a wrong frame: `sm50.rs:72` declares exactly one carry
+register, so a reordering that overlaps two carry values fails register assignment, which is
+the Kepler bug report upstream closed with it. The FMNMX encoding fix
 beside it is `sm70_encode.rs`, i.e. Volta and later (`sm50.rs:56` asserts
 `sm >= 50 && sm < 70`), so it cannot reach GM20B. The other four are
 inert here: the `meson.build` hunk is a `libclc` lookup for rusticl/microsoft-clc, the

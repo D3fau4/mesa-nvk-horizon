@@ -128,9 +128,21 @@ tags.
 six host suites and a cross build — and a cross build is a compile. Every hardware
 number in this file was measured against 26.1.5 or 26.1.6, and the carry fix above
 is the only driver-code difference between those and this that can reach GM20B.
-What that fix does to a shader NAK compiles for GM20B is unmeasured: it changes
-scheduling, so the code generated for anything using carry may differ, and no
-console has executed it.
+What that fix does to a shader NAK compiles for GM20B is unmeasured — but the
+failure it removes is loud rather than silent, which narrows what "unmeasured"
+costs. `sm50.rs:72` gives `RegFile::Carry` exactly **one** register, so a
+scheduler that separated a carry producer from its consumer does not compute a
+wrong answer: it makes two carry values live at once and `assign_regs` fails to
+find a free register. That is upstream's reported case, filed against Kepler
+(`sm32.rs:42` declares the same single carry register) and closed by this commit.
+On GM20B it would surface as pipeline creation panicking inside NAK on a shader
+doing 64-bit integer arithmetic, not as a frame that came out wrong.
+
+Which also means this tree could not have caught it: all 15 shaders under
+`tests/shaders/` declare `OpCapability Shader` and nothing else, and none uses
+`Int64` or `OpTypeInt 64`, so nothing here has ever asked NAK to emit a 64-bit
+integer add. Adding that coverage is a larger job than a point release and is
+noted rather than done.
 
 ---
 
