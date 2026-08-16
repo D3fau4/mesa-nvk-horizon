@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-11
-**Branch:** `main`
+**Last updated:** 2026-08-16
+**Branch:** `claude/focused-dijkstra-y6yp71`
 
 ---
 
@@ -27,9 +27,126 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **What is still unverified** | Any display mode change and docked resolution — and with the mode change goes `VK_SUBOPTIMAL_KHR` itself, which patch **0074** returns and no console has yet produced. Run 21 measured everything around it (2303 frames, the rule in both directions, zero false positives) and the transition not at all, which is the honest split. **Multi-threaded WSI is no longer on this list** — `t_vk_wsi_mt` covers it and found the defect patch **0070** fixes — but read what it does *not* cover: it never breaks the external synchronisation Vulkan requires of a swapchain, a queue or a command pool, so it says nothing about a driver that would need locks the specification does not ask for. Two surfaces over two `NWindow`s is untested, because this test uses `nwindowGetDefault()` and there is only one of those. **`VK_PRESENT_MODE_IMMEDIATE_KHR` is no longer on this list**: run 25 measured it end to end through `vkCreateSwapchainKHR` — 8264 us against FIFO's 16577 us over 240 frames each, with a FIFO run either side of it, and run 24 said the same a build earlier |
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead. `nvkmd_horizon_ctx_wait`'s cross-channel CPU wait, which patch 0056 already reduced to cross-channel only and patch **0077** now measures rather than reasons about |
 | **The 140 ms fence** | **Not this driver's fence, and that was measured before the question was asked.** A follow-up to the 6.4 Hz report puts 140.7 ms in one `vkWaitForFences` on an empty submission. `t_vk_submits` runs exactly that harness — sixteen empty command buffers, each submitted with a fence and waited for before the next — and has measured **100, 115, 126 and 137 us** per submit-to-signal round trip in four console runs, with run 26 adding 1193 us for a clear and 3022 us for three fullscreen draws. There is no poll thread and no poll interval anywhere in `horizon/`; the wait is the nvhost `SYNCPT_WAIT` ioctl, woken by the syncpoint. Patch **0077** is the meter that can attribute the reporter's number from inside their own process — cross build only, no console has run it. See the entry below the table |
-| **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
+| **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. Re-checked 2026-08-16: **there is still no 26.2.1**, so nothing about D21 has moved. The *point* releases inside the pinned series keep being taken: **the pin is now `mesa-26.1.7`** (2026-08-16), series applying **77 of 77** — and unlike 26.1.6 that one is not free, because it touches six of the files we patch and carries a NAK carry-register fix on the **SM50** path. See the entry below the table. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Mesa 26.1.7, and the first point release that touches what we patch (2026-08-16)
+
+Checking upstream for releases newer than the pinned `mesa-26.1.6` found one:
+[`mesa-26.1.7`](https://docs.mesa3d.org/relnotes/26.1.7.html), released
+2026-08-12, commit `e8617e4ca95fc655b0f13fd115c224d27eba2441` (tag object
+`09741f24d1712840`). "Mesa 26.1.7 is a bug fix release which fixes bugs found
+since the 26.1.6 release"; **New features: None**; 89 commits from 34 authors,
+closing 13 reported issues. **It is taken, and the pin is now `mesa-26.1.7`.**
+
+`mesa-26.2.0` is still the newest thing in the 26.2 series — **no 26.2.1 exists
+yet**, re-checked the same day — so D21 has nothing new to weigh and stays open
+with the owner.
+
+### This one is not the free ride 26.1.6 was
+
+The 26.1.5 → 26.1.6 bump could be justified in one line, because the
+intersection between what it changed and what we patch was *empty*. This one is
+not:
+
+```
+grep -h '^+++ b/' mesa-patches/*.patch | sed 's|^+++ b/||' | sort -u   # 121
+git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{} | sort -u   # 121
+comm -12 <those two>                                                   # 6
+```
+
+| file | what upstream did to it | patches of ours on it |
+|---|---|---|
+| `meson.build` | `dep_clc` is now asked for by rusticl/microsoft_clc only, and prefers `mesa-libclc` over `libclc` | 0001, 0003, 0005, 0011, 0013, 0014, 0017, 0021, 0050 |
+| `src/util/os_misc.c` | new `os_jit_allowed()`; a real probe on macOS, `return true` everywhere else | 0009, 0010 |
+| `src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c` | `has_compression` also for Turing on nouveau 1.4.3 | 0029, 0038 |
+| `src/nouveau/compiler/nak/ir.rs` | `Dst::is_carry()` | 0017 |
+| `src/nouveau/compiler/nak/opt_instr_sched_prepass.rs` | serialise carry access in the dependency graph | 0017 |
+| `src/nouveau/compiler/nak/sm70_encode.rs` | `OpFMnMx` stops encoding an RZ for src2 | 0017 |
+
+**The series still applies 77 of 77**, no fuzz and no rejects, and the merge did
+not quietly drop what upstream wrote: after applying, the tree still has
+`TURING_A` in `nvkmd_nouveau_pdev.c`, `mesa-libclc` in `meson.build` and
+`os_jit_allowed` in `os_misc.c`, with our own additions beside them.
+
+### The reason to take it rather than skip it
+
+**`nak: Serialize carry access in instr_sched_prepass` (Mel Henning) is a fix on
+the Maxwell path.** The chain, checked in the tree rather than assumed:
+
+- `opt_instr_sched_prepass` runs for every shader model. There is no gate on it
+  — `src/nouveau/compiler/nak/api.rs:499`, plain `pass!(s, opt_instr_sched_prepass)`,
+  ten lines above the `if nak.sm >= 70` that *does* gate `opt_jump_thread`.
+- Below SM70, NAK's 64-bit integer add lowers to `OpIAdd2` + `OpIAdd2X` passing
+  the carry through a `RegFile::Carry` SSA value. `src/nouveau/compiler/nak/builder.rs:414`
+  is the branch: `if self.sm() >= 70` takes predicates, the `else` takes the
+  carry register. `OpIAdd2` is encoded only in `sm20.rs`, `sm32.rs` and `sm50.rs`.
+- On SM50 that file has **exactly one register**: `RegFile::Carry => 1`,
+  `src/nouveau/compiler/nak/sm50.rs:73`.
+- Before this commit the prepass built its dependency graph with no edge between
+  a carry write and a carry read, so it was free to interleave a second carry
+  producer between an `OpIAdd2` and its `OpIAdd2X`.
+
+GM20B is SM50. The release notes carry the symptom as `[NVK/Kepler] NAK compiler
+panic in assign_regs.rs: "Failed to find free register" when launching wgpu
+application (Zed)` — Kepler is SM32, the other pre-Volta model with the same
+single carry register, which is what makes the report legible: register
+allocation cannot place two overlapping live ranges in a one-register file.
+**This is a compiler defect this port could have hit and spent an afternoon
+blaming on itself.**
+
+`sm70_encode.rs` is the Turing+ encoder and `nvkmd_nouveau_pdev.c` is the
+*nouveau* KMD backend — neither is a path Horizon takes. The `wsi/` commits in
+this release are the display and Wayland backends, not ours. The rest is anv,
+radv, tu, panvk, v3d, etnaviv, zink, d3d12, radeonsi and the drm-shims.
+
+### One thing to watch, deliberately not acted on here
+
+The `meson.build` change is Karol Herbst's "clc: make libclc optional for
+configs not needing it". `dep_clc` used to be requested whenever `with_clc` was
+true, which includes any driver in `with_driver_using_cl` — NVK among them. Now
+it is requested only for rusticl and microsoft_clc, and
+`src/compiler/clc/meson.build:43` drops `nir_load_libclc.c` when `dep_clc` is
+not found. **An NVK-only build therefore no longer needs libclc at all**, which
+is a real simplification available to `toolchain/Dockerfile`, where
+`libclc-15-dev` is part of the `DEBIAN_CLC_PACKAGES` closure.
+
+Nothing was removed from the toolchain here. This is a pin bump; changing what
+the image installs is a separate change that should stand on its own build, not
+ride along inside a version update.
+
+### What was actually run
+
+| what | command | result |
+|---|---|---|
+| the pin resolves and verifies | `scripts/fetch-mesa.sh` | `checked out mesa-26.1.7, verified HEAD = e8617e4c...` |
+| the series still applies | `scripts/apply-mesa-patches.sh` | **77 of 77, no fuzz, no rejects** |
+| and reports itself so | `scripts/apply-mesa-patches.sh --list` | `77 applied, 0 pending (77 in mesa-patches/)` |
+| the five gates | `check-{layering,no-abs-paths,mesa-test-parity,dispatch-complete,history-intact}.sh` | all **PASS** |
+| host suites | `scripts/run-host-tests.sh` | **PASS** 20/20, 21/21, 30/30, 39/39, 14/14, 8/8 |
+| every archive, cross | `scripts/ci-build-archives.sh` | **still running when this was written** — recorded in the commit that follows |
+
+Mesa's `meson_version` floor is unchanged at `>= 1.4.0` (`mesa/meson.build:9`),
+so the pinned Meson 1.11.2 still clears it.
+
+**This also discharges a debt two earlier entries left open.** Both the patch
+0076 and patch 0077 entries record the same finding — the working copy's `mesa/`
+was a shallow checkout still based at `6a02618` (26.1.5) while `versions.env`
+pinned `ffa422e` (26.1.6), so `apply-mesa-patches.sh` refused and the tree was
+still building 26.1.5 — and both say `fetch-mesa.sh` followed by
+`apply-mesa-patches.sh` was owed before the next release build. That is what ran
+here, from a clean checkout: `fetch-mesa.sh` materialised 26.1.7 and verified the
+SHA, and the full series went on top of it. Patches 0076 and 0077 have now been
+applied to the tree the pin actually names.
+
+**This is a cross build, five gates and six host suites. It says nothing about a
+console.** No hardware run carries 26.1.7 — every number elsewhere in this file
+was measured against 26.1.5 or 26.1.6. In particular the carry fix above is
+argued from the source, not observed: nothing in this tree has ever produced the
+miscompilation it prevents, and nothing here demonstrates it is gone.
 
 ---
 
@@ -3905,7 +4022,7 @@ other change shows up as a failing gate.
 |---|---|---|
 | D1 | Literal reuse from GPL/AGPL reference | **no**; nothing copied |
 | D4 | Switch available | **yes — closed.** Full run, confirmation re-run, and the Phase 4 hardware run all done |
-| D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592`. **The pin is now `mesa-26.1.6`** @ `ffa422e53d59a4938b38abd5c3fc319555da31dd` (2026-08-10) — a point release *inside* the series this row chose, taken because it costs nothing (75 of 75 patches apply unmodified, no file we patch was touched) and carries two NVK fixes. That is not a reopening of D2; **which series to be on is D21** |
+| D2 | Mesa version to pin | **closed at Phase 2 start: `mesa-26.1.5`** @ `6a02618ccf6c5651ecb9cccbde571eb61fd73592`. **The pin is now `mesa-26.1.6`** @ `ffa422e53d59a4938b38abd5c3fc319555da31dd` (2026-08-10) — a point release *inside* the series this row chose, taken because it costs nothing (75 of 75 patches apply unmodified, no file we patch was touched) and carries two NVK fixes. **And now `mesa-26.1.7`** @ `e8617e4ca95fc655b0f13fd115c224d27eba2441` (2026-08-16), another point release inside the same series — this one *does* touch six of the files we patch, still applies 77 of 77, and carries a NAK fix on the SM50 carry register that GM20B's 64-bit integer adds run through. That is not a reopening of D2; **which series to be on is D21** |
 | D3 | Mesa checkout mechanism | **closed at Phase 2 start: script-fetched**, not a submodule |
 | D5 | Cache policy per memory type | **closed by the hardware, and not the way it was framed** — one policy per advertised type: type 0 (`DEVICE_LOCAL HOST_VISIBLE HOST_CACHED`) is `HORIZON_GPU_MEM_CACHED` with nvkmd's own maintenance, which it performs because `util_has_cache_ops()` is true on AArch64; type 1 (`HOST_VISIBLE HOST_COHERENT`) is UNCACHED, see D14. The framing that was wrong: this row assumed the first GPU write would be made visible *by* CPU cache maintenance. R6 measured the opposite — the four-arm `t_gpuwrite` matrix failed identically with the CPU mapping cached and uncached, and what made the write appear was a GPU-side L2 writeback. The policy is real and still required; it was never what blocked the readback. Was: — blocked on R6 (first GPU write) |
 | D6 | Timeline semaphores vs upload queue | **closed: advertise, by emulation (patch 0022)** — the runtime's `vk_sync_timeline` is registered over the binary syncpoint fence D11 settled on, so timelines are advertised without touching the upload queue. Was: — Phase 4. Original wording, `docs/known-risks.md:403`: advertise timeline semaphores, or fix the upload queue instead |

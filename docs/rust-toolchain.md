@@ -15,6 +15,18 @@ touches 114 files and not one of them is under `src/nouveau/compiler/` or
 than approximate. Checked with
 `git -C mesa diff --name-only mesa-26.1.5^{} mesa-26.1.6^{}`.
 
+The pin moved again to `mesa-26.1.7` (`e8617e4ca95fc655b0f13fd115c224d27eba2441`)
+on 2026-08-16, and this time the claim needs a narrower form, because three
+files *did* move under `src/nouveau/compiler/`: `nak/ir.rs` (+4),
+`nak/opt_instr_sched_prepass.rs` (+23) and `nak/sm70_encode.rs` (+5/-1). Nothing
+under `src/compiler/rust/` moved. **None of the three is quoted below** — the
+citations here are to `nak/api.rs`, `nak/union_find.rs`,
+`nak/opt_instr_sched_common.rs` (not `_prepass.rs`), `nak/lib.rs`,
+`rust/memstream.rs` and `rust/nir_instr_printer.rs` — so every file:line
+reference is still exact, but the reason is now "none of the moved files is
+cited" rather than "nothing moved". Checked with
+`git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
+
 ---
 
 ## 1. The question

@@ -323,6 +323,53 @@ neither large — `nvk: free copy_memory_indirect_temps on command buffer destro
 on the command-buffer destroy path) and `nvk: report fills from memory correctly`
 (`VK_KHR_pipeline_executable_properties` reported spills where it meant fills).
 
+**Point release taken, 2026-08-16: `mesa-26.1.6` → `mesa-26.1.7`**, commit
+`e8617e4ca95fc655b0f13fd115c224d27eba2441` (tag object `09741f24d1712840`, released
+2026-08-12, [release notes](https://docs.mesa3d.org/relnotes/26.1.7.html)). Also *inside*
+the series D2 chose — "New features: None", 89 commits closing 13 reported issues — but it
+is not the free ride 26.1.6 was, and the difference is worth stating rather than glossing:
+**six of the 121 files `mesa-patches/` writes to are among the 121 this release changes.**
+The series still applies **77 of 77**, no fuzz and no rejects, and all three upstream edits
+that land in a file we patch survive the series intact (checked by grepping the applied
+tree for `TURING_A`, `mesa-libclc` and `os_jit_allowed`). The overlap is:
+
+| file | upstream change | our patches on it |
+|---|---|---|
+| `meson.build` | `dep_clc` is now asked for only by rusticl/microsoft_clc, preferring `mesa-libclc` | 0001, 0003, 0005, 0011, 0013, 0014, 0017, 0021, 0050 |
+| `src/util/os_misc.c` | adds `os_jit_allowed()`, a macOS-only JIT probe (`return true` everywhere else) | 0009, 0010 |
+| `src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c` | `has_compression` also on Turing with nouveau 1.4.3 | 0029, 0038 |
+| `src/nouveau/compiler/nak/ir.rs` | adds `Dst::is_carry()` | 0017 |
+| `src/nouveau/compiler/nak/opt_instr_sched_prepass.rs` | serialises carry access in the dependency graph | 0017 |
+| `src/nouveau/compiler/nak/sm70_encode.rs` | `OpFMnMx` stops encoding RZ for src2 | 0017 |
+
+**One of those is a fix on our own hardware path, and it is the reason to take this
+release rather than wait.** `nak: Serialize carry access in instr_sched_prepass`
+(Mel Henning): `opt_instr_sched_prepass` runs unconditionally, with no shader-model gate
+(`src/nouveau/compiler/nak/api.rs:499`), and before this commit its dependency graph had
+no edge between an instruction writing the carry register and the one reading it. On
+pre-Volta the carry file is **one register** — `RegFile::Carry => 1` in
+`src/nouveau/compiler/nak/sm50.rs:73` — and it is exactly what NAK's 64-bit integer add
+lowers to below SM70: `builder.rs:414` branches on `self.sm() >= 70`, taking predicates
+above and `OpIAdd2`/`OpIAdd2X` over a `RegFile::Carry` SSA value below. GM20B is SM50, so
+**the branch this fixes is the branch our shaders take**. The reported symptom is in the
+notes as `[NVK/Kepler] NAK compiler panic in assign_regs.rs: "Failed to find free
+register"` — Kepler being SM32, the other pre-Volta model with the same single carry
+register. That is a compiler defect this port could have hit and blamed on itself.
+
+Nothing else in the release is ours. `nvkmd_nouveau_pdev.c` is the *nouveau* KMD backend,
+which Horizon does not use, and the change is Turing-gated regardless; `sm70_encode.rs` is
+the Turing+ encoder; the `wsi/` commits are the display and Wayland backends, not ours;
+the rest is anv, radv, tu, panvk, v3d, etnaviv, zink, d3d12, radeonsi and the drm-shims.
+
+The one thing worth watching afterwards is the `meson.build` change, because it moves what
+our toolchain has to supply: `dep_clc` is no longer requested for a driver that merely
+uses CL (NVK), only for rusticl and microsoft_clc, and `src/compiler/clc/meson.build:43`
+drops `nir_load_libclc.c` when it is not found. So an NVK-only build no longer needs
+libclc at all. `toolchain/Dockerfile` still installs `libclc-15-dev` and that is left
+alone here — this bump changes the pin, not the toolchain — but the dependency is now
+believed unnecessary and can be dropped on its own evidence, not as a side effect of a
+version bump.
+
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
 is a development release whose own notes tell stability-minded users to wait for 26.2.1,
 and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
