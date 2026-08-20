@@ -84,10 +84,25 @@ pulled off the SD card.
 **This is a re-verification on rebuilt state, not a new measurement.** It
 confirms the Phase 7 behaviour runs 28–31 established still holds after a
 from-scratch environment rebuild; it does not add coverage or advance the
-phase. `t_vulkan` and the other 15 `t_vk_*` tests compiled and linked clean
-on this rebuild (37 `.nro` total, `check-tls-relocs` OK, 0 TLS relocations in
-`libnvk.a` and `libnouveau_rust_runtime.a`) but had not, as of this entry,
-been run on this console this session.
+phase. All 37 `.nro` (the 21 base + Mesa-linked tests and the 16 Vulkan
+ones) compiled and linked clean on this rebuild, `check-tls-relocs` OK, 0
+TLS relocations in `libnvk.a` and `libnouveau_rust_runtime.a`.
+
+`t_vulkan` was also run, same console session, same takeover: **`RESULT:
+PASS (62/62)`**. `vkEnumeratePhysicalDevices` finds one device — `NVIDIA
+gm20b (NVK gm20b) (api 1.3.354)`, the real Tegra X1 GPU, not a stub — device
+and queue creation, a host-visible+cached buffer, map/flush/invalidate,
+command buffer record and submit, `vkWaitForFences`, and a GPU-side write
+read back correctly at 1024/1024 words. Section D16 checked
+`vkWaitForFences` timeout semantics on an unsignaled, never-submitted fence:
+waits rather than answering immediately, times out at the requested bound
+without rounding a 5 ms sub-chunk up to a 100 ms one. Log at
+`sdmc:/horizon_gpu_tests/t_vulkan.log`, not yet pulled.
+
+The other 15 `t_vk_*` tests (transfer, cache, compute, image, submits,
+format, depth, triangle, texture, caps, swapchain, immediate, present_draw,
+wsi_mt, suboptimal) — all previously verified on hardware in runs 11–31 —
+have not been re-run on this console this session.
 
 ---
 
