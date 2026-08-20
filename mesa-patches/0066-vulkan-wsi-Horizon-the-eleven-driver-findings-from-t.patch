@@ -1,8 +1,8 @@
-From 587ac72db98e2b2745795dbf293becb49d7a233d Mon Sep 17 00:00:00 2001
+From 8b7184b8af84dc2a586a36253265e30daf857522 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 14:17:35 +0000
-Subject: [PATCH] vulkan/wsi: Horizon, the eleven driver findings from the
- branch review
+Subject: [PATCH 66/81] vulkan/wsi: Horizon, the eleven driver findings from
+ the branch review
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

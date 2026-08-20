@@ -1,7 +1,7 @@
-From d8d789fa401e8bd8ec8d0664e2a73b2a697350b9 Mon Sep 17 00:00:00 2001
+From aa84b5ea4c8044e6ad33d5ec4056f66edf16fc2d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 09:57:37 +0000
-Subject: [PATCH 49/61] vulkan/wsi: size the platform table from the last
+Subject: [PATCH 49/81] vulkan/wsi: size the platform table from the last
  enumerator
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

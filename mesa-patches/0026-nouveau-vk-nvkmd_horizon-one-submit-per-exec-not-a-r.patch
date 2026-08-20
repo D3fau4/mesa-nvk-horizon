@@ -1,7 +1,7 @@
-From fa6a04ba62ec4ecc053950e43749719a2423627e Mon Sep 17 00:00:00 2001
+From 3d169ed081ecd8e7c06331140588a20e6f3e533d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 14:26:04 +0000
-Subject: [PATCH 26/61] nouveau/vk: nvkmd_horizon, one submit per exec, not a
+Subject: [PATCH 26/81] nouveau/vk: nvkmd_horizon, one submit per exec, not a
  run of them
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

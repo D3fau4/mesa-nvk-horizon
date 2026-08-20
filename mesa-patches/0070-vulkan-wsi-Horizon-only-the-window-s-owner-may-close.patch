@@ -1,8 +1,8 @@
-From 85638f8640cba6a3134259121dbf45e2b38afd25 Mon Sep 17 00:00:00 2001
+From 3bbf0bffd662d0814411303952d7019b7c01cfb6 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Sun, 9 Aug 2026 16:16:40 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, only the window's owner may close the
- framebuffer
+Subject: [PATCH 70/81] vulkan/wsi: Horizon, only the window's owner may close
+ the framebuffer
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: libnx's framebufferClose calls nwindowReleaseBuffers(fb->win)
@@ -158,5 +158,5 @@ index 9bd603a..4073d16 100644
     if (chain->holds_nv_fence)
        nvFenceExit();
 -- 
-2.55.0.windows.2
+2.43.0
 

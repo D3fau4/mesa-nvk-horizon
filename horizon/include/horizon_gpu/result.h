@@ -38,6 +38,12 @@ typedef enum horizon_gpu_status {
     HORIZON_GPU_ERR_LEAK,          /* teardown found live objects (memory-model §8) */
     HORIZON_GPU_ERR_UNSUPPORTED,   /* valid request this phase does not implement */
     HORIZON_GPU_ERR_STATE,         /* object is in the wrong state for this call  */
+    /* Appended, never inserted: the numeric values above are printed in
+     * hardware logs that are kept as evidence (docs/hw-logs/), so a run
+     * from 2026-08 and a run from later must mean the same thing by the
+     * same number. */
+    HORIZON_GPU_ERR_IO,            /* a filesystem read/write/seek/flush failed   */
+    HORIZON_GPU_ERR_NOT_FOUND,     /* the requested entry is not in the store     */
 } horizon_gpu_status;
 
 typedef struct horizon_gpu_result {

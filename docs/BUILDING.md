@@ -18,7 +18,7 @@ Start at the top. Each row is useful on its own, and the first needs nothing ins
 scripts/run-host-tests.sh
 ```
 
-Compiles six suites against the *same* `horizon/` sources the Switch build compiles —
+Compiles seven suites against the *same* `horizon/` sources the Switch build compiles —
 alignment and overflow arithmetic, the VA interval set, wrap-safe syncpoint comparison,
 the GPFIFO command emitters, status strings and logging — with `-Wall -Wextra -Werror`
 and, where the compiler supports them, ASan and UBSan. Each prints `RESULT: PASS (n/n)`.
@@ -64,7 +64,7 @@ There are two, deliberately, and they do **not** build the same set:
 | The 18 `horizon_gpu` tests | yes | yes |
 | `t_threads`, `t_ostime` (need Mesa core) | yes, when Mesa is built | yes, when Mesa is built |
 | The 14 `t_vk_*` Vulkan tests | **no** | yes, when NVK is built |
-| Maximum `.nro` | 20 | **34** |
+| Maximum `.nro` | 21 | **37** |
 
 The Makefile is the path whose output was verified on hardware, and it is readable
 without running anything; the Meson path is the one that can link NVK.

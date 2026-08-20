@@ -1,7 +1,7 @@
-From 1c36cac076978117d0a510a5557830c4e8abb827 Mon Sep 17 00:00:00 2001
+From 025ecd829b739592f238f7ae72eb777a9d1421df Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:10:23 +0000
-Subject: [PATCH 38/61] nouveau/vk: privileged register writes follow a kmd
+Subject: [PATCH 38/81] nouveau/vk: privileged register writes follow a kmd
  capability (R18)
 
 nvk_push_draw_state_init issues two SET_PRIV_REG writes whenever the 3D

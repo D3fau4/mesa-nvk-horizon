@@ -1,8 +1,8 @@
-From 4cb4b853a27a73552820ab5c6835681b521a6fe4 Mon Sep 17 00:00:00 2001
+From 87b4103974cc1f88c566b6275fab623f9a62282f Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 10:39:50 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, split the acquire's wait into the two
- things it can be
+Subject: [PATCH 76/81] vulkan/wsi: Horizon, split the acquire's wait into the
+ two things it can be
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: a zero-copy vkAcquireNextImageKHR can block in exactly two places
@@ -249,3 +249,6 @@ index d22f198..1333f5a 100644
     for (uint32_t attempt = 0; attempt < 2; attempt++) {
        const bool try_zero_copy = (attempt == 0) && zero_copy_wanted;
  
+-- 
+2.43.0
+

@@ -5,6 +5,158 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+## What the cache saves
+
+### `t_vk_cache-run31-PASS.log`
+
+Run 31, 2026-08-11, `2026-08-11T18:58:20.516Z e6f6165-dirty mesa:3ba5227`,
+`RESULT: PASS (45/45)`. The last number Phase 7 was missing:
+
+```
+note vkCreateComputePipelines took 442 us on a warm cache
+note against 5342 us when this build's cache was cold: 4900 us saved, 91% of the compile
+ok   a warm cache creates the pipeline faster than a cold one (442 us against 5342 us)
+```
+
+**12× faster, 91% of the compile gone**, on the driver's own cache path with no
+environment override and no `VkPipelineCache` passed to the create — so the only thing
+that could have answered it is the disk. And the shader that came back is right:
+`4096/4096 words match`, with the 64-word poisoned tail untouched.
+
+**The 5342 µs is self-certified.** The cold run's own log was not kept, but the test
+records a cold baseline *only* when the driver reported `0 entries` at startup, and a
+cold run clears `sdmc:/mesa_shader_cache` itself before the driver opens anything. A
+number in the marker file therefore cannot be a warm create wearing a cold label —
+runs 29 and 29 both wrote `0` there rather than lie about it, which is what makes the
+5342 in this one mean something.
+
+## The shader off the card, correct in full
+
+### `t_vk_cache-run30-PASS.log`
+
+Run 30, 2026-08-11, `2026-08-11T18:46:12.351Z 28bbe35-dirty mesa:3ba5227`,
+`RESULT: PASS (44/44)`. What run 29 measured and could not prove:
+
+```
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+note vkCreateComputePipelines took 432 us on a warm cache
+ok   the cached shader's output: 4096/4096 words match
+ok   the words past the dispatch are untouched: 64/64 words are 0xdeadbeef
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+**Every one of the 4096 words**, from a shader NVK did not compile, plus a poisoned
+tail that a wrong dispatch would have disturbed and did not. Run 29's two failures
+were the test's, and this is the same test with them fixed.
+
+**What it still does not measure is the saving.** Line 26 says it: `the driver's own
+cache was already populated when this launch started`, so the run had no cold
+baseline to compare 432 µs against, and the test refused to invent one — it recorded
+`0` in its marker and said why. That refusal is the design working; it is also the
+second run in a row where the intended cold measurement did not happen because the
+driver's cache had to be deleted by hand first. The test now clears that directory
+itself on a cold run.
+
+## NVK stops recompiling, and a test that read its own result wrong
+
+### `t_vk_cache-run29-FAIL.log`
+
+Run 29, 2026-08-11, `2026-08-11T18:37:03.904Z b5454be-dirty mesa:3ba5227`,
+`RESULT: FAIL (37/39)`. **Read the two FAIL lines as what they are: the test being
+wrong about a console that was right.**
+
+The evidence the run was actually gathering:
+
+```
+MESA: info: disk cache: sdmc:/mesa_shader_cache/nvk_012b.hzc, 2 entries
+note vkCreateComputePipelines took 646 us on a warm cache
+MESA: info: disk shader cache:  hits = 2, misses = 0
+```
+
+The driver's own cache, on its own path, with no environment override — **two hits
+and no misses. NVK compiled nothing.** That is the thing the whole phase exists for,
+and this log is the first place it appears.
+
+The failure is `the cached shader's output: 0/64 words match`, with
+`first mismatch at word 0: got 0xa5c4d00d, want 0x00000000`. The test expected
+`out[id] = id`. `comp_write_id` documents in its own header that it stores
+`(id * 2654435769) ^ 2781138957`, and `expect_word(0)` is exactly **0xa5c4d00d** —
+the multiply vanishes at id 0 and the XOR constant is all that is left. **The cached
+shader computed the correct value and the test did not know what correct was.**
+
+The same test also dispatched 64 groups of a `LocalSize 64` shader into a 64-word
+buffer: 4096 invocations, 4032 of them writing past the end of a runtime array. Both
+are fixed, and the fixed test carries a static check that `expect_word(0)` is that
+value, plus a 64-word poisoned tail that a wrong dispatch size would disturb.
+
+**What this log does not establish**: that all 4096 words are right. It compared
+against the wrong array and printed only the first mismatch, so exactly one word of
+the shader's output is known to be correct here.
+
+## The shader disk cache, working
+
+### `t_shader_cache-run28-PASS.log`
+
+Run 28, 2026-08-11, `2026-08-11T17:02:09.068Z 1f9f128-dirty mesa:3ba5227`,
+`RESULT: PASS (56/56)`. The run that closed the claim a cache exists to make:
+
+```
+note C1 this launch found 32 entries (WARM — a previous launch filled it)
+ok   C2 every entry the previous launch wrote came back intact
+```
+
+Entries written by one process, read back by the next, off a real SD card. It also
+turned run 27's vacuous `ftruncate` check into three real ones, and re-measured the
+two defects run 27 exposed: opening 201 entries went from 40498 µs to **1605 µs**
+(201 → 7 µs per entry) and 100 writes into a full 32 KiB cache from **70 compactions
+to 5**.
+
+One line in this log is correct and reads like a fault. At B1:
+`did not match this driver build …; started over (96 bytes discarded)` — 96 bytes is
+exactly an empty header, i.e. the file the *previous* run's B7 left behind, B7 being
+the check that opens under a deliberately different driver id. The driver is refusing
+last run's leftovers, which is what it should do. The test has since been changed to
+clear its own cache first so the message only appears where it is provoked.
+
+What this log does **not** show is NVK not recompiling. Nothing here touches the
+driver's shader compilation; `t_vk_cache` is the test for that and had not been
+written when this ran.
+
+## The shader disk cache, and a check that could not fail
+
+### `t_shader_cache-run27-FAIL.log`
+
+Run 27, 2026-08-11, `2026-08-11T00:07:01.401Z d0514c1-dirty mesa:3ba5227`,
+`RESULT: FAIL (46/47)`. The first console run of the shader cache, and the first
+evidence that `disk_cache_create()` returns anything but NULL on this platform.
+
+**Read two lines of this log carefully, and neither is the FAIL.**
+
+`FAIL A8 and stayed inside the ceiling` is the test's fault, not the store's:
+`file_size_of()` opened the cache file a second time while the store still held it
+open, which this platform refuses, and the −1 it returned was cast to `uint64_t`.
+
+The line that matters is four lines above it and says `ok`:
+
+```
+ok   A6 ftruncate() actually shortened the file on this filesystem
+```
+
+Same −1, compared as a signed `long` against 4096. **That check could not fail**, and
+it reported success for something it never looked at. `ftruncate` on this filesystem
+is therefore *not* evidenced by this log, despite the `ok`. It is on the unverified
+list until a run with the fixed test says otherwise.
+
+What the log does establish: Mesa's `disk_cache_*` API working end to end on a Switch
+including a 256 KiB entry; recovery from a file cut short mid-payload on the real
+card; another driver build's file being reset rather than read; and an in-place
+compaction reopening clean. It also carries the first latencies, two of which were
+structural defects — 201 µs per entry to open, and 70 compactions for 100 writes —
+both since fixed. See `docs/shader-cache.md` and `STATUS.md`.
+
+Section C reported a cold cache, which a first run must. Nothing here shows that
+entries outlive the process that wrote them.
+
 ## `VK_SUBOPTIMAL_KHR`, and the half of it a console cannot show
 
 ### `t_vk_suboptimal-run21-PASS.log`

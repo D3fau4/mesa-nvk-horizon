@@ -62,9 +62,19 @@ Do not reintroduce them:
 | `horizon/` | libnx, newlib, C11 | Vulkan, Mesa, NVK, WSI, `nwindow` semantics beyond a surface-info struct |
 | `nvkmd_horizon` (in `mesa-patches/`) | NVK internals, `horizon/` | libnx directly, `nwindow` |
 | WSI Horizon (in `mesa-patches/`) | Vulkan WSI runtime, `horizon/` surface info, libnx `nwindow` | `nvkmd_horizon` internals |
+| `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/` internals, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
 `horizon/` must compile and its tests must run **without Mesa present**.
+
+`horizon/cache/` is in that layer and not beside the driver on purpose: it is the
+shader cache's *storage*, its whole value is what it does with a damaged file, and a
+format that is only tested where it runs is a format nobody has tested against the
+damage. Being libnx-free and Mesa-free is what lets `scripts/run-host-tests.sh`
+compile the same translation unit the console does and hand it truncated and
+bit-flipped files under sanitizers. It performs **no path operation after `open()`** —
+libnx routes `open`/`stat`/`unlink`/`mkdir`/`rename` through one unlocked global
+buffer, so a second thread doing path work corrupts the first one's path.
 
 ## Toolchain fallback (devkitA64)
 

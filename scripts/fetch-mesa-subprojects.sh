@@ -73,9 +73,17 @@ if [ "$FORCE" -eq 1 ]; then
     done
 fi
 
+# -j1: `meson subprojects download` otherwise runs each wrap's fetch in
+# its own thread of one ThreadPoolExecutor, and on Windows the
+# subprojects-directory lock (msvcrt.locking(), in Meson's DirectoryLock)
+# is not safely reentrant across threads of the same process the way
+# POSIX fcntl locks are — two threads racing to lock the same
+# .wraplock fail with "OSError: [Errno 36] Resource deadlock avoided"
+# instead of one waiting for the other. Serial downloads sidestep the
+# race; the cost is small; each wrap is a few hundred kilobytes.
 PYTHONPATH="$PWD/$HORIZON_MESON_DIR:$PWD/$HORIZON_PYTHON_DIR" \
     python3 "$PWD/$HORIZON_MESON_DIR/bin/meson" \
-    subprojects download --sourcedir mesa "$@"
+    subprojects download --sourcedir mesa -j1 "$@"
 
 # Nothing here writes into mesa/ beyond what Meson unpacks, and that is
 # deliberate: Mesa's own subprojects/.gitignore already ignores every

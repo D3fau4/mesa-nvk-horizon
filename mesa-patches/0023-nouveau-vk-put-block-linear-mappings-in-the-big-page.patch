@@ -1,7 +1,7 @@
-From efdc34f1761332aa4c198c4bea04c667785e93c5 Mon Sep 17 00:00:00 2001
+From 40844b8a05bb44341cb02f24a302a94c03c9e3b5 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:57:23 +0000
-Subject: [PATCH 23/61] nouveau/vk: put block-linear mappings in the big-page
+Subject: [PATCH 23/81] nouveau/vk: put block-linear mappings in the big-page
  half on Horizon
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

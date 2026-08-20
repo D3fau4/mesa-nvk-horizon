@@ -1,7 +1,8 @@
-From 815dca2fd77a4eaf178b9afdbf2b65784fcf2082 Mon Sep 17 00:00:00 2001
+From 5feab0ad405cb04de7fab9bceeca519aa768eb98 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 15:59:34 +0000
-Subject: [PATCH] vulkan/wsi: Horizon, one dequeue policy at every timeout
+Subject: [PATCH 67/81] vulkan/wsi: Horizon, one dequeue policy at every
+ timeout
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -158,3 +159,6 @@ index 5f8ae52..d62de7c 100644
  
        if (R_SUCCEEDED(rc)) {
           struct wsi_horizon_image *image = &chain->images[slot];
+-- 
+2.43.0
+

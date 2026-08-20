@@ -14,8 +14,13 @@
 │    Implements NVK's nvkmd interface (nvkmd_dev / nvkmd_mem / nvkmd_va /   │
 │    nvkmd_ctx) on top of horizon_gpu. Knows Vulkan; knows nothing of libnx.│
 ├───────────────────────────────────────────────────────────────────────────┤
+│  disk_cache_horizon                     [lives in mesa-patches/]          │
+│    Replaces Mesa's util/disk_cache_os.c. Knows Mesa's util; knows nothing │
+│    of Vulkan, NVK or libnx. Beside nvkmd_horizon, not below it.           │
+├───────────────────────────────────────────────────────────────────────────┤
 │  horizon_gpu                            [this repo, horizon/]             │
-│    Device, memory, VA, channel, submit, sync, surface info, debug.        │
+│    Device, memory, VA, channel, submit, sync, surface info, debug,        │
+│    and the shader cache's blob store.                                     │
 │    Pure C. No Vulkan. No Mesa. No WSI. Explicit contexts.                 │
 ├───────────────────────────────────────────────────────────────────────────┤
 │  libnx                                                                    │
@@ -53,9 +58,24 @@ Owns every interaction with the `nv` services. Provides:
 | `sync/` | Syncpoint identity and monotonic values; fence creation, query, wait with an explicit timeout; fence comparison. |
 | `surface/` | Describe a presentable allocation: `NvMap` id, offset, pitch, block-height, PTE kind, colour format, GPU VA. **No `nwindow` calls, no queueing.** |
 | `debug/` | Structured logging, optional synchronous mode, channel error decoding, GPFIFO dumping. |
+| `cache/` | A keyed blob store on a Horizon filesystem: one append-only, CRC-validated file, an in-memory index, in-place compaction. **Not a GPU concern**, and it is here for a reason given below. |
 
 **Prohibited in `horizon/`:** any `#include <vulkan/*>`, any Mesa header, any
 `nwindowQueueBuffer`/`nwindowDequeueBuffer` call, any global mutable device state.
+
+`cache/` is the one entry in that table that is not about the GPU, and it is a
+deliberate exception rather than drift. The shader disk cache's whole value is what it
+does with a file that is *wrong* — truncated by a flat battery, bit-flipped by a
+failing card, written by a different driver build. A format tested only where it runs
+is a format nobody has tested against that damage, because producing a damaged file on
+a console means an operator with a card reader. Being libnx-free and Mesa-free is what
+lets `scripts/run-host-tests.sh` compile the same translation unit the console does
+and hand it those files under ASan and UBSan.
+
+It also carries an invariant the rest of the layer does not need: **no path operation
+after `open()`**. libnx routes `open`, `stat`, `unlink`, `mkdir` and `rename` through
+one unlocked global buffer, and the cache is reached from Mesa's put queue — i.e. from
+a thread the caller never named. See [`shader-cache.md`](shader-cache.md).
 
 ### `nvkmd_horizon`
 
@@ -68,6 +88,16 @@ mapping) and nothing else. It must not call libnx.
 Owns swapchain state, image slots, `nwindow` dequeue/queue, buffer-count policy,
 resize and error recovery. It obtains tiling/kind/`NvMap`-id facts from
 `horizon_gpu`'s surface layer rather than reaching into `nvkmd_horizon`.
+
+### `disk_cache_horizon`
+
+Replaces `src/util/disk_cache_os.c` on Horizon and nothing else: Mesa's generic
+`disk_cache.c` — key derivation, the put queue, compression, the statistics — is used
+unchanged. It owns the entry layout (an uncompressed length, then the deflated blob),
+the lock that serialises the store against Mesa's put queue, and the cache path. It
+sits beside `nvkmd_horizon` rather than under it: it is a `src/util` component and
+knows nothing of Vulkan, NVK or the WSI, and nothing of libnx either — the platform is
+entirely behind `horizon_gpu`'s blob store.
 
 ### `compat/`
 
@@ -83,6 +113,8 @@ interposition is **not** a valid use of this directory.
 | `horizon/` | `nwindow` / `vi` queueing | Presentation policy is a WSI concern; `horizon/` only describes surfaces. |
 | `nvkmd_horizon` | libnx | Keeps the OS surface in one auditable place. |
 | WSI Horizon | `nvkmd_horizon` internals | WSI must work through public NVK/Mesa interfaces. |
+| `disk_cache_horizon` | Vulkan / NVK / WSI / libnx | It is a `src/util` component; the platform is behind `horizon_gpu`'s blob store. |
+| `horizon/cache/` | a path operation after `open()` | libnx's devoptab shares one unlocked path buffer, and the store is reached from Mesa's put queue. |
 | anything | a DRM/nouveau uAPI shim | The whole point of the rewrite. |
 | anything | global device/window/swapchain state | Prevents multi-object correctness and clean teardown. |
 

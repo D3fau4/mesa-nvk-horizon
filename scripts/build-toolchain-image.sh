@@ -37,6 +37,31 @@ fi
 
 CTX=build/toolchain/image-context
 
+# `docker build` on Windows (Docker Desktop, WSL2 backend) reads the
+# context off the Windows filesystem to stream it to the daemon. For a
+# few seconds after "exporting to image" finishes, its file-sharing
+# layer still holds handles on files under $CTX — an immediate
+# `rm -rf "$CTX"` fails with "Permission denied" on files that were
+# ordinary 644 the whole time (nothing about their own permissions is
+# wrong; the handle is external and closes on its own). Elsewhere
+# (native Linux, or before the context is ever read by a build) the
+# first attempt always succeeds and this is a single no-op stat call.
+rm_context() {
+    [ -e "$CTX" ] || return 0
+    tries=0
+    while ! rm -rf "$CTX" 2>/tmp/rm-context-err.$$; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 5 ]; then
+            cat /tmp/rm-context-err.$$ >&2
+            rm -f /tmp/rm-context-err.$$
+            return 1
+        fi
+        sleep 2
+    done
+    rm -f /tmp/rm-context-err.$$
+    return 0
+}
+
 # What the image was built from. The base image is a floating tag by
 # policy, so its digest is part of the identity: a `docker pull` that
 # moves the tag has to rebuild this layer, or the sysroot inside it
@@ -127,7 +152,7 @@ fi
 # directory also holds Meson, a 250 MB cargo target directory and the
 # Mesa tarball cache, none of which belong in an image context.
 echo "build-toolchain-image: assembling the context in $CTX"
-rm -rf "$CTX"
+rm_context
 mkdir -p "$CTX/debs" "$CTX/sysroot-driver/src"
 
 cp "build/toolchain/rust-tools-dl/$DEBIAN_LIBCLANG_DEB" \
@@ -248,7 +273,7 @@ docker build --network=none \
     --label "org.mesa-nvk-horizon.identity=$want" \
     "$CTX"
 
-rm -rf "$CTX"
+rm_context
 
 # --- 4. prove it works before claiming success ------------------------
 #

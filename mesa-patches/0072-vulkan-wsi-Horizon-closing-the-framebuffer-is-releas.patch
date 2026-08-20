@@ -1,8 +1,8 @@
-From 348dc0aef8c98c2856c7184b2b232b9115b2d2b2 Mon Sep 17 00:00:00 2001
+From 1703e4c8967c00554a9ebb1c446b7d87e4c38373 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Sun, 9 Aug 2026 22:03:32 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, closing the framebuffer is releasing the
- window
+Subject: [PATCH 72/81] vulkan/wsi: Horizon, closing the framebuffer is
+ releasing the window
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: patch 0070 established that only the swapchain owning the window's
@@ -320,5 +320,5 @@ index d6b0552..2c033e9 100644
     if (chain->holds_nv_fence)
        nvFenceExit();
 -- 
-2.55.0.windows.2
+2.43.0
 

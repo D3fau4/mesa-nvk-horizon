@@ -93,6 +93,12 @@ cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
 cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
 echo "configure-mesa-nvk: horizon_gpu staged in $HORIZON_GPU_PREFIX"
 
+# The identity NVK reports as driverUUID and the pipeline cache UUID, and
+# that the shader disk cache keys on. Mesa's version alone does not
+# change when this port changes (mesa-patches/0078); this does.
+HORIZON_DRIVER_ID=$(scripts/gen-driver-id.sh)
+echo "configure-mesa-nvk: driver id $HORIZON_DRIVER_ID"
+
 MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
 
 set -- \
@@ -105,7 +111,8 @@ set -- \
     -Dplatforms=vi \
     -Dopengl=false \
     -Dllvm=disabled \
-    -Dshader-cache=disabled \
+    -Dshader-cache=enabled \
+    -Dhorizon-driver-id="$HORIZON_DRIVER_ID" \
     -Dxmlconfig=disabled \
     -Dmesa-clc=system \
     -Dprecomp-compiler=system \

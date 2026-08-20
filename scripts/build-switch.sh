@@ -38,5 +38,10 @@ fi
 # Two reasons: it keeps a hardcoded container workdir out of this script
 # (scripts/check-no-abs-paths.sh), and it makes compiler diagnostics and
 # generated depfiles name paths that also resolve on the host.
-exec docker run --rm -e DEVKITPRO=/opt/devkitpro \
+#
+# MSYS_NO_PATHCONV=1 is what makes the mount above work under Git Bash on
+# Windows — see the long comment on the same variable in horizon_run()
+# (scripts/toolchain-env.sh). This script has its own docker invocation
+# rather than going through that helper, so it needs its own copy.
+exec env MSYS_NO_PATHCONV=1 docker run --rm -e DEVKITPRO=/opt/devkitpro \
     -v "$PWD":"$PWD" -w "$PWD" "$@"

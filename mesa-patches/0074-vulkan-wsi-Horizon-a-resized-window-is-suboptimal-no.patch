@@ -1,8 +1,8 @@
-From 186b0820e3413fdbfa9030e54b99329e9066f73d Mon Sep 17 00:00:00 2001
+From a89f88b6a90ea7d7b0b0f5e25c7017e893d024bf Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
-Subject: [PATCH] vulkan/wsi: Horizon, a resized window is suboptimal, not out
- of date
+Subject: [PATCH 74/81] vulkan/wsi: Horizon, a resized window is suboptimal,
+ not out of date
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: a display mode change - docking the console, which takes the layer
@@ -356,5 +356,5 @@ index 2f41ef6..484571f 100644
  
  static VkResult
 -- 
-2.55.0.windows.2
+2.43.0
 

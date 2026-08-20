@@ -1,7 +1,7 @@
-From bdf257a784648ec5f630c9d15e37191e13afa6d8 Mon Sep 17 00:00:00 2001
+From f20b3b4289dcabc23a5e926e0cde7e3264890802 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:33:49 +0000
-Subject: [PATCH 05/61] meson: detect whether the C library needs _GNU_SOURCE
+Subject: [PATCH 05/81] meson: detect whether the C library needs _GNU_SOURCE
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

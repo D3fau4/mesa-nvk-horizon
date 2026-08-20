@@ -108,6 +108,8 @@ add_project_arguments('-Wall', '-Wextra', '-Werror', language : 'c')
 # Keep the two lists in step: a file added here and not there builds
 # clean under Meson and vanishes from the hardware-verified path.
 horizon_gpu_sources = files(
+  'horizon/cache/crc32.c',
+  'horizon/cache/blob_cache.c',
   'horizon/debug/log.c',
   'horizon/debug/status.c',
   'horizon/device/device.c',
@@ -233,8 +235,9 @@ test_nros = []
 # Phase 3 items 4 (threads) and 5 (timers/clocks). They link the archives
 # Mesa's build produced, not sources recompiled with flags of our own:
 # the object under test has to be the object Mesa builds, or the
-# measurement describes a different build. -DHAVE_PTHREAD and
-# -DHAVE_STRUCT_TIMESPEC are Mesa's own configure results here, copied so
+# measurement describes a different build. -DHAVE_PTHREAD,
+# -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are Mesa's own
+# configure results here, copied so
 # its headers declare the same types; both appear in
 # build/mesa-probe/build.ninja.
 #
@@ -257,11 +260,17 @@ fs = import('fs')
 # value through (see meson.options for why it is an option and not an
 # environment variable).
 mesa_build_dir = get_option('mesa_build_dir')
+# libmesa_util.a reaches blake3 through mesa-blake3.h's inline wrappers —
+# disk_cache_compute_key() is one — so libblake3.a has to be on the link
+# line of anything that calls into the shader cache. It was not needed
+# while t_threads and t_ostime were the only two tests here, because
+# neither of them hashes anything.
 mesa_test_libs = [
   mesa_build_dir / 'src/c11/impl/libmesa_util_c11.a',
   mesa_build_dir / 'src/util/libmesa_util.a',
+  mesa_build_dir / 'src/util/blake3/libblake3.a',
 ]
-mesa_tests = ['t_threads', 't_ostime']
+mesa_tests = ['t_threads', 't_ostime', 't_shader_cache']
 
 # ---------------------------------------------------------------------
 # Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
@@ -346,6 +355,11 @@ nvk_tests = [
   # Phase 5 item 1. Everything later in the phase reads its result back
   # through a copy, so this is the one that has nothing behind it.
   't_vk_transfer',
+  # Phase 7: the only test that asks what the shader cache is FOR — is a
+  # shader compiled on one launch still compiled on the next. Needs two
+  # launches of the same build to mean anything; the first is cold and
+  # says so.
+  't_vk_cache',
   # Phase 5 items 3 and 4. One test because an off-screen image is only
   # observable once something renders to it, and the smallest thing that
   # does is a clear — which NVK implements as a render pass, not a blit.
@@ -416,6 +430,9 @@ nvk_test_shaders = {
   # able to catch the regression patch 0048 fixed.
   't_vk_image' : [],
   't_vk_compute' : ['comp_write_id'],
+  # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
+  # should be about the cache and not about a shader nothing else runs.
+  't_vk_cache' : ['comp_write_id'],
   # Two pipelines: A builds its positions from gl_VertexIndex and writes
   # a constant colour, B fetches position and colour from a vertex
   # buffer and interpolates. Four shaders so that a failure in B alone
@@ -494,9 +511,24 @@ if mesa_libs_present
   # documented on the path where it is guaranteed and nowhere on the
   # path where it is not obvious.
   idep_mesa_core = declare_dependency(
-    compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC'],
+    compile_args : ['-DHAVE_PTHREAD', '-DHAVE_STRUCT_TIMESPEC',
+                    '-DENABLE_SHADER_CACHE'],
     include_directories : include_directories('mesa/src', 'mesa/include'),
-    link_args : mesa_test_lib_paths,
+    # One list, not two: a second `link_args` key would silently replace
+    # the first rather than add to it, and the archives are the half that
+    # would have been lost.
+    #
+    # -lzstd -lz because enabling the shader cache put compress.c on the
+    # reachable side of libmesa_util.a, and Mesa's own configure enabled
+    # it through devkitPro's portlibs. libhorizon_gpu.a is already on the
+    # line — every test links it — and the group makes the order between
+    # them irrelevant. The Makefile names the same libraries and says why
+    # order matters there instead.
+    link_args : mesa_test_lib_paths + [
+      '-L' + meson.get_external_property('devkitpro_prefix') /
+             'portlibs/switch/lib',
+      '-lzstd', '-lz',
+    ],
   )
   horizon_tests += mesa_tests
 else
@@ -534,9 +566,17 @@ if nvk_libs_present
     # is turned off again immediately: whole-archiving the rest costs
     # size for nothing, and whole-archiving two archives built from the
     # same sources collides on every symbol in them.
+    #
+    # -lzstd -lz: enabling the shader cache put compress.c on the
+    # reachable side of libmesa_util.a, and Mesa's own configure enabled
+    # it through devkitPro's portlibs. Same libraries idep_mesa_core
+    # names, for the same reason.
     link_args : ['-Wl,--whole-archive'] + nvk_whole_lib_paths +
                 ['-Wl,--no-whole-archive'] + nvk_test_lib_paths +
-                ['-lstdc++'],
+                ['-lstdc++',
+                 '-L' + meson.get_external_property('devkitpro_prefix') /
+                        'portlibs/switch/lib',
+                 '-lzstd', '-lz'],
     # The same platform define the driver was built with. Without it
     # <vulkan/vulkan.h> hides VK_NN_vi_surface — VkViSurfaceCreateInfoNN,
     # PFN_vkCreateViSurfaceNN, the extension's name macro — so a test

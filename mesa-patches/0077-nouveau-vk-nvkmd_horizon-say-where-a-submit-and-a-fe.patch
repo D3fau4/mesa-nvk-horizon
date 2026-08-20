@@ -1,8 +1,8 @@
-From 1726079d04b06ff3db6142f168070b4fe1933684 Mon Sep 17 00:00:00 2001
+From 44aa539e46f39cfb8485162f06d7b3899692802c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 12:20:11 +0200
-Subject: [PATCH] nouveau/vk: nvkmd_horizon, say where a submit and a fence
- wait went
+Subject: [PATCH 77/81] nouveau/vk: nvkmd_horizon, say where a submit and a
+ fence wait went
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
 Why: "vkWaitForFences took N milliseconds" is one number, and at least
@@ -613,5 +613,5 @@ index e222108..db5391c 100644
     sync->signalled_value = signal_value;
     sync->state = NVK_HORIZON_SYNC_PENDING;
 -- 
-2.55.0.windows.2
+2.43.0
 

@@ -21,6 +21,8 @@ const char *horizon_gpu_status_str(horizon_gpu_status status)
     case HORIZON_GPU_ERR_LEAK:           return "leak detected at teardown";
     case HORIZON_GPU_ERR_UNSUPPORTED:    return "unsupported";
     case HORIZON_GPU_ERR_STATE:          return "wrong object state";
+    case HORIZON_GPU_ERR_IO:             return "filesystem I/O error";
+    case HORIZON_GPU_ERR_NOT_FOUND:      return "entry not found";
     }
     return "unknown status";
 }

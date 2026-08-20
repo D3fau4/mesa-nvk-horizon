@@ -106,7 +106,18 @@ curl -fsSL --retry 3 -o "$DL/Packages.gz" \
 
 # --- 3. resolve the closure, then download and verify ------------------
 python3 - "$DL" "$DEBIAN_MIRROR" "$DEBIAN_CLC_PACKAGES" <<'PY'
-import gzip, hashlib, os, pathlib, re, subprocess, sys, urllib.request
+import gzip, hashlib, os, pathlib, re, shutil, subprocess, sys, urllib.request
+
+# Resolved once, through shutil.which() rather than a bare 'dpkg' in the
+# subprocess.run() call below. On Windows, subprocess with a list of
+# args goes straight to CreateProcess, which auto-appends only .exe —
+# never the PATHEXT search (.bat, .cmd, ...) a shell would do. A host
+# with no native dpkg but a dpkg.bat/.cmd shim on PATH would otherwise
+# see it as silently "not found", indistinguishable from dpkg being
+# genuinely absent. shutil.which() does the full platform-appropriate
+# search and hands subprocess.run() a path CreateProcess can launch
+# directly. No effect where a real dpkg is already on PATH.
+_DPKG = shutil.which('dpkg') or 'dpkg'
 
 dl, mirror, roots = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3].split()
 
@@ -159,7 +170,7 @@ def satisfied_by_installed(name, op, ver):
     # Debian versions have epochs, tildes and mixed alphanumeric
     # segments, and getting that subtly wrong is how a closure ends up
     # looking right and failing at install time.
-    return subprocess.run(['dpkg', '--compare-versions', installed, op, ver],
+    return subprocess.run([_DPKG, '--compare-versions', installed, op, ver],
                           check=False).returncode == 0
 
 

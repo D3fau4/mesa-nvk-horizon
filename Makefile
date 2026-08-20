@@ -34,6 +34,8 @@ LIBS    := -lhorizon_compat -lnx
 BUILD   := build
 
 LIB_SRCS := \
+    horizon/cache/crc32.c \
+    horizon/cache/blob_cache.c \
     horizon/debug/log.c \
     horizon/debug/status.c \
     horizon/device/device.c \
@@ -69,9 +71,14 @@ TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
 # sources with flags of our own — the object under test has to be the
 # object Mesa builds, or the measurement is about a different build.
 #
-# -DHAVE_PTHREAD and -DHAVE_STRUCT_TIMESPEC are not choices: they are
-# what Mesa's own configure decided here, copied so the headers declare
-# the same types. Both are visible in build/mesa-probe/build.ninja.
+# -DHAVE_PTHREAD, -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are
+# not choices: they are what Mesa's own configure decided here, copied so
+# the headers declare the same things the archives were built with. All
+# three are visible in build/mesa-probe/build.ninja. The last one in
+# particular is load-bearing rather than cosmetic — without it
+# disk_cache.h offers static-inline stubs instead of prototypes, so
+# t_shader_cache would compile against a cache that does nothing and
+# then fail to link against one that does.
 #
 # meson.build states these same four things for the other build path,
 # and scripts/check-mesa-test-parity.sh fails if the two ever disagree.
@@ -87,9 +94,10 @@ TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
 # scripts/build-switch.sh forwards it into the container.
 MESA_BUILD  := $(or $(MESA_BUILD_DIR),build/mesa-probe)
 MESA_LIBS   := $(MESA_BUILD)/src/c11/impl/libmesa_util_c11.a \
-               $(MESA_BUILD)/src/util/libmesa_util.a
-MESA_CFLAGS := -Imesa/src -Imesa/include -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC
-MESA_TESTS  := t_threads t_ostime
+               $(MESA_BUILD)/src/util/libmesa_util.a \
+               $(MESA_BUILD)/src/util/blake3/libblake3.a
+MESA_CFLAGS := -Imesa/src -Imesa/include -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC -DENABLE_SHADER_CACHE
+MESA_TESTS  := t_threads t_ostime t_shader_cache
 
 ifeq ($(words $(wildcard $(MESA_LIBS))),$(words $(MESA_LIBS)))
 TESTS += $(MESA_TESTS)
@@ -179,7 +187,22 @@ $(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
 # Target-specific, so only tests 12 and 13 see the Mesa include path and
 # archives; the other eleven keep building with no Mesa in sight.
 $(MESA_TESTS:%=$(BUILD)/%.t.o): EXTRA_CFLAGS := $(MESA_CFLAGS)
-$(MESA_TESTS:%=$(BUILD)/%.elf): EXTRA_LIBS := $(MESA_LIBS)
+# $(LIB) appears a second time AFTER the Mesa archives, and -lzstd -lz
+# after those, because this is a plain left-to-right link and the shader
+# cache made libmesa_util.a depend on both directions:
+#
+#   libmesa_util.a(disk_cache_horizon.c.o) -> horizon_gpu_status_str
+#                                             ... in libhorizon_gpu.a
+#   libmesa_util.a(compress.c.o)           -> ZSTD_compress, deflate
+#                                             ... in devkitPro's portlibs
+#
+# The first is the whole point of the backend and the second is Mesa's
+# own configure result (-DHAVE_ZSTD -DHAVE_ZLIB, from portlibs' pkg-config).
+# An archive already passed is not searched again, so libhorizon_gpu.a
+# has to be named on both sides of libmesa_util.a.
+$(MESA_TESTS:%=$(BUILD)/%.elf): \
+    EXTRA_LIBS := $(MESA_LIBS) $(LIB) \
+                  -L$(DEVKITPRO)/portlibs/switch/lib -lzstd -lz
 $(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)
 
 $(BUILD)/%.nacp: | $(BUILD)/
