@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-20 (Windows environment rebuild + `t_shader_cache` re-verification; phase unchanged, still run 31 / Phase 7 complete)
+**Last updated:** 2026-08-20 (merged `main`'s Mesa 26.1.7 pin; series 81 of 81, cross build green; phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
@@ -30,6 +30,69 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Merging `main`'s Mesa 26.1.7 into this branch (2026-08-20)
+
+`main` moved the pin from `mesa-26.1.6` to **`mesa-26.1.7`** (PR #15) while this
+branch was open, and GitHub reported the pull request un-mergeable. One file
+conflicted: this one. `docs/BUILDING.md`, `docs/known-risks.md`,
+`docs/rust-toolchain.md` and `toolchain/versions.env` merged without help.
+
+Three hunks, and what each resolution chose:
+
+- **The header.** Kept this branch's. Main's commit that set it to `main` says
+  the header names *the branch the file lands on*; by that same rule it names
+  this one here.
+- **The `Open decisions` row.** Took main's — the pin really is 26.1.7 now — and
+  corrected the count it carries. Main says the series applies **77 of 77**;
+  this branch adds four, so the row now says **81 of 81** and names them.
+- **The log body.** Both sides had prepended dated sections, which is why git
+  could not merge it: they occupy the same place, not the same lines. Interleaved
+  by date instead — 2026-08-20 (the Windows rebuild), then 2026-08-12 (26.1.7),
+  then the run 27–31 entries of 2026-08-11. Nothing was dropped from either side.
+
+### The question that actually mattered
+
+26.1.7 is **the first point release that touches files `mesa-patches/` writes
+to** — that is main's own finding, recorded in the entry below this one. So
+whether the four shader-cache patches still apply was a real question and not a
+formality. They do:
+
+```
+scripts/fetch-mesa.sh          mesa-26.1.7, HEAD = e8617e4 verified
+scripts/apply-mesa-patches.sh  81 of 81, no fuzz, no rejects
+scripts/run-host-tests.sh      PASS 20/20 21/21 30/30 39/39 16/16 8/8 171/171
+check-{layering,no-abs-paths,mesa-test-parity,history-intact}   OK
+scripts/build-mesa.sh          OK, check-tls-relocs OK (3 TLS objects of 351)
+scripts/build-mesa-nvk.sh      OK, 37 .nro
+```
+
+`0078` (the `disk_cache.h` include trim) and `0081` (the Horizon backend) are the
+two that write to files 26.1.7 could have moved under them, and neither needed a
+line changed.
+
+### What this does not say
+
+**No console has run 26.1.7, with these patches or without them.** Every hardware
+number in this file — runs 27 to 31 included, and the 5342 us against 442 us that
+closes Phase 7 — was measured against 26.1.5 or 26.1.6. This is a cross build and
+a host suite, nothing more.
+
+There is also a consequence worth stating before somebody reports it as a
+regression: `scripts/gen-driver-id.sh` hashes `toolchain/versions.env`, so moving
+the pin **moves the driver identity**, and the first launch of a build carrying
+this merge will find no entry it is willing to serve and start cold. That is the
+identity discriminating correctly — the defect found before run 27 and confirmed
+by A6/B7 on hardware — and not a cache that broke.
+
+### Two commits on this branch that are not mine
+
+`7974da5` (four Windows portability defects in the Docker toolchain path) and
+`e4ef4af` (`t_vulkan` re-verified, PASS 62/62) arrived from another session while
+this branch was open. They are carried through the merge untouched; the entry
+below this one is theirs.
 
 ---
 
