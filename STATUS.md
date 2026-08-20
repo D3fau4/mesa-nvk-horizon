@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-11 (run 31)
+**Last updated:** 2026-08-20 (Windows environment rebuild + `t_shader_cache` re-verification; phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
@@ -30,6 +30,64 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* release inside the pinned series was taken: **the pin is `mesa-26.1.6`**, series applying 75 of 75. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Windows dev-environment rebuild, and `t_shader_cache` re-verified after it (2026-08-20)
+
+A fresh checkout on a different machine (Windows 11, Git Bash, Docker Desktop,
+local devkitPro present but the Docker toolchain path used per CLAUDE.md) had
+none of the build state runs 1–31 were made against: no derived toolchain
+image, no `build/mesa-clc`, no `build/mesa-nvk`. Rebuilding it end to end —
+`scripts/fetch-mesa.sh` through `scripts/build-mesa-nvk.sh` — found four real
+portability defects in this project's own scripts, none in Mesa, NVK or
+`horizon/`, the same class the entries above at 1582 and 2206 already record
+for a different Windows machine:
+
+- **`scripts/build-switch.sh`** ran its own `docker run` without
+  `MSYS_NO_PATHCONV=1`, which `horizon_run()` has carried since it was written
+  (1594 above) — MSYS rewrote the bind-mount path and the daemon refused it.
+- **`scripts/fetch-clc-deps.sh`** resolved `dpkg` with a bare
+  `subprocess.run(['dpkg', ...])`. On Windows that goes straight to
+  `CreateProcess`, which auto-appends only `.exe` — never the PATHEXT search a
+  shell does — so a `dpkg.bat`/`.cmd` shim on `PATH` is invisible to it. Fixed
+  with `shutil.which('dpkg')`, resolved once.
+- **`scripts/build-toolchain-image.sh`**'s `rm -rf` of the build context,
+  right after `docker build` reads it, raced Docker Desktop's file-sharing
+  layer, which still holds handles on the context for a few seconds after
+  "exporting to image" — `rm -rf` failed with `Permission denied` on files
+  that were ordinary 644 the whole time, and `set -e` aborted before the
+  image could be tagged off `:staging`. Retried with backoff (`rm_context()`).
+- **`scripts/fetch-mesa-subprojects.sh`** deadlocked inside `meson
+  subprojects download`'s own `ThreadPoolExecutor`: on Windows,
+  `msvcrt.locking()` (Meson's `DirectoryLock`) is not reentrant across
+  threads of one process the way POSIX `fcntl` is, so two download threads
+  racing the same `.wraplock` failed with `OSError: [Errno 36] Resource
+  deadlock avoided` instead of one waiting for the other. Serialized with
+  `-j1` — a few hundred KiB per wrap, so the wall-clock cost is negligible.
+
+None of the four touch `mesa-patches/`, NVK or `horizon/`. All four are cross
+build only, on this machine; none has run on the machine runs 1–31 were made
+on.
+
+With the toolchain rebuilt, `t_shader_cache` was run once on the user's
+console — **full-memory takeover** (hold R through the title-select and,
+this time, a user-profile-confirm prompt the previously-documented
+`+R,W500,A,W9000,-R` sequence did not account for; see the correction in the
+`switch-full-memory-mode` memory note) — over NetLoader. **`RESULT: PASS
+(56/56)`**, matching run 28's count exactly: A-series compaction/recovery,
+B-series Mesa API, C-series persistence across launches (32 warm entries from
+a previous launch came back intact, 32 fresh ones written for the next). Log
+on the console at `sdmc:/horizon_gpu_tests/t_shader_cache.log`, not yet
+pulled off the SD card.
+
+**This is a re-verification on rebuilt state, not a new measurement.** It
+confirms the Phase 7 behaviour runs 28–31 established still holds after a
+from-scratch environment rebuild; it does not add coverage or advance the
+phase. `t_vulkan` and the other 15 `t_vk_*` tests compiled and linked clean
+on this rebuild (37 `.nro` total, `check-tls-relocs` OK, 0 TLS relocations in
+`libnvk.a` and `libnouveau_rust_runtime.a`) but had not, as of this entry,
+been run on this console this session.
 
 ---
 
