@@ -15,6 +15,16 @@ touches 114 files and not one of them is under `src/nouveau/compiler/` or
 than approximate. Checked with
 `git -C mesa diff --name-only mesa-26.1.5^{} mesa-26.1.6^{}`.
 
+It moved again to `mesa-26.1.7` (`e8617e4ca95fc655b0f13fd115c224d27eba2441`) on
+2026-08-12, and this time the Rust half **did** move — but not where this
+document points. Three files under `src/nouveau/compiler/` changed
+(`nak/ir.rs`, `nak/opt_instr_sched_prepass.rs`, `nak/sm70_encode.rs`), nothing
+under `src/compiler/rust/`, and **none of the files cited below is among them**:
+`nouveau/compiler/meson.build`, `nak/{api,union_find,lib,opt_instr_sched_common}.rs`,
+`rust/{memstream,nir_instr_printer}.rs` are all byte-identical to 26.1.6. The
+file:line references are therefore still exact. Checked with
+`git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
+
 ---
 
 ## 1. The question
