@@ -192,6 +192,22 @@ emits a link line that works as it stands — the `--start-group`, the
 `--whole-archive` around `libnvk.a` and nothing else, and the trailing
 `-lstdc++ -lzstd -lz -lnx`.
 
+**You cannot call `vkCreateInstance`, and this is the first thing that will stop you.**
+There is no such symbol to link against: a Vulkan *loader* is what normally defines the
+`vk*` trampolines, and there is no loader here. The driver exports the one symbol a
+loader would look for —
+
+```c
+extern PFN_vkVoidFunction
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+```
+
+— so you fetch `vkCreateInstance` from it with a `VK_NULL_HANDLE` instance, and
+everything else from it with the instance you get back.
+[`tests/common/vkfw.c`](../tests/common/vkfw.c) is a worked example. Miss this and the
+link fails with ``undefined reference to `vkCreateInstance` ``, which reads like a
+missing library and is not one.
+
 It installs 68 files: the seventeen NVK archives under `lib/nvk/`, `libhorizon_gpu.a`
 and `libhorizon_compat.a`, the `include/horizon_gpu/` headers, the Vulkan headers the
 driver was compiled against under `include/nvk/`, `lib/pkgconfig/nvk.pc`, the licence,

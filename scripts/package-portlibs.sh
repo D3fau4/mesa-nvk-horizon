@@ -221,8 +221,23 @@ stage_file LICENSES/README.md "$STAGE/licenses/mesa-nvk-horizon/LICENSES.md"
 # lists it so `make uninstall` removes it.
 #
 # THERE IS STILL NO ICD, NO LOADER AND NO SHARED LIBRARY (docs/USAGE.md).
-# Nothing finds this driver at run time. vkCreateInstance is a direct
-# call into the archives below.
+# Nothing finds this driver at run time.
+#
+# WHICH MEANS YOU CANNOT CALL vkCreateInstance. There is no such symbol
+# to link against: a Vulkan loader is what normally defines the vk*
+# trampolines, and there is no loader here. What this driver exports is
+# the one symbol a loader would look for:
+#
+#   extern PFN_vkVoidFunction
+#   vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+#
+# Fetch vkCreateInstance from it with a NULL instance, then fetch
+# everything else from it with the instance you got. tests/common/vkfw.c
+# in the mesa-nvk-horizon tree is a worked example of exactly that, and
+# says the same thing about being an application standing in for a
+# loader. Linking against this package without knowing it fails at
+# "undefined reference to `vkCreateInstance'", which reads like a
+# missing library and is not one.
 #
 # prefix is derived from where this file is, not written in: the tarball
 # this comes from is extracted into whatever devkitPro the reader has,

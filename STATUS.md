@@ -130,12 +130,37 @@ looks for `devkitA64/` under `$DEVKITPRO` and refuses.
 describe themselves as a record of a workflow rather than a workflow, so
 adding a step that never ran there would make the record wrong.
 
-**The one thing still unproven.** Nothing has been *linked* against an
-installed prefix. `pkgconf` resolving every path is not the same claim as the
-linker accepting the line, and the acceptance test — building a `.nro` against
-`aarch64-none-elf-pkg-config --cflags --libs nvk` with `build/mesa-nvk`
-renamed so nothing can resolve there by accident — needs an NVK build newer
-than this branch's Mesa edits, which this tree does not have.
+**IT LINKS, AND THAT IS THE ONLY PART THAT COULD NOT BE FAKED.** A program
+was compiled and linked against an installed prefix using nothing but
+`pkg-config --cflags --libs nvk` — installed into a probe root, not into the
+real devkitPro, with `libnx.a`, `libzstd.a` and `libz.a` placed where the
+`.pc`'s own `${devkitpro}` and `${libdir}` resolve. Result: **69 449 448
+bytes and zero undefined symbols**. Present in the binary:
+`vk_icdGetInstanceProcAddr`, `nvk_CreateInstance`, `nvkmd_horizon_create_pdev`,
+the `horizon_gpu_*` API, `sysconf` (so the `libhorizon_compat` half resolved),
+`nak_compile_shader` and `nil_image_init` (the Rust half), `ZSTD_compress`
+(the shader-cache path) — and **`vk_common_GetPhysicalDeviceProperties2`**,
+which is the exact entry point whose absence cost the console round trip that
+the `--whole-archive` comment in `meson.build` records. The group, the
+whole-archive placement and the trailing `-l` set are therefore right, and
+not merely plausible.
+
+**And it found the thing a consumer will hit first, which nothing here had
+written down: you cannot call `vkCreateInstance`.** There is no such symbol
+anywhere in the build — a loader is what defines the `vk*` trampolines and
+there is no loader. The driver exports `vk_icdGetInstanceProcAddr` and that is
+the only way in; `tests/common/vkfw.c` has always done it that way and says so
+about itself, but nothing told an outside consumer. The first probe written
+here called `vkCreateInstance` directly and failed with `undefined reference`,
+which reads like a missing library and is not one. That is now stated in the
+generated `nvk.pc` and in `docs/BUILDING.md` §6, because it is the first
+question the Godot port will ask.
+
+**Still unproven:** nothing has *run*. This is a link, not an execution, and
+no console has been near it. The archives it linked also predate this branch's
+Mesa edits — the build gate refuses them, and the tarball used here was built
+with the stamp temporarily bumped — so this proves the packaging and the link
+line, not that this branch's driver works.
 
 ---
 
