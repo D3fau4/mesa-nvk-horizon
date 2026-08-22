@@ -52,6 +52,41 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
                                       horizon_gpu_submit_flags flags,
                                       horizon_gpu_fence *out_fence);
 
+/* How many foreign fences one horizon_gpu_submit_waits call can take.
+ * The channel's wait ring is sized from this; a caller with more must
+ * split, and one that asks for more is refused rather than truncated. */
+#define HORIZON_GPU_MAX_WAIT_FENCES 8u
+
+/* Submits a GPU-SIDE wait: the channel's host engine blocks on each
+ * fence's syncpoint until its threshold is reached, and everything
+ * submitted to this channel afterwards is ordered behind it because a
+ * GPFIFO executes in order.
+ *
+ * THIS IS THE POINT: the calling thread does not block. A CPU wait on
+ * another channel's fence stalls the thread that is about to record the
+ * work, which on a swapchain acquire is the whole frame; the host engine
+ * waiting instead costs nothing anybody is waiting for.
+ *
+ * The wait command list is written into a ring of slots inside the
+ * channel's own command page, so a submitted list cannot be overwritten
+ * while the GPU may still be fetching it. A slot is reused only once the
+ * syncpoint has passed the fence of the submit that used it.
+ *
+ * Returns HORIZON_GPU_ERR_BUSY when every slot is still in flight. That
+ * is a real answer and not a failure: the caller may wait on the CPU
+ * instead, which is what the driver does.
+ *
+ * A fence from a channel that has faulted is not distinguished here.
+ * nvgpu's recovery force-increments a lost channel's syncpoints, so such
+ * a wait unblocks rather than hanging — but it unblocks on a counter,
+ * not on work, which is the same caveat horizon_gpu_channel_wait_fence
+ * documents and the reason that call reports CHANNEL_LOST where this one
+ * cannot. */
+horizon_gpu_result horizon_gpu_submit_waits(horizon_gpu_channel *chan,
+                                            const horizon_gpu_fence *fences,
+                                            uint32_t num_fences,
+                                            horizon_gpu_fence *out_fence);
+
 #ifdef __cplusplus
 }
 #endif

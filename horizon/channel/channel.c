@@ -44,6 +44,17 @@ _Static_assert(CHANNEL_SETOBJ_CMDS_OFFSET +
 _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
                HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
                "prologue list would overrun the cmdbuf page");
+_Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
+               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= HORIZON_CHANNEL_WAIT_CMDS_OFFSET,
+               "prologue list would overrun the wait ring");
+/* The wait ring takes what is left of the page, and how much that is has
+ * to be checked rather than believed: the slot count and the per-slot
+ * size are two constants in another header, and either growing would
+ * otherwise put GPU-fetched command lists on top of each other. */
+_Static_assert(HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
+               (uint64_t)HORIZON_CHANNEL_WAIT_SLOTS *
+               HORIZON_CHANNEL_WAIT_SLOT_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
+               "wait ring would overrun the cmdbuf page");
 
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
  * re-checked at a useful rate without busy-polling
@@ -418,6 +429,10 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                            CHANNEL_SETOBJ_CMDS_OFFSET;
     chan->prologue_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                              CHANNEL_PROLOGUE_CMDS_OFFSET;
+    chan->wait_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
+                         HORIZON_CHANNEL_WAIT_CMDS_OFFSET;
+    /* The channel is callocated, so every slot already reads as free and
+     * the ring already starts at 0; nothing else needs initialising. */
 
     /* Optional Zcull context. */
     if (create_info->bind_zcull) {
