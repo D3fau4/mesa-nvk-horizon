@@ -33,6 +33,60 @@ below this table). **What is left is not code**: flipping visibility, and settin
 
 ---
 
+## The PBDMA error a real application hit, and what it was (2026-08-22)
+
+**Patch 0082. A stream push was submitted before it was flushed out of the CPU's
+data cache, and on this platform that is the difference between running and a
+dead channel.**
+
+`nvk_mem_stream_push()` does three things in this order: `memcpy()` the push into
+stream memory, `nvkmd_ctx_exec()` — which submits, and `horizon_gpu_submit()`
+kicks off inside it, so the GPU starts fetching straight away — and only then
+`nvk_mem_stream_flush()`, which is where `nvkmd_mem_sync_map_to_gpu()` cleans the
+cache. On a DRM backend the map is write-combined and the ordering cannot be
+observed. Here it can: `nvkmd_horizon` maps anything without
+`NVKMD_MEM_COHERENT` CPU-cached (`nvkmd_horizon_mem.c`, the policy line), so the
+host engine read the chunk's *previous* contents and faulted.
+
+**How it presented.** Godot 4.0.5, Forward Mobile, on a Nintendo Switch: the
+Vulkan device came up, both channels came up, `bind_engines` completed — and
+NVK's queue-init push killed the channel on its first execution, every single
+run:
+
+```
+[sync-mode] fence 27:19 wait=ok notifier=0 'none'
+channel 0xc68080010: fault notification 32 (PBDMA error) - marking lost
+[sync-mode] fence 27:20 wait=channel lost notifier=32 'PBDMA error'
+```
+
+With the sync moved before the exec, on the same console and the same build:
+
+```
+[sync-mode] fence 27:21 wait=ok notifier=0 'none'
+[sync-mode] fence 27:22 wait=ok notifier=0 'none'
+```
+
+**Why no test ever caught it.** `t_vk_caps` passes **52/52** on the same console
+in the same session — it runs the identical queue-init push through the identical
+code. Whether the dirty lines are still in the cache when the GPU gets there is a
+race, and a small test that has just booted wins it. An application with real
+cache pressure loses it. **This is the most likely explanation for the one
+unexplained MMU fault in run 14** that this file has carried as "never
+reproduced" since: same shape, different victim.
+
+**What was used to find it.** `NVK_DEBUG=push_sync` (nvkmd's own
+sync-and-dump-on-failure) together with `HORIZON_GPU_SYNC=1`, so every submit was
+waited for and attributed. The dumped push was well formed — 275 headers, subch 0
+and 1, no truncation, no unknown methods — which is what said the problem was not
+what `nv_push` wrote but what the engine read.
+
+**Status of the evidence.** Hardware, on a Nintendo Switch, both directions
+(reproduced before, gone after). The verification build is a Godot
+`template_debug` NRO linked against this tree with the single rebuilt
+`nvk_mem_stream.c.o`; a full clean rebuild of the series has not been run here.
+
+---
+
 ## Merging `main`'s Mesa 26.1.7 into this branch (2026-08-20)
 
 `main` moved the pin from `mesa-26.1.6` to **`mesa-26.1.7`** (PR #15) while this
