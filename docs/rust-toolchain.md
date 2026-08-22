@@ -25,6 +25,16 @@ under `src/compiler/rust/`, and **none of the files cited below is among them**:
 file:line references are therefore still exact. Checked with
 `git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
 
+It moved a third time to `mesa-26.1.8`
+(`0fadfea4f394211946f308458f614839ef253ee8`) on 2026-08-22, and the Rust half
+did **not** move: the 26.1.7 → 26.1.8 diff touches 98 files, none of them under
+`src/nouveau/` or `src/compiler/rust/`. The 29 `subprojects/*-rs.wrap` files it
+does change are `source_url` edits only (`crates.io/api/v1` →
+`static.crates.io`) — no crate version and no `source_hash` moves — so neither
+the crates NAK and NIL build against nor the file:line references below are
+affected. Checked with
+`git -C mesa diff --name-only mesa-26.1.7^{} mesa-26.1.8^{}`.
+
 ---
 
 ## 1. The question
