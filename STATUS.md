@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-22 (patches 0082, 0083 and 0084 plus horizon_gpu_submit_waits, all measured on hardware; series 84, phase unchanged, still run 31 / Phase 7 complete)
+**Last updated:** 2026-08-22 (patches 0082, 0083 and 0084 plus horizon_gpu_submit_waits, measured on hardware except the `ctx->last_fence` fix from the second Codex review, which is cross build only; series 84, phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
@@ -28,8 +28,56 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open, not blocking** | Two unconditional L2 operations per submit. The acquire's CPU wait, now quantified: **acquire mean 15712 us of a 16671 us frame** on the zero-copy path against **5 us** on the copy path, where the wait sits in the present instead. `nvkmd_horizon_ctx_wait`'s cross-channel CPU wait, which patch 0056 already reduced to cross-channel only and patch **0077** now measures rather than reasons about |
 | **The 140 ms fence** | **Not this driver's fence, and that was measured before the question was asked.** A follow-up to the 6.4 Hz report puts 140.7 ms in one `vkWaitForFences` on an empty submission. `t_vk_submits` runs exactly that harness — sixteen empty command buffers, each submitted with a fence and waited for before the next — and has measured **100, 115, 126 and 137 us** per submit-to-signal round trip in four console runs, with run 26 adding 1193 us for a clear and 3022 us for three fullscreen draws. There is no poll thread and no poll interval anywhere in `horizon/`; the wait is the nvhost `SYNCPT_WAIT` ioctl, woken by the syncpoint. Patch **0077** is the meter that can attribute the reporter's number from inside their own process — cross build only, no console has run it. See the entry below the table |
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
-| **Never verified on hardware** | **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
+| **Never verified on hardware** | **Patch 0084's `ctx->last_fence` fix** (Codex review, 2026-08-22) — needs a wait-then-signal submission with no command buffers between them, which nothing on this branch exercises; cross build only. **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Codex review of PR #18, second pass — one real race in patch 0084 (2026-08-22)
+
+**Five findings on commits 225e777 and 4ebd38d. One had already been overtaken
+by 0083/0084's own STATUS.md updates. The other four are addressed here: two
+documentation corrections and, in patch 0084, a real bug in the code this
+STATUS.md entry above calls "measured."**
+
+**The bug.** `nvkmd_horizon_ctx_flush_gpu_waits` passed `NULL` as
+`horizon_gpu_submit_waits`'s `out_fence`, discarding it. That call is itself a
+channel submission — it pushes a wait command list and kicks it off — and its
+fence is only reached once the host engine's acquire has resolved, which is
+the entire point of this patch. `ctx->last_fence` needs to become that fence;
+instead it stayed whatever it was before the call. `nvkmd_horizon_ctx_signal`
+reuses `ctx->last_fence` as-is whenever a submission carries no command
+buffers, so a `vkQueueSubmit` with foreign waits and signals but no command
+buffer — legal, and exactly what a fence-only cross-queue handoff looks like —
+could associate its signals with a fence that was already reached, while the
+wait this same call just queued was still blocked on the host engine. Fixed
+by keeping the `out_fence` and folding it into `ctx->last_fence` the same way
+`nvkmd_horizon_ctx_exec` and the fence-only path in `nvkmd_horizon_ctx_signal`
+already do. **Not verified on hardware**: it needs a wait-then-signal
+submission with no command buffers between them, which nothing on this branch
+constructs — `t_submit`'s R10 and the Godot run cited above both go through
+`nvkmd_horizon_ctx_exec`. The same edit adds the missing
+`nvkmd_horizon_meter_submit()` call on that path — `horizon_gpu_submit_waits`
+is a real submit, and the meter's `submit(s)` total was silently omitting
+every GPU-wait batch.
+
+**The two documentation fixes.** Patches 0082, 0083 and 0084 carried
+`Phase 6 item (NVK on Horizon — command submission)` — no item number, and
+Phase 6 is the WSI phase, not submission. Corrected to `Phase 4 item 7
+(submit)` for 0082/0083 and `Phase 4 item 9 (on-demand waits only)` for 0084,
+which is what the fix in that patch actually is. And the cache-pressure
+explanation in "The PBDMA error…" below had the physics backwards: a dirty
+line *surviving* in the CPU cache is what leaves the GPU reading stale memory,
+and eviction — which cache pressure causes, not prevents — is what writes it
+back and makes the correct bytes visible. The paragraph claimed the opposite
+direction. Reworded to state the correct mechanism and to stop asserting a
+specific cause for why `t_vk_caps` passes and Godot does not, which was never
+established either way.
+
+`mesa-patches/0082`, `0083` and `0084` were regenerated from amended
+commits in `mesa/` (`scripts/apply-mesa-patches.sh`'s series contract:
+`git patch-id` on 0082 and 0083 is unchanged — message-only edits — and
+0084's changed, which is expected since its diff did).
 
 ---
 
@@ -197,9 +245,14 @@ With the sync moved before the exec, on the same console and the same build:
 
 **Why no test ever caught it.** `t_vk_caps` passes **52/52** on the same console
 in the same session — it runs the identical queue-init push through the identical
-code. Whether the dirty lines are still in the cache when the GPU gets there is a
-race, and a small test that has just booted wins it. An application with real
-cache pressure loses it. **This is the most likely explanation for the one
+code. A dirty line still sitting in the CPU cache is what leaves the GPU reading
+stale backing memory; eviction — which cache pressure causes, not prevents — is
+what writes that line back and makes the new bytes visible instead. `t_vk_caps`
+is a small process fresh off boot; Godot is not, and which of the two loses the
+race is not explained by pressure keeping data dirty, since pressure runs the
+other way. What actually decides it — eviction timing, or the memory underneath
+carrying different stale content depending on what allocated it before — is not
+established. **This is the most likely explanation for the one
 unexplained MMU fault in run 14** that this file has carried as "never
 reproduced" since: same shape, different victim.
 

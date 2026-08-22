@@ -1,12 +1,12 @@
-From 2c697685ced6b5e2ac2464dabd3ea8455755c3d2 Mon Sep 17 00:00:00 2001
+From 56a6b2fd8c960e5d0334190c7a97263eb610bdc2 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 18:49:28 +0200
-Subject: [PATCH] nouveau/vk: clean only the command memory the CPU wrote
+Subject: [PATCH 83/84] nouveau/vk: clean only the command memory the CPU wrote
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-mesa-nvk-horizon: Phase 6 item (NVK on Horizon — command submission)
+mesa-nvk-horizon: Phase 4 item 7 (submit)
 Why: vkEndCommandBuffer cleans every chunk a command buffer owns over its
  whole length, and nvk_mem_stream_sync_chunks_to_gpu() cleans the current
  chunk over NVK_MEM_STREAM_MAX_ALLOC_SIZE, both regardless of how much of
