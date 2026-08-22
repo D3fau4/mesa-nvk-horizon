@@ -66,7 +66,12 @@ fi
 rm -rf "$HORIZON_GPU_PREFIX"
 mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
 cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
-cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
+# Fattened rather than copied: Meson's libhorizon_gpu.a is thin and
+# names its objects relative to its own directory, so a plain cp puts an
+# unreadable archive here. scripts/configure-mesa-nvk.sh carries the
+# measurement; scripts/fatten-archives.sh carries the mechanism.
+horizon_fatten_archive "$HORIZON_BUILD_DIR/libhorizon_gpu.a" \
+                       "$HORIZON_GPU_PREFIX/lib/libhorizon_gpu.a"
 echo "configure-mesa: horizon_gpu staged in $HORIZON_GPU_PREFIX"
 
 # The identity the shader cache keys on. See scripts/gen-driver-id.sh for
