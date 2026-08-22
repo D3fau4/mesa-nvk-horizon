@@ -344,15 +344,39 @@ So exactly one upstream change in this release can alter code generated for a Sw
 it is a correctness fix in the instruction scheduler. **Verified as a cross build, not on
 hardware** — no console has run 26.1.7.
 
-**The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
-is a development release whose own notes tell stability-minded users to wait for 26.2.1,
-and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
-we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/`, 4 in
-`src/vulkan/wsi/`, both `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates
-NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,
+**Point release taken, 2026-08-22: `mesa-26.1.7` → `mesa-26.1.8`**, commit
+`0fadfea4f394211946f308458f614839ef253ee8` (tag object `d6393a37abc5`, released
+2026-08-19, [release notes](https://docs.mesa3d.org/relnotes/26.1.8.html)). Inside the
+series D2 chose, "New features: None", 8 bug fixes — and a **clean miss** again, the way
+26.1.6 was and 26.1.7 was not: of the 98 files it changes, **none is among the 127
+`mesa-patches/` writes to**, and `src/nouveau/` is not touched at all. So no NVK, NAK,
+NIL or `nvkmd` file moves under this port and **nothing in this release can reach a
+GM20B shader**. The series applies unmodified, 81 of 81, no fuzz and no rejects.
+
+Two details worth naming rather than leaving to a file count. The two
+`src/vulkan/wsi/` files it changes are `wsi_common_{metal,wayland}.c` — neither is a file
+we patch, and the Horizon WSI backend is a patch of ours, not an upstream file. And 29 of
+the 98 are `subprojects/*-rs.wrap`, every one a `source_url` edit only
+(`crates.io/api/v1` → `static.crates.io`); no crate version and no `source_hash` moves.
+That host is the one `scripts/fetch-rust-crates.sh` already uses, so
+`scripts/fetch-mesa-subprojects.sh` keeps working unchanged. **Verified as a cross build,
+not on hardware** — no console has run 26.1.8.
+
+**The 26.2 series is a decision, and it is D21, not this — and its gate has now
+opened.** `mesa-26.2.0` (2026-08-05) is a development release whose own notes told
+stability-minded users to wait for 26.2.1. **`mesa-26.2.1` was tagged on 2026-08-20**
+(`da14d65e4499e66468094be52bff9ea0915a695e`,
+[release notes](https://docs.mesa3d.org/relnotes/26.2.1.html)), its notes carry no such
+advice, and it fixes an NVK/Kepler NAK register-allocation panic. So the reason D21 was
+merely *deferred* is gone; what remains is the cost, and the cost has not shrunk. Measured
+against the pin as it now stands: **3569 files changed between 26.1.8 and 26.2.1, 54 of
+the 127 we patch among them** — 20 NAK files, 7 under `src/nouveau/vulkan/` (including
+`nvk_wsi.c` and `nvk_physical_device.{c,h}`), 4 in `src/vulkan/wsi/`, 4 under `src/util/`,
+both `src/vulkan/runtime/vk_image.{c,h}`, 2 under `src/nouveau/nil/`, and the Rust helper
+crates NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,
 plus `proc/as_slice.rs`). Rebasing onto it is a real piece of work with a real risk of
-silent behaviour change on a driver whose evidence is all hardware runs, so it is put to
-the owner rather than taken.
+silent behaviour change on a driver whose evidence is all hardware runs, so it stays put
+to the owner rather than taken.
 
 ---
 
