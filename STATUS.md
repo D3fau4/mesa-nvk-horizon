@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-20 (merged `main`'s Mesa 26.1.7 pin; series 81 of 81, cross build green; phase unchanged, still run 31 / Phase 7 complete)
+**Last updated:** 2026-08-22 (patches 0082 and 0083, both measured on hardware through a real application; series 83, phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
@@ -30,6 +30,61 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## Cleaning 64 KiB to make 200 bytes visible (2026-08-22)
+
+**Patch 0083. Measured, kept, and small — which is the whole entry.**
+
+`vkEndCommandBuffer` cleaned every chunk a command buffer owns over
+`mem->size_B`, and `nvk_mem_stream_sync_chunks_to_gpu()` cleaned the current
+chunk over `NVK_MEM_STREAM_MAX_ALLOC_SIZE`, both without reference to how much
+of the chunk had been written. On a DRM backend that costs nothing:
+`nvkmd_mem_sync_to_gpu()` returns immediately for a coherent map. Here it is an
+`armDCacheClean` over the range, line by line, on every submit.
+
+The bytes written were already tracked — `nvk_cmd_push` carries its own
+`range`, `nvk_mem_stream` carries `chunk_alloc_B` — so the fix is a watermark
+on `nvk_cmd_mem` and a length that is not the allocation. `used_B` stays zero
+for a chunk no CPU write ever touches, which is what `nvk_cmd_indirect.c`
+allocates, and those are now not cleaned at all.
+
+**What it is worth, on hardware.** Godot 4.0.5 `template_release` on a Switch
+at 1280x720, per-viewport CPU render time, 240 frames per phase, before against
+after:
+
+| phase | cpu ms before | cpu ms after | |
+|---|---:|---:|---|
+| 2000 cubes (1999 draws) | 8.55 | 8.17 | **-4.4%** |
+| 800 cubes | 3.82 | 3.71 | **-2.9%** |
+| 800 cubes + directional shadow | 8.47 | 8.49 | noise |
+| 1200 sprites | 4.25 | 4.25 | noise |
+| 32 fullscreen alpha rects | 0.64 | 0.67 | noise |
+| idle | 0.37 | 0.38 | noise |
+
+GPU time is unchanged everywhere (2000 cubes 12.99 -> 12.94 ms), which is what
+a CPU-side cache change should do.
+
+**Why it is not more, stated rather than hoped for.** A command buffer's chunks
+are full but for the last one, so the waste was never proportional to the
+command stream — it was bounded at roughly 64 KiB per command buffer. The two
+phases that move are the two that record the most commands. **One run per
+configuration**, so 3-4% is at the edge of what this measurement resolves; it
+is reported as the direction it is, not as a number to quote.
+
+**What this run also established, and it is the larger finding.** The frame
+rate this driver presents at is not its speed. Every Vulkan frame time on this
+console lands on a multiple of the 60 Hz refresh even with
+`VK_PRESENT_MODE_IMMEDIATE_KHR` granted, because the acquire waits for the
+compositor to release a buffer — the 15712 us already on record in the
+table's *Open, not blocking* row. Measured through
+`RenderingServer.viewport_get_measured_render_time_cpu/_gpu`, which bracket the
+viewport draw and not the present, the GPU has slack in seven of eight phases
+(0.19 to 13.0 ms against a 16.7 ms budget). The one phase where the GPU is the
+limit is 32 layers of fullscreen alpha at 25.7 ms — fill rate and bandwidth,
+which is the case compressed PTE kinds would answer and `has_compression =
+false` currently does not (`nvkmd_horizon_pdev.c:459`).
 
 ---
 
