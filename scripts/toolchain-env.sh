@@ -386,6 +386,27 @@ horizon_nvk_archive_gate() {
     return 0
 }
 
+# Copy one archive somewhere it will still link — see
+# scripts/fatten-archives.sh for what that means and why a plain cp of a
+# Meson archive does not.
+#
+# For a caller with ONE archive to move. Anything with a list of them
+# should build a job file and call scripts/fatten-archives.sh through
+# horizon_run itself: this spends a container invocation per archive in
+# container mode, which is exactly what that script exists not to do.
+horizon_fatten_archive() {
+    _hz_fa_job=$(mktemp "build/fatten-job.XXXXXX")
+    printf '%s\t%s\n' "$1" "$2" > "$_hz_fa_job"
+    if horizon_run bash scripts/fatten-archives.sh "$_hz_fa_job" >/dev/null; then
+        rm -f "$_hz_fa_job"
+        unset _hz_fa_job
+        return 0
+    fi
+    rm -f "$_hz_fa_job"
+    unset _hz_fa_job
+    return 1
+}
+
 # Both halves, because the Meson path bakes both answers into
 # build.ninja at configure time and t_vulkan depends on the second one.
 #
