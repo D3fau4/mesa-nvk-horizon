@@ -11,8 +11,22 @@
 #include <switch.h>
 
 #include "horizon_gpu/channel.h"
+#include "horizon_gpu/cmds.h"
+#include "horizon_gpu/submit.h"
 #include "horizon_gpu/memory.h"
 #include "horizon_gpu/vm.h"
+
+/* Slots in the channel's GPU-side wait ring, and the dwords each holds.
+ * Both are fixed by what is left of the command page after the three
+ * write-once blocks; channel.c asserts the arithmetic against the page.
+ */
+#define HORIZON_CHANNEL_WAIT_SLOT_DWORDS     (HORIZON_CMDS_SYNCPT_WAIT_DWORDS * HORIZON_GPU_MAX_WAIT_FENCES)
+#define HORIZON_CHANNEL_WAIT_SLOTS 24u
+/* Byte offset of the ring inside the channel's command page. Here
+ * rather than in channel.c because submit/ writes the slots and
+ * channel/ places them, and a second copy of the number is how the
+ * two would drift. */
+#define HORIZON_CHANNEL_WAIT_CMDS_OFFSET UINT64_C(0x400)
 
 typedef struct horizon_retire_entry {
     uint64_t threshold64; /* shadow-extended completion value */
@@ -58,6 +72,26 @@ struct horizon_gpu_channel {
      * See horizon_gpu_channel_create for the hardware measurement. */
     uint64_t prologue_cmds_va;
     uint32_t prologue_cmds_dwords;
+
+    /* The GPU-side wait ring (horizon_gpu_submit_waits).
+     *
+     * A wait list is built at submit time — its thresholds are not known
+     * before then — so unlike the three blocks above it cannot be one
+     * buffer written once. It is a ring of fixed slots in the same page,
+     * and a slot may be rewritten only once the GPU is provably done
+     * fetching the list that was in it. `fence` is the fence of the
+     * submit that used the slot and `busy` says whether it means
+     * anything yet; a slot whose fence the syncpoint has passed is free.
+     *
+     * No lock: a channel is externally synchronised, like the rest of
+     * this struct.
+     */
+    uint64_t wait_cmds_va;
+    uint32_t wait_slot_next;
+    struct {
+        horizon_gpu_fence fence;
+        bool busy;
+    } wait_slots[HORIZON_CHANNEL_WAIT_SLOTS];
 
     /* Zcull context (optional). */
     horizon_gpu_mem *zcull_mem;

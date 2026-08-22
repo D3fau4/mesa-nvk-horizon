@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-20 (merged `main`'s Mesa 26.1.7 pin; series 81 of 81, cross build green; phase unchanged, still run 31 / Phase 7 complete)
+**Last updated:** 2026-08-22 (patches 0082, 0083 and 0084 plus horizon_gpu_submit_waits, all measured on hardware; series 84, phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
 
 ---
@@ -30,6 +30,189 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## The cross-channel wait moves to the host engine (2026-08-22)
+
+**Patch 0084 and `horizon_gpu_submit_waits`. The change is right, it is
+measured, and the application that motivated it does not use it — all
+three are the entry.**
+
+The *Open, not blocking* row has carried "`nvkmd_horizon_ctx_wait`'s
+cross-channel CPU wait" since Phase 5, and the comment in the function
+said a GPU-side wait needed a command-stream builder this backend did
+not have. **That stopped being true in Phase 5 and nobody went back to
+it**: `horizon_cmds_syncpt_wait` emits the host's SYNCPOINT acquire, and
+`t_submit`'s R10 has been measuring it on hardware ever since — a
+consumer channel blocked on a producer's counter, unblocking when the
+producer reaches it. What was missing was that a wait list's thresholds
+are only known at submit time, and all three command blocks in a
+channel's page are written once at creation.
+
+`horizon_gpu_submit_waits` closes that with a ring of 24 slots in what
+is left of the same page. A slot is reused only once the syncpoint has
+passed the fence of the submit that used it: one counter read, no
+allocation, and no retirement callback that could fail after the submit
+already happened. A full ring answers `BUSY`, which the driver treats as
+an answer rather than an error and falls back to the CPU wait.
+
+The semantics are unchanged and that is checkable rather than claimed:
+once a `nvk_horizon_sync` is PENDING, its CPU wait waits on
+`sync->fence` and ignores `wait_value`, because the fence covers every
+timeline value up to the one it carries. The GPU wait is emitted against
+that same fence.
+
+**On hardware.** `t_submit` **PASS 32/32** with the change, R10 included
+— `consumer stays blocked on producer syncpt 27 threshold 82249 not yet
+reached (status=timeout)`, then `GPU-side cross-channel wait unblocks
+once the producer reaches the threshold (status=ok)`.
+
+**And the result that matters most, which is a negative one.** Godot
+4.0.5 through the whole eight-phase benchmark reports **`0 wait(s)
+handed to the host engine` in all 78 of the new meter's one-second
+windows**, beside 61 per second `skipped as already ordered by this
+channel`. That application issues no cross-channel wait at all: its
+waits are on its own exec channel, which the GPFIFO already orders, and
+the upload queue's time point is 0 in the steady state. Frame, CPU and
+GPU render times are identical to the run before it, to the hundredth of
+a millisecond.
+
+So this removes a real stall for anything that does cross-queue work —
+compute against graphics, sparse binding, a second queue — and does
+nothing for the frame loop that motivated looking at it.
+
+**What it does NOT fix, stated because it is why the work was started.**
+The 60 Hz ceiling is not reachable from here. The stall is
+`nvMultiFenceWait` inside `wsi_horizon_acquire_zero_copy`, on the
+compositor's release fence, and it never passes through
+`nvkmd_horizon_ctx_wait`. Measured this session on a Switch through the
+acquire meter: **13.9 ms of a 16.7 ms frame, with zero dequeue rounds**
+— the buffer is handed over immediately and the wait is entirely the
+fence. Handing that fence to the driver instead would need a
+`wsi_device` hook that turns a foreign `NvMultiFence` into a `vk_sync`
+(the DRM backends have `wsi_create_sync_for_dma_buf_wait`; this platform
+falls through to `vk_sync_dummy_type`) and a sync type that can adopt a
+fence from no channel of ours. **This patch is that work's prerequisite
+and not a substitute for it**: without a GPU-side ctx wait, handing the
+dependency over would move the stall rather than remove it, which is
+what the old comment in `wsi_horizon.c` says.
+
+A separate finding from the same session, not fixed here:
+`scripts/package-horizon.sh` stages `libhorizon_gpu.a` without its
+`.a.p/` objects. Meson builds it as a **thin** archive, so the staged
+copy names members that are not there and a link against `build/pkg`
+fails with `error opening thin archive member`. Worked around locally by
+copying the object directory; the packaging script is untouched.
+
+---
+
+## Cleaning 64 KiB to make 200 bytes visible (2026-08-22)
+
+**Patch 0083. Measured, kept, and small — which is the whole entry.**
+
+`vkEndCommandBuffer` cleaned every chunk a command buffer owns over
+`mem->size_B`, and `nvk_mem_stream_sync_chunks_to_gpu()` cleaned the current
+chunk over `NVK_MEM_STREAM_MAX_ALLOC_SIZE`, both without reference to how much
+of the chunk had been written. On a DRM backend that costs nothing:
+`nvkmd_mem_sync_to_gpu()` returns immediately for a coherent map. Here it is an
+`armDCacheClean` over the range, line by line, on every submit.
+
+The bytes written were already tracked — `nvk_cmd_push` carries its own
+`range`, `nvk_mem_stream` carries `chunk_alloc_B` — so the fix is a watermark
+on `nvk_cmd_mem` and a length that is not the allocation. `used_B` stays zero
+for a chunk no CPU write ever touches, which is what `nvk_cmd_indirect.c`
+allocates, and those are now not cleaned at all.
+
+**What it is worth, on hardware.** Godot 4.0.5 `template_release` on a Switch
+at 1280x720, per-viewport CPU render time, 240 frames per phase, before against
+after:
+
+| phase | cpu ms before | cpu ms after | |
+|---|---:|---:|---|
+| 2000 cubes (1999 draws) | 8.55 | 8.17 | **-4.4%** |
+| 800 cubes | 3.82 | 3.71 | **-2.9%** |
+| 800 cubes + directional shadow | 8.47 | 8.49 | noise |
+| 1200 sprites | 4.25 | 4.25 | noise |
+| 32 fullscreen alpha rects | 0.64 | 0.67 | noise |
+| idle | 0.37 | 0.38 | noise |
+
+GPU time is unchanged everywhere (2000 cubes 12.99 -> 12.94 ms), which is what
+a CPU-side cache change should do.
+
+**Why it is not more, stated rather than hoped for.** A command buffer's chunks
+are full but for the last one, so the waste was never proportional to the
+command stream — it was bounded at roughly 64 KiB per command buffer. The two
+phases that move are the two that record the most commands. **One run per
+configuration**, so 3-4% is at the edge of what this measurement resolves; it
+is reported as the direction it is, not as a number to quote.
+
+**What this run also established, and it is the larger finding.** The frame
+rate this driver presents at is not its speed. Every Vulkan frame time on this
+console lands on a multiple of the 60 Hz refresh even with
+`VK_PRESENT_MODE_IMMEDIATE_KHR` granted, because the acquire waits for the
+compositor to release a buffer — the 15712 us already on record in the
+table's *Open, not blocking* row. Measured through
+`RenderingServer.viewport_get_measured_render_time_cpu/_gpu`, which bracket the
+viewport draw and not the present, the GPU has slack in seven of eight phases
+(0.19 to 13.0 ms against a 16.7 ms budget). The one phase where the GPU is the
+limit is 32 layers of fullscreen alpha at 25.7 ms — fill rate and bandwidth,
+which is the case compressed PTE kinds would answer and `has_compression =
+false` currently does not (`nvkmd_horizon_pdev.c:459`).
+
+---
+
+## The PBDMA error a real application hit, and what it was (2026-08-22)
+
+**Patch 0082. A stream push was submitted before it was flushed out of the CPU's
+data cache, and on this platform that is the difference between running and a
+dead channel.**
+
+`nvk_mem_stream_push()` does three things in this order: `memcpy()` the push into
+stream memory, `nvkmd_ctx_exec()` — which submits, and `horizon_gpu_submit()`
+kicks off inside it, so the GPU starts fetching straight away — and only then
+`nvk_mem_stream_flush()`, which is where `nvkmd_mem_sync_map_to_gpu()` cleans the
+cache. On a DRM backend the map is write-combined and the ordering cannot be
+observed. Here it can: `nvkmd_horizon` maps anything without
+`NVKMD_MEM_COHERENT` CPU-cached (`nvkmd_horizon_mem.c`, the policy line), so the
+host engine read the chunk's *previous* contents and faulted.
+
+**How it presented.** Godot 4.0.5, Forward Mobile, on a Nintendo Switch: the
+Vulkan device came up, both channels came up, `bind_engines` completed — and
+NVK's queue-init push killed the channel on its first execution, every single
+run:
+
+```
+[sync-mode] fence 27:19 wait=ok notifier=0 'none'
+channel 0xc68080010: fault notification 32 (PBDMA error) - marking lost
+[sync-mode] fence 27:20 wait=channel lost notifier=32 'PBDMA error'
+```
+
+With the sync moved before the exec, on the same console and the same build:
+
+```
+[sync-mode] fence 27:21 wait=ok notifier=0 'none'
+[sync-mode] fence 27:22 wait=ok notifier=0 'none'
+```
+
+**Why no test ever caught it.** `t_vk_caps` passes **52/52** on the same console
+in the same session — it runs the identical queue-init push through the identical
+code. Whether the dirty lines are still in the cache when the GPU gets there is a
+race, and a small test that has just booted wins it. An application with real
+cache pressure loses it. **This is the most likely explanation for the one
+unexplained MMU fault in run 14** that this file has carried as "never
+reproduced" since: same shape, different victim.
+
+**What was used to find it.** `NVK_DEBUG=push_sync` (nvkmd's own
+sync-and-dump-on-failure) together with `HORIZON_GPU_SYNC=1`, so every submit was
+waited for and attributed. The dumped push was well formed — 275 headers, subch 0
+and 1, no truncation, no unknown methods — which is what said the problem was not
+what `nv_push` wrote but what the engine read.
+
+**Status of the evidence.** Hardware, on a Nintendo Switch, both directions
+(reproduced before, gone after). The verification build is a Godot
+`template_debug` NRO linked against this tree with the single rebuilt
+`nvk_mem_stream.c.o`; a full clean rebuild of the series has not been run here.
 
 ---
 
