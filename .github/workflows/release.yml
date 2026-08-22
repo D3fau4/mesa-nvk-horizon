@@ -231,6 +231,16 @@ jobs:
           sha256sum "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
               > "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
 
+          # THE SECOND ASSET, for a different reader: the -nro one is
+          # what you run on a console, this is what another project
+          # links against. It is not assembled here — it is
+          # scripts/package-portlibs.sh's output, unaltered, because
+          # that is the same script `make install` extracts, so a
+          # release and an install cannot be different file sets. Its
+          # own .sha256 comes with it.
+          scripts/package-portlibs.sh \
+              "mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz"
+
           build_id=$(sed -n 's/^build id  *: //p' build/pkg/MANIFEST.txt)
           count=$(find build/pkg -name '*.nro' | wc -l)
           vk_count=$(find build/pkg -name 't_vk_*.nro' | wc -l)
@@ -265,6 +275,28 @@ jobs:
             echo "  is load-bearing)."
             echo "- **${count} \`.nro\`, ${vk_count} of them \`t_vk_*\` (NVK/Vulkan)**"
             echo "- **Build id:** \`${build_id}\`"
+            echo
+            echo "### The second asset: linking against this from your own project"
+            echo
+            echo "\`mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz\` is the same"
+            echo "driver arranged as a devkitPro portlibs package, with the"
+            echo "archives converted from Meson's thin ones so they still link"
+            echo "outside the tree that built them, and a \`nvk.pc\` that emits"
+            echo "the whole link line — the \`--start-group\`, the"
+            echo "\`--whole-archive\` around \`libnvk.a\` alone, and the trailing"
+            echo "\`-lstdc++ -lzstd -lz -lnx\`. Install it with:"
+            echo
+            echo '```sh'
+            echo "tar -xzf mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz \\"
+            echo "    -C \"\$DEVKITPRO/portlibs/switch\""
+            echo '```'
+            echo
+            echo "then build against it with"
+            echo "\`aarch64-none-elf-pkg-config --cflags --libs nvk\`. It records"
+            echo "what it placed in"
+            echo "\`share/mesa-nvk-horizon/installed-files.txt\`, so"
+            echo "\`scripts/install-horizon.sh --uninstall\` removes exactly that"
+            echo "and nothing else."
             echo
             echo "Every test prints that build id as the second line of its"
             echo "log. If a log you are reporting does not carry this exact"
@@ -314,6 +346,7 @@ jobs:
             echo
             echo '```sh'
             echo "sha256sum -c mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+            echo "sha256sum -c mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz.sha256"
             echo '```'
             echo
             echo "\`MANIFEST.txt\` inside the archive carries a sha256 for"
@@ -334,6 +367,8 @@ jobs:
           path: |
             mesa-nvk-horizon-*-nro.tar.gz
             mesa-nvk-horizon-*-nro.tar.gz.sha256
+            mesa-nvk-horizon-*-portlibs.tar.gz
+            mesa-nvk-horizon-*-portlibs.tar.gz.sha256
             NOTES.md
           if-no-files-found: error
 
@@ -358,7 +393,9 @@ jobs:
           safe_tag=$(printf '%s' "$tag" | tr '/' '-')
           scripts/ci-github-release.sh "$tag" NOTES.md \
               "mesa-nvk-horizon-${safe_tag}-nro.tar.gz" \
-              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256"
+              "mesa-nvk-horizon-${safe_tag}-nro.tar.gz.sha256" \
+              "mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz" \
+              "mesa-nvk-horizon-${safe_tag}-portlibs.tar.gz.sha256"
 
       - name: say what a dispatch run did and did not do
         if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
