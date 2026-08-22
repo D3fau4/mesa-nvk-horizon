@@ -1,7 +1,7 @@
 # STATUS
 
-**Last updated:** 2026-08-22 (patches 0082, 0083 and 0084 plus horizon_gpu_submit_waits, measured on hardware except the `ctx->last_fence` fix from the second Codex review, which is cross build only; series 84, phase unchanged, still run 31 / Phase 7 complete)
-**Branch:** `claude/mesa-shader-cache-horizon-uq2zkz`
+**Last updated:** 2026-08-23 (`make install` — the driver as a devkitPro portlibs package consumable through `pkg-config`, and the thin-archive bug that made every previous package unlinkable; cross build only, no console involved; series 84 unchanged, phase unchanged, still run 31 / Phase 7 complete)
+**Branch:** `claude/nvk-mem-stream-flush-before-exec`
 
 ---
 
@@ -30,6 +30,112 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Patch 0084's `ctx->last_fence` fix** (Codex review, 2026-08-22) — needs a wait-then-signal submission with no command buffers between them, which nothing on this branch exercises; cross build only. **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## `make install` — the driver as something another project can link (2026-08-23)
+
+**Cross build only. No console has run anything built against an installed
+prefix, and nothing below is a hardware claim.**
+
+**What was wrong.** Nothing outside this repository could consume the driver.
+`meson.build` links the `t_vk_*` against absolute paths inside
+`build/mesa-nvk`, and `scripts/package-horizon.sh` collects what goes to an SD
+card. A project that wanted Vulkan on a Switch had to be told where our build
+directory is — the Godot port was being built with `nvk_path=` and
+`horizon_path=` pointing into this tree.
+
+**And the package we did publish would not have helped, because it does not
+link.** Meson writes *thin* archives: a list of paths to the objects, not the
+objects. Sixteen of the seventeen NVK archives open with `!<thin>`, and
+`libnvk.a` is 95 494 bytes naming 179 members it does not contain. This was
+already recorded for `build/pkg/lib/libhorizon_gpu.a` — worked around once by
+hand-copying the `.a.p` directory, the script left untouched — and **the same
+bug is live in a second place nobody had noticed**:
+`build/toolchain/horizon-gpu/lib/libhorizon_gpu.a`, staged by
+`configure-mesa.sh`, `configure-mesa-nvk.sh` and `build-mesa-nvk.sh`, is
+broken *today*: `ar t` on it answers "No such file or directory". It is
+harmless only because nothing links it yet. **Neither is fixed here** —
+they are separate bugs and would have blurred this series — but
+`horizon_fatten_archive` now exists in `scripts/toolchain-env.sh` for
+whoever does fix them, which is why it lives there rather than inside the
+installer.
+
+**What is there now.** `make install` puts 68 files into
+`$DEVKITPRO/portlibs/switch`: the seventeen NVK archives flattened into
+`lib/nvk/`, `libhorizon_gpu.a` and `libhorizon_compat.a`, the
+`include/horizon_gpu/` headers, the Vulkan headers the driver was compiled
+against under `include/nvk/`, the licence, and an `nvk.pc` that emits a link
+line that works as it stands. `make uninstall` takes exactly those back out.
+About 225 MiB, because a usable `libnvk.a` is 95 MiB rather than 96 KiB.
+
+**One procedure, not two.** The install medium is a tarball —
+`scripts/package-portlibs.sh` builds it, `scripts/install-horizon.sh`
+extracts it, and both CI workflows publish that same file unaltered. So what
+a release contains and what an install places are one file set by
+construction, installing a downloaded release is the same code path as
+installing a local build, and the tarball being byte-reproducible makes
+"already current" a single file comparison rather than a re-write of 225 MiB.
+
+**Measured on this tree** (`DEVKITPRO=/c/devkitPro`; where the NVK build gate
+had to pass, the build stamp was bumped and then restored to its exact
+original mtime):
+
+- fattening all 19 archives: 17 fattened, 2 already real, 10.9 s; every
+  output `!<arch>`; `libnvk.a` 95 494 → 95 344 536 bytes with all 179 members
+  present; a second pass writes nothing;
+- two `ar` runs over `libnvk.a` are byte-identical, and two full packaging
+  runs to different paths produce byte-identical tarballs (68 files,
+  56 698 529 bytes);
+- extracted into an unrelated directory, `pkgconf` resolves all 19 archive
+  paths, keeps the written order, and wraps only `libnvk.a` in
+  `--whole-archive`;
+- install → 68 files; install again → nothing written; uninstall → 68 files
+  and all seven of our directories gone, while another package's
+  `libsomeoneelse.a`, `other.h` and `other.pc` and their directories survive;
+- `make install` on this branch's tree **refuses**, naming the five Mesa
+  sources newer than the build stamp. That is the gate `package-horizon.sh`
+  already had, now shared rather than copied.
+
+**Four things this cost, each found by running it rather than by reading it.**
+
+1. **`ar t` comes back CRLF-terminated under Git Bash** — devkitA64's `ar` is
+   a native Windows binary. Without `tr -d '\r'` all 179 members of
+   `libnvk.a` look like files that do not exist, and the fattening produces
+   an empty archive and exits 0. Same shape as the `strings` lesson
+   `package-horizon.sh` already records: the host tooling here is not POSIX.
+2. **`-D` is not this binutils' default.** `ar --help` (2.46) lists
+   `[U] use actual timestamps and uids/gids (default)`, so without `D` every
+   run produces different bytes and nothing downstream can be idempotent.
+3. **`sort -rn -u` drops duplicates by the *comparison* key.** The numeric key
+   was only the leading depth, so every directory at a given depth but one was
+   thrown away and `lib/nvk`, `include/nvk` and four others were left behind
+   empty by uninstall.
+4. **devkitPro's `make` on Windows is a Cygwin build and cannot pass an
+   environment assignment to any child.** `FOO=hello sh -c 'echo $FOO'` in a
+   recipe prints nothing. The `install` recipe passed `PREFIX` and `DESTDIR`
+   that way, so `make install PREFIX=...` echoed the prefix it had been asked
+   for and installed into the default one. They are `--prefix` and
+   `--destdir` arguments now.
+
+**And one trap that is worse than a failure.** `$DEVKITPRO` is a path *as the
+compiler sees it*, which is not always a path the shell can reach: under Git
+Bash a `$DEVKITPRO` of `/opt/devkitpro` resolves inside the Git installation
+(`cygpath -w /opt` says so), where `mkdir -p` **succeeds**. Hundreds of MiB
+installed where no compiler will ever look, exit status 0. `make install` now
+looks for `devkitA64/` under `$DEVKITPRO` and refuses.
+
+**Not done, deliberately:** the two pre-existing thin-archive bugs above;
+`.forgejo/workflows-disabled/`, whose files are commented out line by line and
+describe themselves as a record of a workflow rather than a workflow, so
+adding a step that never ran there would make the record wrong.
+
+**The one thing still unproven.** Nothing has been *linked* against an
+installed prefix. `pkgconf` resolving every path is not the same claim as the
+linker accepting the line, and the acceptance test — building a `.nro` against
+`aarch64-none-elf-pkg-config --cflags --libs nvk` with `build/mesa-nvk`
+renamed so nothing can resolve there by accident — needs an NVK build newer
+than this branch's Mesa edits, which this tree does not have.
 
 ---
 
