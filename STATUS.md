@@ -86,7 +86,20 @@ this environment's proxy. The build confirms it rather than assuming it —
 | the fetch is still idempotent | `scripts/fetch-mesa.sh` re-run | recognises `MESA_TAG plus 81 local commit(s)`, exits 0 without resetting |
 | four source gates | `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all PASS |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 16/16, 8/8, 171/171 |
-| every archive, cross | `scripts/ci-build-archives.sh` | **in progress at the time of this commit — not yet a result.** It is recorded in the follow-up commit on this branch, whatever it says. Nothing above depends on it: the empty intersection is a property of the diff, not of the build |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK — every archive built, 37 `.nro` link them** (meson.build names 37), `check-dispatch-complete` OK (825 entry points named, 234 core, 1 allowed absence) and `check-tls-relocs` OK (3 objects use TLS, all with relocations, 350 scanned) against the built artefacts. Exit 0 |
+
+The chain ran end to end in container mode — derived toolchain image, `mesa_clc` and
+`vtn_bindgen2` native, Mesa's non-driver core, the nouveau Vulkan driver, every archive
+the tests link, then the 37 `.nro` rebuilt against them. **Nothing in `mesa-patches/`
+needed touching at any step**, which is what an empty intersection predicts and what the
+build now confirms rather than assumes.
+
+One piece of noise worth naming so the next reader does not chase it: bindgen prints
+`error: 'rustfmt' is not installed for the toolchain 'nightly-…'` followed by
+`Failed to run rustfmt: Internal rustfmt error (non-fatal, continuing)` on every binding
+it generates. It is cosmetic — rustfmt only pretty-prints generated bindings — it is
+pre-existing rather than anything 26.1.8 introduced, and the build walks straight past
+it. It reads like a failure in a log and is not one.
 
 **This says nothing about a console.** No hardware run carries 26.1.8. Every number in
 the rest of this file was measured against 26.1.5, 26.1.6 or 26.1.7 — and for once that
