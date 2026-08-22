@@ -43,11 +43,21 @@ Then `scripts/package-horizon.sh`, and `release.yml` publishes:
     same tarball actually work,
   - `LICENSE`, `LICENSES.md` and `MANIFEST.txt`,
 - its `.sha256`,
+- `mesa-nvk-horizon-<tag>-portlibs.tar.gz` and its `.sha256` — **the same driver
+  arranged so another project can link it**, which the tarball above is not: Meson
+  writes thin archives, and the `lib/` and `lib/nvk/` in the `-nro` package name objects
+  they do not contain, so they link nowhere but the tree that built them. This one
+  carries the objects, adds the Vulkan headers under `include/nvk/` and an `nvk.pc` that
+  emits the whole link line, and is rooted at the prefix so it goes in with
+  `tar -xzf … -C "$DEVKITPRO/portlibs/switch"`. It is `scripts/package-portlibs.sh`'s
+  output unaltered — the same file `make install` extracts, so a release and an install
+  are the same file set (`docs/BUILDING.md` §6),
 - release notes carrying the build id and the caveats below.
 
 The licence files are in there because MIT requires its notice to accompany copies of
 the software, and a tarball of built artefacts is a copy. `package-horizon.sh` puts them
-in, so a package built by hand is no different.
+in, so a package built by hand is no different. `package-portlibs.sh` refuses to build
+its tarball without them for the same reason.
 
 **What it is not.** Nothing in that package has run on a console. The notes say so, in
 the release body, because a reader who skips `STATUS.md` should still not come away
@@ -82,10 +92,15 @@ outside the workflow, so both are yours to make here:
 scripts/package-horizon.sh build/pkg
 tar -czf mesa-nvk-horizon-v0.1.0-nro.tar.gz -C build/pkg .
 sha256sum mesa-nvk-horizon-v0.1.0-nro.tar.gz > mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
+# the second asset makes and signs itself — do not tar this one by hand,
+# it is reproducible only because that script controls how it is built
+scripts/package-portlibs.sh mesa-nvk-horizon-v0.1.0-portlibs.tar.gz
 # write NOTES.md — see "What a release may claim" below for what it must say
 GH_TOKEN=<token with contents: write> \
     scripts/ci-github-release.sh v0.1.0 NOTES.md \
-        mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256
+        mesa-nvk-horizon-v0.1.0-nro.tar.gz mesa-nvk-horizon-v0.1.0-nro.tar.gz.sha256 \
+        mesa-nvk-horizon-v0.1.0-portlibs.tar.gz \
+        mesa-nvk-horizon-v0.1.0-portlibs.tar.gz.sha256
 ```
 
 The Forgejo equivalent is still `scripts/ci-forgejo-release.sh` (see the manual section

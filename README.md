@@ -25,11 +25,18 @@ be reviewed on any schedule.
 ```sh
 scripts/run-host-tests.sh     # pure logic, no toolchain, no console
 scripts/build-switch.sh -j4   # devkitA64, or Docker as a fallback
+make install                  # into devkitPro's portlibs, for other projects
 ```
 
 The cross build needs devkitA64 (`$DEVKITPRO`) or Docker; with neither installed the
 scripts fall back to `ghcr.io/d3fau4/nx-dev:latest`. Building the Vulkan half needs Mesa
 and a Rust toolchain for the Switch target, which costs considerably more.
+
+`make install` is for linking the driver from *your* homebrew rather than running ours:
+it puts the archives, headers and an `nvk.pc` into `$DEVKITPRO/portlibs/switch`, so
+`pkg-config --cflags --libs nvk` gives you a working link line and nothing has to know
+where this repository is. It is still a static link — there is no ICD and no loader.
+See [`docs/BUILDING.md`](docs/BUILDING.md) §6.
 
 ## Run it on a console
 
