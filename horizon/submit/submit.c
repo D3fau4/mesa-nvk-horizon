@@ -219,3 +219,125 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
         *out_fence = fence;
     return horizon_gpu_ok();
 }
+
+/* Finds a slot in the channel's wait ring that the GPU is provably done
+ * with, or reports BUSY.
+ *
+ * "Provably" is one syncpoint read, not a guess: a slot records the
+ * fence of the submit that used it, and the GPFIFO is in order, so once
+ * the counter has passed that fence the list in the slot has been
+ * fetched and executed. A slot that has never been used is free without
+ * any read at all, which is the whole of a channel's first frames.
+ *
+ * The scan starts at wait_slot_next and wraps, so slots are consumed in
+ * the order they were freed rather than always retrying the same one.
+ */
+static horizon_gpu_result
+horizon_wait_ring_take(horizon_gpu_channel *chan, uint32_t *out_slot)
+{
+    uint32_t hw = 0;
+    bool have_hw = false;
+
+    for (uint32_t i = 0; i < HORIZON_CHANNEL_WAIT_SLOTS; i++) {
+        const uint32_t slot =
+            (chan->wait_slot_next + i) % HORIZON_CHANNEL_WAIT_SLOTS;
+
+        if (!chan->wait_slots[slot].busy) {
+            chan->wait_slot_next =
+                (slot + 1u) % HORIZON_CHANNEL_WAIT_SLOTS;
+            *out_slot = slot;
+            return horizon_gpu_ok();
+        }
+
+        /* Read the counter at most once per call, and only when a busy
+         * slot is actually in the way. */
+        if (!have_hw) {
+            horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
+            if (horizon_gpu_failed(res))
+                return res;
+            have_hw = true;
+        }
+
+        if (horizon_gpu_syncpt_reached(hw,
+                                       chan->wait_slots[slot].fence.threshold)) {
+            chan->wait_slots[slot].busy = false;
+            chan->wait_slot_next =
+                (slot + 1u) % HORIZON_CHANNEL_WAIT_SLOTS;
+            *out_slot = slot;
+            return horizon_gpu_ok();
+        }
+    }
+
+    return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
+}
+
+horizon_gpu_result horizon_gpu_submit_waits(horizon_gpu_channel *chan,
+                                            const horizon_gpu_fence *fences,
+                                            uint32_t num_fences,
+                                            horizon_gpu_fence *out_fence)
+{
+    if (!chan || !fences || num_fences == 0 ||
+        num_fences > HORIZON_GPU_MAX_WAIT_FENCES)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    if (chan->lost)
+        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+
+    uint32_t slot = 0;
+    horizon_gpu_result res = horizon_wait_ring_take(chan, &slot);
+    if (horizon_gpu_failed(res))
+        return res;
+
+    const uint64_t slot_offset =
+        HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
+        (uint64_t)slot * HORIZON_CHANNEL_WAIT_SLOT_DWORDS * 4;
+
+    uint32_t *base = horizon_gpu_mem_cpu_ptr(chan->cmdbuf_mem);
+    if (base == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+    uint32_t *cmds = base + slot_offset / 4;
+
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < num_fences; i++) {
+        /* A syncpoint id the encoding cannot hold would be silently
+         * masked into a *different, valid* id and waited on, which is a
+         * hang on a counter nobody is incrementing. Refuse instead, and
+         * leave the slot free: nothing has been submitted yet. */
+        const uint32_t emitted =
+            horizon_cmds_syncpt_wait(cmds + n, fences[i].syncpt_id,
+                                     fences[i].threshold);
+        if (emitted == 0)
+            return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+        n += emitted;
+    }
+
+    /* Before the submit, never after it — patch 0082's lesson, and it is
+     * the same hardware property: the command page is mapped CPU-cached,
+     * the host engine does not snoop, and a kickoff starts the fetch
+     * immediately. */
+    res = horizon_gpu_mem_flush(chan->cmdbuf_mem, slot_offset, n * 4);
+    if (horizon_gpu_failed(res))
+        return res;
+
+    const horizon_gpu_cmd_span span = {
+        .gpu_va = chan->wait_cmds_va +
+                  (uint64_t)slot * HORIZON_CHANNEL_WAIT_SLOT_DWORDS * 4,
+        .num_dwords = n,
+    };
+
+    horizon_gpu_fence fence;
+    res = horizon_gpu_submit(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
+                             &fence);
+    if (horizon_gpu_failed(res))
+        return res;
+
+    /* Claimed only now. A slot marked busy before a submit that was
+     * refused would never come back: nothing would ever reach its
+     * fence. */
+    chan->wait_slots[slot].fence = fence;
+    chan->wait_slots[slot].busy = true;
+
+    if (out_fence)
+        *out_fence = fence;
+    return horizon_gpu_ok();
+}
