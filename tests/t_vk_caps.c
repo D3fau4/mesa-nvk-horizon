@@ -5,7 +5,7 @@
  * TWO THINGS THAT HAD NEVER BEEN CHECKED ON HARDWARE, both of them
  * consequences of patches this project wrote.
  *
- * PART A — the extension gating (patch 0046). NVK advertised
+ * PART A — the extension gating (patch 0028). NVK advertised
  * VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf and
  * VK_EXT_map_memory_placed unconditionally, and their entry points call
  * nvkmd operations this backend does not implement: an application that
@@ -26,17 +26,17 @@
  * The values on the left are nvkmd_horizon_pdev.c's, stated there with
  * a reason each. The last two rows are what make this a measurement
  * rather than a formality: one thing the gate must let through, and one
- * feature set patch 0029 made follow a capability instead of the 3D
+ * feature set patch 0022 made follow a capability instead of the 3D
  * class.
  *
- * PART B — nvkmd_dev_alloc_tiled_mem (patch 0045), executed at last.
- * The operation was a NULL function pointer until patch 0045
+ * PART B — nvkmd_dev_alloc_tiled_mem (patch 0027), executed at last.
+ * The operation was a NULL function pointer until patch 0027
  * implemented it, and then nothing reached it: the obvious caller is
  * "render into a VK_IMAGE_TILING_LINEAR image", and NVK refuses that
  * outright — nvk_image.c:76 withholds COLOR_ATTACHMENT from every
  * linear format, upstream, on every chip.
  *
- * There is exactly one other path, and it is the one patch 0045 itself
+ * There is exactly one other path, and it is the one patch 0027 itself
  * opened. EXT_image_drm_format_modifier is advertised when
  * has_alloc_tiled is true, so setting that flag is what put the
  * extension in the list. An image created with
@@ -214,7 +214,7 @@ static void check_gates(vkfw *fw)
       feats.sparseResidency8Samples || feats.sparseResidencyAliased;
    t_check(t, !any_sparse,
            "no sparse feature is advertised — has_sparse is false, and "
-           "patch 0029 made these follow it rather than the 3D class");
+           "patch 0022 made these follow it rather than the 3D class");
 }
 
 /* PART B ---------------------------------------------------------- */

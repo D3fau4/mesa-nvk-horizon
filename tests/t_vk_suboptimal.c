@@ -941,7 +941,7 @@ int run_test(test_ctx *t)
       sub_destroy(&fw, &a);
 
       /* Destroying the superseded one must not have taken the window
-       * from the survivor — the defect patch 0070 fixed, checked again
+       * from the survivor — the defect patch 0037 fixed, checked again
        * here because this file creates the same pairing on the copy
        * path where it happened. */
       sub_run after;
@@ -1232,7 +1232,7 @@ int run_test(test_ctx *t)
 
          /* The previous generation goes now, while the new one is live
           * — the ordinary recreate sequence, and the one that took the
-          * console down before patch 0070. */
+          * console down before patch 0037. */
          if (have_cur) {
             const VkResult q = sub_quiesce(&fw);
             if (q != VK_SUCCESS) {

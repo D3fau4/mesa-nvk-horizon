@@ -199,7 +199,7 @@ compare "standalone test names" "Makefile:$mk_horizon" \
 #
 #    That matters beyond tidiness for t_vk_image, which must reach its
 #    first render pass with nothing uploaded to NVK's shader heap or it
-#    stops being the regression test for patch 0048 (see its header
+#    stops being the regression test for patch 0030 (see its header
 #    comment). "This test includes no shader" is a property of the test,
 #    and this is what makes it fail out loud when it stops being true.
 ms_nvk_tests=$(sed -n '/^nvk_tests  *= *\[/,/^\]/p' meson.build |

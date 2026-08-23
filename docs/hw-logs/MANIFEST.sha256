@@ -2,7 +2,7 @@
 # A new log is declared by running scripts/split-status.py --record-logs,
 # which shows up as added lines; a CHANGED line for a log that already
 # existed is the thing this exists to make visible.
-12be79d24fe447b5c9e3483b97134a6876f13397254245f831cf10e90dccbcc4  README.md
+3d30409e9fa763e1401c0c31ebe56f6aed031a01599999893ec0055028855a82  README.md
 96cbe961605dec8763186cb6db84fbd607ccfd7b8d93d6ec3e6666e58d6eeac8  t_alloc-run14-PASS.log
 e5729f968f5bce3f54e3011b01cb1ceddb65ff14accfc8f17f645b96244d0669  t_alloc.log
 87ee35ca589b5430b0f6253610fd5e356c9c6e32492223afb758fc6280102cd4  t_channel-emu-run1.log

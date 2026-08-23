@@ -1096,7 +1096,7 @@ int run_test(test_ctx *t)
     * application writes when it simply wants the next image, and it is
     * what most engines pass. Every acquire in this file used a finite
     * budget, so the branch the driver took on the infinite side had no
-    * coverage at all — and until patch 0067 that branch was a different
+    * coverage at all — and until patch 0037 that branch was a different
     * dequeue mode, not a different deadline.
     *
     * Two images on purpose: this is the configuration where the

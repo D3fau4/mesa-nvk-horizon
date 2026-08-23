@@ -186,7 +186,7 @@ run_test(test_ctx *t)
     *
     * `push_dump` decodes every push nvkmd_ctx_exec submits — methods and
     * the addresses inside them — through nvkmd_ctx_exec_dump, which
-    * finds the memory by VA (working here only because patch 0031 gives
+    * finds the memory by VA (working here only because patch 0019 gives
     * every allocation one) and prints it with vk_push_print. `vm` logs
     * every VA reservation and bind as it happens.
     *

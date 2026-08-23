@@ -246,7 +246,7 @@ comments: FP helper invocation memory loads, without which one dEQP subgroups te
 occasionally; and Out Of Range Address exceptions stay enabled for a case involving an
 empty fragment shader. Neither is reachable by anything this port runs today.
 
-Gated on `nvkmd_info::has_priv_reg_writes` (patch 0038) rather than neutered, so nouveau
+Gated on `nvkmd_info::has_priv_reg_writes` (patch 0023) rather than neutered, so nouveau
 keeps NVK's behaviour and the cost is stated at the declaration instead of vanishing into
 a no-op. **Not yet confirmed on hardware** — the console that confirms it is the one that
 closes Phase 4.

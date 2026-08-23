@@ -36,7 +36,7 @@ NVK  →  disk_cache_create / put / get / compute_key      (Mesa's API, unchange
    key derivation, the put queue, zstd/zlib compression, statistics
             │
             ▼
-   src/util/disk_cache_horizon.c            ← mesa-patches/0081
+   src/util/disk_cache_horizon.c            ← mesa-patches/0046
    the OS layer only: entry layout, the lock, the cache path
             │
             ▼

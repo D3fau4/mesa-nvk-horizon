@@ -33,7 +33,7 @@
  *                               nvkmd_dev_alloc_tiled_mem
  *                               (nvk_cmd_draw.c:1055) — the operation
  *                               that was a NULL function pointer until
- *                               patch 0045. This case is the one that
+ *                               patch 0027. This case is the one that
  *                               executes it.
  *
  * Both colours are non-zero and different from each other, so a driver
@@ -303,7 +303,7 @@ int run_test(test_ctx *t)
    t_note(t, "no shader, pipeline or descriptor set layout has been created "
              "on this device: the first render pass below reaches the 3D "
              "engine with a program region the driver had to make valid on "
-             "its own (patch 0048)");
+             "its own (patch 0030)");
 
    /* Simplest first. Run 1 began with the two-layer image, so a failure
     * there could not distinguish layered rendering from the first render
