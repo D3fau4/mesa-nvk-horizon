@@ -348,10 +348,10 @@ hardware** — no console has run 26.1.7.
 `0fadfea4f394211946f308458f614839ef253ee8` (tag object `d6393a37abc5`, released
 2026-08-19, [release notes](https://docs.mesa3d.org/relnotes/26.1.8.html)). Inside the
 series D2 chose, "New features: None", 8 bug fixes — and a **clean miss** again, the way
-26.1.6 was and 26.1.7 was not: of the 98 files it changes, **none is among the 127
+26.1.6 was and 26.1.7 was not: of the 98 files it changes, **none is among the 131
 `mesa-patches/` writes to**, and `src/nouveau/` is not touched at all. So no NVK, NAK,
 NIL or `nvkmd` file moves under this port and **nothing in this release can reach a
-GM20B shader**. The series applies unmodified, 81 of 81, no fuzz and no rejects.
+GM20B shader**. The series applies unmodified, 84 of 84, no fuzz and no rejects.
 
 Two details worth naming rather than leaving to a file count. The two
 `src/vulkan/wsi/` files it changes are `wsi_common_{metal,wayland}.c` — neither is a file
@@ -369,8 +369,8 @@ stability-minded users to wait for 26.2.1. **`mesa-26.2.1` was tagged on 2026-08
 [release notes](https://docs.mesa3d.org/relnotes/26.2.1.html)), its notes carry no such
 advice, and it fixes an NVK/Kepler NAK register-allocation panic. So the reason D21 was
 merely *deferred* is gone; what remains is the cost, and the cost has not shrunk. Measured
-against the pin as it now stands: **3569 files changed between 26.1.8 and 26.2.1, 54 of
-the 127 we patch among them** — 20 NAK files, 7 under `src/nouveau/vulkan/` (including
+against the pin as it now stands: **3569 files changed between 26.1.8 and 26.2.1, 55 of
+the 131 we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/` (including
 `nvk_wsi.c` and `nvk_physical_device.{c,h}`), 4 in `src/vulkan/wsi/`, 4 under `src/util/`,
 both `src/vulkan/runtime/vk_image.{c,h}`, 2 under `src/nouveau/nil/`, and the Rust helper
 crates NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,

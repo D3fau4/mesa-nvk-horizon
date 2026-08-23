@@ -119,9 +119,51 @@ endif
 
 TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 
-.PHONY: all lib clean prune-stale
+.PHONY: all lib clean prune-stale install uninstall
 all: prune-stale lib $(TEST_NROS)
 lib: $(LIB)
+
+# INSTALL AND UNINSTALL ARE ONE SCRIPT, CALLED TWICE. The set of files
+# an install places and the set an uninstall removes have to be one list
+# or they are two lists that drift, and the drift is silent in the
+# direction that matters: files left behind inside $(DEVKITPRO), where
+# every later build on the machine goes on finding them.
+#
+# The script installs by extracting the tarball
+# scripts/package-portlibs.sh builds, which is also what CI publishes —
+# so what a release contains and what an install places are the same
+# file set by construction. It builds that tarball first unless one is
+# named; on a second run nothing is rebuilt.
+#
+# PREFIX defaults to devkitPro's portlibs prefix because that is the one
+# directory $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
+# looks in: it clears PKG_CONFIG_PATH and points PKG_CONFIG_LIBDIR
+# there and nowhere else. ?= rather than =, so both
+# `make install PREFIX=...` and `PREFIX=... make install` work.
+#
+# NEITHER DEPENDS ON `all`, and that is deliberate three times over.
+# `all` builds tests an install does not ship. `all` cannot build any of
+# the seventeen NVK archives, which are the thing being installed —
+# scripts/build-mesa-nvk.sh does. And `all` produces
+# $(BUILD)/libhorizon_gpu.a, which is the WRONG library here: the NVK
+# archives were built against the Meson one, and the script refuses
+# rather than substitute it. What turns "not built" into something
+# useful is the script's gates, not a prerequisite.
+PREFIX  ?= $(DEVKITPRO)/portlibs/switch
+DESTDIR ?=
+
+# AS ARGUMENTS, NOT AS ENVIRONMENT. devkitPro's make on Windows is a
+# Cygwin build and an environment assignment in front of a recipe
+# command reaches no child of it — measured, `FOO=hello sh -c 'echo
+# $$FOO'` in a recipe prints nothing. Written that way, `make install
+# PREFIX=...` installed into the default prefix while echoing the one it
+# had been asked for, which is the worst shape a bug can have here.
+install:
+	scripts/install-horizon.sh --prefix '$(PREFIX)' --destdir '$(DESTDIR)'
+
+uninstall:
+	scripts/install-horizon.sh --uninstall \
+	    --prefix '$(PREFIX)' --destdir '$(DESTDIR)'
 
 # Safe under -j: $(STALE_MESA) is non-empty only for tests this build is
 # not producing, so nothing else has these files as a target.

@@ -32,8 +32,8 @@ TOOLS="
 git:fetch-mesa.sh clones the pinned checkout and apply-mesa-patches.sh git-ams the series
 python3:the pinned Meson, spv-embed.py and split-status.py all need it
 curl:fetch-rust-tools.sh and fetch-clc-deps.sh download the crates and the LLVM debs
-tar:unpacking the .crate and .deb payloads
-sha256sum:every download is verified against the digest in toolchain/versions.env
+tar:unpacking the .crate and .deb payloads, and package-portlibs.sh packs with it (--sort=name, so GNU tar)
+sha256sum:every download is verified against the digest in toolchain/versions.env, and both packaging scripts sign their tarball with it
 cargo:fetch-rust-tools.sh runs 'cargo vendor' for bindgen and cbindgen
 "
 

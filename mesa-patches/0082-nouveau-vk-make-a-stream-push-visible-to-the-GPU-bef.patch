@@ -1,0 +1,146 @@
+From 232d34480634391c3b0c7a1a94a8b9092d07ec6a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Sat, 22 Aug 2026 17:09:07 +0200
+Subject: [PATCH 82/84] nouveau/vk: make a stream push visible to the GPU
+ before it is submitted
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 item 7 (submit)
+Why: nvk_mem_stream_push() memcpy()s the push into stream memory, calls
+ nvkmd_ctx_exec() — which submits and the GPU starts fetching immediately —
+ and only then calls nvk_mem_stream_flush(), which is what performs the
+ nvkmd_mem_sync_map_to_gpu() cache clean. On a DRM backend the map is
+ write-combined and coherent, so the ordering is invisible. It is not a
+ property of DRM that Mesa may assume: nvkmd_mem_sync_map_to_gpu() exists
+ precisely because a map need not be coherent, and where it is not — Horizon
+ maps anything without NVKMD_MEM_COHERENT CPU-cached — the host engine
+ fetches the pushbuffer while the dwords are still in the CPU's data cache
+ and executes whatever the chunk held before.
+Evidence: Nintendo Switch (GM20B), Godot 4.0.5 Forward Mobile, NVK_DEBUG=
+ push_sync + HORIZON_GPU_SYNC=1. The queue-init push (1889 dwords: SET_OBJECT
+ 0xb197, the MME instruction RAM loads, the NV90C0 shader windows) killed the
+ channel on its first execution, every run:
+   [sync-mode] fence 27:19 wait=ok notifier=0 'none'
+   channel 0xc68080010: fault notification 32 (PBDMA error) - marking lost
+   [sync-mode] fence 27:20 wait=channel lost notifier=32 'PBDMA error'
+ The dumped push was well formed (275 headers, subch 0 and 1, no truncation),
+ so what the engine read was not what nv_push wrote. With the sync moved
+ before the exec, the same push completes on the same console:
+   [sync-mode] fence 27:21 wait=ok notifier=0 'none'
+   [sync-mode] fence 27:22 wait=ok notifier=0 'none'
+ A smaller Vulkan client (the repo's t_vk_caps, PASS 52/52 on the same
+ console, same build) never reproduced it: a dirty line still sitting in the
+ CPU cache is what leaves the GPU reading stale backing memory, and eviction
+ — which cache pressure causes, not prevents — is what would write it back
+ and make the new bytes visible instead. Which of the two processes' cache
+ sets an eviction reaches first, and whether the memory underneath was
+ already carrying garbage from a prior allocation, is not established; only
+ that the smaller client happens not to lose the race and a real application
+ does.
+Upstream: yes — this is an ordering bug against nvkmd's own interface, not a
+ Horizon special case. The flush belongs before the submit on any backend
+ whose maps are not coherent, and it costs a coherent one nothing.
+---
+ src/nouveau/vulkan/nvk_mem_stream.c | 67 ++++++++++++++++++++---------
+ 1 file changed, 46 insertions(+), 21 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_mem_stream.c b/src/nouveau/vulkan/nvk_mem_stream.c
+index 54d2df6..b59160e 100644
+--- a/src/nouveau/vulkan/nvk_mem_stream.c
++++ b/src/nouveau/vulkan/nvk_mem_stream.c
+@@ -180,30 +180,27 @@ nvk_mem_stream_alloc(struct nvk_device *dev,
+    return VK_SUCCESS;
+ }
+ 
+-VkResult
+-nvk_mem_stream_flush(struct nvk_device *dev,
+-                     struct nvk_mem_stream *stream,
+-                     struct nvkmd_ctx *ctx,
+-                     uint64_t *time_point_out)
++/** Makes everything written into the current chunk visible to the GPU.
++ *
++ * Where the map is coherent this is free and the placement does not matter.
++ * Where it is not — Horizon maps non-NVKMD_MEM_COHERENT memory CPU-cached —
++ * it has to happen *before* the work that reads the memory is submitted, and
++ * that is why nvk_mem_stream_push() calls it rather than leaving it to
++ * nvk_mem_stream_flush(): that one runs after nvkmd_ctx_exec() has already
++ * kicked the GPU off, so the host engine can fetch the pushbuffer while the
++ * dwords are still sitting in the CPU's data cache and fault on whatever the
++ * chunk held before (a PBDMA error, seen on a Nintendo Switch).
++ */
++static void
++nvk_mem_stream_sync_chunks_to_gpu(struct nvk_mem_stream *stream)
+ {
+-   if (!stream->needs_flush) {
+-      if (time_point_out != NULL)
+-         *time_point_out = stream->next_time_point - 1;
+-      return VK_SUCCESS;
+-   }
+-
+-   if (stream->next_time_point == UINT64_MAX)
+-      abort();
+-
+-   /* Flush any chunks with idle_time_point == next_time_point, including
+-    * those on the recycle list.  We can assume that anything with
+-    * idle_time_point < next_time_point is already flushed by a previous call
+-    * to nvk_mem_stream_flush().
++   /* Everything written since the last flush, which is the current chunk plus
++    * any chunk that filled up and moved to the recycle list in this round.
++    * Anything older was made visible by a previous call.
+     */
+    if (stream->chunk != NULL) {
+-      struct nvk_mem_stream_chunk *chunk = stream->chunk;
+-      assert(chunk->idle_time_point <= stream->next_time_point);
+-      if (chunk->idle_time_point == stream->next_time_point) {
++      assert(stream->chunk->idle_time_point <= stream->next_time_point);
++      if (stream->chunk->idle_time_point == stream->next_time_point) {
+          nvkmd_mem_sync_map_to_gpu(stream->chunk->mem, 0,
+                                    NVK_MEM_STREAM_MAX_ALLOC_SIZE);
+       }
+@@ -217,6 +214,29 @@ nvk_mem_stream_flush(struct nvk_device *dev,
+ 
+       nvkmd_mem_sync_map_to_gpu(chunk->mem, 0, NVK_MEM_STREAM_MAX_ALLOC_SIZE);
+    }
++}
++
++VkResult
++nvk_mem_stream_flush(struct nvk_device *dev,
++                     struct nvk_mem_stream *stream,
++                     struct nvkmd_ctx *ctx,
++                     uint64_t *time_point_out)
++{
++   if (!stream->needs_flush) {
++      if (time_point_out != NULL)
++         *time_point_out = stream->next_time_point - 1;
++      return VK_SUCCESS;
++   }
++
++   if (stream->next_time_point == UINT64_MAX)
++      abort();
++
++   /* Redundant when the caller was nvk_mem_stream_push(), which has already
++    * done this before its exec, and necessary for every other caller: memory
++    * handed out by nvk_mem_stream_alloc() and read by work submitted
++    * elsewhere is made visible here.
++    */
++   nvk_mem_stream_sync_chunks_to_gpu(stream);
+ 
+    const struct vk_sync_signal signal = {
+       .sync = stream->sync,
+@@ -255,6 +275,11 @@ nvk_mem_stream_push(struct nvk_device *dev,
+ 
+    memcpy(push_map, push_data, push_dw_count * 4);
+ 
++   /* Before the exec, not after it: nvkmd_ctx_exec() submits immediately and
++    * the GPU reads this memory as soon as it does.
++    */
++   nvk_mem_stream_sync_chunks_to_gpu(stream);
++
+    const struct nvkmd_ctx_exec exec = {
+       .addr = push_addr,
+       .size_B = push_dw_count * 4,
+-- 
+2.53.0.windows.2
+

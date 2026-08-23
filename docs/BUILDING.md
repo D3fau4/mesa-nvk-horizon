@@ -171,7 +171,91 @@ simply omitted, not an error.
 That refusal exists because a `.nro` on an SD card looks exactly like the one it
 replaced, and an afternoon was once spent measuring a three-day-old build.
 
-## 6. Everything is pinned in one file
+## 6. Installing it, so another project can link it
+
+Packaging (§5) produces a directory you copy. **Installing produces something a
+different project builds against without knowing this repository exists:**
+
+```sh
+make install                     # into $DEVKITPRO/portlibs/switch
+make install PREFIX=/some/prefix DESTDIR=/staging   # or anywhere
+make uninstall                   # removes exactly what install placed
+```
+
+after which
+
+```sh
+aarch64-none-elf-pkg-config --cflags --libs nvk
+```
+
+emits a link line that works as it stands — the `--start-group`, the
+`--whole-archive` around `libnvk.a` and nothing else, and the trailing
+`-lstdc++ -lzstd -lz -lnx`.
+
+**You cannot call `vkCreateInstance`, and this is the first thing that will stop you.**
+There is no such symbol to link against: a Vulkan *loader* is what normally defines the
+`vk*` trampolines, and there is no loader here. The driver exports the one symbol a
+loader would look for —
+
+```c
+extern PFN_vkVoidFunction
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+```
+
+— so you fetch `vkCreateInstance` from it with a `VK_NULL_HANDLE` instance, and
+everything else from it with the instance you get back.
+[`tests/common/vkfw.c`](../tests/common/vkfw.c) is a worked example. Miss this and the
+link fails with ``undefined reference to `vkCreateInstance` ``, which reads like a
+missing library and is not one.
+
+It installs 68 files: the seventeen NVK archives under `lib/nvk/`, `libhorizon_gpu.a`
+and `libhorizon_compat.a`, the `include/horizon_gpu/` headers, the Vulkan headers the
+driver was compiled against under `include/nvk/`, `lib/pkgconfig/nvk.pc`, the licence,
+and a record of what it placed under `share/mesa-nvk-horizon/`.
+
+**It is about 225 MiB, and that is not a mistake.** Meson writes *thin* archives — a
+list of paths to the objects rather than the objects — so `libnvk.a` is 96 KiB in the
+build directory and 95 MiB once it carries what it names. A thin archive copied
+anywhere else is one that fails at the next project's link with `error opening thin
+archive member`, so the install converts every one of them
+([`scripts/fatten-archives.sh`](../scripts/fatten-archives.sh)).
+
+**The mechanism is a tarball, and it is the same one CI publishes.**
+[`scripts/package-portlibs.sh`](../scripts/package-portlibs.sh) builds it and
+[`scripts/install-horizon.sh`](../scripts/install-horizon.sh) extracts it, so what a
+release contains and what an install places are one file set rather than two that have
+to be kept in step. Which also means a release can be installed directly:
+
+```sh
+scripts/install-horizon.sh --tarball mesa-nvk-horizon-v0.1.0-portlibs.tar.gz
+```
+
+The tarball is byte-reproducible — deterministic `ar`, sorted `tar`, fixed timestamps
+taken from the build's own success stamp — so re-installing an unchanged build writes
+nothing at all rather than rewriting 225 MiB identically.
+
+Two things worth knowing before you run it:
+
+- **It changes global toolchain state.** Afterwards `aarch64-none-elf-pkg-config`
+  answers for `nvk` for *every* project on the machine, and `dkp-pacman` knows nothing
+  about these files — a `-Syu` will neither remove nor preserve them. That is why
+  `make uninstall` works from a recorded manifest instead of deleting what it guesses:
+  it removes exactly the files that were placed, and `rmdir`s only the directories they
+  created, so a non-empty `lib/` or `lib/pkgconfig/` belonging to devkitPro is left
+  alone by construction.
+- **`$DEVKITPRO` has to be a path *this shell* can reach**, not only one the compiler
+  can. On Windows a `$DEVKITPRO` of `/opt/devkitpro` is meaningful inside devkitPro's
+  own MSYS2 shell and resolves somewhere else entirely under Git Bash, where `mkdir -p`
+  would happily succeed in the wrong place. `make install` checks for `devkitA64/`
+  under it and refuses rather than install where nothing will look.
+
+`make install` does **not** build anything first, on purpose: `make all` cannot produce
+the NVK archives (§4 does), and the `libhorizon_gpu.a` it does produce is the wrong one
+— the driver is built against Meson's. If the build is incomplete or its archives are
+older than the Mesa sources in the tree, the install refuses and names both what is
+missing and the script that produces it.
+
+## 7. Everything is pinned in one file
 
 [`toolchain/versions.env`](../toolchain/versions.env) is the single source of truth, and
 it is split deliberately:
@@ -190,7 +274,7 @@ The Mesa *commit* is pinned, not just the tag, because tags can be moved — and
 `scripts/print-toolchain-versions.sh` reports what the current environment resolves to,
 read-only.
 
-## 7. The gates
+## 8. The gates
 
 Five cost seconds and need nothing but bash, python and a C compiler. **GitHub Actions
 runs them automatically** on every push and pull request
@@ -221,9 +305,9 @@ Run them by hand after a build if you want them sooner than CI.
 `check-rust-target.sh` compares the checked-in target JSON against what `rustc` reports,
 and needs a nightly toolchain.
 
-## 8. The scripts, in one table
+## 9. The scripts, in one table
 
-All 37 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
+All 42 live in [`scripts/`](../scripts/), are `set -eu`, and `cd` to the repository root
 themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 
 **Fetch** (host-side, because containers have no network)
@@ -245,7 +329,11 @@ themselves — so they can be run from anywhere as `scripts/<name>.sh`.
 `check-rust-target.sh` · `run-host-tests.sh`
 
 **Package and tooling**
-`package-horizon.sh` · `print-toolchain-versions.sh` · `apply-mesa-patches.sh` ·
+`package-horizon.sh` (what goes to a console) · `package-portlibs.sh` (what another
+project links, §6) · `install-horizon.sh` (extracts that into a prefix, and
+`--uninstall` takes it back out) · `fatten-archives.sh` (turns Meson's thin archives
+into ones that survive leaving the tree — the reason the other two exist in this
+shape) · `print-toolchain-versions.sh` · `apply-mesa-patches.sh` ·
 `split-status.py` · `spv-embed.py` · `toolchain-env.sh` (sourced, never executed — it
 resolves local-vs-container mode and is what every other script agrees through)
 
@@ -326,7 +414,7 @@ record nothing but `local`. The two probes that prove the image works (bindgen a
 real header, `rustc` against the sysroot) are `RUN` steps in that Dockerfile, so a broken
 toolchain fails the build instead of producing an image somebody has to un-tag.
 
-## 9. Environment variables
+## 10. Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -336,12 +424,20 @@ toolchain fails the build instead of producing an image somebody has to un-tag.
 | `MESA_NVK_BUILD_DIR` | `build/mesa-nvk` | Where NVK was built; selects whether the 14 `t_vk_*` are built. |
 | `HORIZON_BUILD_DIR` | `build/meson` | The Meson build directory. |
 | `CC`, `OUT` | `cc`, `build/host-tests` | Host tests only. |
+| `PREFIX` | `$DEVKITPRO/portlibs/switch` | Where `make install` puts the driver (§6). The default is the only directory `aarch64-none-elf-pkg-config` searches. |
+| `DESTDIR` | empty | Staging root, prepended to `PREFIX` and to nothing else. |
 
-## 10. Cleaning
+## 11. Cleaning
 
 `make clean` removes `build/` **except** `build/toolchain` and the Mesa build directory:
 the pinned Meson and Mesa's Python dependencies are installed over the network, and
 Mesa takes a long time to build. Deleting either by hand is safe; it just costs time.
+
+It does **not** touch an install (§6) — that lives in `$PREFIX`, outside this tree, and
+`make uninstall` is what removes it. The two are independent in both directions: you
+can `make clean` with the driver still installed, and you can uninstall from a tree
+whose build directory is long gone, because the file list uninstall works from is
+recorded in the prefix rather than derived from the build.
 
 ---
 

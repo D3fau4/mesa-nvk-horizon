@@ -1,14 +1,21 @@
 # Running it on a console
 
-Read this before assuming what you have: **there is no installable Vulkan driver here
-yet.** There is no ICD you can drop next to an application, no loader, no shared
-library. What exists is a set of standalone homebrew `.nro` programs, each of which
-links the driver statically and exercises one part of it, and each of which prints a
-machine-checkable verdict.
+Read this before assuming what you have: **there is no ICD you can drop next to an
+application, no loader, and no shared library.** Nothing on a console finds this driver
+at run time. What exists is a Vulkan implementation you link *into* your own homebrew,
+statically — plus a set of standalone `.nro` programs that each exercise one part of it
+and print a machine-checkable verdict.
 
 That is what "Phase 6 complete" means in [`STATUS.md`](../STATUS.md): the driver
 presents a `VK_KHR_swapchain` on real hardware, and the way you see it do that is by
 running `t_vk_swapchain.nro`.
+
+**There is now something to install, and it is not an ICD.** `make install` puts the
+driver into devkitPro's portlibs prefix as an ordinary static package — archives,
+headers and an `nvk.pc` — so another project can build against it with
+`pkg-config --cflags --libs nvk` and never name a directory of this repository. See
+[`BUILDING.md`](BUILDING.md) §6. The result is still a static link into your own
+`.nro`; the paragraph above is unchanged by it.
 
 ## What you need
 

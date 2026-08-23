@@ -270,15 +270,141 @@ horizon_mesa_libs_present() {
 #
 # One function, called from both sides, so the two cannot record and
 # compare different things.
+# Which of $HORIZON_NVK_TEST_LIBS are not in $MESA_NVK_BUILD_DIR, one
+# per line; empty when the build is complete.
+#
+# The names, not just a yes/no, because every caller that refuses has to
+# say what is missing — a refusal that only says "incomplete" sends the
+# reader to run the whole build again rather than to the one archive
+# that did not get made.
+horizon_nvk_missing_libs() {
+    for _hz_nvk_lib in $HORIZON_NVK_TEST_LIBS; do
+        [ -f "$MESA_NVK_BUILD_DIR/$_hz_nvk_lib" ] || echo "$_hz_nvk_lib"
+    done
+    unset _hz_nvk_lib
+}
+
 # True when the archives t_vulkan links are present. Separate from
 # horizon_mesa_libs_present because they live in a different build
 # directory, produced by a different script, at a different time.
 horizon_nvk_libs_present() {
-    for _hz_nvk_lib in $HORIZON_NVK_TEST_LIBS; do
-        [ -f "$MESA_NVK_BUILD_DIR/$_hz_nvk_lib" ] || return 1
-    done
-    unset _hz_nvk_lib
+    [ -z "$(horizon_nvk_missing_libs)" ]
+}
+
+# THE BUILD THAT PRODUCED THOSE ARCHIVES ACTUALLY SUCCEEDED, AND IT
+# COMPILED WHAT THE TREE SAYS. Moved here verbatim from
+# scripts/package-horizon.sh, which is no longer the only caller:
+# scripts/package-portlibs.sh asks the identical question before it
+# installs the same archives into a toolchain prefix, where a stale
+# answer is worse — a package is a directory somebody chose to copy, an
+# install is already in the path of every later build on that machine.
+#
+# The whole rationale is package-horizon.sh's and is kept with the code:
+#
+#   The staleness gate there asks whether an artefact is older than the
+#   archives it links. It cannot ask whether those archives are older
+#   than the source they were built from — and on 2026-08-08 that is
+#   exactly what shipped: a t_vk_swapchain.nro built minutes earlier,
+#   linked against a libvulkan_wsi.a from three days before, missing the
+#   one patch the run was meant to test. The .nro was newer than the
+#   archive, so that gate passed with nothing to say.
+#
+#   The build had failed and said so; the command that ran it printed
+#   "built" regardless, because an unconditional echo followed a
+#   filtered pipeline. A gate is the answer to that, not more care.
+#
+#   AGAINST THE BUILD'S OWN SUCCESS STAMP, not against an archive. The
+#   first version compared every file under mesa/src with
+#   libvulkan_wsi.a, and that is wrong in the ordinary case: Ninja does
+#   not touch an archive whose inputs did not change, so editing
+#   anything outside WSI leaves libvulkan_wsi.a older than the source
+#   that was just correctly compiled, and a good build reads as stale.
+#   Reported by Codex on PR #8, and right.
+#
+#   scripts/build-mesa-nvk.sh touches .horizon-build-ok as its last act,
+#   under `set -e`, so the stamp exists only if every step succeeded and
+#   is newer than everything that run compiled.
+#
+# THE `[ -d mesa/src ]` GUARD IS INSIDE THIS FUNCTION AND NOT AT THE
+# CALL SITES. It is a policy and not an optimisation: a tree with no
+# Mesa checkout has no stamp to demand, and package-horizon.sh's
+# .nro-only package is legitimate there. Hoisting it out would put that
+# policy in two places and let them drift.
+#
+# `find ... 2>/dev/null | head -5` takes head's exit status, which is
+# what makes it survive a caller's `set -e`. It is written that way on
+# purpose; do not "tidy" it.
+horizon_nvk_build_stamp_gate() {
+    [ -d mesa/src ] || return 0
+
+    _hz_stamp="$MESA_NVK_BUILD_DIR/.horizon-build-ok"
+    if [ ! -f "$_hz_stamp" ]; then
+        echo "error: $_hz_stamp does not exist, so no complete" \
+             "scripts/build-mesa-nvk.sh run has produced the archives in" \
+             "$MESA_NVK_BUILD_DIR. Run it and try again." >&2
+        unset _hz_stamp
+        return 1
+    fi
+    _hz_newer_src=$(find mesa/src -type f \( -name '*.c' -o -name '*.h' \
+                         -o -name '*.rs' -o -name '*.build' \) \
+                    -newer "$_hz_stamp" 2>/dev/null | head -5)
+    if [ -n "$_hz_newer_src" ]; then
+        echo "error: these Mesa sources are newer than the last successful" \
+             "build ($_hz_stamp):" >&2
+        echo "$_hz_newer_src" | sed 's/^/         /' >&2
+        echo "       The archives do not contain them, so anything built" \
+             "against them is built against source that is no longer what" \
+             "the tree says. Run scripts/build-mesa-nvk.sh and try again." >&2
+        unset _hz_stamp _hz_newer_src
+        return 1
+    fi
+    unset _hz_stamp _hz_newer_src
     return 0
+}
+
+# ALL SEVENTEEN OR NONE, over the full list rather than the two
+# representative archives the staleness gate checks. What it stops is a
+# package — or now an install — shipping twelve of seventeen and calling
+# it the driver.
+#
+# The caller decides whether "no NVK build at all" is an error:
+# package-horizon.sh calls this only when it has already established
+# there is one, because a Makefile-only package legitimately has none
+# (docs/BUILDING.md §5), while package-portlibs.sh refuses outright
+# because an install with no driver in it is not an install.
+horizon_nvk_archive_gate() {
+    _hz_nvk_missing=$(horizon_nvk_missing_libs | tr '\n' ' ')
+    if [ -n "$_hz_nvk_missing" ]; then
+        echo "error: NVK archives exist but these named in" \
+             "\$HORIZON_NVK_TEST_LIBS are missing from" \
+             "$MESA_NVK_BUILD_DIR: $_hz_nvk_missing" >&2
+        echo "       scripts/build-mesa-nvk.sh is what produces them." >&2
+        unset _hz_nvk_missing
+        return 1
+    fi
+    unset _hz_nvk_missing
+    return 0
+}
+
+# Copy one archive somewhere it will still link — see
+# scripts/fatten-archives.sh for what that means and why a plain cp of a
+# Meson archive does not.
+#
+# For a caller with ONE archive to move. Anything with a list of them
+# should build a job file and call scripts/fatten-archives.sh through
+# horizon_run itself: this spends a container invocation per archive in
+# container mode, which is exactly what that script exists not to do.
+horizon_fatten_archive() {
+    _hz_fa_job=$(mktemp "build/fatten-job.XXXXXX")
+    printf '%s\t%s\n' "$1" "$2" > "$_hz_fa_job"
+    if horizon_run bash scripts/fatten-archives.sh "$_hz_fa_job" >/dev/null; then
+        rm -f "$_hz_fa_job"
+        unset _hz_fa_job
+        return 0
+    fi
+    rm -f "$_hz_fa_job"
+    unset _hz_fa_job
+    return 1
 }
 
 # Both halves, because the Meson path bakes both answers into

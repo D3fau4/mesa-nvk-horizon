@@ -252,9 +252,36 @@ jobs:
           scripts/package-horizon.sh build/pkg
           cat build/pkg/MANIFEST.txt
 
+      # THE OTHER ARTEFACT, AND IT IS NOT A SUBSET OF THE ONE ABOVE.
+      # build/pkg holds what goes to a console: .nro, with a manifest
+      # attributing them to one build. This is what another PROJECT
+      # links — the archives fattened so they survive leaving this tree,
+      # the headers, and an nvk.pc that makes
+      # `pkg-config --cflags --libs nvk` produce a link line that works.
+      #
+      # It is the same script `make install` runs, so what CI publishes
+      # and what an install places cannot be different file sets.
+      - name: the portlibs tarball
+        run: |
+          set -eu
+          scripts/package-portlibs.sh
+          cat build/mesa-nvk-horizon-portlibs.tar.gz.sha256
+
       - name: Upload dist
         uses: actions/upload-artifact@v4
         with:
           name: horizon-gpu-full
           path: build/pkg
+          if-no-files-found: error
+
+      # Its own artefact rather than a file inside the one above: that
+      # one uploads the build/pkg DIRECTORY, and the two have different
+      # audiences anyway.
+      - name: Upload the portlibs tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvk-portlibs
+          path: |
+            build/mesa-nvk-horizon-portlibs.tar.gz
+            build/mesa-nvk-horizon-portlibs.tar.gz.sha256
           if-no-files-found: error

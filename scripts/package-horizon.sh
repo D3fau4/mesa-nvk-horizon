@@ -78,7 +78,6 @@ fi
 #
 # A tree with no NVK build has nothing to compare against and this says
 # so rather than passing quietly.
-_nvk_dir="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
 _nvk_tests=$(sed -n '/^nvk_tests = \[/,/^]/p' meson.build |
              grep -o "'t_[a-z_0-9]*'" | tr -d "'")
 if [ -z "$_nvk_tests" ]; then
@@ -87,74 +86,43 @@ if [ -z "$_nvk_tests" ]; then
          "that checks nothing must not report success" >&2
     exit 1
 fi
-# AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN.
+# AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN: the build's own
+# success stamp, and no Mesa source newer than it.
 #
-# The check below asks whether an artefact is older than the archives it
-# links. It cannot ask whether those archives are older than the source
-# they were built from — and on 2026-08-08 that is exactly what shipped:
-# a t_vk_swapchain.nro built minutes earlier, linked against a
-# libvulkan_wsi.a from three days before, missing the one patch the run
-# was meant to test. The .nro was newer than the archive, so the gate
-# below passed with nothing to say.
-#
-# The build had failed and said so; the command that ran it printed
-# "built" regardless, because an unconditional echo followed a filtered
-# pipeline. A gate is the answer to that, not more care.
-#
-# AGAINST THE BUILD'S OWN SUCCESS STAMP, not against an archive. The
-# first version of this compared every file under mesa/src with
-# libvulkan_wsi.a, and that is wrong in the ordinary case: Ninja does
-# not touch an archive whose inputs did not change, so editing anything
-# outside WSI leaves libvulkan_wsi.a older than the source that was just
-# correctly compiled, and a good build reads as stale. Reported by
-# Codex on PR #8, and right.
-#
-# scripts/build-mesa-nvk.sh touches .horizon-build-ok as its last act,
-# under `set -e`, so the stamp exists only if every step succeeded and
-# is newer than everything that run compiled.
-_stamp="$_nvk_dir/.horizon-build-ok"
-if [ -d mesa/src ]; then
-    if [ ! -f "$_stamp" ]; then
-        echo "error: $_stamp does not exist, so no complete" \
-             "scripts/build-mesa-nvk.sh run has produced the archives in" \
-             "$_nvk_dir. Run it and package again." >&2
-        exit 1
-    fi
-    _newer_src=$(find mesa/src -type f \( -name '*.c' -o -name '*.h' \
-                      -o -name '*.rs' -o -name '*.build' \) \
-                 -newer "$_stamp" 2>/dev/null | head -5)
-    if [ -n "$_newer_src" ]; then
-        echo "error: these Mesa sources are newer than the last successful" \
-             "build ($_stamp):" >&2
-        echo "$_newer_src" | sed 's/^/         /' >&2
-        echo "       The archives do not contain them, so every" \
-             "driver-linked artefact here is built against source that is" \
-             "no longer what the tree says. Run" \
-             "scripts/build-mesa-nvk.sh and package again." >&2
-        exit 1
-    fi
-fi
+# The gate and the whole story behind it now live in
+# scripts/toolchain-env.sh, unchanged and with their `[ -d mesa/src ]`
+# guard, because scripts/package-portlibs.sh became a second caller that
+# has to ask exactly the same question before it installs these archives
+# into a toolchain prefix. Two copies of a gate are two gates that can
+# drift, and this one already cost a hardware run once.
+horizon_nvk_build_stamp_gate || exit 1
 
 # BOTH ARCHIVES, NOT WHICHEVER SURVIVED. A partial build that leaves
 # only one of them used to be accepted: the loop below `continue`d past
 # the missing one, the "no NVK archives" branch did not fire either, and
 # an old .nro could be validated against libnvk.a alone while also
 # linking WSI. Reported by Codex on PR #8.
-_required_libs="$_nvk_dir/src/nouveau/vulkan/libnvk.a
-$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"
+_required_libs="$MESA_NVK_BUILD_DIR/src/nouveau/vulkan/libnvk.a
+$MESA_NVK_BUILD_DIR/src/vulkan/wsi/libvulkan_wsi.a"
 _missing=""
 for _lib in $_required_libs; do
     [ -f "$_lib" ] || _missing="$_missing $_lib"
 done
-if [ -n "$_missing" ] && [ -f "$_stamp" ]; then
+# The stamp is re-tested here rather than remembered from the gate
+# above: it used to be a $_stamp variable set inside that block and read
+# out here, so moving the block into a function would have left this
+# line reading an unset variable — an immediate `set -eu` abort, not a
+# subtle change.
+if [ -n "$_missing" ] &&
+   [ -f "$MESA_NVK_BUILD_DIR/.horizon-build-ok" ]; then
     echo "error: a successful build is recorded but these archives the" \
          "tests link are missing:$_missing" >&2
     exit 1
 fi
 
 _newest_lib=""
-for _lib in "$_nvk_dir/src/nouveau/vulkan/libnvk.a" \
-            "$_nvk_dir/src/vulkan/wsi/libvulkan_wsi.a"; do
+for _lib in "$MESA_NVK_BUILD_DIR/src/nouveau/vulkan/libnvk.a" \
+            "$MESA_NVK_BUILD_DIR/src/vulkan/wsi/libvulkan_wsi.a"; do
     [ -f "$_lib" ] || continue
     if [ -z "$_newest_lib" ] || [ "$_lib" -nt "$_newest_lib" ]; then
         _newest_lib="$_lib"
@@ -162,7 +130,7 @@ for _lib in "$_nvk_dir/src/nouveau/vulkan/libnvk.a" \
 done
 
 if [ -z "$_newest_lib" ]; then
-    echo "package-horizon: no NVK archives in $_nvk_dir, so nothing here" \
+    echo "package-horizon: no NVK archives in $MESA_NVK_BUILD_DIR, so nothing here" \
          "links them and there is no staleness to check" >&2
 else
     _stale=0
@@ -357,8 +325,56 @@ _pkg_gpu_lib="$SRC/libhorizon_gpu.a"
     exit 1
 }
 mkdir -p "$OUT/lib"
-cp "$_pkg_gpu_lib" "$OUT/lib/libhorizon_gpu.a"
-cp "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" "$OUT/lib/libhorizon_compat.a"
+
+# STAGED SO THEY STILL LINK, WHICH UNTIL NOW THEY DID NOT.
+#
+# Meson writes libhorizon_gpu.a THIN: it holds paths to the objects in
+# libhorizon_gpu.a.p/, resolved against the archive's own directory. A
+# plain cp into $OUT therefore staged an archive naming members that are
+# not beside it, and every package this project has ever published
+# carried one — while docs/BUILDING.md §5 called it "what a project
+# consuming horizon_gpu actually links against". STATUS.md records the
+# workaround: the object directory copied in by hand, once, and the
+# script left alone. The same was true of all seventeen NVK archives
+# below.
+#
+# scripts/fatten-archives.sh converts them, and the whole set goes
+# through it in ONE invocation: in container mode horizon_run starts a
+# docker run per call, so nineteen calls would be nineteen containers.
+# The job file has to live in the tree, which is what horizon_run
+# mounts.
+_pkg_work="build/package-tmp.$$"
+trap 'rm -rf "$_pkg_work"' EXIT INT TERM
+mkdir -p "$_pkg_work"
+
+# In container mode the fattening runs inside the image, which sees only
+# $PWD — so an $OUT somewhere else would be written to a path that
+# vanishes with the container. Refused here rather than half-written,
+# the same way scripts/toolchain-env.sh refuses a $MESA_BUILD_DIR
+# outside the tree.
+if [ "$HORIZON_IN_CONTAINER" -eq 1 ]; then
+    case "$(cd "$OUT" 2>/dev/null && pwd || echo "$PWD/$OUT")" in
+        "$PWD" | "$PWD"/*) ;;
+        *)
+            echo "error: $OUT is outside $PWD, and the toolchain container" \
+                 "mounts only \$PWD, so the archives could not be staged" \
+                 "there. Package into a directory inside the tree, or" \
+                 "install devkitA64 locally." >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# The leftovers of that hand workaround. Once the archive carries its
+# objects the directory beside it is dead weight that would be shipped
+# as part of the package, and worse, would go on looking like the thing
+# that makes the archive work.
+rm -rf "$OUT"/lib/*.a.p
+
+printf '%s\t%s\n' "$_pkg_gpu_lib" "$OUT/lib/libhorizon_gpu.a" \
+    > "$_pkg_work/jobs"
+printf '%s\t%s\n' "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" \
+                  "$OUT/lib/libhorizon_compat.a" >> "$_pkg_work/jobs"
 
 # THE HEADERS THAT LIBRARY IS COMPILED AGAINST, not whatever copy a
 # consumer's own tree happens to have. horizon/include/horizon_gpu/ is
@@ -378,8 +394,8 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # path never configures Mesa at all, and even the Meson path can be
 # configured without NVK (docs/BUILDING.md §4). $_newest_lib, set by the
 # staleness gate above, is already this script's own answer to "does
-# $_nvk_dir hold a real build" — asked again here would be a second
-# place that question could drift from the first.
+# $MESA_NVK_BUILD_DIR hold a real build" — asked again here would be a
+# second place that question could drift from the first.
 #
 # $HORIZON_NVK_TEST_LIBS is the same list scripts/ci-build-archives.sh
 # and scripts/check-mesa-test-parity.sh already read out of
@@ -398,29 +414,73 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # list rather than the two representative archives that gate checks, is
 # what stops a package from shipping twelve of seventeen and calling it
 # the driver.
+#
+# The check itself is horizon_nvk_archive_gate in
+# scripts/toolchain-env.sh, shared with scripts/package-portlibs.sh. The
+# `if [ -n "$_newest_lib" ]` around it stays HERE and was deliberately
+# not moved with it: this script's answer to "no NVK build at all" is to
+# omit lib/nvk/ and still succeed, which docs/BUILDING.md §5 documents,
+# while an install with no driver in it is not an install and refuses.
+# That difference is the caller's, so the condition is the caller's.
 if [ -n "$_newest_lib" ]; then
-    _nvk_missing=""
-    for _lib in $HORIZON_NVK_TEST_LIBS; do
-        [ -f "$_nvk_dir/$_lib" ] || _nvk_missing="$_nvk_missing $_lib"
-    done
-    if [ -n "$_nvk_missing" ]; then
-        echo "error: NVK archives exist but these named in" \
-             "\$HORIZON_NVK_TEST_LIBS are missing from $_nvk_dir:" \
-             "$_nvk_missing" >&2
-        exit 1
-    fi
-    rm -rf "$OUT/lib/nvk"
-    mkdir -p "$OUT/lib/nvk"
+    horizon_nvk_archive_gate || exit 1
+    # NOT `rm -rf "$OUT/lib/nvk"` any more. Fattened, these are ~225 MiB;
+    # wiping them before every run would re-fatten and re-write all of
+    # it each time, which is exactly the idempotence this script's header
+    # promises. They are converted in place instead — unchanged content
+    # leaves the file alone, mtime included — and anything the list no
+    # longer names is pruned by name below.
     for _lib in $HORIZON_NVK_TEST_LIBS; do
         mkdir -p "$OUT/lib/nvk/$(dirname "$_lib")"
-        cp "$_nvk_dir/$_lib" "$OUT/lib/nvk/$_lib"
+        printf '%s\t%s\n' "$MESA_NVK_BUILD_DIR/$_lib" "$OUT/lib/nvk/$_lib" \
+            >> "$_pkg_work/jobs"
     done
+    horizon_run bash scripts/fatten-archives.sh "$_pkg_work/jobs"
+
+    # Anything under lib/nvk/ that $HORIZON_NVK_TEST_LIBS no longer
+    # names. Same argument as the .nro drop loop above: the manifest
+    # below hashes what is in $OUT, so a leftover from a previous
+    # packaging run would be listed under this run's build.
+    printf '%s\n' $HORIZON_NVK_TEST_LIBS | LC_ALL=C sort > "$_pkg_work/want"
+    (cd "$OUT/lib/nvk" && find . -name '*.a' | sed 's|^\./||') |
+        LC_ALL=C sort > "$_pkg_work/have"
+    LC_ALL=C comm -13 "$_pkg_work/want" "$_pkg_work/have" |
+        while IFS= read -r _stale_lib; do
+            [ -n "$_stale_lib" ] || continue
+            echo "package-horizon: dropping lib/nvk/$_stale_lib — not in" \
+                 "\$HORIZON_NVK_TEST_LIBS"
+            rm -f "$OUT/lib/nvk/$_stale_lib"
+        done
+
     echo "package-horizon: $(printf '%s\n' $HORIZON_NVK_TEST_LIBS | wc -l)" \
          "NVK driver archive(s) staged under $OUT/lib/nvk/"
 else
+    horizon_run bash scripts/fatten-archives.sh "$_pkg_work/jobs"
     rm -rf "$OUT/lib/nvk"
-    echo "package-horizon: no NVK build in $_nvk_dir; lib/nvk/ omitted" \
-         "(the .nro-only package is still complete for horizon_gpu itself)"
+    echo "package-horizon: no NVK build in $MESA_NVK_BUILD_DIR;" \
+         "lib/nvk/ omitted (the .nro-only package is still complete for" \
+         "horizon_gpu itself)"
+fi
+
+# NOTHING THIN LEFT THE BUILDING. The whole point of the conversion
+# above is that these archives link somewhere other than the tree that
+# built them, and an archive that is still thin fails at a consumer's
+# link with "error opening thin archive member" — a long way from here,
+# and about a file of ours.
+_pkg_thin=""
+for _a in "$OUT"/lib/*.a; do
+    [ -f "$_a" ] || continue
+    [ "$(head -c 7 "$_a")" = '!<thin>' ] && _pkg_thin="$_pkg_thin $_a"
+done
+if [ -d "$OUT/lib/nvk" ]; then
+    for _a in $(find "$OUT/lib/nvk" -name '*.a'); do
+        [ "$(head -c 7 "$_a")" = '!<thin>' ] && _pkg_thin="$_pkg_thin $_a"
+    done
+fi
+if [ -n "$_pkg_thin" ]; then
+    echo "error: these staged archives are still thin:$_pkg_thin" >&2
+    echo "       They name objects they do not contain." >&2
+    exit 1
 fi
 
 # THE LICENCE TRAVELS WITH THE BINARIES.

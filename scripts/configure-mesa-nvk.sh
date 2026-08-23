@@ -90,7 +90,23 @@ fi
 rm -rf "$HORIZON_GPU_PREFIX"
 mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
 cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
-cp "$HORIZON_BUILD_DIR/libhorizon_gpu.a" "$HORIZON_GPU_PREFIX/lib/"
+# FATTENED, NOT COPIED, and this was a live bug rather than a
+# precaution. Meson writes libhorizon_gpu.a as a THIN archive: it holds
+# paths to the objects in libhorizon_gpu.a.p/, resolved relative to the
+# archive's own directory. Copied here, those paths point at a
+# libhorizon_gpu.a.p/ that does not exist beside it, and the staged
+# archive is not readable at all — measured on this tree before the fix:
+#
+#   $ aarch64-none-elf-gcc-ar t build/toolchain/horizon-gpu/lib/libhorizon_gpu.a
+#   ar: build/toolchain/horizon-gpu/lib/libhorizon_gpu.a: No such file or directory
+#
+# It went unnoticed because nothing has linked it yet: -Dhorizon-gpu-dir
+# supplies an include directory and a find_library that locates the file
+# without linking it. The day anything in that build does link it, this
+# is a link failure inside Mesa about a file of ours. See
+# scripts/fatten-archives.sh.
+horizon_fatten_archive "$HORIZON_BUILD_DIR/libhorizon_gpu.a" \
+                       "$HORIZON_GPU_PREFIX/lib/libhorizon_gpu.a"
 echo "configure-mesa-nvk: horizon_gpu staged in $HORIZON_GPU_PREFIX"
 
 # The identity NVK reports as driverUUID and the pipeline cache UUID, and
