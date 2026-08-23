@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-08-23 (`make install` — the driver as a devkitPro portlibs package consumable through `pkg-config`, and the thin-archive bug that made every previous package unlinkable; cross build only, no console involved; series 84 unchanged, phase unchanged, still run 31 / Phase 7 complete)
+**Last updated:** 2026-08-23 (`make install` — the driver as a devkitPro portlibs package consumable through `pkg-config`; the thin-archive bug fixed in both places it lived, so `build/pkg` and the horizon_gpu staging prefix now hold archives that link; cross build only, no console involved; series 84 unchanged, phase unchanged, still run 31 / Phase 7 complete)
 **Branch:** `claude/nvk-mem-stream-flush-before-exec`
 
 ---
@@ -33,6 +33,54 @@ below this table). **What is left is not code**: flipping visibility, and settin
 
 ---
 
+## The thin archives, both places, and the bit CI caught (2026-08-23)
+
+**Cross build only.** Follows directly from the entry below.
+
+**`build/toolchain/horizon-gpu/lib/libhorizon_gpu.a` was unreadable, and had
+always been.** `configure-mesa.sh`, `configure-mesa-nvk.sh` and
+`build-mesa-nvk.sh` all `cp`'d Meson's thin archive into a staging prefix,
+where its members resolve against a `libhorizon_gpu.a.p/` that is not beside
+it. Measured before the fix: `ar t` answered `No such file or directory`. It
+was harmless only by accident — `-Dhorizon-gpu-dir` gives Mesa an include
+directory and a `find_library` that locates the file without linking it, so
+nothing had yet asked the archive for an object. All three now fatten it:
+3 628 bytes and unreadable before, **502 416 bytes and `!<arch>` after, all
+twelve members listed**.
+
+**`build/pkg` shipped nineteen thin archives, and now ships nineteen real
+ones.** Owner's decision, asked and answered: fatten rather than drop, so
+nothing `docs/BUILDING.md` §5 and `docs/RELEASING.md` already claim stops
+being true. The package goes **246 MB → 455 MB**, which is the honest weight
+of what it says it holds. Measured: run 1 fattened 17 (two were already real)
+in 19.6 s, every archive `!<arch>`, `libnvk.a` at 95 344 536 bytes, and the
+`.a.p` directory left behind by the old hand workaround removed — it would
+have been shipped, and would have gone on looking like the thing that made
+the archive work. Run 2 reports *19 already current* and *manifest unchanged*,
+so the 225 MiB is not rewritten every time; the `rm -rf lib/nvk` that used to
+precede the copy had to go for that, replaced by pruning by name.
+
+**And the portlibs package now refuses to contain a `.nro`**, at the owner's
+instruction. Nothing staged one; the gate is there so that stays true rather
+than remaining true by nobody having added one. Provoked before it was
+believed: planting `t_init.nro` in the staging tree gets
+`error: these test binaries are staged into the portlibs package:
+lib/t_init.nro`, pointing at `package-horizon.sh` as the one that ships those.
+
+**CI caught something none of the local gates could: the executable bit.**
+The first push failed with `scripts/package-portlibs.sh: Permission denied`,
+exit 126. This checkout has `core.fileMode=false` — the norm on Windows — so
+`chmod +x` never reached the index and all three new scripts were committed
+100644 while every other script in `scripts/` is 100755. Fixed with
+`git update-index --chmod=+x`. `build-logcat.sh` was already 100644 and
+`tests/README.md` tells the reader to run it by path, so it had the same
+failure waiting in it and went with them. `toolchain-env.sh` stays 100644: it
+is sourced, never executed. **There is still no gate for this** — nothing in
+the tree checks that a script CI executes by path is executable, and on
+Windows a local run cannot notice.
+
+---
+
 ## `make install` — the driver as something another project can link (2026-08-23)
 
 **Cross build only. No console has run anything built against an installed
@@ -51,15 +99,11 @@ objects. Sixteen of the seventeen NVK archives open with `!<thin>`, and
 `libnvk.a` is 95 494 bytes naming 179 members it does not contain. This was
 already recorded for `build/pkg/lib/libhorizon_gpu.a` — worked around once by
 hand-copying the `.a.p` directory, the script left untouched — and **the same
-bug is live in a second place nobody had noticed**:
+bug was live in a second place nobody had noticed**:
 `build/toolchain/horizon-gpu/lib/libhorizon_gpu.a`, staged by
-`configure-mesa.sh`, `configure-mesa-nvk.sh` and `build-mesa-nvk.sh`, is
-broken *today*: `ar t` on it answers "No such file or directory". It is
-harmless only because nothing links it yet. **Neither is fixed here** —
-they are separate bugs and would have blurred this series — but
-`horizon_fatten_archive` now exists in `scripts/toolchain-env.sh` for
-whoever does fix them, which is why it lives there rather than inside the
-installer.
+`configure-mesa.sh`, `configure-mesa-nvk.sh` and `build-mesa-nvk.sh`, where
+`ar t` answered "No such file or directory". **Both are now fixed** — see the
+entry below this one.
 
 **What is there now.** `make install` puts 68 files into
 `$DEVKITPRO/portlibs/switch`: the seventeen NVK archives flattened into
@@ -125,10 +169,10 @@ Bash a `$DEVKITPRO` of `/opt/devkitpro` resolves inside the Git installation
 installed where no compiler will ever look, exit status 0. `make install` now
 looks for `devkitA64/` under `$DEVKITPRO` and refuses.
 
-**Not done, deliberately:** the two pre-existing thin-archive bugs above;
-`.forgejo/workflows-disabled/`, whose files are commented out line by line and
-describe themselves as a record of a workflow rather than a workflow, so
-adding a step that never ran there would make the record wrong.
+**Not done, deliberately:** `.forgejo/workflows-disabled/`, whose files are
+commented out line by line and describe themselves as a record of a workflow
+rather than a workflow, so adding a step that never ran there would make the
+record wrong.
 
 **IT LINKS, AND THAT IS THE ONLY PART THAT COULD NOT BE FAKED.** A program
 was compiled and linked against an installed prefix using nothing but
