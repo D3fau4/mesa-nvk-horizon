@@ -1,7 +1,7 @@
-From c76bf7f13407d501b045065eec323bd6517aac5f Mon Sep 17 00:00:00 2001
+From 06afdf4ebe7353a0660112c0774831ff7933c6b9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
-Date: Tue, 28 Jul 2026 13:36:45 +0000
-Subject: [PATCH 19/81] nouveau/vk: nvkmd_horizon memory objects, VA heap and
+Date: Sun, 23 Aug 2026 21:50:39 +0000
+Subject: [PATCH 19/49] nouveau/vk: nvkmd_horizon memory objects, VA heap and
  bind/unbind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -21,27 +21,52 @@ call site. log_handle is the in-process NvMap handle: the closest thing
 this platform has to the GEM handle the field was named after, and a
 real identifier rather than a number invented to fill it.
 
-Three requests are refused by name instead of quietly downgraded:
-NVKMD_MEM_VRAM (GM20B has none), NVKMD_MEM_SHARED (no dma-buf, and
-nvkmd_info already says so) and NVKMD_MEM_MAP_FIXED (NvMap chooses the
-CPU address; honouring the call at a different one would be worse than
-failing).
+NVKMD_MEM_COHERENT is an uncached allocation (decision D14): NVK means
+an uncached map by HOST_COHERENT on an SoC (nvk_physical_device.c), and
+nvkmd_mem_sync_to_gpu / sync_from_gpu return before doing anything when
+the flag is set, so a cached allocation behind it would get no
+maintenance from anywhere. Everything else stays CACHED, which is what
+heap memory is and what the explicit flush/invalidate around it expects.
 
-VA reservation picks the address space half rather than assuming one.
-Horizon's GPU address space has a small-page region and a big-page one,
-and a reservation lives entirely in one: horizon_gpu_vm_map uses the
-reservation's page size for every mapping inside it. The big-page half
-is chosen when both the size and the alignment are multiples of the big
-page, which is exactly when every mapping inside can satisfy the
-alignment the map call will demand.
+Every memory object gets its own bound VA, because NVK reads
+mem->va->addr directly and not as a special case — nvk_buffer.c,
+nvk_device.c's zero page while vkCreateDevice is still running, and
+nvk_cmd_buffer.c for every push. The nouveau backend establishes that
+invariant inside its own alloc_mem and nothing in nvkmd core
+re-establishes it for a backend that does not. free() releases the VA
+before destroying the memory: releasing the reservation unmaps what is
+bound in it, and horizon_gpu_mem_destroy refuses with ERR_BUSY while any
+mapping is alive, so the other order would fail every free.
 
-Three VA flags fail by name for one reason each: ALLOC_FIXED, because
-NVGPU_AS_IOCTL_ALLOC_SPACE lets the kernel choose the base and there is
-no "place it here" form — answering with a different address is the one
-thing a caller asking for a fixed one cannot tolerate; SPARSE, because
-that is decision D12 and NVK would otherwise advertise sparseBinding on
-this chip; and REPLAY, which needs fixed addresses for the same reason
-as the first.
+Two requests are refused by name instead of quietly downgraded:
+NVKMD_MEM_VRAM (GM20B has none) and NVKMD_MEM_SHARED (no dma-buf, and
+nvkmd_info already says so). NVKMD_MEM_MAP_FIXED likewise: NvMap chooses
+the CPU address, and honouring the call at a different one would be
+worse than failing.
+
+VA reservation defaults to the small-page half of the address space,
+which imposes the least on the binds inside it: horizon_gpu_vm_map uses
+the reservation's page size for every mapping, and a reservation is not
+always bound as one piece — nvk_mem_arena binds 64 KiB chunks at 64 KiB
+offsets into a VA that is megabytes wide. The one exception is a
+non-pitch (block-linear) PTE kind, which goes to the big-page half: the
+Maxwell MMU only fills block-linear kinds in big pages, and such a
+mapping in the small-page half faults on first access rather than
+failing to map. When a bind fails, the error names the VA offset, the
+memory offset, the range, the PTE kind and the reservation's page size —
+the number that decides whether the offsets were legal.
+
+Unbind checks the result before freeing the binding: horizon_gpu_vm_unmap
+deliberately leaves the mapping alive on failure so the caller can
+retry, and the binding is the only pointer to it. On failure the binding
+goes back on the list and the caller gets the error with the mapping
+still tracked; freeing first stranded the VA range permanently.
+
+Two VA flags fail by name for one reason each: SPARSE, because that is
+decision D12 and NVK would otherwise advertise sparseBinding on this
+chip; and REPLAY, which needs fixed addresses. ALLOC_FIXED is refused
+here and implemented later in this series, together with the shader
+window reservation that needs it.
 
 nvkmd unbinds by (offset, range) and never hands back what bind_mem
 returned, so the VA remembers what it mapped where. An exact match is
@@ -49,15 +74,45 @@ required: horizon_gpu maps and unmaps whole mappings, and unbinding half
 of one would leave the address space and that list disagreeing.
 
 mesa-nvk-horizon: Phase 4 items 3-5
+Why: nvkmd's memory and VA ops are libdrm/GEM-shaped; on Horizon a
+  memory object is an NvMap handle and a GPU VA is an explicit
+  reservation, so the backend has to establish itself every invariant
+  (a bound VA per object, a page-size half per reservation) that a BO
+  gives the nouveau backend for free.
 Evidence: libnvk.a is 94 482 bytes with all five backend objects in the
   archive and 0 TLS relocations; scripts/build-mesa-nvk.sh builds it.
+  On hardware, 2026-07-28: dev->images' 1 MiB contiguous VA landed in
+  the big-page half, its first 0x10000 chunk's size rounded up to
+  0x20000, no longer fit the memory object, and vkCreateDevice failed
+  with VK_ERROR_UNKNOWN — the measurement behind the small-page default.
+Upstream: no — this is the Horizon backend's own memory and VA path.
+
+Absorbs (2026-08-23 series compaction; full history in mesa-patches/'s
+own git log):
+
+- 0023 "put block-linear mappings in the big-page half": the Maxwell MMU
+  only fills block-linear kinds in big pages; choosing the half by size
+  and alignment alone put some tiled images in the wrong one.
+- 0028 "name the number that decides a failed bind": the bind failure
+  message names the reservation's page size
+  (horizon/include/horizon_gpu/vm.h alignment contract).
+- 0030 "NVKMD_MEM_COHERENT is an uncached allocation": decision D14;
+  nvkmd.c returns early from sync_to_gpu/sync_from_gpu on the flag.
+- 0031 "every memory object needs its own VA": nvk_buffer.c:271,
+  nvk_device.c:295 and nvk_cmd_buffer.c:195 dereference mem->va with no
+  NULL check.
+- 0034 "the reservation's size does not pick its page half": measured on
+  hardware 2026-07-28 (the vkCreateDevice failure quoted above); also
+  stopped logging a VA freed with memory still bound as a driver bug —
+  it is nvk_mem_arena_finish's ordinary path.
+- 0043 "keep the binding when unbind fails": found by review on PR #6.
 ---
  src/nouveau/vulkan/meson.build                |   2 +
- .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  36 +++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  36 ++
  .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  |  24 +-
- .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 222 ++++++++++++++++
- .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 249 ++++++++++++++++++
- 5 files changed, 511 insertions(+), 22 deletions(-)
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 285 ++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 313 ++++++++++++++++++
+ 5 files changed, 638 insertions(+), 22 deletions(-)
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 
@@ -180,10 +235,10 @@ index 14696c0..7720a8a 100644
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 new file mode 100644
-index 0000000..cfcc923
+index 0000000..f6901f2
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,285 @@
 +/*
 + * Copyright (c) mesa-nvk-horizon contributors
 + * SPDX-License-Identifier: MIT
@@ -203,6 +258,14 @@ index 0000000..cfcc923
 +nvkmd_horizon_mem_free(struct nvkmd_mem *_mem)
 +{
 +   struct nvkmd_horizon_mem *mem = nvkmd_horizon_mem(_mem);
++
++   /* The VA first, and not only for symmetry with alloc: releasing a
++    * horizon_gpu reservation unmaps what is bound in it, and
++    * horizon_gpu_mem_destroy refuses with ERR_BUSY while any mapping of
++    * the object is still alive. The other order would fail every free.
++    */
++   if (mem->base.va != NULL)
++      nvkmd_va_free(mem->base.va);
 +
 +   horizon_gpu_result res = horizon_gpu_mem_destroy(mem->gpu_mem);
 +   if (res.status != HORIZON_GPU_OK) {
@@ -375,17 +438,26 @@ index 0000000..cfcc923
 +   if (align != 0 && align < HORIZON_GPU_SMALL_PAGE_SIZE)
 +      align = HORIZON_GPU_SMALL_PAGE_SIZE;
 +
-+   /* HORIZON_GPU_MEM_CACHED is the only policy horizon_gpu offers, and
-+    * that is a statement about the platform rather than a limitation of
-+    * this backend: homebrew heap memory on Horizon is CPU-cached.
-+    * NVKMD_MEM_COHERENT therefore cannot be satisfied by the allocation
-+    * itself — it is satisfied by the sync_to_gpu/sync_from_gpu calls
-+    * nvk already makes around every access, which is decision D5 and is
-+    * why that decision is still open.
++   /* NVKMD_MEM_COHERENT means what NVK says it means on an SoC: an
++    * *uncached* map, the alternative to the cached one
++    * (nvk_physical_device.c:1571-1575). It cannot be satisfied by cache
++    * maintenance instead, because nvkmd_mem_sync_to_gpu and
++    * sync_from_gpu return before doing anything when the flag is set
++    * (nvkmd.c:457, :476) — so a cached allocation behind that flag
++    * would get no maintenance from anywhere and neither side would see
++    * the other's writes.
++    *
++    * D14. horizon_gpu gained the policy for exactly this; everything
++    * else stays CACHED, which is what heap memory is and what the
++    * explicit flush/invalidate around it expects.
 +    */
++   const horizon_gpu_cache_policy policy =
++      (flags & NVKMD_MEM_COHERENT) ? HORIZON_GPU_MEM_UNCACHED
++                                   : HORIZON_GPU_MEM_CACHED;
++
 +   horizon_gpu_result res =
-+      horizon_gpu_mem_create(dev->gpu, size_B, align,
-+                             HORIZON_GPU_MEM_CACHED, &mem->gpu_mem);
++      horizon_gpu_mem_create(dev->gpu, size_B, align, policy,
++                             &mem->gpu_mem);
 +   if (res.status != HORIZON_GPU_OK) {
 +      FREE(mem);
 +      return vk_errorf(log_obj, nvkmd_horizon_result(res),
@@ -402,16 +474,62 @@ index 0000000..cfcc923
 +                  horizon_gpu_mem_size(mem->gpu_mem),
 +                  _dev->pdev->bind_align_B);
 +
++   /* EVERY nvkmd_mem CARRIES ITS OWN VA, BOUND AT OFFSET 0.
++    *
++    * This is not an optimisation and it is not optional. NVK reads
++    * mem->va->addr directly for any buffer that has no VA of its own,
++    * which is every ordinary buffer — only sparse and capture/replay
++    * buffers get one (nvk_buffer.c:119-121):
++    *
++    *     buffer->vk.device_address = mem->mem->va->addr + memoryOffset;
++    *                                      -- nvk_buffer.c:271
++    *
++    * so leaving this NULL is a null dereference inside
++    * vkBindBufferMemory, and nvk_device_memory.c:278 reads the same
++    * field. The nouveau backend allocates and binds here for exactly
++    * this reason (nvkmd_nouveau_mem.c:56-66); this backend has to do
++    * the same thing, and the fact that a GPU VA on Horizon is an
++    * explicit reservation rather than a side effect of BO creation is
++    * precisely why it cannot be inherited for free.
++    *
++    * NVKMD_VA_GART: there is no VRAM on this device, so every
++    * allocation is pinned system memory, which is what the flag says
++    * and what puts the reservation in the small-page half. PITCH kind:
++    * this is the untiled path — alloc_tiled_mem is a separate op and
++    * is not implemented here.
++    */
++   const uint64_t va_align_B = MAX2(_dev->pdev->bind_align_B, align);
++
++   VkResult result =
++      nvkmd_dev_alloc_va(_dev, log_obj, NVKMD_VA_GART,
++                         HORIZON_GPU_PTE_KIND_PITCH, mem->base.size_B,
++                         va_align_B, 0 /* fixed_addr */, &mem->base.va);
++   if (result != VK_SUCCESS)
++      goto fail_gpu_mem;
++
++   result = nvkmd_va_bind_mem(mem->base.va, log_obj, 0 /* va_offset_B */,
++                              &mem->base, 0 /* mem_offset_B */,
++                              mem->base.size_B);
++   if (result != VK_SUCCESS)
++      goto fail_va;
++
 +   *mem_out = &mem->base;
 +
 +   return VK_SUCCESS;
++
++fail_va:
++   nvkmd_va_free(mem->base.va);
++fail_gpu_mem:
++   horizon_gpu_mem_destroy(mem->gpu_mem);
++   FREE(mem);
++   return result;
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 new file mode 100644
-index 0000000..8e6bc1c
+index 0000000..70cca2c
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,313 @@
 +/*
 + * Copyright (c) mesa-nvk-horizon contributors
 + * SPDX-License-Identifier: MIT
@@ -450,17 +568,20 @@ index 0000000..8e6bc1c
 +{
 +   struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
 +
-+   /* nvkmd's contract is that a VA is unbound before it is freed. If
-+    * something is still bound, releasing the reservation would fail
-+    * with ERR_BUSY and leak both, so the bindings are torn down here
-+    * and the fact is logged: it is a driver bug, not an application
-+    * one, and it should be visible.
++   /* Freeing a VA that still has memory bound is nvkmd's ordinary path,
++    * not a caller error: nvkmd_horizon_mem_free releases the VA its
++    * object owns without unbinding first, and nvk_mem_arena_finish says
++    * so in as many words — "Freeing the VA will unbind all the memory".
++    * horizon_gpu_vm_release refuses with ERR_BUSY while a mapping is
++    * alive, so the bindings are torn down here first.
++    *
++    * An earlier version logged this as a driver bug. It is not one, and
++    * the message cost a hardware round trip to dismiss: it was the only
++    * thing printed on a failed vkCreateDevice, so it read as the cause
++    * while the real failure was silent.
 +    */
 +   list_for_each_entry_safe(struct nvkmd_horizon_binding, b,
 +                            &va->bindings, link) {
-+      mesa_loge("nvkmd_horizon: VA 0x%" PRIx64 " freed with 0x%" PRIx64
-+                " still bound at +0x%" PRIx64,
-+                _va->addr, b->range_B, b->va_offset_B);
 +      horizon_gpu_vm_unmap(b->mapping);
 +      list_del(&b->link);
 +      FREE(b);
@@ -504,10 +625,22 @@ index 0000000..8e6bc1c
 +                         true /* gpu_cacheable */, &b->mapping);
 +   if (res.status != HORIZON_GPU_OK) {
 +      FREE(b);
++      /* The page size is in the message because it is the number that
++       * decides: horizon_gpu_vm_map requires both offsets to be
++       * aligned to the *reservation's* page size (vm.h:59-63), and a
++       * VA reserved in the big-page half rejects an offset that is
++       * only small-page aligned. Without it the reader has the two
++       * offsets and no way to tell whether they were legal.
++       */
 +      return vk_errorf(log_obj, nvkmd_horizon_result(res),
-+                       "horizon_gpu_vm_map(+0x%" PRIx64 ", 0x%" PRIx64 ") "
-+                       "failed: status %d, nv 0x%08" PRIx32,
-+                       va_offset_B, range_B, (int)res.status, res.nv);
++                       "horizon_gpu_vm_map(va +0x%" PRIx64 ", mem +0x%"
++                       PRIx64 ", 0x%" PRIx64 " bytes, kind 0x%02x, page "
++                       "size 0x%" PRIx32 ") failed: status %d, "
++                       "nv 0x%08" PRIx32,
++                       va_offset_B, mem_offset_B, range_B,
++                       _va->pte_kind,
++                       horizon_gpu_va_range_page_size(va->range),
++                       (int)res.status, res.nv);
 +   }
 +
 +   b->va_offset_B = va_offset_B;
@@ -552,14 +685,30 @@ index 0000000..8e6bc1c
 +   }
 +
 +   horizon_gpu_result res = horizon_gpu_vm_unmap(found->mapping);
-+   FREE(found);
 +   if (res.status != HORIZON_GPU_OK) {
++      /* horizon_gpu_vm_unmap keeps the mapping object and the kernel
++       * mapping alive when it fails, precisely so the operation can be
++       * retried. Freeing the binding here would throw away the only
++       * pointer to that still-live mapping: the next unbind would
++       * report nothing bound, the VA could never be released because
++       * horizon_gpu still counts the mapping against it, and the memory
++       * behind it would be unreachable for the process's lifetime.
++       *
++       * So it goes back on the list it was taken off, in the same
++       * position-independent way it was found, and the caller gets the
++       * failure with the binding still tracked and still unbindable.
++       */
++      simple_mtx_lock(&va->mutex);
++      list_addtail(&found->link, &va->bindings);
++      simple_mtx_unlock(&va->mutex);
++
 +      return vk_errorf(log_obj, nvkmd_horizon_result(res),
 +                       "horizon_gpu_vm_unmap(+0x%" PRIx64 ") failed: "
 +                       "status %d, nv 0x%08" PRIx32,
 +                       va_offset_B, (int)res.status, res.nv);
 +   }
 +
++   FREE(found);
 +   return VK_SUCCESS;
 +}
 +
@@ -619,20 +768,53 @@ index 0000000..8e6bc1c
 +   /* Which half of the address space. Horizon's GPU address space has a
 +    * small-page region and a big-page one, and a reservation lives
 +    * entirely in one of them: horizon_gpu_vm_map uses the reservation's
-+    * page size for every mapping inside it.
++    * page size for every mapping inside it — both offsets must be
++    * aligned to it, and the size is rounded up to it and must still fit
++    * the memory object.
 +    *
-+    * The big-page half is chosen when both the size and the alignment
-+    * are multiples of the big page, because that is exactly when every
-+    * mapping inside the reservation can satisfy the alignment the map
-+    * call will demand. Otherwise the small-page half, which imposes
-+    * less. NVKMD_VA_GART says the caller knows the memory is pinned
-+    * system RAM and the lower alignment is enough, which is the same
-+    * answer.
++    * The reservation's own size and alignment therefore do not decide
++    * this, and an earlier version that let them was wrong. A reservation
++    * is not always bound as one piece: nvk_mem_arena binds
++    * NVK_MEM_ARENA_MIN_SIZE (64 KiB) chunks at 64 KiB offsets into a
++    * contiguous VA that is megabytes wide. "The reservation is a
++    * multiple of the big page" says nothing about the binds inside it,
++    * and nothing above this layer promises anything about them.
++    *
++    * Measured on hardware, 2026-07-28: dev->images asked for a 1 MiB
++    * contiguous VA, which met the old condition and landed in the
++    * big-page half; its first 0x10000 chunk was then bound at offset 0,
++    * the size rounded up to 0x20000, that no longer fit the 0x10000
++    * memory object, and vkCreateDevice failed with VK_ERROR_UNKNOWN.
++    *
++    * So: the small-page half, which imposes the least on the binds.
 +    */
 +   const uint32_t big = pdev->gpu_info.as_big_page_size;
 +   uint32_t page_size = HORIZON_GPU_SMALL_PAGE_SIZE;
-+   if (!(flags & NVKMD_VA_GART) && big != 0 &&
-+       (size_B % big) == 0 && (align_B % big) == 0)
++
++   /* A non-pitch PTE kind is block-linear, and the GPU MMU only fills
++    * block-linear kinds in big pages on Maxwell: a block-linear mapping
++    * in the small-page half faults on first access rather than failing
++    * to map. NVK asks for such a kind whenever an image's layout is
++    * tiled (nvk_image.c:1175 passes plane->nil.pte_kind straight
++    * through), so the default above would put every tiled image in the
++    * half whose mappings fault.
++    *
++    * Where the kind demands it, the big-page half is taken and the size
++    * rounded up to match — horizon_gpu_vm_reserve rounds to page_size
++    * itself, so this only has to choose the half. Refusing instead
++    * would fail a legal request; mapping it in the small-page half
++    * would be the silent wrong answer.
++    *
++    * Known risk, untested because Phase 4's sequence binds no images:
++    * such a reservation inherits the rounding hazard this function was
++    * just fixed for. A tiled image whose memory object is not a multiple
++    * of the big page will have its bind size rounded past the end of the
++    * object and fail. It needs the allocation rounded up to the big page
++    * where the kind is block-linear, which is nvkmd_horizon_mem's
++    * decision, not this one — recorded in STATUS.md rather than guessed
++    * at here.
++    */
++   if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
 +      page_size = big;
 +
 +   horizon_gpu_result res =

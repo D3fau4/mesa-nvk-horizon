@@ -86,3 +86,43 @@ git -C mesa format-patch -o ../mesa-patches "$MESA_COMMIT"
 That rewrites the whole series, so re-read the diff before committing: the
 numbering, the subjects and the headers above are the contract the applier
 relies on.
+
+## The 2026-08-23 compaction (84 → 49)
+
+The series was compacted on 2026-08-23: every fix-of-a-patch-in-this-series was
+folded into the patch that introduced the code, the review-finding batches were
+folded into their targets, and the shader-window block-off/revert/redo cycle
+collapsed to its final state. **The tree after applying the 49-patch series is
+byte-identical to the tree after the old 84-patch series**
+(`git rev-parse HEAD^{tree}` = `8119de7c70a7691fc4b98e8e377ab7d789c6ec8e` for
+both), so the compaction changed no code — only how the same delta is told.
+Each merged patch's message keeps the four-field header, quotes the hardware
+evidence that supports its final state, and lists what it absorbed under
+`Absorbs:`; the full pre-compaction narrative is in this directory's own git
+history.
+
+Documents that are *records* — `docs/history/`, `docs/hw-logs/README.md`, and
+dated `STATUS.md` entries — keep the old numbers, because they describe the
+series as it was when those runs happened. The map, old → new:
+
+| old | new | old | new |
+|---|---|---|---|
+| 0001–0017 | unchanged | 0049 | 0031 |
+| 0018 (+0025, 0033) | 0018 | 0050 | 0032 |
+| 0019 (+0023, 0028, 0030, 0031, 0034, 0043) | 0019 | 0051 | 0033 |
+| 0020 (+0022, 0024, 0026, 0027, 0032, 0036, 0044) | 0020 | 0052 | 0034 |
+| 0021 | 0021 | 0053 (+0055¹, 0057, 0059, 0061–0067, 0069–0073, 0075) | 0037 |
+| 0029 (+0040's comment correction) | 0022 | 0054 (+0055's nvk_wsi.c hunk) | 0038 |
+| 0038 | 0023 | 0056 | 0035 |
+| 0035 | 0024 | 0058 (+0060) | 0036 |
+| 0041 | 0025 | 0068 | 0039 |
+| 0042 | 0026 | 0074 | 0040 |
+| 0045 | 0027 | 0076 | 0041 |
+| 0046 | 0028 | 0077 | 0042 |
+| 0037 + 0039² + 0047 | 0029 | 0078 / 0079 | 0043 / 0044 |
+| 0048 | 0030 | 0080 / 0081 | 0045 / 0046 |
+| | | 0082 / 0083 / 0084 | 0047 / 0048 / 0049 |
+
+¹ 0055's `nvk_wsi.c` hunk went to new 0038 with the patch it corrects.
+² 0039's fixed-VA half; its dev-side block-off and 0040's revert of it cancel,
+and new 0029 carries the corrected pdev-side block-off.

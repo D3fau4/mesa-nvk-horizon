@@ -1,0 +1,254 @@
+From a602f8e5aae768873492b4805ee7c0457c77f959 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <noreply@invalid>
+Date: Tue, 11 Aug 2026 10:39:50 +0200
+Subject: [PATCH 41/49] vulkan/wsi: Horizon, split the acquire's wait into the
+ two things it can be
+
+mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
+Why: a zero-copy vkAcquireNextImageKHR can block in exactly two places
+ and they mean opposite things. Time in the dequeue loop means the
+ consumer has not handed a buffer back at all; time in nvMultiFenceWait
+ means it did hand one back and its own read of it had not finished.
+ From outside the driver both are one number - "the acquire was slow" -
+ and an application cannot take them apart, because neither the
+ BufferQueue's answer nor the release fence crosses the Vulkan boundary.
+ .
+ That ambiguity is currently blocking a diagnosis. A Vulkan application
+ presenting to the default window through VK_NN_vi_surface reports 157 ms
+ per frame with 139.6 ms of it inside vkAcquireNextImageKHR, three images,
+ 1280x720, swap interval 0, on the zero-copy path - against the 16666 us
+ t_vk_swapchain measures on the same hardware with the same swapchain
+ shape. The split reported here is the one measurement that separates "the
+ compositor is not consuming" from "the compositor is consuming late",
+ and nothing outside this file can produce it.
+ .
+ Off by default. A line a second from inside an acquire is not something
+ an application should pay for or read, and patch 0073 spent a run taking
+ this backend's client-invisible chatter to zero; MESA_VK_WSI_HORIZON_
+ ACQUIRE_STATS is the opt-in, alongside MESA_VK_WSI_HORIZON_FORCE_COPY.
+ Left off it costs two adds and one comparison per acquire.
+ .
+ Only acquires that returned an image are counted. A VK_TIMEOUT says how
+ long the caller was willing to wait rather than how long a buffer took,
+ and averaging the two together would hide both.
+Evidence: cross build only. `scripts/toolchain-env.sh` + `horizon_ninja -C
+ build/mesa-nvk src/vulkan/wsi/libvulkan_wsi.a` compiles wsi_horizon.c and
+ links the archive clean against Mesa 26.1.6 with devkitA64 in the
+ mesa-nvk-horizon/nx-dev-mesa image. NO CONSOLE HAS RUN THIS. The 157 ms
+ and 139.6 ms above are the reporter's application-side measurement, not
+ this counter's output - this patch exists precisely because that number
+ cannot be attributed yet.
+Upstream: no - the meter is about this backend's two blocking points and
+ the environment variable is named for it.
+---
+ src/vulkan/wsi/wsi_horizon.c | 139 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 139 insertions(+)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index d22f198..1333f5a 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -115,6 +115,12 @@
+  * "ask again soon" is expressed. */
+ #define WSI_HORIZON_REFRESH_NS 16666666u
+ 
++/* How often the acquire meter, when it is switched on, says what it has
++ * measured. One line a second: long enough that the line itself is not
++ * part of what it measures, short enough to follow a session live in the
++ * log. */
++#define WSI_HORIZON_METER_PERIOD_NS UINT64_C(1000000000)
++
+ /* How long the present path may wait for a submit to *reach* a channel
+  * before giving up on handing the compositor a fence and waiting for
+  * the render on the CPU instead. Not a wait for rendering: see
+@@ -571,6 +577,50 @@ struct wsi_horizon_image {
+    uint32_t scanout_size_B;
+ };
+ 
++/* WHERE THE ACQUIRE'S WAIT ACTUALLY GOES, and why one number was not
++ * enough to say.
++ *
++ * A zero-copy acquire can block in exactly two places, and they mean
++ * opposite things:
++ *
++ *   - in the dequeue loop, asking a BufferQueue that answers "come back
++ *     later" and sleeping an eighth of a refresh between the asks. Time
++ *     here means the consumer has not handed a buffer back yet.
++ *
++ *   - in nvMultiFenceWait, on the fence the compositor released the slot
++ *     with. Time here means a buffer *was* handed back and the
++ *     compositor's own read of it had not finished.
++ *
++ * From outside, both are "vkAcquireNextImageKHR was slow", which is the
++ * report this meter exists to break apart: an application whose frames
++ * arrive at 6.4 Hz cannot tell a compositor that is not consuming from
++ * one that is consuming late, and neither can a log line that only
++ * gives the total.
++ *
++ * Accumulated per swapchain and reported once a second. Not guarded:
++ * vkAcquireNextImageKHR externally synchronises its swapchain
++ * (VUID-vkAcquireNextImageKHR-swapchain-01802 and the "Host Synchronization"
++ * table), so two threads may not be inside this for one swapchain at
++ * once. That is the same rule the slot states above already rely on.
++ *
++ * Only acquires that returned an image are counted. A VK_TIMEOUT or a
++ * VK_NOT_READY is a different measurement — it says how long the caller
++ * was willing to wait, not how long a buffer took — and averaging the
++ * two together would hide both. */
++struct wsi_horizon_acquire_meter {
++   bool enabled;
++
++   /* When the window being accumulated into opened. Zero until the
++    * first metered acquire, which is what opens it. */
++   uint64_t window_start_ns;
++
++   uint32_t acquires;
++   uint32_t rounds;          /* dequeues that answered "come back later" */
++   uint64_t total_ns;
++   uint64_t fence_ns;        /* of the total, inside nvMultiFenceWait  */
++   uint64_t max_total_ns;
++};
++
+ struct wsi_horizon_swapchain {
+    struct wsi_swapchain base;
+ 
+@@ -617,6 +667,9 @@ struct wsi_horizon_swapchain {
+     * hold one of those references so destroy can drop exactly one. */
+    bool holds_nv_fence;
+ 
++   /* Off unless MESA_VK_WSI_HORIZON_ACQUIRE_STATS asked for it. */
++   struct wsi_horizon_acquire_meter meter;
++
+    uint32_t image_count;
+    struct wsi_horizon_image images[];
+ };
+@@ -1276,11 +1329,81 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+    return width != chain->extent.width || height != chain->extent.height;
+ }
+ 
++/* Folds one completed acquire into the meter and reports the window
++ * when it is old enough. `fence_ns` is the part of `start_ns`-to-now
++ * that was spent in nvMultiFenceWait; the rest was spent asking for a
++ * buffer. See struct wsi_horizon_acquire_meter. */
++static void
++wsi_horizon_meter_acquire(struct wsi_horizon_swapchain *chain,
++                          uint64_t start_ns, uint64_t fence_ns,
++                          uint32_t rounds)
++{
++   struct wsi_horizon_acquire_meter *m = &chain->meter;
++
++   if (!m->enabled)
++      return;
++
++   const uint64_t now_ns = os_time_get_nano();
++   /* os_time_get_nano is monotonic and `start_ns` was taken before
++    * `now_ns`, so this cannot wrap — but the subtraction is guarded
++    * rather than reasoned about, because a clock that ever stepped
++    * backwards would turn one bad sample into a 584-year mean. */
++   const uint64_t total_ns = now_ns > start_ns ? now_ns - start_ns : 0;
++   /* The fence wait happened inside the interval `total_ns` measures, so
++    * it cannot be the larger of the two. Clamped anyway: this is the
++    * subtraction the reported split is built on, and one underflow would
++    * print a queue time of eighteen quintillion microseconds. */
++   const uint64_t fence_in_ns = fence_ns < total_ns ? fence_ns : total_ns;
++
++   if (m->window_start_ns == 0)
++      m->window_start_ns = start_ns;
++
++   m->acquires++;
++   m->rounds += rounds;
++   m->total_ns += total_ns;
++   m->fence_ns += fence_in_ns;
++   if (total_ns > m->max_total_ns)
++      m->max_total_ns = total_ns;
++
++   if (now_ns - m->window_start_ns < WSI_HORIZON_METER_PERIOD_NS)
++      return;
++
++   /* Means over the window, in microseconds, beside the counts they
++    * were computed from — a mean with no denominator beside it is not
++    * a measurement anybody can check. */
++   mesa_logi("wsi_horizon: acquire over %" PRIu64 " ms: %" PRIu32
++             " acquire(s), mean %" PRIu64 " us (max %" PRIu64 "), of which "
++             "%" PRIu64 " us waiting for a free buffer over %" PRIu32
++             " dequeue round(s) and %" PRIu64 " us on the compositor's "
++             "release fence",
++             (now_ns - m->window_start_ns) / 1000000u, m->acquires,
++             m->total_ns / m->acquires / 1000u, m->max_total_ns / 1000u,
++             (m->total_ns - m->fence_ns) / m->acquires / 1000u, m->rounds,
++             m->fence_ns / m->acquires / 1000u);
++
++   /* `enabled` survives the reset; everything the window accumulated
++    * does not, so the next line is about the next second and not about
++    * the whole session. */
++   m->window_start_ns = 0;
++   m->acquires = 0;
++   m->rounds = 0;
++   m->total_ns = 0;
++   m->fence_ns = 0;
++   m->max_total_ns = 0;
++}
++
+ static VkResult
+ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+                               uint64_t timeout_ns, uint32_t *image_index)
+ {
+    const uint64_t start_ns = os_time_get_nano();
++   /* What the meter needs and this loop is the only place that knows:
++    * how much of the wait was the release fence, and how many times the
++    * queue said "come back later". Computed unconditionally — two adds
++    * per acquire — so the metered and unmetered paths are the same
++    * code. */
++   uint64_t fence_ns = 0;
++   uint32_t rounds = 0;
+    bool said_stuck = false;
+ 
+    for (;;) {
+@@ -1367,7 +1490,9 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+                wait_us = us > INT32_MAX ? INT32_MAX : (s32)us;
+             }
+ 
++            const uint64_t fence_start_ns = os_time_get_nano();
+             Result frc = nvMultiFenceWait(&image->release_fence, wait_us);
++            fence_ns = os_time_get_nano() - fence_start_ns;
+             if (R_FAILED(frc)) {
+                mesa_logw("wsi_horizon: waiting for the compositor to "
+                          "release slot %d failed: 0x%08x", slot, frc);
+@@ -1383,6 +1508,7 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+             }
+          }
+ 
++         wsi_horizon_meter_acquire(chain, start_ns, fence_ns, rounds);
+          *image_index = (uint32_t)slot;
+          return VK_SUCCESS;
+       }
+@@ -1394,6 +1520,7 @@ wsi_horizon_acquire_zero_copy(struct wsi_horizon_swapchain *chain,
+ 
+       /* No buffer yet. Every path from here honours the caller's
+        * timeout exactly, including zero. */
++      rounds++;
+       if (timeout_ns == 0)
+          return VK_NOT_READY;
+ 
+@@ -2287,6 +2414,18 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       why = "MESA_VK_WSI_HORIZON_FORCE_COPY asked for it";
+    }
+ 
++   /* OFF BY DEFAULT, and it is a measurement and not a diagnostic.
++    *
++    * A line a second from inside vkAcquireNextImageKHR is not something
++    * a shipped application should pay for or read, and patch 0073 spent
++    * a run taking this backend's client-invisible chatter to zero. But
++    * the split it reports is not reconstructible from outside the
++    * driver — an application can time its own acquire and cannot see
++    * which half of it was the compositor — so the switch exists and the
++    * cost of leaving it off is two adds per acquire. */
++   chain->meter.enabled =
++      debug_get_bool_option("MESA_VK_WSI_HORIZON_ACQUIRE_STATS", false);
++
+    for (uint32_t attempt = 0; attempt < 2; attempt++) {
+       const bool try_zero_copy = (attempt == 0) && zero_copy_wanted;
+ 
+-- 
+2.43.0
+

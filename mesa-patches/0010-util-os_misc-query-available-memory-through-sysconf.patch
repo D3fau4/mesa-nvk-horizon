@@ -1,7 +1,7 @@
-From c20a68b2443850a1e9f7ee51c919cc19cc7fb61d Mon Sep 17 00:00:00 2001
+From 052a610a3c9d75ceaed775e00aba5c48429cdb0e Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:13:16 +0000
-Subject: [PATCH 10/81] util/os_misc: query available memory through sysconf
+Subject: [PATCH 10/49] util/os_misc: query available memory through sysconf
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -44,10 +44,10 @@ Upstream: yes — general, guarded on the macro actually existing, and
  1 file changed, 9 insertions(+)
 
 diff --git a/src/util/os_misc.c b/src/util/os_misc.c
-index 0ef5128..bf56517 100644
+index cc2248f..6173e22 100644
 --- a/src/util/os_misc.c
 +++ b/src/util/os_misc.c
-@@ -475,6 +475,15 @@ os_get_available_system_memory(uint64_t *size)
+@@ -477,6 +477,15 @@ os_get_available_system_memory(uint64_t *size)
  
     *size = ((uint64_t)vm_stats.free_count + (uint64_t)vm_stats.inactive_count) * PAGE_SIZE;
     return true;

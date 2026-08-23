@@ -1,0 +1,104 @@
+From 727932b49175984b2319593a9436c88d6397d6f7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 19:38:36 +0000
+Subject: [PATCH 25/49] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
+ item 8, extension 1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+nvkmd_horizon_dev_get_gpu_timestamp was UNREACHABLE, on the grounds that
+horizon_gpu had no timestamp query. Phase 4 step 1's own interface table
+said otherwise about this exact function: "libnx has the same clock:
+nvGpuGetTimestamp (nvidia/gpu.h:16) over nvioctlNvhostCtrlGpu_GetGpuTime
+(nvidia/ioctl.h:262) -> extension 1". The survey was right; the
+implementation comment written afterwards contradicted it.
+
+So horizon_gpu exposes the query and this returns it. That is the third
+claim in this backend about a missing platform capability that turned
+out to be about a missing wrapper.
+
+nvkmd's signature has no way to report failure. Returning zero would be
+a wrong answer offered as a real one, so a failed read is logged and the
+last good value repeated: a clock that stalls is wrong in a way a caller
+can notice, one that jumps to zero is not.
+
+mesa-nvk-horizon: Phase 4 item 8 (extension 1, GPU timestamps)
+Why: nvkmd_horizon_dev_get_gpu_timestamp claimed the platform had no
+  timestamp query; the Phase 4 step 1 interface survey already named
+  the ioctl, so the gap was a missing wrapper, not a missing capability.
+Evidence: libnx nvidia/gpu.h:16 (nvGpuGetTimestamp) over
+  nvidia/ioctl.h:262 (nvioctlNvhostCtrlGpu_GetGpuTime), as the survey
+  recorded.
+Upstream: no — this is the Horizon backend's own dev op.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  6 ++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  | 32 +++++++++++++++----
+ 2 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 883a973..8072cf3 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -92,6 +92,12 @@ struct nvkmd_horizon_dev {
+     */
+    simple_mtx_t va_list_mutex;
+    struct list_head va_list;
++
++   /* Last GPU timestamp successfully read, repeated if a later read
++    * fails — nvkmd's get_gpu_timestamp cannot report an error, and a
++    * clock that stalls is wrong in a way a caller can notice while one
++    * that jumps to zero is not. */
++   uint64_t last_gpu_timestamp;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(dev, horizon);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index 58bdefb..fb71079 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -37,14 +37,32 @@ nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)
+ static uint64_t
+ nvkmd_horizon_dev_get_gpu_timestamp(struct nvkmd_dev *_dev)
+ {
+-   /* Milestone item 8. horizon_gpu has no GPU timestamp query yet —
+-    * it is one of the six extensions Phase 4 step 1 enumerated — and
+-    * the only caller is vkGetCalibratedTimestampsKHR, which NVK gates
+-    * on VK_EXT_calibrated_timestamps. Returning zero here would be a
+-    * wrong answer rather than a missing one, so this is deliberately
+-    * unreachable until the extension exists.
++   /* Milestone item 8, and extension 1 of the six Phase 4 step 1
++    * enumerated. This used to be UNREACHABLE "because horizon_gpu has no
++    * GPU timestamp query yet" — while step 1's own interface table said,
++    * of this exact function, "libnx has the same clock:
++    * nvGpuGetTimestamp over nvioctlNvhostCtrlGpu_GetGpuTime". The survey
++    * was right and the implementation comment contradicted it.
++    *
++    * nvkmd's signature has no way to report failure — the ioctl either
++    * answers or it does not. Returning zero on failure would be a wrong
++    * answer offered as a real one, so the error is logged and the last
++    * good value repeated: a clock that stalls is wrong in a way a
++    * caller can notice, one that jumps to zero is not.
+     */
+-   UNREACHABLE("GPU timestamps are not implemented on Horizon yet");
++   struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
++
++   uint64_t ts = 0;
++   horizon_gpu_result res = horizon_gpu_device_get_timestamp(dev->gpu, &ts);
++   if (res.status != HORIZON_GPU_OK) {
++      mesa_loge("horizon_gpu_device_get_timestamp failed: status %d, "
++                "nv 0x%08" PRIx32 "; repeating the last value",
++                (int)res.status, res.nv);
++      return p_atomic_read(&dev->last_gpu_timestamp);
++   }
++
++   p_atomic_set(&dev->last_gpu_timestamp, ts);
++   return ts;
+ }
+ 
+ static int
+-- 
+2.43.0
+

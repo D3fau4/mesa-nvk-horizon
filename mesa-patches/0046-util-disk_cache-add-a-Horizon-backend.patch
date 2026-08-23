@@ -1,0 +1,976 @@
+From 6a7146dc03495f1293efdb83508b8f2b0be98510 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:51:26 +0000
+Subject: [PATCH 46/49] util/disk_cache: add a Horizon backend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (Mesa shader disk cache on Horizon)
+Why: disk_cache_os.c is written against mmap, flock, fcntl(F_SETLK),
+ posix_fallocate, ftw and getpwuid_r. Every one of them is absent on
+ devkitA64's newlib, and they are not incidental to it: the multi-file
+ backend is a directory of small files locked against other processes
+ with an mmap'd index, which is the wrong shape for an SD card even
+ where the calls exist. So Horizon replaces that one file, and keeps
+ disk_cache.c — the key derivation, the put queue, the compression and
+ the statistics are upstream's and are not worth reimplementing.
+
+ The new backend is one append-only, CRC-validated file per GPU, held
+ open for the life of the cache. There is no lock, because Horizon runs
+ one homebrew title at a time; there is no rename, because rename() over
+ an existing target fails on Horizon and because renaming is a path
+ operation, which brings us to the constraint that shaped the rest:
+
+   libnx routes every path-based devoptab entry point — open, stat,
+   unlink, mkdir, rename, diropen — through fsdev_fixpath(), which
+   copies into the single file-scope buffer __nx_dev_path_buf with no
+   lock (nx/source/runtime/devices/fs_dev.c:211, and `char *fs_path =
+   __nx_dev_path_buf` at 405, 1111, 1197, 1225 and 1276).
+
+ disk_cache.c calls the backend from its put queue, i.e. off the calling
+ thread, so a backend that did path work would be a data race whose
+ symptom is a write to the wrong file. This one does none after it
+ opens: the store works entirely through the handle, and compacts in
+ place rather than through a temporary file.
+
+ The store itself is horizon_gpu's blob cache, which lives outside Mesa
+ because a format whose value is what it does with a *damaged* file has
+ to be testable against damaged files — 138 host checks under ASan and
+ UBSan cover truncation, flipped payload and header bytes, an
+ interrupted compaction, a record claiming more than the file holds, a
+ file from another driver build, and an empty one. Everything
+ Mesa-shaped stays here: compression, the entry layout, and the driver
+ keys blob, which is handed to the store as the identity it rejects a
+ mismatched file by.
+
+ Two smaller decisions are in this patch and are worth naming:
+
+ - The put queue takes one thread here instead of four. The comment
+   above it reasons about desktop CPUs and relies on
+   UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY to keep the extra threads
+   harmless — but that flag is implemented `#if defined(__linux__)`
+   (u_queue.c:254 and 334), so on Horizon it does nothing, and four
+   normal-priority threads would compete with a render loop on a console
+   that gives homebrew three cores. They would serialise on the store's
+   lock in any case.
+
+ - put_key()/has_key() go to the backend rather than to the index.
+   Upstream keeps those marks in an mmap'd 64 K-slot table where a
+   collision silently overwrites; there is no mmap here, so the store
+   records them instead, and disk_cache_mmap_cache_index() allocates
+   only the eight bytes of size counter that remain meaningful — not the
+   two megabytes of table, which would be 2 MiB of a 237 MiB applet-mode
+   budget spent on an index nothing in NVK reads.
+
+Evidence: measured on devkitA64 gcc 15.2.0 (newlib), cross-building the
+ non-driver core with -Dshader-cache=enabled. Upstream's disk_cache_os.c
+ is not built; disk_cache_horizon.c is:
+
+   disk_cache.c.o             79968 bytes  42 defined symbols
+   disk_cache_horizon.c.o     64024 bytes  53 defined symbols
+   disk_cache_os.c.o          not built
+   mesa_cache_db.c.o           1432 bytes   0 defined symbols
+   compress.c.o                9840 bytes   7 defined symbols
+
+ and libmesa_util.a no longer needs any of the calls the feature was
+ turned off for:
+
+   $ nm -u build/mesa-probe/src/util/libmesa_util.a | sort -u \
+       | grep -E 'mmap|flock|posix_fallocate|memfd_create|getpwuid|nftw'
+   (no output)
+
+ The one remaining unresolved symbol of that family is `fcntl`, from
+ os_file.c's os_create_anonymous_file, which predates this work and is
+ unrelated to the cache.
+
+ Configure reports zlib 1.3.1 and zstd through devkitPro's portlibs, so
+ HAVE_COMPRESSION is defined and entries are deflated exactly as they
+ are everywhere else.
+Upstream: no — it is a platform backend, named for its platform. The
+ parts that are not platform-specific were split out into the two
+ patches before this one so that they can go upstream on their own.
+---
+ src/util/disk_cache.c         |  65 +++-
+ src/util/disk_cache_horizon.c | 592 ++++++++++++++++++++++++++++++++++
+ src/util/disk_cache_os.h      |  40 +++
+ src/util/meson.build          |  39 ++-
+ 4 files changed, 733 insertions(+), 3 deletions(-)
+ create mode 100644 src/util/disk_cache_horizon.c
+
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 40bd6e5..0e251f4 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -82,7 +82,17 @@ disk_cache_init_queue(struct disk_cache *cache)
+     * The queue will resize automatically when it's full, so adding new jobs
+     * doesn't stall.
+     */
+-   return util_queue_init(&cache->cache_queue, "disk$", 32, 4,
++   /* One thread on Horizon, not four. The reasoning above is about
++    * desktop CPUs, and it leans on UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY
++    * to make the extra threads harmless — but that flag is implemented
++    * only `#if defined(__linux__)` (u_queue.c), so here it does nothing
++    * and four normal-priority threads would compete with a render loop
++    * on a console that gives homebrew three cores. The backend is a
++    * single file behind a single lock, so extra threads would serialise
++    * on it in any case. */
++   unsigned num_threads = DETECT_OS_HORIZON ? 1 : 4;
++
++   return util_queue_init(&cache->cache_queue, "disk$", 32, num_threads,
+                           UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                           UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
+                           UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
+@@ -198,6 +208,19 @@ disk_cache_type_create(const char *gpu_name,
+    /* Seed our rand function */
+    s_rand_xorshift128plus(cache->seed_xorshift128plus, true);
+ 
++#if DETECT_OS_HORIZON
++   /* After the driver keys blob and not beside the other backends,
++    * because the store is handed that blob as the identity it refuses a
++    * mismatched file by, and it does not exist until here. */
++   if (cache->type == DISK_CACHE_HORIZON && !cache->path_init_failed &&
++       !disk_cache_horizon_open(cache)) {
++      util_queue_finish(&cache->cache_queue);
++      util_queue_destroy(&cache->cache_queue);
++      cache->path_init_failed = true;
++      cache->type = DISK_CACHE_NONE;
++   }
++#endif
++
+    ralloc_free(local);
+ 
+    return cache;
+@@ -218,7 +241,12 @@ disk_cache_create(const char *gpu_name, const char *driver_id,
+    uint64_t max_size = 0;
+    const char *max_size_str;
+ 
+-   if (debug_get_bool_option("MESA_DISK_CACHE_SINGLE_FILE", false)) {
++   if (DETECT_OS_HORIZON) {
++      /* The only backend this platform has; see disk_cache_horizon.c.
++       * The MESA_DISK_CACHE_* selectors below are not offered because
++       * the three backends they select cannot be built here. */
++      cache_type = DISK_CACHE_HORIZON;
++   } else if (debug_get_bool_option("MESA_DISK_CACHE_SINGLE_FILE", false)) {
+       cache_type = DISK_CACHE_SINGLE_FILE;
+    } else if (debug_get_bool_option("MESA_DISK_CACHE_DATABASE", false)) {
+       cache_type = DISK_CACHE_DATABASE;
+@@ -338,6 +366,10 @@ disk_cache_destroy(struct disk_cache *cache)
+       if (cache->type == DISK_CACHE_DATABASE)
+          mesa_cache_db_multipart_close(&cache->cache_db);
+ 
++#if DETECT_OS_HORIZON
++      disk_cache_horizon_close(cache);
++#endif
++
+       disk_cache_destroy_mmap(cache);
+    }
+ 
+@@ -358,6 +390,13 @@ disk_cache_remove(struct disk_cache *cache, const cache_key key)
+       return;
+    }
+ 
++#if DETECT_OS_HORIZON
++   if (cache->type == DISK_CACHE_HORIZON) {
++      disk_cache_horizon_remove_item(cache, key);
++      return;
++   }
++#endif
++
+    char *filename = disk_cache_get_cache_filename(cache, key);
+    if (filename == NULL) {
+       return;
+@@ -453,6 +492,10 @@ cache_put(void *job, void *gdata, int thread_index)
+       disk_cache_write_item_to_disk_foz(dc_job);
+    } else if (dc_job->cache->type == DISK_CACHE_DATABASE) {
+       disk_cache_db_write_item_to_disk(dc_job);
++#if DETECT_OS_HORIZON
++   } else if (dc_job->cache->type == DISK_CACHE_HORIZON) {
++      disk_cache_horizon_write_item_to_disk(dc_job);
++#endif
+    } else if (dc_job->cache->type == DISK_CACHE_MULTI_FILE) {
+       filename = disk_cache_get_cache_filename(dc_job->cache, dc_job->key);
+       if (filename == NULL)
+@@ -611,6 +654,10 @@ disk_cache_get(struct disk_cache *cache, const cache_key key, size_t *size)
+          buf = disk_cache_load_item_foz(cache, key, size);
+       } else if (cache->type == DISK_CACHE_DATABASE) {
+          buf = disk_cache_db_load_item(cache, key, size);
++#if DETECT_OS_HORIZON
++      } else if (cache->type == DISK_CACHE_HORIZON) {
++         buf = disk_cache_horizon_load_item(cache, key, size);
++#endif
+       } else if (cache->type == DISK_CACHE_MULTI_FILE) {
+          char *filename = disk_cache_get_cache_filename(cache, key);
+          if (filename)
+@@ -643,6 +690,15 @@ disk_cache_put_key(struct disk_cache *cache, const cache_key key)
+    if (cache->path_init_failed)
+       return;
+ 
++#if DETECT_OS_HORIZON
++   /* There is no mmap here, so there is no shared key index to write
++    * into; the backend records the mark itself. */
++   if (cache->type == DISK_CACHE_HORIZON) {
++      disk_cache_horizon_put_key(cache, key);
++      return;
++   }
++#endif
++
+    entry = &cache->stored_keys[i * CACHE_KEY_SIZE];
+ 
+    memcpy(entry, key, CACHE_KEY_SIZE);
+@@ -670,6 +726,11 @@ disk_cache_has_key(struct disk_cache *cache, const cache_key key)
+    if (cache->path_init_failed)
+       return false;
+ 
++#if DETECT_OS_HORIZON
++   if (cache->type == DISK_CACHE_HORIZON)
++      return disk_cache_horizon_has_key(cache, key);
++#endif
++
+    entry = &cache->stored_keys[i * CACHE_KEY_SIZE];
+ 
+    return memcmp(entry, key, CACHE_KEY_SIZE) == 0;
+diff --git a/src/util/disk_cache_horizon.c b/src/util/disk_cache_horizon.c
+new file mode 100644
+index 0000000..de21523
+--- /dev/null
++++ b/src/util/disk_cache_horizon.c
+@@ -0,0 +1,592 @@
++/*
++ * Copyright © 2026 mesa-nvk-horizon contributors
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * The OS half of the shader disk cache, for Horizon (Nintendo Switch).
++ *
++ * This file stands in for disk_cache_os.c, which cannot be built here:
++ * it is written against mmap, flock, fcntl(F_SETLK), posix_fallocate,
++ * ftw and getpwuid_r, and this C library (devkitA64's newlib) has none
++ * of them. The generic half — disk_cache.c: key derivation, the put
++ * queue, compression, the statistics — is upstream's and is used
++ * unchanged, which is the point of replacing only this file.
++ *
++ * Storage is horizon_gpu's blob cache (horizon_gpu/blob_cache.h): one
++ * append-only, CRC-validated file per GPU, holding opaque bytes. It
++ * lives outside Mesa because a format whose value is what it does with a
++ * damaged file has to be testable against damaged files, which is what
++ * this project's host test suite does to it. Everything Mesa-shaped —
++ * compression, the driver keys blob, the entry layout below — is here.
++ *
++ * WHAT AN ENTRY LOOKS LIKE. The blob cache stores bytes and asks no
++ * questions, so this file gives each entry a four-byte little-endian
++ * uncompressed length followed by the deflated payload. Nothing else is
++ * needed: the blob cache already checksums every record, and it already
++ * refuses a whole file whose driver key does not match, which is the
++ * check upstream's multi-file backend performs per entry by storing the
++ * driver keys blob inside each one.
++ *
++ * WHAT IS DELIBERATELY NOT IMPLEMENTED. The multi-file, Fossilize and
++ * Mesa-DB backends. A directory of small files is the wrong shape for an
++ * SD card, and the other two need flock. Their entry points are defined
++ * here because disk_cache.c refers to them, and each says no.
++ *
++ * THREADING. disk_cache.c calls into this file from its put queue, so
++ * every entry point that touches the store takes `cache->horizon_lock`.
++ * There is a second, less obvious rule: no path operation may happen off
++ * the thread that created the cache. libnx routes open/stat/unlink/
++ * mkdir/rename through one unlocked global path buffer, so a second
++ * thread doing path work corrupts the first one's path. Everything here
++ * respects that — the only path operations are the mkdir and the open in
++ * disk_cache_generate_cache_dir/disk_cache_horizon_open, both of which
++ * run inside disk_cache_create, and the blob cache performs none at all
++ * once it is open.
++ */
++
++#ifdef ENABLE_SHADER_CACHE
++
++#include <errno.h>
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++
++#include "util/compress.h"
++#include "util/log.h"
++#include "util/os_misc.h"
++#include "util/ralloc.h"
++#include "util/u_debug.h"
++
++#include "disk_cache.h"
++#include "disk_cache_os.h"
++
++#include "horizon_gpu/blob_cache.h"
++
++/* Where the cache goes when nothing overrides it.
++ *
++ * "sdmc:" is libnx's device name for the SD card, the only writable
++ * storage a homebrew title has by default. The directory name matches
++ * CACHE_DIR_NAME so that somebody looking at the card recognises it as
++ * the same thing Mesa writes everywhere else. */
++#define HORIZON_CACHE_ROOT "sdmc:/" CACHE_DIR_NAME
++
++/* Ceiling on the cache file.
++ *
++ * Upstream defaults to 1 GiB (disk_cache.c). That is a desktop number:
++ * this is a card that also holds somebody's games, and the environment
++ * variable that would normally lower it cannot be set on a console —
++ * libnx populates argv but not environ, so getenv() answers NULL for
++ * everything. 64 MiB is the compiled-in answer instead. It is roughly
++ * two orders of magnitude more than the shaders of anything this driver
++ * runs today, and it is small enough that nobody has to think about it. */
++#define HORIZON_CACHE_MAX_SIZE (UINT64_C(64) * 1024 * 1024)
++
++/* ---------------------------------------------------------------- */
++/* One store per file, however many caches ask for it                */
++/* ---------------------------------------------------------------- */
++
++/* WHY THIS EXISTS. disk_cache_create() is called per physical device
++ * per instance, and every one of them on this GPU resolves to the same
++ * path. Two stores over one file is not a race that locking inside each
++ * of them can fix: each keeps its own append offset and its own index,
++ * so both append at what each believes is the end and the second
++ * overwrites the first, whose index then points at somebody else's
++ * record. Compaction makes it worse — one handle rewrites the file the
++ * other is indexing.
++ *
++ * It would not have returned a *wrong shader*: disk_cache_horizon_load_item
++ * goes through horizon_gpu_blob_cache_get(), which re-reads the record
++ * header and compares the key before it believes the index. So the
++ * failure mode was a cache that quietly stopped working rather than one
++ * that lied. That is still a defect, and the fix is the ordinary one —
++ * open each path once and hand out references.
++ *
++ * The lock is inside the reference and not in `struct disk_cache`,
++ * because it is the *store* that must be serialised, not the cache
++ * object: two caches sharing a store share its lock. */
++struct horizon_store_ref {
++   char *path;
++   horizon_gpu_blob_cache *store;
++   unsigned refcount;
++   simple_mtx_t lock;
++   struct horizon_store_ref *next;
++};
++
++static simple_mtx_t horizon_registry_lock = SIMPLE_MTX_INITIALIZER;
++static struct horizon_store_ref *horizon_registry;
++
++/* ---------------------------------------------------------------- */
++/* Lifecycle                                                         */
++/* ---------------------------------------------------------------- */
++
++bool
++disk_cache_enabled(void)
++{
++   /* No __normal_user() question to ask: Horizon has no setuid, and a
++    * homebrew title runs as itself. What can be asked is whether the
++    * user turned it off. */
++   if (debug_get_bool_option("MESA_SHADER_CACHE_DISABLE",
++#ifdef SHADER_CACHE_DISABLE_BY_DEFAULT
++                             true
++#else
++                             false
++#endif
++                             ))
++      return false;
++
++   return true;
++}
++
++/* Returns the path of the cache *file*, not of a directory.
++ *
++ * Horizon keeps one file per GPU rather than a tree, so there is no
++ * per-cache subdirectory to make and nothing for the name to encode
++ * beyond the GPU: a driver change is caught by the driver key inside the
++ * file, which resets it in place. That is deliberately not done by
++ * putting the driver id in the file name — that would leave the previous
++ * build's file behind on the card, and reclaiming it would mean reading
++ * the directory and unlinking, i.e. two more path operations for no gain.
++ */
++const char *
++disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
++                              const char *driver_id,
++                              const char *cache_dir_name_custom,
++                              enum disk_cache_type cache_type,
++                              bool mkdir_cache)
++{
++   const char *root = os_get_option("MESA_SHADER_CACHE_DIR");
++
++   if (root == NULL)
++      root = HORIZON_CACHE_ROOT;
++
++   if (mkdir_cache && mkdir(root, 0755) == -1 && errno != EEXIST) {
++      mesa_logw("disk cache: cannot create %s (%s); cache disabled",
++                root, strerror(errno));
++      return NULL;
++   }
++
++   return ralloc_asprintf(mem_ctx, "%s/%s.%s", root, gpu_name,
++                          cache_dir_name_custom != NULL
++                             ? cache_dir_name_custom
++                             : "hzc");
++}
++
++bool
++disk_cache_horizon_open(struct disk_cache *cache)
++{
++   const horizon_gpu_blob_cache_config config = {
++      .path = cache->path,
++      /* The identity is exactly what disk_cache_compute_key() hashes
++       * into every key: CACHE_VERSION, the driver id, the GPU name, the
++       * pointer size and the driver flags. Handing the store the same
++       * blob means a file written by a driver that would compute
++       * different keys is rejected as a whole rather than producing
++       * misses one entry at a time. */
++      .driver_key = cache->driver_keys_blob,
++      .driver_key_size = cache->driver_keys_blob_size,
++      .max_size = HORIZON_CACHE_MAX_SIZE,
++      .read_only = false,
++   };
++   horizon_gpu_blob_cache *store = NULL;
++
++   simple_mtx_lock(&horizon_registry_lock);
++
++   /* Already open for this path? Share it. */
++   for (struct horizon_store_ref *ref = horizon_registry; ref != NULL;
++        ref = ref->next) {
++      if (strcmp(ref->path, cache->path) == 0) {
++         ref->refcount++;
++         cache->horizon_ref = ref;
++         simple_mtx_unlock(&horizon_registry_lock);
++         mesa_logi("disk cache: %s, shared with %u other cache object(s)",
++                   cache->path, ref->refcount - 1);
++         return true;
++      }
++   }
++
++   horizon_gpu_result r = horizon_gpu_blob_cache_open(&config, &store);
++   if (horizon_gpu_failed(r)) {
++      simple_mtx_unlock(&horizon_registry_lock);
++      mesa_logw("disk cache: cannot open %s (%s); cache disabled",
++                cache->path, horizon_gpu_status_str(r.status));
++      return false;
++   }
++
++   horizon_gpu_blob_cache_stats st;
++   horizon_gpu_blob_cache_get_stats(store, &st);
++   if (st.was_reset)
++      mesa_logi("disk cache: %s did not match this driver build or could "
++                "not be read; started over (%" PRIu64 " bytes discarded)",
++                cache->path, st.discarded_bytes);
++   else if (st.was_truncated)
++      mesa_logi("disk cache: %s had an incomplete tail; %" PRIu64 " bytes "
++                "discarded, %u entries kept", cache->path,
++                st.discarded_bytes, st.entries);
++   else
++      mesa_logi("disk cache: %s, %u entries", cache->path, st.entries);
++
++   struct horizon_store_ref *ref = calloc(1, sizeof(*ref));
++   char *path_copy = ref != NULL ? strdup(cache->path) : NULL;
++   if (ref == NULL || path_copy == NULL) {
++      free(ref);
++      free(path_copy);
++      horizon_gpu_blob_cache_close(store);
++      simple_mtx_unlock(&horizon_registry_lock);
++      mesa_logw("disk cache: out of memory registering %s; cache disabled",
++                cache->path);
++      return false;
++   }
++
++   ref->path = path_copy;
++   ref->store = store;
++   ref->refcount = 1;
++   simple_mtx_init(&ref->lock, mtx_plain);
++   ref->next = horizon_registry;
++   horizon_registry = ref;
++
++   cache->horizon_ref = ref;
++   simple_mtx_unlock(&horizon_registry_lock);
++   return true;
++}
++
++void
++disk_cache_horizon_close(struct disk_cache *cache)
++{
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return;
++
++   cache->horizon_ref = NULL;
++
++   simple_mtx_lock(&horizon_registry_lock);
++   if (--ref->refcount > 0) {
++      simple_mtx_unlock(&horizon_registry_lock);
++      return;
++   }
++
++   for (struct horizon_store_ref **pp = &horizon_registry; *pp != NULL;
++        pp = &(*pp)->next) {
++      if (*pp == ref) {
++         *pp = ref->next;
++         break;
++      }
++   }
++   simple_mtx_unlock(&horizon_registry_lock);
++
++   horizon_gpu_blob_cache_close(ref->store);
++   simple_mtx_destroy(&ref->lock);
++   free(ref->path);
++   free(ref);
++}
++
++/* ---------------------------------------------------------------- */
++/* Entries                                                           */
++/* ---------------------------------------------------------------- */
++
++/* Four bytes of uncompressed length, little-endian, ahead of the
++ * deflated payload. Written and read a byte at a time so the layout does
++ * not depend on this compiler's alignment rules. */
++#define HORIZON_ENTRY_PREFIX 4u
++
++void *
++disk_cache_horizon_load_item(struct disk_cache *cache, const cache_key key,
++                             size_t *size)
++{
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return NULL;
++
++   simple_mtx_lock(&ref->lock);
++   void *raw = NULL;
++   size_t raw_size = 0;
++   horizon_gpu_result r =
++      horizon_gpu_blob_cache_get(ref->store, key, &raw, &raw_size);
++   simple_mtx_unlock(&ref->lock);
++
++   if (horizon_gpu_failed(r))
++      return NULL;
++
++   if (raw_size < HORIZON_ENTRY_PREFIX) {
++      free(raw);
++      return NULL;
++   }
++
++   const uint8_t *p = raw;
++   uint32_t uncompressed = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++
++   /* The store checksums what it returns, so this cannot be a corrupt
++    * length — but it can be one written by a version of this file that
++    * laid entries out differently, so it is still bounded before it
++    * becomes an allocation. */
++   if (uncompressed == 0 || uncompressed > (64u * 1024 * 1024)) {
++      free(raw);
++      return NULL;
++   }
++
++   uint8_t *out = malloc(uncompressed);
++   if (out == NULL) {
++      free(raw);
++      return NULL;
++   }
++
++   if (!util_compress_inflate(p + HORIZON_ENTRY_PREFIX,
++                              raw_size - HORIZON_ENTRY_PREFIX, out,
++                              uncompressed)) {
++      free(out);
++      free(raw);
++      return NULL;
++   }
++
++   free(raw);
++
++   if (size != NULL)
++      *size = uncompressed;
++
++   return out;
++}
++
++bool
++disk_cache_horizon_write_item_to_disk(struct disk_cache_put_job *dc_job)
++{
++   struct disk_cache *cache = dc_job->cache;
++
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return false;
++   if (dc_job->size == 0 || dc_job->size > UINT32_MAX)
++      return false;
++
++   size_t max = util_compress_max_compressed_len(dc_job->size);
++   uint8_t *entry = malloc(max + HORIZON_ENTRY_PREFIX);
++   if (entry == NULL)
++      return false;
++
++   entry[0] = (uint8_t)(dc_job->size & 0xFFu);
++   entry[1] = (uint8_t)((dc_job->size >> 8) & 0xFFu);
++   entry[2] = (uint8_t)((dc_job->size >> 16) & 0xFFu);
++   entry[3] = (uint8_t)((dc_job->size >> 24) & 0xFFu);
++
++   size_t compressed = util_compress_deflate(dc_job->data, dc_job->size,
++                                             entry + HORIZON_ENTRY_PREFIX,
++                                             max);
++   if (compressed == 0) {
++      free(entry);
++      return false;
++   }
++
++   simple_mtx_lock(&ref->lock);
++   horizon_gpu_result r =
++      horizon_gpu_blob_cache_put(ref->store, dc_job->key, entry,
++                                 compressed + HORIZON_ENTRY_PREFIX);
++   simple_mtx_unlock(&ref->lock);
++
++   free(entry);
++
++   if (horizon_gpu_failed(r)) {
++      mesa_logw("disk cache: storing an entry failed (%s)",
++                horizon_gpu_status_str(r.status));
++      return false;
++   }
++
++   return true;
++}
++
++void
++disk_cache_horizon_remove_item(struct disk_cache *cache, const cache_key key)
++{
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return;
++
++   simple_mtx_lock(&ref->lock);
++   (void)horizon_gpu_blob_cache_remove(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
++}
++
++/* disk_cache.c keeps the put_key()/has_key() marks in an mmap'd index
++ * file, which is the one thing about this cache that cannot be done
++ * here at all. The store keeps them as records of their own instead —
++ * a strictly stronger promise than upstream's fixed 64 K-slot table,
++ * which loses a mark to a collision without saying so. */
++void
++disk_cache_horizon_put_key(struct disk_cache *cache, const cache_key key)
++{
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return;
++
++   simple_mtx_lock(&ref->lock);
++   (void)horizon_gpu_blob_cache_put_key(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
++}
++
++bool
++disk_cache_horizon_has_key(struct disk_cache *cache, const cache_key key)
++{
++   struct horizon_store_ref *ref = cache->horizon_ref;
++
++   if (ref == NULL)
++      return false;
++
++   simple_mtx_lock(&ref->lock);
++   bool found = horizon_gpu_blob_cache_has_key(ref->store, key);
++   simple_mtx_unlock(&ref->lock);
++
++   return found;
++}
++
++/* ---------------------------------------------------------------- */
++/* The backends Horizon does not have                                */
++/* ---------------------------------------------------------------- */
++
++/* Each of these exists because disk_cache.c names it. None is reachable:
++ * disk_cache_create() selects DISK_CACHE_HORIZON on this platform and
++ * the multi-file, Fossilize and Mesa-DB paths are never taken. They
++ * return "no" rather than assert, so that a future disk_cache.c which
++ * reached one would degrade to a cache miss instead of aborting a
++ * driver on a games console. */
++
++bool
++disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache)
++{
++   /* Upstream maps 8 bytes of total-size counter followed by a 64 K-slot
++    * key table out of a file, and both are used through pointers into
++    * that mapping. There is no mmap here, and the 2 MiB table would be
++    * two megabytes of a 237 MiB applet-mode budget spent on an index
++    * nothing in NVK reads — so only the counter is allocated, and
++    * disk_cache.c's put_key()/has_key() go to the store instead. */
++   cache->index_mmap = rzalloc_size(cache, sizeof(uint64_t));
++   if (cache->index_mmap == NULL)
++      return false;
++
++   cache->index_mmap_size = sizeof(uint64_t);
++   cache->size = (p_atomic_uint64_t *)cache->index_mmap;
++   cache->stored_keys = NULL;
++
++   return true;
++}
++
++void
++disk_cache_destroy_mmap(struct disk_cache *cache)
++{
++   ralloc_free(cache->index_mmap);
++   cache->index_mmap = NULL;
++   cache->index_mmap_size = 0;
++   cache->size = NULL;
++   cache->stored_keys = NULL;
++}
++
++void
++disk_cache_touch_cache_user_marker(char *path)
++{
++   /* Upstream stamps a marker file so a system cleaner can tell when the
++    * cache was last used. Horizon has no such cleaner, and writing the
++    * marker would be another path operation for nobody. */
++   (void)path;
++}
++
++void
++disk_cache_delete_old_cache(void)
++{
++}
++
++char *
++disk_cache_get_cache_filename(struct disk_cache *cache, const cache_key key)
++{
++   (void)cache;
++   (void)key;
++   return NULL;
++}
++
++void
++disk_cache_evict_lru_item(struct disk_cache *cache)
++{
++   (void)cache;
++}
++
++void
++disk_cache_evict_item(struct disk_cache *cache, char *filename)
++{
++   (void)cache;
++   free(filename);
++}
++
++void *
++disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
++{
++   (void)cache;
++   (void)size;
++   free(filename);
++   return NULL;
++}
++
++void
++disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
++                              char *filename)
++{
++   (void)dc_job;
++   (void)filename;
++}
++
++void *
++disk_cache_load_item_foz(struct disk_cache *cache, const cache_key key,
++                         size_t *size)
++{
++   (void)cache;
++   (void)key;
++   (void)size;
++   return NULL;
++}
++
++bool
++disk_cache_write_item_to_disk_foz(struct disk_cache_put_job *dc_job)
++{
++   (void)dc_job;
++   return false;
++}
++
++bool
++disk_cache_load_cache_index_foz(void *mem_ctx, struct disk_cache *cache)
++{
++   (void)mem_ctx;
++   (void)cache;
++   return false;
++}
++
++void *
++disk_cache_db_load_item(struct disk_cache *cache, const cache_key key,
++                        size_t *size)
++{
++   (void)cache;
++   (void)key;
++   (void)size;
++   return NULL;
++}
++
++bool
++disk_cache_db_write_item_to_disk(struct disk_cache_put_job *dc_job)
++{
++   (void)dc_job;
++   return false;
++}
++
++bool
++disk_cache_db_load_cache_index(void *mem_ctx, struct disk_cache *cache)
++{
++   (void)mem_ctx;
++   (void)cache;
++   return false;
++}
++
++#endif /* ENABLE_SHADER_CACHE */
+diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
+index 8950839..ab616d5 100644
+--- a/src/util/disk_cache_os.h
++++ b/src/util/disk_cache_os.h
+@@ -25,6 +25,7 @@
+ #define DISK_CACHE_OS_H
+ 
+ #include "util/u_queue.h"
++#include "util/simple_mtx.h"
+ #include "util/disk_cache.h"
+ 
+ #if DETECT_OS_WINDOWS
+@@ -55,6 +56,12 @@ enum disk_cache_type {
+    DISK_CACHE_MULTI_FILE,
+    DISK_CACHE_SINGLE_FILE,
+    DISK_CACHE_DATABASE,
++   /* One append-only, CRC-validated file, held open for the life of the
++    * cache. It exists because the three above need mmap, flock or a
++    * directory of small files, and Horizon has none of the first two and
++    * is on an SD card for which the third is the wrong shape.
++    * disk_cache_horizon.c is the implementation. */
++   DISK_CACHE_HORIZON,
+ };
+ 
+ struct disk_cache {
+@@ -105,6 +112,15 @@ struct disk_cache {
+ 
+    /* Internal RO FOZ cache for combined use of RO and RW caches. */
+    struct disk_cache *foz_ro_cache;
++
++#if DETECT_OS_HORIZON
++   /* DISK_CACHE_HORIZON. Not the store itself but a reference to one:
++    * two cache objects for the same GPU — two VkInstances is all it
++    * takes — resolve to the same file, and two independent stores over
++    * one file would each keep their own append offset and their own
++    * index. See disk_cache_horizon.c. */
++   struct horizon_store_ref *horizon_ref;
++#endif
+ };
+ 
+ struct cache_entry_file_data {
+@@ -186,6 +202,30 @@ disk_cache_db_load_cache_index(void *mem_ctx, struct disk_cache *cache);
+ void
+ disk_cache_delete_old_cache(void);
+ 
++#if DETECT_OS_HORIZON
++bool
++disk_cache_horizon_open(struct disk_cache *cache);
++
++void
++disk_cache_horizon_close(struct disk_cache *cache);
++
++void *
++disk_cache_horizon_load_item(struct disk_cache *cache, const cache_key key,
++                             size_t *size);
++
++bool
++disk_cache_horizon_write_item_to_disk(struct disk_cache_put_job *dc_job);
++
++void
++disk_cache_horizon_remove_item(struct disk_cache *cache, const cache_key key);
++
++void
++disk_cache_horizon_put_key(struct disk_cache *cache, const cache_key key);
++
++bool
++disk_cache_horizon_has_key(struct disk_cache *cache, const cache_key key);
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/util/meson.build b/src/util/meson.build
+index 30cf227..e07b79a 100644
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -38,7 +38,6 @@ files_mesa_util = files(
+   'dag.c',
+   'disk_cache.c',
+   'disk_cache.h',
+-  'disk_cache_os.c',
+   'disk_cache_os.h',
+   'double.c',
+   'double.h',
+@@ -182,6 +181,17 @@ files_mesa_util = files(
+   'mesa_cache_db_multipart.h',
+ )
+ 
++# The OS half of the shader disk cache. disk_cache_os.c is written
++# against mmap, flock, fcntl(F_SETLK), posix_fallocate, ftw and
++# getpwuid_r; Horizon's C library has none of them, so that platform
++# brings its own implementation of the same interface instead. The
++# generic half, disk_cache.c above, is shared.
++if host_machine.system() == 'horizon' and with_shader_cache
++  files_mesa_util += files('disk_cache_horizon.c')
++else
++  files_mesa_util += files('disk_cache_os.c')
++endif
++
+ libmesa_util_links = []
+ 
+ if host_machine.cpu_family() == 'aarch64' and cc.get_id() != 'msvc'
+@@ -263,6 +273,32 @@ files_mesa_util += shader_stats_h
+ subdir('format')
+ files_mesa_util += files_mesa_format
+ 
++# horizon_gpu supplies the blob store disk_cache_horizon.c writes
++# through. It lives outside Mesa — this is a pinned checkout, never the
++# place that code lives — so it is named by the same build option the
++# nouveau driver uses, and resolved here as well because src/util is
++# reached long before src/nouveau.
++# Only when the cache is actually built: disk_cache_horizon.c is wholly
++# inside #ifdef ENABLE_SHADER_CACHE, so a Horizon build with
++# -Dshader-cache=disabled needs none of this, and demanding the option
++# there would break a configuration that was valid before this file
++# changed.
++idep_horizon_gpu_util = []
++if host_machine.system() == 'horizon' and with_shader_cache
++  _hz_dir = get_option('horizon-gpu-dir')
++  if _hz_dir == ''
++    error('Building for Horizon with the shader cache enabled needs ' +
++          '-Dhorizon-gpu-dir=<prefix of horizon_gpu>.')
++  endif
++  idep_horizon_gpu_util = declare_dependency(
++    include_directories : include_directories(_hz_dir / 'include'),
++    dependencies : [
++      meson.get_compiler('c').find_library(
++        'horizon_gpu', dirs : [_hz_dir / 'lib'], required : true),
++    ],
++  )
++endif
++
+ deps_for_libmesa_util = [
+   dep_zlib,
+   dep_clock,
+@@ -277,6 +313,7 @@ deps_for_libmesa_util = [
+   idep_blake3,
+   idep_mesautilc11,
+   idep_mesautilformat,
++  idep_horizon_gpu_util,
+ ]
+ 
+ if dep_libdrm.found()
+-- 
+2.43.0
+
