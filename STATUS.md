@@ -33,6 +33,60 @@ below this table). **What is left is not code**: flipping visibility, and settin
 
 ---
 
+## Merging `main` into the Mesa 26.1.8 pin, and re-measuring for 84 (2026-08-23)
+
+`main` moved five commits while this branch sat green on PR #17 — `make install` and the
+devkitPro portlibs package, the thin-archive bug fixed in both places it lived, the
+executable bit CI caught. GitHub flipped #17 to `dirty`; the merge was `origin/main` into
+this branch, never a rebase.
+
+**The part that was not text.** `main` also took the series from **81 patches to 84**
+(0082–0084, the `nvk_mem_stream` flush-before-exec work and its Codex-review follow-ups).
+Every count this branch had recorded was measured against an 81-patch series, so all of
+them were re-measured against 84 rather than carried across:
+
+| | 81-patch series | 84-patch series |
+|---|---|---|
+| files `mesa-patches/` writes to | 127 | **131** |
+| 26.1.7 → 26.1.8 intersection | 0 | **0** |
+| 26.1.8 → 26.2.1 intersection | 54 of 127 | **55 of 131** |
+
+**The conclusion survives, and now rests on the series that actually exists.** 26.1.8
+still touches nothing this port patches and no `src/nouveau/` file at all, so nothing in
+it can reach a GM20B shader. The four files 0082–0084 add to our footprint —
+`nvk_cmd_buffer.c`, `nvk_cmd_pool.{c,h}`, `nvk_mem_stream.c` — are untouched by 26.1.8 as
+well, which is the check that could have broken the clean miss and did not.
+
+**Re-verified against the merged tree**, not inherited from the pre-merge run:
+
+| what | command | result |
+|---|---|---|
+| the pin, reset and re-fetched | `scripts/fetch-mesa.sh --force` | `checked out mesa-26.1.8, verified HEAD = 0fadfea4…` |
+| the 84-patch series applies | `scripts/apply-mesa-patches.sh` | **84 of 84, no fuzz, no rejects**, worktree clean |
+| and reports itself so | `scripts/apply-mesa-patches.sh --list` | `84 applied, 0 pending (84 in mesa-patches/)` |
+| four source gates | `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all PASS |
+| host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 16/16, 8/8, 171/171 |
+
+**The conflicts, and how they were resolved** — by combining, never by picking a side.
+All three were in `STATUS.md`; `docs/BUILDING.md` merged clean.
+
+1. **The header.** Now records both facts: the merge *and* the pin.
+2. **The dated sections.** Both sides inserted at the same offset. Interleaved
+   newest-first, so `main`'s two 2026-08-23 entries sit above this branch's 2026-08-22
+   Mesa entry.
+3. **Two table rows.** `Open decisions` keeps **this branch's** text — it is the newer
+   truth, since it carries D21's opened gate and the 26.1.8 pin. `Never verified on
+   hardware` takes **`main`'s** — it is a superset, adding patch 0084's `ctx->last_fence`
+   fix.
+
+**The cross build had not yet run against the merged tree when this section was
+written** — `scripts/ci-build-archives.sh` was still going. Its result is recorded in the
+follow-up commit on this branch, whatever it says. Nothing above depends on it: the empty
+intersection is a property of the diff, and the 84-of-84 apply is a property of the
+series. **No console has run 26.1.8, with 81 patches or 84.**
+
+---
+
 ## The thin archives, both places, and the bit CI caught (2026-08-23)
 
 **Cross build only.** Follows directly from the entry below.
