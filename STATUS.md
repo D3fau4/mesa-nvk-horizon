@@ -1,7 +1,12 @@
 # STATUS
 
-**Last updated:** 2026-08-23 (`make install` — the driver as a devkitPro portlibs package consumable through `pkg-config`; the thin-archive bug fixed in both places it lived, so `build/pkg` and the horizon_gpu staging prefix now hold archives that link; cross build only, no console involved; series 84 unchanged, phase unchanged, still run 31 / Phase 7 complete)
-**Branch:** `claude/nvk-mem-stream-flush-before-exec`
+**Last updated:** 2026-08-23 (the mesa-patches/ series compacted 84 → 49 with a byte-identical result tree — `HEAD^{tree}` = `8119de7c70a7` for both series, so no code changed; every fix-of-a-fix folded into the patch that introduced the code, the shader-window block-off/revert/redo cycle collapsed to its final state, and all 49 patches now carry the four-field header; cross-references in tests/, scripts/ and docs/ renumbered, records keep old numbers with the map in `mesa-patches/README.md`; cross build tooling untouched, no console involved, phase unchanged, still run 31 / Phase 7 complete)
+**Branch:** `claude/compactar-optimizar-parches-gizzle`
+
+> **Patch-number note (2026-08-23).** Everything in this file below the
+> compaction entry cites patch numbers of the pre-compaction series (up to 84
+> patches). The old → new map is in `mesa-patches/README.md` § "The 2026-08-23
+> compaction (84 → 49)".
 
 ---
 
@@ -30,6 +35,52 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Patch 0084's `ctx->last_fence` fix** (Codex review, 2026-08-22) — needs a wait-then-signal submission with no command buffers between them, which nothing on this branch exercises; cross build only. **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## The series compacted: 84 patches → 49, and the tree that proves it (2026-08-23)
+
+**No code changed, and that is measured, not argued.** The whole point of the
+exercise was maintainability: 39 of the 84 patches were fixes to other patches
+of the same series — the WSI dequeue policy alone was six patches whose net
+effect is ~25 lines, the shader-window story was a block-off (0039), a literal
+revert of it (0040) and a redo (0047), and three patches were review-finding
+batches (0055, 0065, 0066) that themselves violated the series' own
+one-functional-change rule. Every such fix is now folded into the patch that
+introduced the code it fixes.
+
+**The gate: `git -C mesa rev-parse HEAD^{tree}` is
+`8119de7c70a7691fc4b98e8e377ab7d789c6ec8e` after applying the old 84-patch
+series and after applying the new 49-patch series** — measured on a fresh
+`fetch-mesa.sh --force` checkout of `mesa-26.1.7` both times. A byte-identical
+tree means a byte-identical build; nothing needs hardware re-verification,
+because nothing the compiler sees is different. What DOES change is the driver
+identity: `scripts/gen-driver-id.sh` hashes the patch files themselves, so the
+first launch of a build from this series recompiles its shader cache once.
+That is the identity doing its job (Phase 7 exit criterion: two builds
+differing in `mesa-patches/` must not read each other's entries).
+
+The reshuffle, in one paragraph: 0018/0019/0020 (the nvkmd backend's three
+bases) absorbed their fifteen fixups; 0053 (the WSI backend) absorbed sixteen,
+including the whole dequeue saga; 0058+0060 merged (the reference and the
+cycle it created); 0039's fixed-VA half, 0037's overlap log and 0047's redo
+became one shader-window patch, with 0039's dev-side block-off and 0040's
+revert cancelling; 0040's D12-reason correction moved into 0029. Everything
+`Upstream: yes` stayed individual (0001–0016, 0021, 0029→22, 0046→28,
+0082/0083→47/48), as did the features and the patches this file tracks as
+never-verified-on-hardware: old 0068→new 0039, 0074→0040, 0076→0041,
+0077→0042, 0084→0049. Merged messages keep the four-field header, quote the
+hardware evidence that supports the final state, and list what they absorbed
+under `Absorbs:`; the 0034–0044 block, which had no headers at all, got them
+reconstructed. One pre-existing gap fixed on the way: 0021 had no `Why:`.
+
+**Verified after regeneration:** the applier applies 49 of 49 onto the pinned
+commit with `git am`, a second run answers `all 49 patches already applied`,
+`--list` shows a clean prefix, `check-no-abs-paths` and `check-history-intact`
+are green, and every patch carries the four required header fields. The
+`docs/hw-logs/README.md` note (old numbers, and where the map is) is the one
+hardware-log edit, declared by re-recording the manifest with
+`split-status.py --record-logs` — additive, no run content touched.
 
 ---
 
