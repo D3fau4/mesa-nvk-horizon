@@ -325,8 +325,56 @@ _pkg_gpu_lib="$SRC/libhorizon_gpu.a"
     exit 1
 }
 mkdir -p "$OUT/lib"
-cp "$_pkg_gpu_lib" "$OUT/lib/libhorizon_gpu.a"
-cp "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" "$OUT/lib/libhorizon_compat.a"
+
+# STAGED SO THEY STILL LINK, WHICH UNTIL NOW THEY DID NOT.
+#
+# Meson writes libhorizon_gpu.a THIN: it holds paths to the objects in
+# libhorizon_gpu.a.p/, resolved against the archive's own directory. A
+# plain cp into $OUT therefore staged an archive naming members that are
+# not beside it, and every package this project has ever published
+# carried one — while docs/BUILDING.md §5 called it "what a project
+# consuming horizon_gpu actually links against". STATUS.md records the
+# workaround: the object directory copied in by hand, once, and the
+# script left alone. The same was true of all seventeen NVK archives
+# below.
+#
+# scripts/fatten-archives.sh converts them, and the whole set goes
+# through it in ONE invocation: in container mode horizon_run starts a
+# docker run per call, so nineteen calls would be nineteen containers.
+# The job file has to live in the tree, which is what horizon_run
+# mounts.
+_pkg_work="build/package-tmp.$$"
+trap 'rm -rf "$_pkg_work"' EXIT INT TERM
+mkdir -p "$_pkg_work"
+
+# In container mode the fattening runs inside the image, which sees only
+# $PWD — so an $OUT somewhere else would be written to a path that
+# vanishes with the container. Refused here rather than half-written,
+# the same way scripts/toolchain-env.sh refuses a $MESA_BUILD_DIR
+# outside the tree.
+if [ "$HORIZON_IN_CONTAINER" -eq 1 ]; then
+    case "$(cd "$OUT" 2>/dev/null && pwd || echo "$PWD/$OUT")" in
+        "$PWD" | "$PWD"/*) ;;
+        *)
+            echo "error: $OUT is outside $PWD, and the toolchain container" \
+                 "mounts only \$PWD, so the archives could not be staged" \
+                 "there. Package into a directory inside the tree, or" \
+                 "install devkitA64 locally." >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# The leftovers of that hand workaround. Once the archive carries its
+# objects the directory beside it is dead weight that would be shipped
+# as part of the package, and worse, would go on looking like the thing
+# that makes the archive work.
+rm -rf "$OUT"/lib/*.a.p
+
+printf '%s\t%s\n' "$_pkg_gpu_lib" "$OUT/lib/libhorizon_gpu.a" \
+    > "$_pkg_work/jobs"
+printf '%s\t%s\n' "$HORIZON_COMPAT_LIBDIR/libhorizon_compat.a" \
+                  "$OUT/lib/libhorizon_compat.a" >> "$_pkg_work/jobs"
 
 # THE HEADERS THAT LIBRARY IS COMPILED AGAINST, not whatever copy a
 # consumer's own tree happens to have. horizon/include/horizon_gpu/ is
@@ -376,19 +424,63 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # That difference is the caller's, so the condition is the caller's.
 if [ -n "$_newest_lib" ]; then
     horizon_nvk_archive_gate || exit 1
-    rm -rf "$OUT/lib/nvk"
-    mkdir -p "$OUT/lib/nvk"
+    # NOT `rm -rf "$OUT/lib/nvk"` any more. Fattened, these are ~225 MiB;
+    # wiping them before every run would re-fatten and re-write all of
+    # it each time, which is exactly the idempotence this script's header
+    # promises. They are converted in place instead — unchanged content
+    # leaves the file alone, mtime included — and anything the list no
+    # longer names is pruned by name below.
     for _lib in $HORIZON_NVK_TEST_LIBS; do
         mkdir -p "$OUT/lib/nvk/$(dirname "$_lib")"
-        cp "$MESA_NVK_BUILD_DIR/$_lib" "$OUT/lib/nvk/$_lib"
+        printf '%s\t%s\n' "$MESA_NVK_BUILD_DIR/$_lib" "$OUT/lib/nvk/$_lib" \
+            >> "$_pkg_work/jobs"
     done
+    horizon_run bash scripts/fatten-archives.sh "$_pkg_work/jobs"
+
+    # Anything under lib/nvk/ that $HORIZON_NVK_TEST_LIBS no longer
+    # names. Same argument as the .nro drop loop above: the manifest
+    # below hashes what is in $OUT, so a leftover from a previous
+    # packaging run would be listed under this run's build.
+    printf '%s\n' $HORIZON_NVK_TEST_LIBS | LC_ALL=C sort > "$_pkg_work/want"
+    (cd "$OUT/lib/nvk" && find . -name '*.a' | sed 's|^\./||') |
+        LC_ALL=C sort > "$_pkg_work/have"
+    LC_ALL=C comm -13 "$_pkg_work/want" "$_pkg_work/have" |
+        while IFS= read -r _stale_lib; do
+            [ -n "$_stale_lib" ] || continue
+            echo "package-horizon: dropping lib/nvk/$_stale_lib — not in" \
+                 "\$HORIZON_NVK_TEST_LIBS"
+            rm -f "$OUT/lib/nvk/$_stale_lib"
+        done
+
     echo "package-horizon: $(printf '%s\n' $HORIZON_NVK_TEST_LIBS | wc -l)" \
          "NVK driver archive(s) staged under $OUT/lib/nvk/"
 else
+    horizon_run bash scripts/fatten-archives.sh "$_pkg_work/jobs"
     rm -rf "$OUT/lib/nvk"
     echo "package-horizon: no NVK build in $MESA_NVK_BUILD_DIR;" \
          "lib/nvk/ omitted (the .nro-only package is still complete for" \
          "horizon_gpu itself)"
+fi
+
+# NOTHING THIN LEFT THE BUILDING. The whole point of the conversion
+# above is that these archives link somewhere other than the tree that
+# built them, and an archive that is still thin fails at a consumer's
+# link with "error opening thin archive member" — a long way from here,
+# and about a file of ours.
+_pkg_thin=""
+for _a in "$OUT"/lib/*.a; do
+    [ -f "$_a" ] || continue
+    [ "$(head -c 7 "$_a")" = '!<thin>' ] && _pkg_thin="$_pkg_thin $_a"
+done
+if [ -d "$OUT/lib/nvk" ]; then
+    for _a in $(find "$OUT/lib/nvk" -name '*.a'); do
+        [ "$(head -c 7 "$_a")" = '!<thin>' ] && _pkg_thin="$_pkg_thin $_a"
+    done
+fi
+if [ -n "$_pkg_thin" ]; then
+    echo "error: these staged archives are still thin:$_pkg_thin" >&2
+    echo "       They name objects they do not contain." >&2
+    exit 1
 fi
 
 # THE LICENCE TRAVELS WITH THE BINARIES.

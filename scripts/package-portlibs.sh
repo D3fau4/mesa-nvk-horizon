@@ -395,6 +395,27 @@ fi
 # healthy and fails at somebody else's link, which is the entire failure
 # this package exists to stop.
 # ---------------------------------------------------------------------
+# NO TEST BINARIES IN HERE, EVER.
+#
+# This package is what another project links against. The .nro are this
+# project's own homebrew — they belong in the package
+# scripts/package-horizon.sh builds, which is for a console and is a
+# different artefact for a different reader. Nothing stages one today;
+# the gate is here so that stays true rather than remaining true by
+# nobody having added one, and because the two packages are assembled by
+# two scripts that are easy to make rhyme by accident.
+_binaries=$(cd "$STAGE" && find . \( -name '*.nro' -o -name '*.elf' \
+                                     -o -name '*.nacp' \) | sed 's|^\./||')
+if [ -n "$_binaries" ]; then
+    echo "error: these test binaries are staged into the portlibs" \
+         "package:" >&2
+    printf '%s\n' "$_binaries" | sed 's/^/         /' >&2
+    echo "       This package is what another project links, not what" \
+         "runs on a console — scripts/package-horizon.sh is the one that" \
+         "ships .nro." >&2
+    exit 1
+fi
+
 _thin=""
 for _a in "$STAGE"/lib/*.a "$STAGE"/lib/nvk/*.a; do
     [ -f "$_a" ] || continue
