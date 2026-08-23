@@ -79,11 +79,17 @@ All three were in `STATUS.md`; `docs/BUILDING.md` merged clean.
    hardware` takes **`main`'s** — it is a superset, adding patch 0084's `ctx->last_fence`
    fix.
 
-**The cross build had not yet run against the merged tree when this section was
-written** — `scripts/ci-build-archives.sh` was still going. Its result is recorded in the
-follow-up commit on this branch, whatever it says. Nothing above depends on it: the empty
-intersection is a property of the diff, and the 84-of-84 apply is a property of the
-series. **No console has run 26.1.8, with 81 patches or 84.**
+**The cross build against the merged tree is green.**
+`scripts/ci-build-archives.sh` — **OK, exit 0**: every archive built, **37 `.nro` link
+them** (meson.build names 37), `check-dispatch-complete` OK (825 entry points named, 234
+core, 1 allowed absence), and `check-tls-relocs` OK at both stages it runs — 350 objects
+scanned after Mesa's core, 1203 (817 loose plus the members of two archives) after NVK.
+The chain ran end to end: derived toolchain image, `mesa_clc`/`vtn_bindgen2` native,
+Mesa's non-driver core, the nouveau Vulkan driver, every archive the tests link, then the
+37 `.nro`. **Nothing in `mesa-patches/` needed touching at any step** — with 84 patches,
+not the 81 the pre-merge run used.
+
+**No console has run 26.1.8, with 81 patches or 84.**
 
 ---
 
