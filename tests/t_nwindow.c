@@ -1684,6 +1684,99 @@ int run_test(test_ctx *t)
                  "slow lane: released back to the compositor -> 0x%08x", rc))
         rv = 1;
 
+    /* --- WHAT SIZES THIS WINDOW WILL TAKE --------------------------
+     *
+     * Everything above renders at the window's own size, because that
+     * is the only size the Vulkan backend offers: nvk_wsi.c sets
+     * force_swapchain_to_currentExtent and wsi_horizon.c publishes
+     * min == current == max. Lifting that is what would let an
+     * application render at 720p and present to a docked 1080p layer,
+     * with the compositor doing the scaling — the scalingMode nw_queue
+     * already sends on every frame is the mechanism, and patch 0040
+     * measured it working when the *consumer* resizes.
+     *
+     * What has never been asked is which sizes this window accepts.
+     * A minImageExtent published without asking would be a promise
+     * about an unknown, which is the mistake minImageCount made until
+     * the queue was asked earlier in this same run. So the ramp asks:
+     * register two buffers at each size and put one frame through it.
+     *
+     * Only sizes at or below the native one are tried. The NvMap above
+     * is sized for the native geometry, and rendering LARGER than the
+     * layer is not what the feature is for — a swapchain that scales
+     * down is the one worth having on this chip.
+     */
+    static const struct { uint32_t w, h; } nw_extents[] = {
+        { 1280, 720 }, { 960, 540 }, { 640, 360 }, { 320, 180 },
+        { 160, 90 }, { 64, 36 }, { 16, 16 },
+    };
+    uint32_t smallest_w = 0, smallest_h = 0;
+
+    for (uint32_t e = 0; e < sizeof(nw_extents) / sizeof(nw_extents[0]);
+         e++) {
+        nw_geometry eg;
+        if (!nw_geometry_init(&eg, nw_extents[e].w, nw_extents[e].h)) {
+            t_note(t, "extent %" PRIu32 "x%" PRIu32 ": no representable "
+                   "scanout geometry; not tried", nw_extents[e].w,
+                   nw_extents[e].h);
+            continue;
+        }
+        if ((uint64_t)eg.buffer_size_B * 2u > total_B) {
+            t_note(t, "extent %" PRIu32 "x%" PRIu32 ": two buffers need "
+                   "more than this test's NvMap; not tried", eg.width,
+                   eg.height);
+            continue;
+        }
+
+        s.geom = eg;
+        s.num_buffers = 2;
+        if (!nw_session_register(&s)) {
+            t_note(t, "MEASURED: %" PRIu32 "x%" PRIu32 " was refused at "
+                   "registration", eg.width, eg.height);
+            continue;
+        }
+
+        nw_slot got;
+        bool presented = false;
+        if (nw_ask_for_a_buffer(&s, "extent ramp", &got)) {
+            const uint32_t off = (uint32_t)got.slot * eg.buffer_size_B;
+            nw_fill(cpu, off, eg.buffer_size_B, nw_frame_colour(e));
+            horizon_gpu_mem_flush(mem, off, eg.buffer_size_B);
+
+            BqBufferOutput bout;
+            memset(&bout, 0, sizeof(bout));
+            Result qrc = nw_queue(&s.prod, got.slot, 1, &got.fence, &bout);
+            presented = R_SUCCEEDED(qrc);
+            t_check(t, presented, "MEASURED: %" PRIu32 "x%" PRIu32
+                    " registered and presented one frame -> 0x%08x",
+                    eg.width, eg.height, qrc);
+        } else {
+            t_check(t, false, "MEASURED: %" PRIu32 "x%" PRIu32
+                    " registered, but no buffer came back to draw into",
+                    eg.width, eg.height);
+        }
+
+        if (presented) {
+            smallest_w = eg.width;
+            smallest_h = eg.height;
+        }
+
+        rc = nwindowReleaseBuffers(win);
+        t_check(t, R_SUCCEEDED(rc), "%" PRIu32 "x%" PRIu32
+                ": released -> 0x%08x", eg.width, eg.height, rc);
+    }
+
+    t_note(t, "MEASURED: the smallest size this window took a frame at is "
+           "%" PRIu32 "x%" PRIu32 "; a published minImageExtent may not go "
+           "below what this ramp reached", smallest_w, smallest_h);
+    t_check(t, smallest_w != 0 && smallest_h != 0,
+            "at least one size below the window's own was registered and "
+            "presented, which is what a scaling swapchain needs");
+
+    /* Back to the geometry the probes below expect. */
+    s.geom = geom;
+    s.num_buffers = 3;
+
     if (!nw_run_probes(&s, "AFTER"))
         rv = 1;
 
