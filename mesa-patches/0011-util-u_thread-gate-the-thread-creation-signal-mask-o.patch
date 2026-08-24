@@ -1,7 +1,7 @@
-From 35d1c034050226a6ca60219a7e899e94d43c6bcc Mon Sep 17 00:00:00 2001
+From 5937dfd961fe61107577a48cfe803972d399dc97 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:08 +0000
-Subject: [PATCH 11/81] util/u_thread: gate the thread-creation signal mask on
+Subject: [PATCH 11/49] util/u_thread: gate the thread-creation signal mask on
  pthread_sigmask
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -50,10 +50,10 @@ Upstream: yes — it is a libc trait, not an OS name; the fallback is the
  2 files changed, 18 insertions(+), 1 deletion(-)
 
 diff --git a/meson.build b/meson.build
-index ef415aa..ef9c244 100644
+index 200ff66..ba7917e 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1792,6 +1792,17 @@ if dep_thread.found()
+@@ -1798,6 +1798,17 @@ if dep_thread.found()
        args : '-D_GNU_SOURCE')
      pre_args += '-DHAVE_PTHREAD_MUTEX_TIMEDLOCK'
    endif

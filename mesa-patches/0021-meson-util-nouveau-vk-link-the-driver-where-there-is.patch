@@ -1,7 +1,7 @@
-From 8981a385cc8319f7b029e8a9c6d175386e0cb0ab Mon Sep 17 00:00:00 2001
+From 37b17eda68f1b6a15e60d8730bea96fef97d1107 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:50:49 +0000
-Subject: [PATCH 21/81] meson,util,nouveau/vk: link the driver where there is
+Subject: [PATCH 21/49] meson,util,nouveau/vk: link the driver where there is
  no DRM and no regex
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -27,6 +27,10 @@ Both are conditional on properties Mesa already computes and change
 nothing where DRM and regex exist.
 
 mesa-nvk-horizon: Phase 4 — the mandatory Vulkan sequence
+Why: meson gates regex on the operating system and NVK installs a DRM
+  syncobj hook unconditionally; whether regcomp exists is a property of
+  the C library, and where there is no DRM the runtime expects the hook
+  left NULL.
 Evidence: t_vulkan.nro links at 14 000 184 bytes with zero undefined
   symbols and zero multiple definitions. That last number also answers
   the question docs/rust-toolchain.md left open since step 3: linking
@@ -38,10 +42,10 @@ Upstream: yes, both.
  2 files changed, 18 insertions(+), 4 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index 0817173..013889c 100644
+index e790b55..e5d2efd 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1855,13 +1855,20 @@ endif
+@@ -1861,13 +1861,20 @@ endif
  # it's not linux and wont
  dep_m = cc.find_library('m', required : false)
  

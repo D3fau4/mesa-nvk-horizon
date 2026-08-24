@@ -1,7 +1,7 @@
-From d67b183760dfa86601241f2868c1b59833c3a8f3 Mon Sep 17 00:00:00 2001
+From 06d22a190dcd9096c179a8b5cd3b176c1d1c5646 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:12:53 +0000
-Subject: [PATCH 09/81] util/os_misc: include <unistd.h> where sysconf is the
+Subject: [PATCH 09/49] util/os_misc: include <unistd.h> where sysconf is the
  answer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -41,10 +41,10 @@ Upstream: yes — it is additive and cannot change any platform that
  1 file changed, 5 insertions(+)
 
 diff --git a/src/util/os_misc.c b/src/util/os_misc.c
-index ee2b790..0ef5128 100644
+index cde1a35..cc2248f 100644
 --- a/src/util/os_misc.c
 +++ b/src/util/os_misc.c
-@@ -77,6 +77,11 @@
+@@ -79,6 +79,11 @@
  #elif DETECT_OS_FUCHSIA
  #include <unistd.h>
  #include <zircon/syscalls.h>

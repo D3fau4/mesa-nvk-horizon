@@ -1,0 +1,418 @@
+From 7d685533c8e13c148cb61ab4d5f98fbf85266786 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Sat, 22 Aug 2026 22:02:02 +0200
+Subject: [PATCH 49/49] nouveau/vk: nvkmd_horizon: wait on the host engine, not
+ on the thread
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 item 9 (on-demand waits only)
+Why: nvkmd_horizon_ctx_wait blocked the calling thread until another
+ channel's fence was reached. It was correct and it was the wrong place
+ to spend the time: the thread it stops is the one about to record the
+ work, and the work being waited for is not work this CPU does. The
+ comment it carried said a GPU-side wait needed a command-stream builder
+ this backend did not have. That has not been true since Phase 5 —
+ horizon_cmds_syncpt_wait emits the host's SYNCPOINT acquire and
+ t_submit's R10 measures it on hardware — so what was missing was the
+ plumbing, which horizon_gpu_submit_waits now provides.
+ The semantics are unchanged, and that is checkable rather than claimed:
+ once a nvk_horizon_sync is PENDING its CPU wait waits on sync->fence and
+ ignores wait_value, because the fence covers every timeline value up to
+ the one it carries. The GPU wait is emitted against that same fence.
+ horizon_gpu_submit_waits() is itself a channel submission and its
+ out_fence is only reached once the host engine's acquire resolves.
+ nvkmd_horizon_ctx_flush_gpu_waits() discarded that fence (NULL) instead
+ of storing it in ctx->last_fence, so a signal issued right after a
+ GPU-side wait with no intervening exec() — a valid queue submission
+ with foreign waits and signals but no command buffers — reused whatever
+ fence ctx->last_fence already held. That older fence can already be
+ reached while the wait this call just queued is still blocked, which
+ lets the signal, and whatever depends on it, go out ahead of the
+ producer the wait exists to order against. Fixed by keeping the
+ out_fence and folding it into ctx->last_fence like every other
+ submission path here does; the same change makes the GPU-wait batch
+ call nvkmd_horizon_meter_submit(), which it also owed and did not pay —
+ horizon_gpu_submit_waits() is a real submit, and the meter's submit(s)
+ total silently omitted every one of these batches without it.
+Evidence: t_submit PASS 32/32 on a Nintendo Switch with this change,
+ including R10 — "consumer stays blocked on producer syncpt 27 threshold
+ 82249 not yet reached (status=timeout)" then "GPU-side cross-channel
+ wait unblocks once the producer reaches the threshold (status=ok)".
+ Godot 4.0.5 through the whole eight-phase benchmark: identical frame,
+ CPU and GPU render times to the run before it, and the new meter counter
+ reports "0 wait(s) handed to the host engine" in all 78 of its one-
+ second windows — that application issues no cross-channel wait at all,
+ so this changes nothing for it and breaks nothing either. What it does
+ change is every wait that is not same-channel: those no longer stop a
+ thread. The CPU path stays for a sync with no fence yet and as the
+ fallback when the ring is full. The ctx->last_fence fix has not been
+ exercised on hardware: it needs a wait-then-signal submission with no
+ command buffers between them, which none of the tests on this branch
+ construct — recorded here rather than in a passing run.
+Upstream: no — it is a Horizon backend implementing a nvkmd op the DRM
+ backend already expresses through its own submit ioctl.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  21 ++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 212 ++++++++++++++----
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c |  21 ++
+ 3 files changed, 205 insertions(+), 49 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 54afe5b..a2f82bb 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -217,6 +217,11 @@ struct nvkmd_horizon_meter {
+    uint32_t ctx_waits;
+    uint32_t ctx_waits_skipped;
+    uint64_t ctx_wait_ns;
++   /* Waits handed to the host engine instead of blocked on here. These
++    * are the ones that cost the calling thread nothing, so they are
++    * counted apart from ctx_waits rather than folded into it — a mean
++    * over both would hide exactly the change worth seeing. */
++   uint32_t ctx_waits_gpu;
+ 
+    /* nvk_horizon_sync_wait, counting only the waits that blocked and
+     * then succeeded. A wait that found the sync already signalled cost
+@@ -341,6 +346,10 @@ void nvkmd_horizon_meter_init(struct nvkmd_horizon_meter *m,
+                               horizon_gpu_channel *chan);
+ void nvkmd_horizon_meter_finish(struct nvkmd_horizon_meter *m);
+ void nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m);
++/* One wait resolved by the host engine rather than by this thread. */
++void nvkmd_horizon_meter_ctx_wait_gpu(struct nvkmd_horizon_meter *m,
++                                      uint32_t count);
++
+ void nvkmd_horizon_meter_ctx_wait(struct nvkmd_horizon_meter *m,
+                                   bool skipped, uint64_t ns);
+ void nvkmd_horizon_meter_fence_wait(struct nvkmd_horizon_meter *m,
+@@ -368,6 +377,18 @@ VkResult nvk_horizon_sync_get_fence(struct vk_sync *sync,
+ bool nvk_horizon_sync_is_pending_on(struct vk_sync *sync,
+                                     horizon_gpu_channel *chan);
+ 
++/* The fence of a sync that is PENDING on a channel OTHER than `chan`,
++ * which is exactly the set of waits a GPU-side syncpoint wait can carry.
++ *
++ * False — and `fence_out` untouched — for anything else: a sync with no
++ * fence yet, one already signalled, one pending on `chan` itself (the
++ * GPFIFO already orders that one), or a foreign sync type. Those still
++ * belong to the CPU path.
++ */
++bool nvk_horizon_sync_get_foreign_fence(struct vk_sync *sync,
++                                        horizon_gpu_channel *chan,
++                                        horizon_gpu_fence *fence_out);
++
+ VkResult nvkmd_horizon_create_ctx(struct nvkmd_dev *dev,
+                                   struct vk_object_base *log_obj,
+                                   enum nvkmd_engines engines,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index 07f8c05..c3086cc 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -59,11 +59,12 @@ nvkmd_horizon_meter_report_locked(struct nvkmd_horizon_meter *m,
+    const uint64_t window_ms = window_ns / 1000000u;
+ 
+    mesa_logi("nvkmd_horizon: channel %p over %" PRIu64 " ms: %" PRIu32
+-             " submit(s); %" PRIu32 " CPU wait(s) for another channel "
+-             "totalling %" PRIu64 " us, %" PRIu32 " wait(s) skipped as "
+-             "already ordered by this channel",
+-             (void *)m->chan, window_ms, m->submits, m->ctx_waits,
+-             m->ctx_wait_ns / 1000u, m->ctx_waits_skipped);
++             " submit(s); %" PRIu32 " wait(s) handed to the host engine, "
++             "%" PRIu32 " CPU wait(s) for another channel totalling %" PRIu64
++             " us, %" PRIu32 " wait(s) skipped as already ordered by this "
++             "channel",
++             (void *)m->chan, window_ms, m->submits, m->ctx_waits_gpu,
++             m->ctx_waits, m->ctx_wait_ns / 1000u, m->ctx_waits_skipped);
+ 
+    /* Means beside the count they were computed from — a mean with no
+     * denominator next to it is not a measurement anybody can check. */
+@@ -93,6 +94,7 @@ nvkmd_horizon_meter_report_locked(struct nvkmd_horizon_meter *m,
+    m->ctx_waits = 0;
+    m->ctx_waits_skipped = 0;
+    m->ctx_wait_ns = 0;
++   m->ctx_waits_gpu = 0;
+    m->fence_waits = 0;
+    m->fence_wait_ns = 0;
+    m->before_fence_ns = 0;
+@@ -142,6 +144,23 @@ nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m)
+    simple_mtx_unlock(&m->mutex);
+ }
+ 
++void
++nvkmd_horizon_meter_ctx_wait_gpu(struct nvkmd_horizon_meter *m,
++                                 uint32_t count)
++{
++   if (m == NULL || !m->enabled || count == 0)
++      return;
++
++   const uint64_t now_ns = os_time_get_nano();
++
++   simple_mtx_lock(&m->mutex);
++   if (m->window_start_ns == 0)
++      m->window_start_ns = now_ns;
++   m->ctx_waits_gpu += count;
++   nvkmd_horizon_meter_report_locked(m, now_ns, false);
++   simple_mtx_unlock(&m->mutex);
++}
++
+ void
+ nvkmd_horizon_meter_ctx_wait(struct nvkmd_horizon_meter *m,
+                              bool skipped, uint64_t ns)
+@@ -224,6 +243,97 @@ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+    FREE(ctx);
+ }
+ 
++/* CPU-waits the syncs a GPU-side wait could not carry, and meters them.
++ * Used both for the kinds that never qualify and as the fallback when
++ * the ring is full or the submit is refused.
++ */
++static VkResult
++nvkmd_horizon_ctx_wait_cpu(struct nvkmd_horizon_ctx *ctx,
++                           const struct vk_sync_wait *wait)
++{
++   struct vk_sync *sync = wait->sync;
++   const struct vk_sync_type *type = sync->type;
++   assert(type->wait != NULL);
++
++   /* Timed unconditionally, two clock reads around a call that is about
++    * to block on another channel's work — the metered and unmetered
++    * paths stay the same code, and the cost is nothing beside what is
++    * being measured. */
++   const uint64_t start_ns = os_time_get_nano();
++
++   /* NULL device: the sync type's wait() uses it only to build a
++    * vk_errorf, and nvkmd has no vk_device to hand it — the layer below
++    * the driver deliberately does not know about one.
++    */
++   VkResult result = type->wait(NULL, sync, wait->wait_value,
++                                VK_SYNC_WAIT_COMPLETE, OS_TIMEOUT_INFINITE);
++
++   /* Folded before the result is checked: a wait that failed still spent
++    * the time, and dropping it would make a channel that is losing whole
++    * seconds to a faulted neighbour look idle. */
++   const uint64_t end_ns = os_time_get_nano();
++   nvkmd_horizon_meter_ctx_wait(&ctx->meter, false,
++                                end_ns > start_ns ? end_ns - start_ns : 0);
++   return result;
++}
++
++/* Hands the collected batch to the host engine, or falls back to CPU
++ * waits for exactly the syncs in it. Empties the batch either way.
++ */
++static VkResult
++nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
++                                  horizon_gpu_fence *fences,
++                                  struct vk_sync_wait *syncs,
++                                  uint32_t *count)
++{
++   const uint32_t n = *count;
++   if (n == 0)
++      return VK_SUCCESS;
++
++   *count = 0;
++
++   /* The out_fence matters, not just the status: this call is itself a
++    * channel submission (horizon_gpu_submit_waits pushes a wait command
++    * list and kicks it off), and its fence is only reached once the
++    * host engine's acquire — the thing this whole patch exists to wait
++    * for instead of the CPU — has resolved. ctx->last_fence has to
++    * become that fence, not stay whatever it was before this call: a
++    * later nvkmd_horizon_ctx_signal() with no exec() in between reuses
++    * ctx->last_fence as-is, and a stale fence there can already be
++    * reached while the wait this call just queued is still blocked,
++    * which would let a signal — and whatever waits on it — go out
++    * ahead of the producer this was supposed to wait for.
++    */
++   horizon_gpu_fence fence;
++   horizon_gpu_result res =
++      horizon_gpu_submit_waits(ctx->chan, fences, n, &fence);
++   if (horizon_gpu_succeeded(res)) {
++      ctx->last_fence = fence;
++      ctx->has_fence = true;
++      nvkmd_horizon_meter_ctx_wait_gpu(&ctx->meter, n);
++      /* horizon_gpu_submit_waits() is a real horizon_gpu_submit() under
++       * the hood, so it counts as one for the same reason the exec and
++       * fence-only signal paths call this: leaving it out would make the
++       * meter's submit(s) total silently omit every GPU-wait batch. */
++      nvkmd_horizon_meter_submit(&ctx->meter);
++      return VK_SUCCESS;
++   }
++
++   /* BUSY means every slot in the ring is still in flight, which is a
++    * real answer and not an error: the CPU wait below is what this call
++    * used to do unconditionally, so falling back to it is a slowdown and
++    * never a wrong result. A lost channel goes the same way, because the
++    * CPU path is the one that can tell the caller so.
++    */
++   for (uint32_t i = 0; i < n; i++) {
++      VkResult result = nvkmd_horizon_ctx_wait_cpu(ctx, &syncs[i]);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
+ static VkResult
+ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+                        struct vk_object_base *log_obj,
+@@ -232,18 +342,33 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
+ 
+-   /* A GPU-side wait is what this should be: the channel should stall on
+-    * the syncpoint rather than the CPU stalling on it. The methods that
+-    * do that (the host's SYNCPOINT/SEMAPHORE acquire) are Phase 5 work —
+-    * this backend has no command-stream builder yet, and inventing one
+-    * here would be the wrong place for it.
++   /* THE WAIT HAPPENS ON THE HOST ENGINE, NOT ON THIS THREAD.
++    *
++    * A wait on another channel's fence used to block the calling thread
++    * until that fence was reached. It was correct and it was the wrong
++    * place to spend the time: the thread that blocks here is the one
++    * about to record the frame, and the work it is waiting for is not
++    * work this CPU does. Measured on a Nintendo Switch through a
++    * swapchain acquire, that stall was 13.8 ms of a 16.7 ms frame while
++    * the GPU had 0.18 ms of work to do.
+     *
+-    * So the wait happens on the CPU, and that is stated rather than
+-    * hidden. It is NOT the thing rejected design 6 forbids: this runs
+-    * only when the application asked one submission to wait for another,
+-    * never after every submit, and never to make something else appear
+-    * to work.
++    * horizon_gpu_submit_waits emits the host's SYNCPOINT acquire into
++    * the channel instead. The GPFIFO executes in order, so everything
++    * submitted afterwards is ordered behind the wait without anyone
++    * being told to wait for it — which is the whole of what a wait
++    * between two submissions has to mean.
++    *
++    * Two kinds of wait still belong to the CPU, and neither is a
++    * shortcut:
++    *   - a sync with no fence yet, or one already signalled: there is no
++    *     syncpoint threshold to put in a command, and the sync type's
++    *     own wait is what observes it acquiring one;
++    *   - the fallback when the channel's wait ring is momentarily full.
+     */
++   horizon_gpu_fence gpu_fences[HORIZON_GPU_MAX_WAIT_FENCES];
++   struct vk_sync_wait gpu_syncs[HORIZON_GPU_MAX_WAIT_FENCES];
++   uint32_t n_gpu = 0;
++
+    for (uint32_t i = 0; i < wait_count; i++) {
+       /* THE WAIT THAT IS ALREADY SATISFIED, AND THE ONE CASE WHERE
+        * SKIPPING IT IS NOT AN OPTIMISATION BUT THE TRUTH.
+@@ -252,20 +377,14 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+        * pushed. If this wait is on work that was already submitted to
+        * THIS channel, the submit that follows cannot begin before that
+        * work has finished, and the channel enforces it without anyone
+-       * asking. Waiting on the CPU for it would stall the caller for
+-       * something the hardware has already guaranteed.
+-       *
+-       * It matters because it is the ordinary case, not a corner: a
+-       * swapchain present waits on the semaphore the application's
+-       * render submit signalled, on the same queue, every frame. With
+-       * the CPU wait, handing the compositor a fence to wait on saves
+-       * nothing — the CPU has already waited for the render by the time
+-       * the buffer is queued.
++       * asking. Emitting a wait command for it, or blocking the CPU on
++       * it, would both pay for something the hardware has already
++       * guaranteed.
+        *
+        * The bound is exact: only a sync that is PENDING (a submit has
+        * attached a fence to it) and whose fence came from this same
+        * channel. Anything else — another channel's fence, the upload
+-       * queue's, a sync nothing has submitted yet — still waits below.
++       * queue's, a sync nothing has submitted yet — is handled below.
+        *
+        * What it costs: a wait on a channel that has faulted no longer
+        * reports CHANNEL_LOST here. The error is not lost, it moves —
+@@ -278,35 +397,30 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+          continue;
+       }
+ 
+-      const struct vk_sync_type *type = waits[i].sync->type;
+-      assert(type->wait != NULL);
+-
+-      /* Timed unconditionally, two clock reads around a call that is
+-       * about to block on another channel's work — the metered and
+-       * unmetered paths stay the same code, and the cost is nothing
+-       * beside what is being measured. */
+-      const uint64_t start_ns = os_time_get_nano();
+-
+-      /* NULL device: the sync type's wait() uses it only to build a
+-       * vk_errorf, and nvkmd has no vk_device to hand it — the layer
+-       * below the driver deliberately does not know about one.
+-       */
+-      VkResult result = type->wait(NULL, waits[i].sync, waits[i].wait_value,
+-                                   VK_SYNC_WAIT_COMPLETE,
+-                                   OS_TIMEOUT_INFINITE);
+-
+-      /* Folded before the result is checked: a wait that failed still
+-       * spent the time, and dropping it would make a channel that is
+-       * losing whole seconds to a faulted neighbour look idle. */
+-      const uint64_t end_ns = os_time_get_nano();
+-      nvkmd_horizon_meter_ctx_wait(&ctx->meter, false,
+-                                   end_ns > start_ns ? end_ns - start_ns : 0);
++      horizon_gpu_fence fence;
++      if (nvk_horizon_sync_get_foreign_fence(waits[i].sync, ctx->chan,
++                                             &fence)) {
++         gpu_fences[n_gpu] = fence;
++         gpu_syncs[n_gpu] = waits[i];
++         n_gpu++;
++
++         if (n_gpu == HORIZON_GPU_MAX_WAIT_FENCES) {
++            VkResult result =
++               nvkmd_horizon_ctx_flush_gpu_waits(ctx, gpu_fences, gpu_syncs,
++                                                 &n_gpu);
++            if (result != VK_SUCCESS)
++               return result;
++         }
++         continue;
++      }
+ 
++      VkResult result = nvkmd_horizon_ctx_wait_cpu(ctx, &waits[i]);
+       if (result != VK_SUCCESS)
+          return result;
+    }
+ 
+-   return VK_SUCCESS;
++   return nvkmd_horizon_ctx_flush_gpu_waits(ctx, gpu_fences, gpu_syncs,
++                                            &n_gpu);
+ }
+ 
+ static VkResult
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index db5391c..6fa8c51 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -598,6 +598,27 @@ nvk_horizon_sync_get_fence(struct vk_sync *_sync, uint64_t abs_timeout_ns,
+    return VK_SUCCESS;
+ }
+ 
++bool
++nvk_horizon_sync_get_foreign_fence(struct vk_sync *_sync,
++                                   horizon_gpu_channel *chan,
++                                   horizon_gpu_fence *fence_out)
++{
++   if (_sync->type != &nvk_horizon_sync_type || chan == NULL ||
++       fence_out == NULL)
++      return false;
++
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   mtx_lock(&sync->mutex);
++   const bool foreign = sync->state == NVK_HORIZON_SYNC_PENDING &&
++                        sync->chan != NULL && sync->chan != chan;
++   if (foreign)
++      *fence_out = sync->fence;
++   mtx_unlock(&sync->mutex);
++
++   return foreign;
++}
++
+ bool
+ nvk_horizon_sync_is_pending_on(struct vk_sync *_sync,
+                                horizon_gpu_channel *chan)
+-- 
+2.43.0
+

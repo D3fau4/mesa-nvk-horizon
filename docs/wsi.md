@@ -4,7 +4,7 @@ Target: a `VK_KHR_swapchain` implementation over Horizon's VI compositor via lib
 `nwindow`, with no global state, real double/triple buffering, and a genuine zero-copy
 path whose fallback is explicit and logged.
 
-This is **Phase 6**. It is implemented, as patches 0049-0056 in `mesa-patches/`.
+This is **Phase 6**. It is implemented, as patches 0031-0041 in `mesa-patches/`.
 The design below was written from the audit in `docs/reference-analysis.md`
 before any of it existed; where building it disproved something, the paragraph
 says so and names what disproved it. Those corrections are § 2.2, § 2.3, § 2.5,

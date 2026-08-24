@@ -447,7 +447,7 @@ static Result nw_dequeue(nw_producer *p, uint64_t timeout_ns, nw_slot *out)
             return rc;
 
         /* THE SAME POLICY THE WSI USES, so this test measures what the
-         * driver does — and since patch 0067 that is one policy at
+         * driver does — and since patch 0037 that is one policy at
          * every timeout rather than two.
          *
          * The history is worth keeping because it is how the mistake
@@ -958,7 +958,7 @@ static void nw_probe_starvation(nw_session *s, const char *where)
 /* AND THE SAME MEASUREMENT WITH NO DEADLINE AT ALL.
  *
  * `timeout == UINT64_MAX` is what an application writes when it simply
- * wants the next buffer, and until patch 0067 it was the one value that
+ * wants the next buffer, and until patch 0037 it was the one value that
  * selected a different dequeue mode in the driver — a branch no test in
  * this tree had ever taken, because every caller here and in
  * t_vk_swapchain passes a finite budget. 0067 deleted that branch on

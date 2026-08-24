@@ -1,0 +1,267 @@
+From e7cb1fca28a3e835518b19da42afeac6860a5b56 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 4 Aug 2026 16:04:47 +0000
+Subject: [PATCH 27/49] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
+Why: nvkmd_dev_alloc_tiled_mem calls dev->ops->alloc_tiled_mem with no
+  capability check and no assert (nvkmd.c:111-118), so a backend that
+  leaves the entry NULL does not fail -- it jumps through a null
+  pointer. This backend left it NULL, with a comment claiming "nvkmd.h's
+  inline wrappers assert on that before dispatching". They do not: the
+  function is out-of-line in nvkmd.c and dispatches unconditionally.
+Evidence: read at MESA_COMMIT. Two callers reach it. The vkAllocateMemory
+  route (nvk_device_memory.c:228) needs pte_kind or tile_mode non-zero,
+  and both stay zero here because nvk_image_can_compress
+  (nvk_image.c:812) returns false whenever kmd_info.has_compression is
+  false. The reachable one is ensure_linear_tiled_shadow_mem_locked
+  (nvk_cmd_draw.c:1055), which fires whenever a VK_IMAGE_TILING_LINEAR
+  image is used as an attachment -- an ordinary thing for an off-screen
+  test to do.
+Upstream: no -- it implements an operation for this backend.
+
+The operation is implementable here, and cheaply. A block-linear layout
+is a property of the GPU *mapping* on this platform, not of the memory
+object (docs/memory-model.md § 1 #9), and alloc_mem already reserves and
+binds a VA for every object it creates. So the only difference between
+the two entry points is the PTE kind that VA carries, and the body
+becomes one function taking the kind.
+
+That kind also decides which half of the address space the reservation
+lands in -- nvkmd_horizon_alloc_va sends a non-pitch kind to the
+big-page half -- which decides the *object's* size too. horizon_gpu_vm_map
+rounds a bind's size up to the reservation's page size and then requires
+the rounded range to still fit the memory object, so an object that is
+not a whole number of big pages cannot be bound whole. That is the
+hazard nvkmd_horizon_alloc_va names in a comment and hands to the
+allocation, and this is the allocation: raising the alignment to
+bind_align_B for a block-linear kind is the whole fix, because
+horizon_gpu_mem_create rounds the size up to the alignment.
+
+tile_mode is not consumed, and not silently. In the nouveau backend it
+is a field of the kernel's BO; Horizon has no such field, and everything
+needed to interpret a block-linear surface comes from the PTE kind or
+from the image descriptor NIL writes. Recording the block dimensions in
+a place nothing reads would be a fiction.
+
+has_alloc_tiled becomes true, which is what it now is. Its one other
+consumer is EXT_image_drm_format_modifier, which therefore appears in
+the advertised set; nothing enables it here, and an advertised extension
+costs nothing until an application asks for it.
+
+Cross build: libnvk.a builds and carries nvkmd_horizon_alloc_tiled_mem.
+Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
+52/52 reaches this operation through the one path that can -- a
+DRM_FORMAT_MOD_LINEAR image used as a colour attachment, which makes
+NVK allocate a tiled shadow here -- and all 4096 texels come back
+correct (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  7 ++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  | 17 ++--
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 83 ++++++++++++++++---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 14 ++--
+ 4 files changed, 100 insertions(+), 21 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 8072cf3..12d235a 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -247,6 +247,13 @@ VkResult nvkmd_horizon_alloc_mem(struct nvkmd_dev *dev,
+                                  enum nvkmd_mem_flags flags,
+                                  struct nvkmd_mem **mem_out);
+ 
++VkResult nvkmd_horizon_alloc_tiled_mem(struct nvkmd_dev *dev,
++                                       struct vk_object_base *log_obj,
++                                       uint64_t size_B, uint64_t align_B,
++                                       uint8_t pte_kind, uint16_t tile_mode,
++                                       enum nvkmd_mem_flags flags,
++                                       struct nvkmd_mem **mem_out);
++
+ VkResult nvkmd_horizon_alloc_va(struct nvkmd_dev *dev,
+                                 struct vk_object_base *log_obj,
+                                 enum nvkmd_va_flags flags, uint8_t pte_kind,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+index fb71079..8c01a74 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
+@@ -80,11 +80,18 @@ const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
+    .get_gpu_timestamp = nvkmd_horizon_dev_get_gpu_timestamp,
+    .get_drm_fd = nvkmd_horizon_dev_get_drm_fd,
+    .alloc_mem = nvkmd_horizon_alloc_mem,
+-   /* alloc_tiled_mem and import_dma_buf are left NULL on purpose:
+-    * nvkmd_info says has_alloc_tiled and has_dma_buf are false, and
+-    * nvkmd.h's inline wrappers assert on that before dispatching, so a
+-    * caller that ignored the capability faults here rather than
+-    * silently getting a wrong allocation.
++   .alloc_tiled_mem = nvkmd_horizon_alloc_tiled_mem,
++   /* import_dma_buf is left NULL: nvkmd_info says has_dma_buf is false,
++    * and after the patch that makes the external-memory extensions
++    * follow that capability, nothing advertises a way to reach it.
++    *
++    * The comment that used to stand here said the same of
++    * alloc_tiled_mem and added that "nvkmd.h's inline wrappers assert on
++    * that before dispatching". They do not. nvkmd_dev_alloc_tiled_mem is
++    * an out-of-line function in nvkmd.c that calls
++    * dev->ops->alloc_tiled_mem with no check and no assert at all
++    * (nvkmd.c:111-118), and nvkmd_dev_import_dma_buf is the same
++    * (nvkmd.c:154-160). The claim was checked and was false.
+     */
+    .alloc_va = nvkmd_horizon_alloc_va,
+    .create_ctx = nvkmd_horizon_create_ctx,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index f6901f2..a54b2ed 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -153,12 +153,18 @@ const struct nvkmd_mem_ops nvkmd_horizon_mem_ops = {
+     */
+ };
+ 
+-VkResult
+-nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
+-                        struct vk_object_base *log_obj,
+-                        uint64_t size_B, uint64_t align_B,
+-                        enum nvkmd_mem_flags flags,
+-                        struct nvkmd_mem **mem_out)
++/* The body of both alloc entry points. They differ in exactly one
++ * thing on this platform — the PTE kind the memory's VA is reserved and
++ * bound with — because a block-linear layout is a property of the GPU
++ * *mapping* here and not of the memory object (memory-model § 1 #9).
++ */
++static VkResult
++nvkmd_horizon_alloc_mem_kind(struct nvkmd_dev *_dev,
++                             struct vk_object_base *log_obj,
++                             uint64_t size_B, uint64_t align_B,
++                             uint8_t pte_kind,
++                             enum nvkmd_mem_flags flags,
++                             struct nvkmd_mem **mem_out)
+ {
+    struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
+ 
+@@ -197,6 +203,22 @@ nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
+    if (align != 0 && align < HORIZON_GPU_SMALL_PAGE_SIZE)
+       align = HORIZON_GPU_SMALL_PAGE_SIZE;
+ 
++   /* A block-linear kind sends the reservation to the big-page half
++    * (nvkmd_horizon_alloc_va), and that decides the *object's* size too,
++    * not only the address space's. horizon_gpu_vm_map rounds a bind's
++    * size up to the reservation's page size and then requires the
++    * rounded range to still fit the memory object, so an object that is
++    * not a whole number of big pages cannot be bound as a whole — which
++    * is precisely the hazard nvkmd_horizon_alloc_va names and hands to
++    * this function, because the allocation is where it can be fixed.
++    *
++    * horizon_gpu_mem_create rounds the size up to the alignment, so
++    * raising the alignment is the whole fix. align == 0 means "page
++    * align" there, and MAX2 turns that into the big page as well.
++    */
++   if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH)
++      align = MAX2(align, (uint64_t)_dev->pdev->bind_align_B);
++
+    /* NVKMD_MEM_COHERENT means what NVK says it means on an SoC: an
+     * *uncached* map, the alternative to the cached one
+     * (nvk_physical_device.c:1571-1575). It cannot be satisfied by cache
+@@ -252,16 +274,16 @@ nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
+     * precisely why it cannot be inherited for free.
+     *
+     * NVKMD_VA_GART: there is no VRAM on this device, so every
+-    * allocation is pinned system memory, which is what the flag says
+-    * and what puts the reservation in the small-page half. PITCH kind:
+-    * this is the untiled path — alloc_tiled_mem is a separate op and
+-    * is not implemented here.
++    * allocation is pinned system memory, which is what the flag says.
++    * The PTE kind is the caller's: PITCH for the untiled path, and the
++    * image's block-linear kind for alloc_tiled_mem, which is also what
++    * decides which half of the address space the reservation lands in.
+     */
+    const uint64_t va_align_B = MAX2(_dev->pdev->bind_align_B, align);
+ 
+    VkResult result =
+       nvkmd_dev_alloc_va(_dev, log_obj, NVKMD_VA_GART,
+-                         HORIZON_GPU_PTE_KIND_PITCH, mem->base.size_B,
++                         pte_kind, mem->base.size_B,
+                          va_align_B, 0 /* fixed_addr */, &mem->base.va);
+    if (result != VK_SUCCESS)
+       goto fail_gpu_mem;
+@@ -283,3 +305,42 @@ fail_gpu_mem:
+    FREE(mem);
+    return result;
+ }
++
++VkResult
++nvkmd_horizon_alloc_mem(struct nvkmd_dev *_dev,
++                        struct vk_object_base *log_obj,
++                        uint64_t size_B, uint64_t align_B,
++                        enum nvkmd_mem_flags flags,
++                        struct nvkmd_mem **mem_out)
++{
++   return nvkmd_horizon_alloc_mem_kind(_dev, log_obj, size_B, align_B,
++                                       HORIZON_GPU_PTE_KIND_PITCH, flags,
++                                       mem_out);
++}
++
++VkResult
++nvkmd_horizon_alloc_tiled_mem(struct nvkmd_dev *_dev,
++                              struct vk_object_base *log_obj,
++                              uint64_t size_B, uint64_t align_B,
++                              uint8_t pte_kind, uint16_t tile_mode,
++                              enum nvkmd_mem_flags flags,
++                              struct nvkmd_mem **mem_out)
++{
++   /* tile_mode is not ignored for convenience; there is nothing on this
++    * platform that consumes it. In the nouveau backend it is a field of
++    * the kernel's BO — DRM_NOUVEAU_GEM_NEW carries tile_mode alongside
++    * tile_flags, and the kernel programs the display and copy engines
++    * from it. Horizon has no such field: an NvMap allocation is a range
++    * of process memory registered with the service, and everything the
++    * GPU needs to interpret a block-linear surface comes from either the
++    * PTE kind (which the MMU uses, and which this function does honour)
++    * or the image descriptor NIL writes. Recording the block dimensions
++    * a second time in a place nothing reads would be a fiction.
++    *
++    * Which also means the pte_kind == 0 && tile_mode != 0 case — legal
++    * to reach, since nvk_device_memory.c:228 dispatches here on either
++    * being set — is an ordinary pitch allocation here, correctly.
++    */
++   return nvkmd_horizon_alloc_mem_kind(_dev, log_obj, size_B, align_B,
++                                       pte_kind, flags, mem_out);
++}
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 6b797ca..41cf692 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -289,10 +289,14 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+     *                      Sharing between processes on Horizon is a
+     *                      different mechanism entirely (Phase 6).
+     *   has_get_vram_used  there is no VRAM.
+-    *   has_alloc_tiled    NvMap allocations carry no PTE kind of their
+-    *                      own; the kind is a property of the *mapping*
+-    *                      on this platform, applied at
+-    *                      horizon_gpu_vm_map time.
++    *   has_alloc_tiled    TRUE, and the only true one here. The kind is
++    *                      a property of the *mapping* on this platform,
++    *                      applied at horizon_gpu_vm_map time, which is
++    *                      why this used to read false — but "the memory
++    *                      object carries no kind" describes how the op
++    *                      is implemented, not whether it can be. It can:
++    *                      nvkmd_horizon_alloc_tiled_mem reserves and
++    *                      binds the memory's VA with the caller's kind.
+     *   has_map_fixed      NvMap gives back a CPU pointer of its own
+     *                      choosing; there is no mmap(MAP_FIXED).
+     *   has_overmap        follows from has_map_fixed.
+@@ -347,7 +351,7 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+       .has_priv_reg_writes = false,
+       .has_dma_buf = false,
+       .has_get_vram_used = false,
+-      .has_alloc_tiled = false,
++      .has_alloc_tiled = true,
+       .has_map_fixed = false,
+       .has_overmap = false,
+       .has_compression = false,
+-- 
+2.43.0
+

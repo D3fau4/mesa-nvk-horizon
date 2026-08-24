@@ -1,7 +1,12 @@
 # STATUS
 
-**Last updated:** 2026-08-23 (`make install` — the driver as a devkitPro portlibs package consumable through `pkg-config`; the thin-archive bug fixed in both places it lived, so `build/pkg` and the horizon_gpu staging prefix now hold archives that link; cross build only, no console involved; series 84 unchanged, phase unchanged, still run 31 / Phase 7 complete)
-**Branch:** `claude/nvk-mem-stream-flush-before-exec`
+**Last updated:** 2026-08-24 (CI was red on every branch, and not because of any of them: `fetch-rust-crates.sh` read the standard library's `Cargo.lock` from the *derived cached* image while the sysroot is compiled `FROM` the *base* image, so a rolling nightly that moved left the vendor closure built for the wrong compiler. Fixed by reading — and keying the staleness check on — the image the sysroot is actually built in. Host-side only, no console, no cross build changed; the patch series is untouched at 49)
+**Branch:** `claude/compactar-optimizar-parches-gizzle`
+
+> **Patch-number note (2026-08-23).** Everything in this file below the
+> compaction entry cites patch numbers of the pre-compaction series (up to 84
+> patches). The old → new map is in `mesa-patches/README.md` § "The 2026-08-23
+> compaction (84 → 49)".
 
 ---
 
@@ -30,6 +35,172 @@ below this table). **What is left is not code**: flipping visibility, and settin
 | **Open decisions** | **D7 and D21.** **D21 is new (2026-08-10): whether to move off the 26.1 series onto Mesa 26.2.** Not taken here, because it is a choice and not an update — 26.2.0's own notes say to wait for 26.2.1, **which still does not exist** (upstream tags checked 2026-08-12), and 53 of the 121 files `mesa-patches/` writes to moved under it. The *point* releases inside the pinned series were taken: **the pin is `mesa-26.1.7`** (2026-08-12), series applying 81 of 81 with this branch's four shader-cache patches (0078–0081) on top. D18 (`minImageCount`) closed: it stays **2** — two images present 90 of 90; the compositor was never the limit, the retry loop was. D19 closed by run 13: **`async=false` is deleted** (patch 0067), because `async=true` plus the sleep presented 90 of 90 on two images without it. **D20** — the untracked Mesa commit, which this row previously called D18 as well — closed 2026-08-09 by exporting it as patch **0071**; see the collision note beneath the decisions table |
 | **Never verified on hardware** | **Patch 0084's `ctx->last_fence` fix** (Codex review, 2026-08-22) — needs a wait-then-signal submission with no command buffers between them, which nothing on this branch exercises; cross build only. **Nothing of the shader disk cache** — runs 27 to 31 closed all of it: the store on a real card, persistence across launches, `ftruncate`, the driver-identity refusal, Mesa's API end to end, NVK not recompiling, the shader correct in full, and what it saves. One gap in the *record* rather than in the evidence: the cold run of run 31's pair was not kept as a log, so 5342 us is attested by the test's own refusal-to-record rule instead of by a file. Patch **0077**, the submit and fence-wait meter, is new and cross build only. Patch **0068** — it has been in three builds and never fired, because no device has been lost since run 14, so the path it fixes remains untaken, and with nxlink gone there is no known way to provoke one. **The `VK_SUBOPTIMAL_KHR` return of patch 0074**: run 21 passed 273/273 and exercised everything around it, but the condition itself cannot be provoked from the process, so the result has never actually come back from a console. **Patches 0072 and 0073 are no longer on this list** — run 21 is the first console run to carry them, and it takes 0073's 188 client-invisible warnings to zero and puts 0072's recreation sequence through twelve generations without a fatal. The `testfw`/`vkfw`/`t_vk_wsi_mt` changes from the PR 9 review are still cross build only: `t_vk_wsi_mt` has not been re-run. Everything else has now run: 0069 and the rewritten control are in run 16's PASS, 0071 is in run 20's, and `t_vk_swapchain`'s infinite-timeout coverage executed for the first time at 20 of 20 |
 
+
+---
+
+## CI was red on every branch, and the vendor closure was built for the wrong compiler (2026-08-24)
+
+**Host-side only.** No console, no cross build, no change to `mesa-patches/`.
+
+**What was failing.** Every CI run since 2026-08-23 22:03 died about three
+minutes in, building the toolchain image at `toolchain/Dockerfile:97` — the
+step that compiles the Rust sysroot with `cargo -Zbuild-std`:
+
+```
+error: failed to select a version for the requirement `wasip2 = "^1.0.3"`
+       (locked to 1.0.4+wasi-0.2.12)
+candidate versions found which didn't match: 1.0.3+wasi-0.2.9
+location searched: directory source `/tmp/horizon-ctx/rust-vendor`
+required by package `std v0.0.0 (...nightly.../library/std)`
+```
+
+**It was not the patch-series compaction, and that was established before
+anything was changed.** The identical error, at the identical step, is in
+run 32707605052 on `claude/layer-review-2026-08-24` — a branch that does not
+carry the compaction — 30 minutes before the PR 19 run reproduced it.
+
+**The defect.** `scripts/fetch-rust-crates.sh` reads `library/Cargo.lock` out
+of `$HORIZON_IMAGE` and vendors exactly what it names. `$HORIZON_IMAGE`
+prefers the **derived** image whenever one exists locally
+(`scripts/toolchain-env.sh`), and CI pulls exactly that as a build cache
+(`HORIZON_NX_DERIVED_IMAGE=ghcr.io/d3fau4/nx-dev-mesa:latest`) *before*
+`scripts/build-toolchain-image.sh` runs — which calls this script at line 122
+and then builds `FROM $HORIZON_BASE_IMAGE`. So the closure was vendored for
+the nightly the cache was built with, and handed to the nightly the base
+image carries today. The two agreed until the base image's rolling nightly
+moved, and then they did not.
+
+The script's header claims it "pins nothing and therefore cannot drift from
+the toolchain". That was true of the *versions* it reads and false about
+*which* toolchain it read them from — the one bit that decides whether the
+closure fits.
+
+**The fix.** Read the lockfile from, and key the staleness check on, the
+image the sysroot is actually compiled in: `$HORIZON_BASE_IMAGE`.
+`horizon_image_digest` takes an optional image argument for that; every
+other caller passes none and keeps describing `$HORIZON_IMAGE`, which is
+what a manifest recording "the image these binaries were built in" wants.
+
+**Measured here, not reasoned about.** `ghcr.io/d3fau4/nx-dev:latest` carries
+`rustc 1.100.0-nightly (c54751567 2026-08-22)`, and its
+`library/Cargo.lock` names `wasip2 1.0.4+wasi-0.2.12` — exactly what CI said
+it was "locked to", and a version the vendored 1.0.3 could not have come
+from. With the fix, `scripts/fetch-rust-crates.sh` re-read that lockfile and
+vendored **31 of 31 crates including `wasip2-1.0.4+wasi-0.2.12`**, and
+stamped its identity as
+`ghcr.io/d3fau4/nx-dev:latest ghcr.io/d3fau4/nx-dev@sha256:bea93226...` —
+the base image, where it used to be the derived one.
+
+**And behind it, a second break from the same nightly move.** With the
+closure fixed, `cargo -Zbuild-std` resolves and compiles — `Compiling core`,
+`Compiling alloc`, `Finished release profile in 23.63s` — and the step then
+died one line later:
+
+```
+cp: cannot stat '.../release/deps/*.rlib': No such file or directory
+```
+
+`toolchain/Dockerfile` harvested the built artefacts by globbing
+`<triple>/release/deps/*.rlib`. That directory no longer exists: cargo
+1.100.0-nightly (e8cb624d5 2026-08-22) leaves them one level down, per
+crate, as `<triple>/release/build/core/<hash>/out/libcore-<hash>.rlib` and
+the same for `alloc` and `compiler_builtins` — measured by running the step
+by hand in the base image and listing every artefact under the target
+directory. The harvest is now a `find` over the profile directory,
+excluding the driver's own by name (the new layout also emits a bare
+`libhorizon_sysroot_driver.rlib`), which covers both layouts.
+
+**And the `.rmeta` has to come with it**, which is the third thing this
+nightly changed and the one that would have been easy to get wrong
+quietly. In this layout the rlib carries only a metadata stub and the full
+metadata is a sibling file — `libcore-<hash>.rlib` is 655 KB beside 66 MB
+of `libcore-<hash>.rmeta`. A sysroot holding only the rlibs installs
+cleanly, passes the three-crate check, and then fails the first time
+anything reads it:
+
+```
+error: only metadata stub found for `rlib` dependency `core`
+       please provide path to the corresponding .rmeta file with full metadata
+error: requires `Range` lang_item
+```
+
+That is § 4b's staticlib probe — the check the image already carried for
+exactly this class of half-built sysroot, and it earned its keep here. With
+both file types harvested, the probe compiles a 1 191 820-byte staticlib
+against the sysroot.
+
+Two smaller things were measured rather than reasoned about on the way. The
+`find` terminator is `+`, not a quoted `';'`: this `RUN` is a `sh -c '...'`
+inside the Dockerfile's own `/bin/sh -c`, and a quoted semicolon closes that
+string early — `find: missing argument to '-exec'`, then the rest of the
+recipe handed to the outer shell as a command name. And the three-crate
+check is unchanged, because it is what turns the next layout change into a
+build failure instead of a sysroot quietly missing `core`.
+
+**The three defects are independent and all were needed**, and each hid the
+next: every run died at resolution before it could reach the harvest, and
+the harvest failed before anything could read the sysroot it wrote.
+
+**The whole image builds.** `scripts/build-toolchain-image.sh` ran to
+completion on this host with the three fixes in: every step including the
+sysroot harvest and both § 4b probes, `probes ran inside the build; image is
+good`, `mesa-nvk-horizon/nx-dev-mesa:latest ready (1644 MB)`. That is the
+same script, the same Dockerfile and the same base image CI runs, so the
+step that had been killing every run at three minutes is closed on measured
+evidence rather than on the argument for the patch.
+
+**What is not verified:** nothing on a console — none of this is driver
+code, and no cross build of Mesa was run here (CI does that after the image
+and is the remaining answer). `scripts/fetch-rust-tools.sh` was checked for
+the same shape as the first defect and does not have it: bindgen and
+cbindgen are pinned in `toolchain/versions.env`, so they cannot drift with
+the nightly.
+
+---
+
+## The series compacted: 84 patches → 49, and the tree that proves it (2026-08-23)
+
+**No code changed, and that is measured, not argued.** The whole point of the
+exercise was maintainability: 39 of the 84 patches were fixes to other patches
+of the same series — the WSI dequeue policy alone was six patches whose net
+effect is ~25 lines, the shader-window story was a block-off (0039), a literal
+revert of it (0040) and a redo (0047), and three patches were review-finding
+batches (0055, 0065, 0066) that themselves violated the series' own
+one-functional-change rule. Every such fix is now folded into the patch that
+introduced the code it fixes.
+
+**The gate: `git -C mesa rev-parse HEAD^{tree}` is
+`8119de7c70a7691fc4b98e8e377ab7d789c6ec8e` after applying the old 84-patch
+series and after applying the new 49-patch series** — measured on a fresh
+`fetch-mesa.sh --force` checkout of `mesa-26.1.7` both times. A byte-identical
+tree means a byte-identical build; nothing needs hardware re-verification,
+because nothing the compiler sees is different. What DOES change is the driver
+identity: `scripts/gen-driver-id.sh` hashes the patch files themselves, so the
+first launch of a build from this series recompiles its shader cache once.
+That is the identity doing its job (Phase 7 exit criterion: two builds
+differing in `mesa-patches/` must not read each other's entries).
+
+The reshuffle, in one paragraph: 0018/0019/0020 (the nvkmd backend's three
+bases) absorbed their fifteen fixups; 0053 (the WSI backend) absorbed sixteen,
+including the whole dequeue saga; 0058+0060 merged (the reference and the
+cycle it created); 0039's fixed-VA half, 0037's overlap log and 0047's redo
+became one shader-window patch, with 0039's dev-side block-off and 0040's
+revert cancelling; 0040's D12-reason correction moved into 0029. Everything
+`Upstream: yes` stayed individual (0001–0016, 0021, 0029→22, 0046→28,
+0082/0083→47/48), as did the features and the patches this file tracks as
+never-verified-on-hardware: old 0068→new 0039, 0074→0040, 0076→0041,
+0077→0042, 0084→0049. Merged messages keep the four-field header, quote the
+hardware evidence that supports the final state, and list what they absorbed
+under `Absorbs:`; the 0034–0044 block, which had no headers at all, got them
+reconstructed. One pre-existing gap fixed on the way: 0021 had no `Why:`.
+
+**Verified after regeneration:** the applier applies 49 of 49 onto the pinned
+commit with `git am`, a second run answers `all 49 patches already applied`,
+`--list` shows a clean prefix, `check-no-abs-paths` and `check-history-intact`
+are green, and every patch carries the four required header fields. The
+`docs/hw-logs/README.md` note (old numbers, and where the map is) is the one
+hardware-log edit, declared by re-recording the manifest with
+`split-status.py --record-logs` — additive, no run content touched.
 
 ---
 

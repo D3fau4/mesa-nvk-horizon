@@ -1,7 +1,7 @@
-From ff3b8654b8f4e4c64e1878c6ff22d6b7066de36d Mon Sep 17 00:00:00 2001
+From 8a04aa0f9b3ecdd6a0d5f568a722ff37b9771434 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
-Date: Tue, 28 Jul 2026 13:27:06 +0000
-Subject: [PATCH 18/81] nouveau/vk: add the Horizon kernel-mode-driver backend
+Date: Sun, 23 Aug 2026 21:49:52 +0000
+Subject: [PATCH 18/49] nouveau/vk: add the Horizon kernel-mode-driver backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -78,11 +78,30 @@ Evidence: `meson compile` for aarch64/horizon with
     nouveau_bo.c: fatal error: sys/mman.h: No such file or directory
 Upstream: the four fixes above and the nv_device_info move, yes. The
   backend itself is new code for a platform Mesa does not yet target.
+
+Absorbs (2026-08-23 series compaction; full history in mesa-patches/'s
+own git log):
+
+- 0025 "say why enumeration found no GPU": both empty-list paths of
+  enumeration now log their cause, and the common one names
+  NVK_I_WANT_A_BROKEN_VULKAN_DRIVER — nvk_is_conformant() refuses
+  NV_DEVICE_TYPE_SOC and under NDEBUG that refusal printed nothing.
+  Evidence: first hardware run of t_vulkan failed at
+  "vkEnumeratePhysicalDevices -> 0" with no diagnostic anywhere, which
+  cost a console round trip.
+
+- 0033 "nonCoherentAtomSize is a CPU cache property": nc_atom_size_B is
+  the cache write-back granule (cache_ops.h:65), not the services'
+  compression page. GM20B reports a 0x20000 compression page and
+  nvk_device_memory.c rounds flush ranges up to nc_atom_size_B, so a
+  4 KiB buffer flushed with VK_WHOLE_SIZE ran `dc civac` across 128 KiB.
+  Evidence: t_init on console reports "compression_page=0x20000"
+  (2026-07-27 logs).
 ---
  meson.options                                 |  10 +
  src/nouveau/headers/meson.build               |   3 +-
  src/nouveau/headers/nv_device_info.h          |  10 +
- src/nouveau/headers/nv_device_info_chipset.c  | 287 ++++++++++++++++++
+ src/nouveau/headers/nv_device_info_chipset.c  | 287 +++++++++++++++++
  src/nouveau/meson.build                       |  32 +-
  src/nouveau/vulkan/meson.build                |  45 ++-
  src/nouveau/vulkan/nvk_descriptor_table.c     |   1 -
@@ -90,14 +109,14 @@ Upstream: the four fixes above and the nv_device_info move, yes. The
  src/nouveau/vulkan/nvk_instance.c             |  41 ++-
  src/nouveau/vulkan/nvk_physical_device.c      |  45 ++-
  src/nouveau/vulkan/nvk_physical_device.h      |  10 +
- .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  88 ++++++
- .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  | 158 ++++++++++
- .../nvkmd/horizon/nvkmd_horizon_enumerate.c   |  62 ++++
- .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 287 ++++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  88 +++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_dev.c  | 158 +++++++++
+ .../nvkmd/horizon/nvkmd_horizon_enumerate.c   |  85 +++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 304 ++++++++++++++++++
  src/nouveau/winsys/nouveau_device.c           | 270 +---------------
  src/vulkan/runtime/vk_image.c                 |   2 -
  src/vulkan/runtime/vk_image.h                 |   8 +-
- 18 files changed, 1069 insertions(+), 291 deletions(-)
+ 18 files changed, 1109 insertions(+), 291 deletions(-)
  create mode 100644 src/nouveau/headers/nv_device_info_chipset.c
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
@@ -1044,10 +1063,10 @@ index 0000000..14696c0
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
 new file mode 100644
-index 0000000..299997b
+index 0000000..dc0ef2b
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,85 @@
 +/*
 + * Copyright (c) mesa-nvk-horizon contributors
 + * SPDX-License-Identifier: MIT
@@ -1071,6 +1090,7 @@ index 0000000..299997b
 +#include "nvk_instance.h"
 +#include "nvk_physical_device.h"
 +
++#include "util/log.h"
 +#include "vk_alloc.h"
 +#include "vk_log.h"
 +#include "vk_physical_device.h"
@@ -1088,9 +1108,18 @@ index 0000000..299997b
 +      /* No GPU is not an error: a process that cannot reach the nv
 +       * services simply has no Vulkan device, and Vulkan says that is
 +       * an empty list rather than a failed call.
++       *
++       * Said out loud, though. Returning an empty list silently is
++       * what turned the first hardware run of the Phase 4 sequence
++       * into a console round trip: vkEnumeratePhysicalDevices returned
++       * VK_SUCCESS with a count of zero and nothing anywhere said why.
 +       */
-+      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
++         mesa_logw("nvkmd_horizon: no GPU — the nv services could not "
++                   "be opened. A process without the nv permissions "
++                   "has no Vulkan device.");
 +         return VK_SUCCESS;
++      }
 +      return result;
 +   }
 +
@@ -1101,8 +1130,21 @@ index 0000000..299997b
 +       * it on every failure path of its own, so there is nothing to
 +       * free here.
 +       */
-+      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER) {
++         /* The GPU is there and NVK declined it. On this chip that is
++          * almost always nvk_is_conformant(), whose first line is
++          * "Tegra is not currently supported" — GM20B is
++          * NV_DEVICE_TYPE_SOC, so NVK refuses unless the application
++          * asks for it. Under NDEBUG that check prints nothing at all,
++          * which is exactly the case worth naming here.
++          */
++         mesa_logw("nvkmd_horizon: the GPU was found and NVK declined "
++                   "it (VK_ERROR_INCOMPATIBLE_DRIVER). NVK is not "
++                   "conformant on Tegra; set "
++                   "NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1 to proceed "
++                   "anyway.");
 +         return VK_SUCCESS;
++      }
 +      return result;
 +   }
 +
@@ -1112,10 +1154,10 @@ index 0000000..299997b
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 new file mode 100644
-index 0000000..6365634
+index 0000000..68b3ee5
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,304 @@
 +/*
 + * Copyright (c) mesa-nvk-horizon contributors
 + * SPDX-License-Identifier: MIT
@@ -1126,6 +1168,7 @@ index 0000000..6365634
 +#include "vulkan/vulkan_core.h"
 +#include "vk_log.h"
 +
++#include "util/cache_ops.h"
 +#include "util/log.h"
 +#include "util/macros.h"
 +#include "util/u_memory.h"
@@ -1284,13 +1327,29 @@ index 0000000..6365634
 +   info->vram_size_B = 0;
 +   info->bar_size_B = 0;
 +
-+   /* The atom size for a non-coherent map. Horizon's NvMap allocations
-+    * are page-granular and the CPU cache line on Cortex-A57 is 64 B;
-+    * the compression page size the services report is the smallest
-+    * unit the GPU's memory subsystem addresses coherently, so it is
-+    * used rather than a constant.
++   /* The atom size for a non-coherent map: a CPU cache-maintenance
++    * property, not a GPU one.
++    *
++    * This used to be the services' compression page size, on the
++    * reasoning that it is the smallest unit the GPU's memory subsystem
++    * addresses coherently. That is the wrong quantity. nonCoherentAtomSize
++    * bounds what vkFlushMappedMemoryRanges and vkInvalidateMappedMemoryRanges
++    * touch, and those run `dc cvac` / `dc civac` on the CPU — so it has to
++    * be the cache write-back granule, which is what util_cache_granularity()
++    * reads out of CTR_EL0.CWG and what cache_ops.h says a Vulkan driver
++    * should report ("Vulkan drivers should return this as
++    * nonCoherentAtomSize", cache_ops.h:65). The nouveau backend uses
++    * exactly that (nvkmd_nouveau_pdev.c:113).
++    *
++    * The old value was not merely imprecise. GM20B reports a 0x20000
++    * compression page (measured: t_init on console, "compression_page=
++    * 0x20000"), and nvk_device_memory.c:461 rounds a flush range UP to
++    * this number before handing it to the cache ops. A 4 KiB allocation
++    * flushed with VK_WHOLE_SIZE therefore had `dc civac` run across
++    * 128 KiB — 124 KiB past the end of the object, which is a data abort
++    * if the pages beyond it are not mapped.
 +    */
-+   info->nc_atom_size_B = gpu->compression_page_size;
++   info->nc_atom_size_B = util_cache_granularity();
 +
 +   /* Tegra has no separate copy-engine queue exposed through `nv`; work
 +    * goes through the one GPFIFO channel. Advertising a transfer queue
