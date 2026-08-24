@@ -91,6 +91,52 @@ RUN CARGO_HOME=/tmp/horizon-ctx/cargo-home \
 # on; -Zbuild-std compiles core and alloc as its dependencies, and
 # those artefacts are what gets installed. The driver's own rlib is
 # dropped.
+#
+# THE ARTEFACTS ARE FOUND, NOT GLOBBED OUT OF deps/, because where cargo
+# leaves them is not a stable interface. This read
+# `.../release/deps/*.rlib` until 2026-08-24, when the base image's
+# rolling nightly (rustc 1.100.0-nightly, c54751567 2026-08-22) moved to
+# a layout with no deps/ directory at all:
+#
+#   cp: cannot stat '.../release/deps/*.rlib': No such file or directory
+#
+# and the same build now leaves them one level down, per crate:
+#
+#   .../release/build/core/25fdf654ef0abfef/out/libcore-25fdf654ef0abfef.rlib
+#   .../release/build/alloc/8421d24a80ac7ee8/out/liballoc-8421d24a80ac7ee8.rlib
+#   .../release/build/compiler_builtins/.../libcompiler_builtins-....rlib
+#
+# THE .rmeta GOES WITH IT, and that is not tidiness. In this layout the
+# rlib carries a metadata stub and the full metadata is a sibling file —
+# core is 655 KB of rlib beside 66 MB of rmeta — so a sysroot holding
+# only the rlibs builds and then fails the moment anything reads it:
+#
+#   error: only metadata stub found for `rlib` dependency `core`
+#          please provide path to the corresponding .rmeta file
+#
+# which is what § 4b's staticlib probe reported once the copy above
+# started finding anything at all.
+#
+# A find over the profile directory collects them wherever cargo put
+# them, which covers both layouts and the next one. The exclusion is by
+# name rather than by directory for the same reason: the driver's own
+# rlib is emitted both as `libhorizon_sysroot_driver-<hash>.rlib` and,
+# in the new layout, as a bare `libhorizon_sysroot_driver.rlib` beside
+# the profile root. The three-crate check below is what turns a layout
+# this stops matching into a build failure rather than a sysroot that is
+# quietly missing core.
+#
+# `-exec cp -t "$libdir" {} +`, and the terminator is the reason. This
+# RUN is a `sh -c '...'` inside the Dockerfile's own `/bin/sh -c`, so a
+# quoted `';'` closes that string early: find never receives its
+# terminator and the rest of the recipe is handed to the outer shell as
+# a command name.
+#
+#   find: missing argument to `-exec'
+#   /bin/sh: 1: ;       for want in core alloc ...: not found
+#
+# `+` needs no quote and no backslash at either level, and runs one cp
+# instead of one per file.
 COPY rust-vendor/ /tmp/horizon-ctx/rust-vendor/
 COPY cargo-config-std.toml /tmp/horizon-ctx/cargo-home-std/config.toml
 COPY sysroot-driver/ /tmp/horizon-ctx/sysroot-driver/
@@ -104,10 +150,10 @@ RUN CARGO_HOME=/tmp/horizon-ctx/cargo-home-std \
             --target "${RUST_TARGET}"; \
       libdir=/opt/rust-sysroot/lib/rustlib/${RUST_TARGET}/lib; \
       mkdir -p "$libdir"; \
-      for r in /tmp/horizon-ctx/sysroot-target/${RUST_TARGET}/release/deps/*.rlib; do \
-        case "$(basename "$r")" in libhorizon_sysroot_driver-*) continue ;; esac; \
-        cp "$r" "$libdir/"; \
-      done; \
+      find "/tmp/horizon-ctx/sysroot-target/${RUST_TARGET}/release" \
+           \( -name "*.rlib" -o -name "*.rmeta" \) \
+           ! -name "libhorizon_sysroot_driver*" \
+           -exec cp -t "$libdir" {} +; \
       for want in core alloc compiler_builtins; do \
         ls "$libdir"/lib${want}-*.rlib >/dev/null || \
           { echo "error: $want missing from the built sysroot" >&2; exit 1; }; \

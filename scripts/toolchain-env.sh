@@ -655,7 +655,14 @@ horizon_ensure_python_deps() {
 #   <repo>@sha256:...        pullable; use it verbatim in HORIZON_NX_IMAGE
 #   local-image-id:sha256:.. built here and never pushed; not pullable
 #   unknown                  docker could not describe it at all
-horizon_image_digest() {
+#
+# Takes the image to describe, defaulting to $HORIZON_IMAGE — which is
+# what almost every caller wants, because that is the image its commands
+# run in. scripts/fetch-rust-crates.sh is the exception and passes
+# $HORIZON_BASE_IMAGE: what it builds a vendor closure for is the
+# compiler the *sysroot* is built with, and that is the base image even
+# when a derived one exists (the header there records what that cost).
+horizon_image_digest() { # [image]
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         # RUNNING *INSIDE* THE DERIVED IMAGE IS NOT THE SAME AS RUNNING
         # ON A DEVELOPER'S MACHINE, and until this existed both were
@@ -696,21 +703,23 @@ horizon_image_digest() {
     # case, where it would hand back whichever repository docker listed
     # first — possibly one the reader has no access to — in the field
     # whose whole job is telling them how to reproduce the build.
+    _hz_img="${1:-$HORIZON_IMAGE}"
     for _hz_repo in "$HORIZON_NX_DERIVED_REPO" "$HORIZON_NX_IMAGE_REPO"; do
         [ -n "$_hz_repo" ] || continue
         _hz_ref=$(docker image inspect \
                       --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-                      "$HORIZON_IMAGE" 2>/dev/null |
+                      "$_hz_img" 2>/dev/null |
                   grep -m1 "^${_hz_repo}@")
         if [ -n "$_hz_ref" ]; then
             echo "$_hz_ref"
-            unset _hz_repo _hz_ref
+            unset _hz_repo _hz_ref _hz_img
             return 0
         fi
     done
     unset _hz_repo _hz_ref
-    _hz_id=$(docker image inspect --format '{{.Id}}' "$HORIZON_IMAGE" \
+    _hz_id=$(docker image inspect --format '{{.Id}}' "$_hz_img" \
                  2>/dev/null | grep -m1 .)
+    unset _hz_img
     if [ -n "$_hz_id" ]; then
         echo "local-image-id:$_hz_id"
         return 0

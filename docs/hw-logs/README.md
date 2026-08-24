@@ -5,6 +5,10 @@ or deleted after the fact — including the ones later found to have measured
 less than they claimed. This file is where that is said, because a reader opens
 the log, not `STATUS.md`.
 
+> The patch numbers cited below are the series as it was when each run happened
+> (pre-2026-08-23 compaction, 84 patches). The old → new map is in
+> `mesa-patches/README.md` § "The 2026-08-23 compaction (84 → 49)".
+
 ## What the cache saves
 
 ### `t_vk_cache-run31-PASS.log`

@@ -151,5 +151,5 @@ Include:
   `NWindow`s. The current known failures are listed in `STATUS.md` and are not hidden.
 - **This is pre-1.0 software driving a GPU through system services.** It has taken a
   console down before — `qlaunch` fatal `0x290`, kept in `docs/hw-logs/` as evidence and
-  fixed by patch `0070`. Nothing here can write to system storage, but a hang or a
+  fixed by patch `0037`. Nothing here can write to system storage, but a hang or a
   forced power-off is a real possibility. Run it when you are willing to reboot.

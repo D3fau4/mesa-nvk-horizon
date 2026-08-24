@@ -101,7 +101,7 @@ the object Mesa builds.
 
 ```sh
 scripts/fetch-mesa.sh              # mesa/ at the pinned MESA_COMMIT
-scripts/apply-mesa-patches.sh      # the 75-patch series
+scripts/apply-mesa-patches.sh      # the 49-patch series
 scripts/configure-mesa.sh
 scripts/build-mesa.sh
 ```

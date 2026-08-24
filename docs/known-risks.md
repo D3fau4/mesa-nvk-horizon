@@ -246,7 +246,7 @@ comments: FP helper invocation memory loads, without which one dEQP subgroups te
 occasionally; and Out Of Range Address exceptions stay enabled for a case involving an
 empty fragment shader. Neither is reachable by anything this port runs today.
 
-Gated on `nvkmd_info::has_priv_reg_writes` (patch 0038) rather than neutered, so nouveau
+Gated on `nvkmd_info::has_priv_reg_writes` (patch 0023) rather than neutered, so nouveau
 keeps NVK's behaviour and the cost is stated at the declaration instead of vanishing into
 a no-op. **Not yet confirmed on hardware** — the console that confirms it is the one that
 closes Phase 4.
@@ -351,7 +351,7 @@ series D2 chose, "New features: None", 8 bug fixes — and a **clean miss** agai
 26.1.6 was and 26.1.7 was not: of the 98 files it changes, **none is among the 131
 `mesa-patches/` writes to**, and `src/nouveau/` is not touched at all. So no NVK, NAK,
 NIL or `nvkmd` file moves under this port and **nothing in this release can reach a
-GM20B shader**. The series applies unmodified, 84 of 84, no fuzz and no rejects.
+GM20B shader**. The series applies unmodified, 49 of 49, no fuzz and no rejects (84 of 84 before the 2026-08-23 compaction; the series is tree-identical across it).
 
 Two details worth naming rather than leaving to a file count. The two
 `src/vulkan/wsi/` files it changes are `wsi_common_{metal,wayland}.c` — neither is a file

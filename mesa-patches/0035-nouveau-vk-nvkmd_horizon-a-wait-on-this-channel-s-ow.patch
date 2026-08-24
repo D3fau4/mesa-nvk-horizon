@@ -1,0 +1,132 @@
+From b38c818f4043e60a88c7e8cf8d9362d4dbb8873a Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:42:04 +0000
+Subject: [PATCH 35/49] nouveau/vk: nvkmd_horizon, a wait on this channel's own
+ work is already done
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 8 (Correct fence-based synchronisation at
+ acquire and present)
+Why: nvkmd_horizon_ctx_wait performs a submit's waits on the CPU,
+ because this backend has no GPU-side syncpoint acquire. For one case
+ that is not a limitation but a wait that has already happened: a GPFIFO
+ channel executes its entries in the order they were pushed, so a wait
+ on work already submitted to THIS channel cannot be outstanding by the
+ time the submit that waits on it runs. The hardware enforces the
+ ordering whether or not anyone waits for it.
+ It is the ordinary case and not a corner. A swapchain present waits on
+ the semaphore the application's render submit signalled, on the same
+ queue, every frame; with the CPU wait, handing the compositor a
+ syncpoint fence to wait on saved nothing, because the CPU had already
+ waited for the render before the buffer was queued. That made patch
+ 0052's whole point decorative.
+ The bound is exact: only a sync that is PENDING — a submit has attached
+ a fence to it — and whose fence came from this same channel. Another
+ channel's fence, the upload queue's, or a sync nothing has submitted
+ yet all still wait as before.
+ What it costs, said rather than discovered: a wait on a channel that
+ has faulted no longer reports CHANNEL_LOST from the wait. The error
+ moves rather than disappearing — the submit that follows is refused by
+ the same lost channel, which t_fault measured on hardware ("a submit to
+ the lost channel is refused", docs/hw-logs/t_fault-run3-*.log).
+Evidence: cross build of build/mesa-nvk. THIS IS THE ONE CHANGE IN THIS
+ PHASE THAT ALTERS THE SUBMIT PATH EVERY TEST GOES THROUGH, so the
+ Phase 5 suite is part of what has to be re-run for it, not just the
+ swapchain tests. NOT RUN ON A CONSOLE.
+Upstream: no — it is a property of this backend's channel model.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  7 +++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 31 +++++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c | 17 ++++++++++
+ 3 files changed, 55 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 797e267..985c870 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -258,6 +258,13 @@ VkResult nvk_horizon_sync_get_fence(struct vk_sync *sync,
+                                     horizon_gpu_fence *fence_out,
+                                     bool *has_fence_out);
+ 
++/* True when this sync is waiting on work already submitted to `chan`.
++ * A caller that is about to submit to the SAME channel needs no wait at
++ * all: the channel executes its entries in order. See
++ * nvkmd_horizon_ctx_wait. */
++bool nvk_horizon_sync_is_pending_on(struct vk_sync *sync,
++                                    horizon_gpu_channel *chan);
++
+ VkResult nvkmd_horizon_create_ctx(struct nvkmd_dev *dev,
+                                   struct vk_object_base *log_obj,
+                                   enum nvkmd_engines engines,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index df58208..e7eb770 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -60,6 +60,37 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+     * to work.
+     */
+    for (uint32_t i = 0; i < wait_count; i++) {
++      /* THE WAIT THAT IS ALREADY SATISFIED, AND THE ONE CASE WHERE
++       * SKIPPING IT IS NOT AN OPTIMISATION BUT THE TRUTH.
++       *
++       * A GPFIFO channel executes its entries in the order they were
++       * pushed. If this wait is on work that was already submitted to
++       * THIS channel, the submit that follows cannot begin before that
++       * work has finished, and the channel enforces it without anyone
++       * asking. Waiting on the CPU for it would stall the caller for
++       * something the hardware has already guaranteed.
++       *
++       * It matters because it is the ordinary case, not a corner: a
++       * swapchain present waits on the semaphore the application's
++       * render submit signalled, on the same queue, every frame. With
++       * the CPU wait, handing the compositor a fence to wait on saves
++       * nothing — the CPU has already waited for the render by the time
++       * the buffer is queued.
++       *
++       * The bound is exact: only a sync that is PENDING (a submit has
++       * attached a fence to it) and whose fence came from this same
++       * channel. Anything else — another channel's fence, the upload
++       * queue's, a sync nothing has submitted yet — still waits below.
++       *
++       * What it costs: a wait on a channel that has faulted no longer
++       * reports CHANNEL_LOST here. The error is not lost, it moves —
++       * the submit that follows is refused by the same lost channel,
++       * which t_fault measured on hardware ("a submit to the lost
++       * channel is refused").
++       */
++      if (nvk_horizon_sync_is_pending_on(waits[i].sync, ctx->chan))
++         continue;
++
+       const struct vk_sync_type *type = waits[i].sync->type;
+       assert(type->wait != NULL);
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index fe956d7..e222108 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -556,3 +556,20 @@ nvk_horizon_sync_get_fence(struct vk_sync *_sync, uint64_t abs_timeout_ns,
+    *has_fence_out = has_fence;
+    return VK_SUCCESS;
+ }
++
++bool
++nvk_horizon_sync_is_pending_on(struct vk_sync *_sync,
++                               horizon_gpu_channel *chan)
++{
++   if (_sync->type != &nvk_horizon_sync_type || chan == NULL)
++      return false;
++
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++
++   mtx_lock(&sync->mutex);
++   const bool same = sync->state == NVK_HORIZON_SYNC_PENDING &&
++                     sync->chan == chan;
++   mtx_unlock(&sync->mutex);
++
++   return same;
++}
+-- 
+2.43.0
+

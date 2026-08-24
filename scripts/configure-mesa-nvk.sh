@@ -111,7 +111,7 @@ echo "configure-mesa-nvk: horizon_gpu staged in $HORIZON_GPU_PREFIX"
 
 # The identity NVK reports as driverUUID and the pipeline cache UUID, and
 # that the shader disk cache keys on. Mesa's version alone does not
-# change when this port changes (mesa-patches/0078); this does.
+# change when this port changes (mesa-patches/0043); this does.
 HORIZON_DRIVER_ID=$(scripts/gen-driver-id.sh)
 echo "configure-mesa-nvk: driver id $HORIZON_DRIVER_ID"
 

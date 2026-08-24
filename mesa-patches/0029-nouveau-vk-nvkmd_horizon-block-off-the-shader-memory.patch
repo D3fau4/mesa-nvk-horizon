@@ -1,0 +1,309 @@
+From 573d137a4fea58eacb7c0d232f34e88e958318d5 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Sun, 23 Aug 2026 21:54:23 +0000
+Subject: [PATCH 29/49] nouveau/vk: nvkmd_horizon, block off the shader memory
+ window; fixed VA (extension 5)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+nvk_cmd_dispatch.c and nvk_cmd_draw.c program the shader local and
+shared memory windows at 0xff000000 and 0xfe000000 on pre-Volta. They
+are apertures the hardware fixes, not allocations, and a shader's
+LDL/STL/LDS/STS go through them; upstream says outright that nothing
+stops an ordinary allocation being given that range and leaves it:
+"This will have to be dealt with for real eventually by blocking off
+that area from the VM. Really?!? TODO: Fix this for realz." On this
+platform it is not a possibility but the default: the small-page region
+begins at 0x8000000 and NVK's shader heap reserves 4 GiB from the
+bottom of it, covering both windows — measured with NVK_DEBUG=vm:
+alloc va [0xa052000, 0x10a052000) spans 0xfe000000 and 0xff000000.
+
+Three pieces make the defence:
+
+NVKMD_VA_ALLOC_FIXED is implemented, closing extension 5 of the six
+Phase 4 step 1 enumerated. An earlier note said ALLOC_SPACE had no
+"place it here" form; NvAllocSpaceFlags_FixedOffset exists, and
+horizon_gpu_vm_reserve_fixed reports a range that came back at a
+different address as a failure rather than accepting it — the property
+a caller asking for a fixed address actually needs.
+
+The window [0xfe000000, 0x100000000) is reserved at pdev creation and
+never bound. It lives on the pdev rather than the dev: the address
+space is the pdev's — one horizon_gpu_device per process, shared by
+every VkDevice (decision D9) — so a per-dev reservation would succeed
+once and then warn on every further VkDevice about a hazard already
+prevented. Not fatal on failure: without it the collision is back to
+being detected and logged, which is what it was.
+
+And alloc_va logs any reservation that lands on the window, which is
+both the fallback when the reservation fails and the tripwire that
+found the problem. The day a shader reads its own code instead of its
+locals, this line is in the log.
+
+This was tried once and backed out, and the backing-out was wrong. The
+first version reserved the window on the dev; it was removed because
+the 4 GiB contiguous shader-heap reservation then failed with
+LibnxNvidiaError_InsufficientMemory, recorded as "the window splits the
+small-page region at precisely the wrong address and the heap no longer
+fits below it" — a measurement made on the emulator. On a console the
+allocator places the 4 GiB reservation above the hole, and about 12 GiB
+sits above the window. Same shape as the syncpoint failure of
+2026-07-28, which was also the emulator answering for itself.
+
+mesa-nvk-horizon: Phase 5 item 2 (compute dispatch)
+Why: the windows are apertures the hardware fixes, and nothing else
+  stops an ordinary allocation being given that range; on this address
+  space the shader heap covers both by default.
+Evidence: measured on a real console, t_va_window, 2026-08-04
+  (docs/hw-logs/t_va_window-run1-PASS.log):
+    small-page region [0x8000000, 0x3fffff000)      ~15.87 GiB
+    P2 window fixed @0xfe000000: ok
+    P3 heap 4 GiB non-fixed with the window held:
+       ok base=0x100000000 -- clears the window
+    P4/P5 heap 4 GiB fixed @0x100000000 and @0x200000000: both ok
+    P7 heap fixed first, then the window: both ok
+  RUN ON A CONSOLE 2026-08-04: the shader-window overlap warning is
+  gone from all four logs of that batch and vkCreateDevice still
+  succeeds (docs/hw-logs/t_vulkan-run8-window-blocked-PASS.log and the
+  three beside it).
+Upstream: no -- it uses a fixed reservation this address space provides.
+
+Absorbs (2026-08-23 series compaction; full history in mesa-patches/'s
+own git log): 0037 "say when a reservation lands on the shader memory
+window", 0039 "block off the shader memory window, and implement fixed
+VA" (its fixed-VA half; the dev-side block-off half and its revert 0040
+cancel, and the pdev-side reservation here is the corrected redo), and
+0047 "block off the shader memory window (again)".
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 16 ++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 72 ++++++++++++++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 76 +++++++++++++++----
+ 3 files changed, 151 insertions(+), 13 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 12d235a..d2aa0b6 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -70,6 +70,22 @@ struct nvkmd_horizon_pdev {
+     */
+    struct vk_sync_timeline_type timeline_sync_type;
+    const struct vk_sync_type *sync_types[3];
++
++   /* The shader local- and shared-memory window aperture, reserved so
++    * nothing else can be given it, and never bound. NULL if the
++    * reservation failed, which is logged and not fatal — the collision
++    * it prevents is then back to being detected rather than prevented.
++    *
++    * IT LIVES ON THE PDEV, not on the dev, because the thing it reserves
++    * from is the pdev's: one horizon_gpu_device and one GPU address
++    * space per process, shared by every VkDevice created from this
++    * physical device (decision D9). A per-dev reservation would succeed
++    * once and then fail for every further VkDevice with a warning about
++    * a hazard that is in fact already prevented.
++    *
++    * See nvkmd_horizon_pdev.c.
++    */
++   horizon_gpu_va_range *shader_window_va;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(pdev, horizon);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 41cf692..3e8131c 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -73,6 +73,18 @@ nvkmd_horizon_pdev_destroy(struct nvkmd_pdev *_pdev)
+     */
+    assert(pdev->dev_refcnt == 0);
+ 
++   /* Released before the address space it came from. Nothing was ever
++    * bound in it, so this is just the reservation going back. */
++   if (pdev->shader_window_va != NULL) {
++      horizon_gpu_result wres =
++         horizon_gpu_vm_release(pdev->shader_window_va);
++      if (wres.status != HORIZON_GPU_OK) {
++         mesa_loge("releasing the shader memory window failed: "
++                   "status %d, nv 0x%08" PRIx32,
++                   (int)wres.status, wres.nv);
++      }
++   }
++
+    horizon_gpu_result res = horizon_gpu_device_destroy(pdev->gpu);
+    if (res.status != HORIZON_GPU_OK) {
+       /* horizon_gpu_device_destroy fails with ERR_LEAK when a child
+@@ -282,6 +294,66 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+ 
+    fill_dev_info(&pdev->base.dev_info, &pdev->gpu_info, pdev->gpu);
+ 
++   /* Block off the shader local- and shared-memory windows.
++    *
++    * nvk_cmd_dispatch.c:82,85 program SET_SHADER_LOCAL_MEMORY_WINDOW at
++    * 0xff000000 and SET_SHADER_SHARED_MEMORY_WINDOW at 0xfe000000 on
++    * pre-Volta, and nvk_cmd_draw.c:583 programs the local one for
++    * graphics too. They are apertures the hardware fixes, not
++    * allocations: a shader's LDL/STL/LDS/STS go through them, so
++    * anything else bound in that range is read as locals and vice
++    * versa. Upstream says nothing stops that happening and leaves it —
++    * "This will have to be dealt with for real eventually by blocking
++    * off that area from the VM. Really?!? TODO: Fix this for realz."
++    *
++    * This is that. The reservation is never bound, so an access through
++    * the window still faults; what it buys is that the window can no
++    * longer be handed to somebody's buffer.
++    *
++    * IT WAS TRIED ONCE AND BACKED OUT, AND THE BACKING-OUT WAS WRONG.
++    * Patch 0039 did exactly this and patch 0040 removed it, because the
++    * 4 GiB contiguous shader-heap reservation that follows then failed
++    * with LibnxNvidiaError_InsufficientMemory. That measurement was made
++    * on the emulator, and this file recorded its explanation — "the
++    * window splits the small-page region at precisely the wrong address
++    * and the heap no longer fits below it" — as though it were a fact
++    * about the hardware. It is not. t_va_window on a real console,
++    * 2026-08-04:
++    *
++    *   small-page region [0x8000000, 0x3fffff000)   ~15.87 GiB
++    *   P2 window fixed @0xfe000000: ok
++    *   P3 heap 4 GiB non-fixed, window held:
++    *      ok base=0x100000000 — clears the window
++    *   P7 heap fixed @0x100000000 first, then the window: both ok
++    *
++    * The real allocator places the 4 GiB reservation *above* the hole.
++    * There was never a shortage of space — about 12 GiB sits above the
++    * window — and the emulator's allocator simply could not skip it.
++    * Same shape as the syncpoint failure of 2026-07-28, which was also
++    * the emulator answering for itself.
++    *
++    * Not fatal on failure, and now for a smaller reason than before: if
++    * the reservation cannot be made, the collision is back to being what
++    * it was, which is detected and logged by nvkmd_horizon_alloc_va. A
++    * device that refuses to be created would be worse than a device that
++    * carries a known and reported hazard.
++    */
++   const uint64_t win_base = UINT64_C(0xfe000000);
++   const uint64_t win_size = UINT64_C(0x02000000); /* both, 16 MiB each */
++   horizon_gpu_result wres =
++      horizon_gpu_vm_reserve_fixed(pdev->gpu, win_base, win_size,
++                                   HORIZON_GPU_SMALL_PAGE_SIZE,
++                                   &pdev->shader_window_va);
++   if (wres.status != HORIZON_GPU_OK) {
++      pdev->shader_window_va = NULL;
++      mesa_logw("nvkmd_horizon: could not reserve the shader memory window "
++                "[0x%" PRIx64 ", 0x%" PRIx64 "): status %d, nv 0x%08" PRIx32
++                ". A later allocation may be given it, and a shader's local "
++                "or shared accesses would then read that allocation.",
++                win_base, win_base + win_size, (int)wres.status, wres.nv);
++   }
++
++
+    /* What this backend can and cannot do. Each false is a statement
+     * about Horizon, not a gap left for later:
+     *
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index 8fa1682..c543c25 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -296,17 +296,17 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+    struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_dev);
+    struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_dev->pdev);
+ 
+-   /* NVGPU_AS_IOCTL_ALLOC_SPACE lets the kernel choose the base; there
+-    * is no "place it here" form. NVKMD_VA_ALLOC_FIXED is therefore
+-    * refused rather than answered with a different address, which is
+-    * the one thing a caller asking for a fixed address cannot tolerate.
+-    * This is extension 5 of the six Phase 4 step 1 enumerated.
++   /* NVKMD_VA_ALLOC_FIXED — extension 5 of the six Phase 4 step 1
++    * enumerated, and no longer missing. An earlier version of this
++    * function refused it, saying ALLOC_SPACE had no "place it here"
++    * form. It has one: NvAllocSpaceFlags_FixedOffset, which
++    * horizon_gpu_vm_reserve_fixed now uses. The refusal was wrong, not
++    * the hardware.
++    *
++    * horizon_gpu_vm_reserve_fixed reports a range that came back at a
++    * different address as a failure rather than accepting it, which is
++    * the property a caller asking for a fixed address actually needs.
+     */
+-   if (flags & NVKMD_VA_ALLOC_FIXED) {
+-      return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
+-                       "nvkmd_horizon: fixed VA allocation is not "
+-                       "implemented (Phase 4 step 1, extension 5)");
+-   }
+ 
+    /* Sparse is decision D12 and is not advertised: NVK derives
+     * sparseBinding from cls_eng3d >= MAXWELL_B, and GM20B's queried 3D
+@@ -385,11 +385,24 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+    if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
+       page_size = big;
+ 
+-   horizon_gpu_result res =
+-      horizon_gpu_vm_reserve(dev->gpu, size_B, page_size, align_B,
+-                             &va->range);
++   horizon_gpu_result res;
++   if (flags & NVKMD_VA_ALLOC_FIXED) {
++      res = horizon_gpu_vm_reserve_fixed(dev->gpu, fixed_addr, size_B,
++                                         page_size, &va->range);
++   } else {
++      res = horizon_gpu_vm_reserve(dev->gpu, size_B, page_size, align_B,
++                                   &va->range);
++   }
+    if (res.status != HORIZON_GPU_OK) {
+       FREE(va);
++      if (flags & NVKMD_VA_ALLOC_FIXED) {
++         return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                          "horizon_gpu_vm_reserve_fixed(0x%" PRIx64 ", 0x%"
++                          PRIx64 ", %" PRIu32 ") failed: status %d, "
++                          "nv 0x%08" PRIx32,
++                          fixed_addr, size_B, page_size,
++                          (int)res.status, res.nv);
++      }
+       return vk_errorf(log_obj, nvkmd_horizon_result(res),
+                        "horizon_gpu_vm_reserve(0x%" PRIx64 ", %" PRIu32 ", "
+                        "0x%" PRIx64 ") failed: status %d, nv 0x%08" PRIx32,
+@@ -397,6 +410,43 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+                        (int)res.status, res.nv);
+    }
+ 
++   /* The shader local- and shared-memory windows are fixed VA apertures,
++    * not allocations: nvk_push_dispatch_state_init programs
++    * SET_SHADER_LOCAL_MEMORY_WINDOW = 0xff000000 and
++    * SET_SHADER_SHARED_MEMORY_WINDOW = 0xfe000000 on pre-Volta, and a
++    * shader's LDL/STL/LDS/STS go through them. Upstream says outright
++    * that nothing stops a real allocation landing there — "Reduce
++    * likelihood of collision with real buffers ... This will have to be
++    * dealt with for real eventually by blocking off that area from the
++    * VM. Really?!? TODO: Fix this for realz."
++    *
++    * On this platform it is not a likelihood, it is what happens. The
++    * small-page region begins at 0x8000000 and NVK's reservations march
++    * up through 4 GiB, so the shader heap's own 4 GiB reservation covers
++    * both windows. Measured on the emulator, 2026-07-28:
++    * alloc va [0xa052000, 0x10a052000) spans 0xfe000000 and 0xff000000.
++    *
++    * Detected rather than worked around. NVGPU_AS_IOCTL_ALLOC_SPACE has
++    * no "place it here" form (see NVKMD_VA_ALLOC_FIXED above), so the
++    * aperture cannot simply be reserved, and every scheme for steering
++    * the allocator around it costs gigabytes of address space on a guess
++    * nobody can test without a console. Saying so precisely is worth
++    * more than a blind fix: the day a shader reads its own code instead
++    * of its locals, this line is in the log.
++    */
++   const uint64_t win_lo = UINT64_C(0xfe000000); /* shared window base */
++   const uint64_t win_hi = UINT64_C(0x100000000); /* local window end */
++   const uint64_t va_lo = horizon_gpu_va_range_base(va->range);
++   const uint64_t va_hi = va_lo + horizon_gpu_va_range_size(va->range);
++   if (va_lo < win_hi && win_lo < va_hi) {
++      mesa_loge("nvkmd_horizon: reservation [0x%" PRIx64 ", 0x%" PRIx64
++                ") overlaps the shader local/shared memory window "
++                "[0x%" PRIx64 ", 0x%" PRIx64 "). Shader local and shared "
++                "accesses go through that aperture; anything bound here "
++                "will be read as locals and vice versa.",
++                va_lo, va_hi, win_lo, win_hi);
++   }
++
+    va->base.ops = &nvkmd_horizon_va_ops;
+    va->base.dev = _dev;
+    va->base.flags = flags;
+-- 
+2.43.0
+

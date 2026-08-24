@@ -1,0 +1,243 @@
+From cb0bd26df2c8c322017a80f73d39c0b6197857a9 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 5 Aug 2026 10:26:27 +0000
+Subject: [PATCH 38/49] nouveau/vk: advertise VK_NN_vi_surface and answer the
+ Horizon WSI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 1 (Swapchain with no global state)
+Why: three things had to be true before an application could create a
+ swapchain on this platform, and none of them was.
+ NVK_USE_WSI_PLATFORM is what gates KHR_surface, KHR_swapchain and the
+ swapchain-aware paths in nvk_image.c and nvk_physical_device.c, and its
+ condition listed Wayland, XCB, Xlib and display — every window system
+ except this one. With VK_USE_PLATFORM_VI_NN added, everything already
+ written for a WSI platform applies here unchanged.
+ VK_NN_vi_surface is what vkCreateViSurfaceNN needs to be enabled, and
+ it was in no driver's instance extension table.
+ And the WSI backend needs two answers only the driver has: an image's
+ layout — vkGetImageSubresourceLayout is invalid usage on the OPTIMAL
+ images every renderable one here is — and the syncpoint fence a VkFence
+ will be signalled by. Both go through wsi_device::horizon, in the same
+ shape as the existing win32 and metal callback structs.
+ The GOB check in get_image_info is the one worth reading twice: NIL
+ picks the sector ordering inside a GOB from the device type, and an SoC
+ gets TegraColor rather than FermiColor (nil/tiling.rs:144-151). Both are
+ 512-byte 64x8 GOBs, so a wrong answer here passes every size and stride
+ check and puts a scrambled image on screen. TegraColor is what
+ Horizon's display block reads as "generic 16Bx2", and it is the only
+ one accepted.
+ The page-table kind reported is the *compressed* one when NVK decided
+ the image could be compressed, because that is the layout the memory
+ actually holds. This backend's nvkmd_info sets has_compression false,
+ so the case does not arise here today; reporting the kind NVK is not
+ using would be a check that passes for the wrong reason if it ever
+ does.
+Evidence: cross build of build/mesa-nvk with -Dplatforms=vi. The image
+ facts come from nil_image: levels[0].row_stride_B, levels[0].tiling and
+ pte_kind, the same fields NVK's own descriptors and copies are built
+ from. The NvMap id is horizon_gpu_mem_get_id() through
+ nvkmd_mem_export_scanout_id, the same value t_nwindow registers scanout
+ buffers with by hand. NOT RUN ON A CONSOLE.
+Upstream: no — it names a platform that exists on one device.
+
+Absorbs (2026-08-23 series compaction): the nvk_wsi.c correction from
+0055 of the pre-compaction series (the driver half of its review
+findings).
+---
+ src/nouveau/vulkan/nvk_instance.c        |   3 +
+ src/nouveau/vulkan/nvk_physical_device.h |   3 +-
+ src/nouveau/vulkan/nvk_wsi.c             | 125 +++++++++++++++++++++++
+ 3 files changed, 130 insertions(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvk_instance.c b/src/nouveau/vulkan/nvk_instance.c
+index 171906d..0d8039f 100644
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -36,6 +36,9 @@ static const struct vk_instance_extension_table instance_extensions = {
+    .EXT_surface_maintenance1 = true,
+    .EXT_swapchain_colorspace = true,
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++   .NN_vi_surface = true,
++#endif
+ #ifdef VK_USE_PLATFORM_WAYLAND_KHR
+    .KHR_wayland_surface = true,
+ #endif
+diff --git a/src/nouveau/vulkan/nvk_physical_device.h b/src/nouveau/vulkan/nvk_physical_device.h
+index d2a20e0..fa9385c 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.h
++++ b/src/nouveau/vulkan/nvk_physical_device.h
+@@ -102,7 +102,8 @@ VkExtent2D nvk_max_shading_rate(const struct nvk_physical_device *pdev,
+ #if defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
+     defined(VK_USE_PLATFORM_XCB_KHR) || \
+     defined(VK_USE_PLATFORM_XLIB_KHR) || \
+-    defined(VK_USE_PLATFORM_DISPLAY_KHR)
++    defined(VK_USE_PLATFORM_DISPLAY_KHR) || \
++    defined(VK_USE_PLATFORM_VI_NN)
+ #define NVK_USE_WSI_PLATFORM
+ #endif
+ 
+diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
+index deaecb7..bb06cc6 100644
+--- a/src/nouveau/vulkan/nvk_wsi.c
++++ b/src/nouveau/vulkan/nvk_wsi.c
+@@ -3,10 +3,17 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include "nvk_wsi.h"
++#include "nvk_device.h"
++#include "nvk_device_memory.h"
++#include "nvk_image.h"
+ #include "nvk_instance.h"
++#include "nvk_physical_device.h"
+ #include "nvkmd/nvkmd.h"
++#include "vk_fence.h"
+ #include "wsi_common.h"
+ 
++#include <string.h>
++
+ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+ nvk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+ {
+@@ -14,6 +21,15 @@ nvk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+    return vk_instance_get_proc_addr_unchecked(pdev->vk.instance, pName);
+ }
+ 
++#ifdef VK_USE_PLATFORM_VI_NN
++static VkResult
++nvk_wsi_get_image_info(VkDevice device, VkImage image, VkDeviceMemory memory,
++                       struct wsi_horizon_image_info *info_out);
++static VkResult
++nvk_wsi_get_fence(VkDevice device, VkFence fence, uint64_t abs_timeout_ns,
++                  struct wsi_horizon_fence *fence_out);
++#endif
++
+ VkResult
+ nvk_init_wsi(struct nvk_physical_device *pdev)
+ {
+@@ -35,6 +51,19 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
+    pdev->wsi_device.supports_modifiers =
+       pdev->vk.supported_extensions.table.EXT_image_drm_format_modifier;
+ 
++#ifdef VK_USE_PLATFORM_VI_NN
++   pdev->wsi_device.horizon.get_image_info = nvk_wsi_get_image_info;
++   pdev->wsi_device.horizon.get_fence = nvk_wsi_get_fence;
++
++   /* The window's size is the compositor's to choose and every buffer
++    * registered on it must match, so the surface reports a fixed
++    * currentExtent. This makes the common WSI clamp an application's
++    * imageExtent to it rather than leaving the backend to refuse a
++    * swapchain over a difference the application could not have
++    * avoided. */
++   pdev->wsi_device.force_swapchain_to_currentExtent = true;
++#endif
++
+    pdev->vk.wsi_device = &pdev->wsi_device;
+ 
+    return result;
+@@ -46,3 +75,99 @@ nvk_finish_wsi(struct nvk_physical_device *pdev)
+    pdev->vk.wsi_device = NULL;
+    wsi_device_finish(&pdev->wsi_device, &pdev->vk.instance->alloc);
+ }
++
++#ifdef VK_USE_PLATFORM_VI_NN
++/* The two things Horizon's WSI backend cannot work out for itself.
++ *
++ * Both are queries about objects the driver owns — an image's layout and
++ * the fence a submit will signal — asked through wsi_device rather than
++ * by reaching into NVK, which is the same shape as wsi_device::win32 and
++ * wsi_device::metal. Neither has anything Horizon-specific in it beyond
++ * the two structures wsi_common.h declares for exactly this purpose.
++ */
++
++static VkResult
++nvk_wsi_get_image_info(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
++                       struct wsi_horizon_image_info *info_out)
++{
++   VK_FROM_HANDLE(nvk_image, image, _image);
++   VK_FROM_HANDLE(nvk_device_memory, mem, _memory);
++
++   if (image->plane_count != 1) {
++      /* A multi-planar image has no single layout to describe, and the
++       * display block takes one plane. Not an error: the caller turns
++       * it into a copy. */
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++   }
++
++   const struct nvk_image_plane *plane = &image->planes[0];
++   const struct nil_image *nil = &plane->nil;
++   const struct nil_tiling *tiling = &nil->levels[0].tiling;
++
++   uint32_t scanout_id = 0;
++   VkResult result = nvkmd_mem_export_scanout_id(mem->mem, &image->vk.base,
++                                                 &scanout_id);
++   if (result != VK_SUCCESS)
++      return result;
++
++   memset(info_out, 0, sizeof(*info_out));
++   info_out->scanout_id = scanout_id;
++
++   /* Where the image's data starts inside that memory object. The bind
++    * offset the application passed is not recorded anywhere on the
++    * image, so this is only the whole answer for an image bound at
++    * offset 0 — which is what the WSI's own dedicated allocation does,
++    * and it is the caller's business to bind that way if it wants to
++    * present without a copy. */
++   info_out->offset_B = plane->plane_offset_B;
++   info_out->size_B = nil->size_B;
++   info_out->row_stride_B = nil->levels[0].row_stride_B;
++   info_out->block_height_log2 = tiling->y_log2;
++
++   /* THE KIND THE MEMORY IS ACTUALLY MAPPED WITH, which is the
++    * compressed one when NVK decided this image could be compressed:
++    * the two describe different byte layouts and the display block
++    * would read the wrong one. */
++   info_out->pte_kind = image->is_compressed ? nil->compressed_pte_kind
++                                             : nil->pte_kind;
++
++   info_out->block_linear = tiling->gob_type != NIL_GOB_TYPE_LINEAR &&
++                            tiling->x_log2 == 0 && tiling->z_log2 == 0;
++
++   /* NOT FermiColor, although this is a Fermi-descended chip. NIL picks
++    * the GOB's sector ordering from the device type, and an SoC gets
++    * TegraColor (nil/tiling.rs: `else if dev.type_ == NV_DEVICE_TYPE_SOC`).
++    * That is the ordering Horizon's display block reads as "generic
++    * 16Bx2"; the desktop Fermi ordering has the same GOB size and a
++    * different sector arrangement inside it, so accepting it here would
++    * put a scrambled image on screen with every check passing. */
++   info_out->gob_layout_is_display =
++      tiling->gob_type == NIL_GOB_TYPE_TEGRA_COLOR;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvk_wsi_get_fence(VkDevice _device, VkFence _fence, uint64_t abs_timeout_ns,
++                  struct wsi_horizon_fence *fence_out)
++{
++   VK_FROM_HANDLE(nvk_device, dev, _device);
++   VK_FROM_HANDLE(vk_fence, fence, _fence);
++
++   struct nvkmd_syncpt_fence syncpt = { 0 };
++   bool has_fence = false;
++
++   VkResult result =
++      nvkmd_pdev_get_syncpt_fence(nvk_device_physical(dev)->nvkmd,
++                                  vk_fence_get_active_sync(fence),
++                                  abs_timeout_ns, &syncpt, &has_fence);
++   if (result != VK_SUCCESS)
++      return result;
++
++   fence_out->syncpt_id = syncpt.id;
++   fence_out->threshold = syncpt.value;
++   fence_out->valid = has_fence;
++
++   return VK_SUCCESS;
++}
++#endif /* VK_USE_PLATFORM_VI_NN */
+-- 
+2.43.0
+

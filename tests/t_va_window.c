@@ -19,7 +19,7 @@
  * small-page region starts far below the window.
  *
  * Blocking the window off was tried once and broke vkCreateDevice:
- * mesa-patches 0039 reserved it, and the 4 GiB reservation that follows
+ * mesa-patches 0029 reserved it, and the 4 GiB reservation that follows
  * then failed with LibnxNvidiaError_InsufficientMemory. 0040 backed it
  * out. Nobody has ever asked the allocator *why*, and the arithmetic
  * says the space is there: t_va_reserve measured the small-page region
@@ -207,7 +207,7 @@ int run_test(test_ctx *t)
     const bool p2_ok = window != NULL;
 
     /* Everything from here to the matching release runs with the window
-     * held, which is the configuration patch 0039 created. */
+     * held, which is the configuration patch 0029 created. */
 
     /* ---- Probe 3: 0039's failure, measured on hardware. ---- */
     horizon_gpu_va_range *heap1 =
