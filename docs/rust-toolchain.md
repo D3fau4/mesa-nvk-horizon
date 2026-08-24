@@ -25,6 +25,16 @@ under `src/compiler/rust/`, and **none of the files cited below is among them**:
 file:line references are therefore still exact. Checked with
 `git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
 
+It moved once more to `mesa-26.1.8` (`0fadfea4f394211946f308458f614839ef253ee8`) on
+2026-08-24, and the Rust half stood still: of the 98 files it changes, **not one is under
+`src/nouveau/compiler/` or `src/compiler/rust/`**, so every file:line below is exact
+again. The two wrap files §2 cites *did* change, in their `source_url` line only — the
+host moved from `crates.io/api/v1/crates/…` to `static.crates.io/crates/…` across all 28
+Rust wraps, while `directory`, `source_filename` and `source_hash` stayed byte-identical.
+The sha256 pinning claimed below therefore still holds. Checked with
+`git -C mesa diff --name-only mesa-26.1.7^{} mesa-26.1.8^{}` and
+`git -C mesa diff mesa-26.1.7^{} mesa-26.1.8^{} -- subprojects/`.
+
 ---
 
 ## 1. The question

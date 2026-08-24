@@ -264,8 +264,8 @@ it is split deliberately:
   devkitPro does not support pinning in the usual sense; see
   [`docs/known-risks.md`](known-risks.md) R15. It is *recorded* at packaging time
   instead, which is what makes a hardware result attributable.
-- **Pinned** — everything this project chose: Mesa `mesa-26.1.7` at commit
-  `e8617e4ca95fc655b0f13fd115c224d27eba2441`, Meson 1.11.2, mako, PyYAML, bindgen,
+- **Pinned** — everything this project chose: Mesa `mesa-26.1.8` at commit
+  `0fadfea4f394211946f308458f614839ef253ee8`, Meson 1.11.2, mako, PyYAML, bindgen,
   cbindgen, the LLVM debs with their sha256, SPIRV-Tools, and the Rust target triple.
 
 The Mesa *commit* is pinned, not just the tag, because tags can be moved — and

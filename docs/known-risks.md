@@ -344,8 +344,29 @@ So exactly one upstream change in this release can alter code generated for a Sw
 it is a correctness fix in the instruction scheduler. **Verified as a cross build, not on
 hardware** — no console has run 26.1.7.
 
+**Point release taken, 2026-08-24: `mesa-26.1.7` → `mesa-26.1.8`**, commit
+`0fadfea4f394211946f308458f614839ef253ee8` (tag object `d6393a37abc5`, released
+2026-08-19, [release notes](https://docs.mesa3d.org/relnotes/26.1.8.html)). Inside the
+series D2 chose, "New features: None", and back to a clean miss: of the 98 files it
+changes, **none is among the 131 `mesa-patches/` writes to**, and **nothing under
+`src/nouveau/` changed at all** — no NVK, NAK, NIL or `nvkmd` file moved, so nothing in
+this release can alter code generated for a Switch by way of the compiler. The series
+applies unmodified, 49 of 49.
+
+The one part of the delta that touches ground this repo stands on is
+`subprojects/*-rs.wrap`: 28 wraps had their `source_url` host rewritten from
+`crates.io/api/v1/crates/…` to `static.crates.io/crates/…`. Versions, filenames and
+`source_hash` lines are byte-identical — the whole `subprojects/` delta is `source_url`
+lines and nothing else — so the sha256 pinning `docs/rust-toolchain.md` relies on is
+unchanged, and `scripts/fetch-mesa-subprojects.sh` reads the URL out of the wrap rather
+than carrying its own. **Verified as a cross build, not on hardware** — no console has
+run 26.1.8.
+
 **The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
-is a development release whose own notes tell stability-minded users to wait for 26.2.1,
+is a development release whose own notes tell stability-minded users to wait for 26.2.1
+— which now exists (`mesa-26.2.1`, 2026-08-20,
+[notes](https://docs.mesa3d.org/relnotes/26.2.1.html)), so the condition D21 was waiting
+on is met and the decision is live rather than deferred. It still is not taken here,
 and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
 we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/`, 4 in
 `src/vulkan/wsi/`, both `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates
