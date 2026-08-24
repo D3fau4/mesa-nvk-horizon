@@ -19,6 +19,19 @@
  * re-checkable. */
 #define SYNC_WAIT_CHUNK_US INT32_C(100000)
 
+/* Upper bound on the pacing sleep below.
+ *
+ * The point of the sleep is to stop a chunk that did not block turning
+ * the loop into two ioctls back to back; a millisecond of it does that,
+ * cutting the ioctl rate by three orders of magnitude. Sleeping out the
+ * whole unspent chunk would do it better and would also mean that a
+ * counter read lagging the kernel's own answer — measured happening,
+ * 2026-08-24: nvFenceWait returned success at 1347 us of a 100 ms chunk
+ * while SyncptRead still showed the old value — could add most of a
+ * chunk to a fence that had in fact retired. A wait must not be slower
+ * than the thing it is waiting for. */
+#define SYNC_PACE_MAX_NS UINT64_C(1000000)
+
 horizon_gpu_result horizon_gpu_syncpt_read(horizon_gpu_device *dev,
                                            uint32_t syncpt_id,
                                            uint32_t *out_value)
@@ -171,6 +184,8 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
                              fence.syncpt_id, last_rc, fence.threshold);
             }
             uint64_t nap_ns = unslept_ns;
+            if (nap_ns > SYNC_PACE_MAX_NS)
+                nap_ns = SYNC_PACE_MAX_NS;
             if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
                 nap_ns > timeout_ns - elapsed_ns)
                 nap_ns = timeout_ns - elapsed_ns;

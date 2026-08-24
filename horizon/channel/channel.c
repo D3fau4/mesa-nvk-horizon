@@ -61,6 +61,13 @@ _Static_assert(HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
  * re-checked at a useful rate without busy-polling. */
 #define CHANNEL_WAIT_CHUNK_US INT32_C(100000)
 
+/* Same bound, and the same reason, as SYNC_PACE_MAX_NS in
+ * horizon/sync/syncpt.c: a millisecond is enough to stop a chunk that
+ * did not block becoming a hot loop, and short enough that a counter
+ * read lagging the kernel's answer cannot add most of a chunk to a
+ * fence that has in fact retired. */
+#define CHANNEL_PACE_MAX_NS UINT64_C(1000000)
+
 horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
                                                uint32_t *out_hw)
 {
@@ -776,6 +783,8 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                              fence.syncpt_id, last_rc, fence.threshold);
             }
             uint64_t nap_ns = unslept_ns;
+            if (nap_ns > CHANNEL_PACE_MAX_NS)
+                nap_ns = CHANNEL_PACE_MAX_NS;
             if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
                 nap_ns > timeout_ns - elapsed_ns)
                 nap_ns = timeout_ns - elapsed_ns;

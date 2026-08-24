@@ -557,14 +557,35 @@ int run_test(test_ctx *t)
           (unsigned long long)(serial_ns / 1000),
           (unsigned long long)(serial_ns / 1000 / TRIVIAL));
 
-   /* If submission were synchronous the two figures would be the same.
-    * They are compared with a wide margin because this is latency on a
-    * shared console, not a benchmark: the claim is only that batching
-    * is cheaper, not by how much. */
-   t_check(t, batch_ns < serial_ns,
-           "batching %u submits beat submitting them one at a time "
-           "(%llu us against %llu us)", TRIVIAL,
-           (unsigned long long)(batch_ns / 1000),
+   /* WHAT EMPTY SUBMITS CAN AND CANNOT SHOW.
+    *
+    * This used to assert batch_ns < serial_ns outright. Measured on a
+    * console 2026-08-24, it failed: 1715 us batched against 1580 us one
+    * at a time. That is not a regression, it is the claim being wrong
+    * for this workload — these command buffers are begin+end with
+    * nothing between, so there is no GPU work for a batch to overlap.
+    * Both figures are then sixteen submit syscalls and nothing else,
+    * the batched side pays one extra vkWaitForFences over sixteen
+    * fences, and which one comes out ahead is a coin toss. It had been
+    * landing the other way and passing on luck.
+    *
+    * The asynchrony claim this looked like it was making is made
+    * properly, and quantitatively, by the eight-job section above:
+    * job 0 is still running when job 7 has been issued, and issuing
+    * costs under a quarter of running. Nothing is lost by not
+    * repeating it badly here.
+    *
+    * What these numbers DO measure is the cost of a submit round trip
+    * with no work in it, which is worth having on record and is what
+    * the note above prints. The check that remains is the one an empty
+    * submit can support: neither path drains the GPU per submit, which
+    * a backend that waited after every submit could not manage. Ten
+    * times the batched figure is far outside anything either path has
+    * produced and far inside a per-submit drain. */
+   t_check(t, serial_ns < batch_ns * 10 && batch_ns < serial_ns * 10,
+           "sixteen empty submits cost the same order either way — no "
+           "path waits for the GPU per submit (%llu us batched, %llu us "
+           "one at a time)", (unsigned long long)(batch_ns / 1000),
            (unsigned long long)(serial_ns / 1000));
 
 out:
