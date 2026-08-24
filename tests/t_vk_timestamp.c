@@ -208,6 +208,57 @@ static void bracket(clock_read *r, uint64_t before, uint64_t after,
    r->spread_ns = armTicksToNs(after - before);
 }
 
+/* THE COMBINED FORM, ASKED DIRECTLY.
+ *
+ * write_timestamp above records the reset and the timestamp in two
+ * submits, and says why. That split was made while the cause was still
+ * unknown; the cause turned out to be stale dirty CPU cache lines on a
+ * fresh allocation, fixed in horizon/memory/mem.c, and nothing to do
+ * with the two engines touching one address inside one submission.
+ *
+ * So the combined form — which is what every other Vulkan application
+ * writes — may well work now, and this asks. ATTEMPTS times, because
+ * the failure it is looking for was intermittent: roughly half of the
+ * runs before the fix, which one attempt could not have distinguished
+ * from luck.
+ *
+ * It reports rather than demands. If the combined form works, the split
+ * in write_timestamp comes out and this section with it; if it does
+ * not, this is the run that says so and the split stays with a reason
+ * behind it instead of a suspicion.
+ */
+#define COMBINED_ATTEMPTS 6u
+
+static void probe_combined(vkfw *fw, VkQueryPool pool, uint32_t index)
+{
+   test_ctx *t = fw->t;
+   uint32_t ok = 0, tried = 0;
+
+   for (uint32_t i = 0; i < COMBINED_ATTEMPTS; i++) {
+      VkCommandBuffer cb;
+      if (!vkfw_cmd_begin(fw, &cb))
+         break;
+      fw->vk.vkCmdResetQueryPool(cb, pool, index, 1);
+      fw->vk.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                 pool, index);
+      if (!vkfw_submit_and_wait(fw, cb, "combined reset+timestamp"))
+         break;
+      tried++;
+
+      uint64_t value = 0;
+      if (read_timestamp(fw, pool, index, &value, "combined"))
+         ok++;
+   }
+
+   t_note(t, "MEASURED: the reset and the timestamp in ONE command "
+          "buffer became available %" PRIu32 " of %" PRIu32 " times",
+          ok, tried);
+   t_check(t, tried > 0 && ok == tried,
+           "the combined form works, so t_vk_timestamp's two-submit "
+           "split is no longer needed (%" PRIu32 "/%" PRIu32 ")",
+           ok, tried);
+}
+
 /* One bracketed reading of each clock, at the same moment.
  *
  * The query clock costs two submits and two fence waits; the device
@@ -361,6 +412,10 @@ int run_test(test_ctx *t)
    if (!t_check(t, r == VK_SUCCESS, "vkCreateQueryPool(TIMESTAMP, %u) -> %s",
                 2u * WINDOWS, vkfw_result_str(r)))
       goto out;
+
+   /* Asked before the windows, on a slot of its own, so a failure here
+    * costs the measurement nothing. */
+   probe_combined(&fw, qpool, 2 * WINDOWS - 1);
 
    /* WINDOWS INTERVALS, NOT ONE.
     *

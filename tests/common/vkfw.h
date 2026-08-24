@@ -100,6 +100,7 @@
    X(vkGetFenceStatus)                                                   \
    X(vkWaitForFences)                                                    \
    X(vkQueueSubmit)                                                      \
+   X(vkQueueBindSparse)                                                  \
    /* transfer and clear commands */                                     \
    X(vkCmdFillBuffer)                                                    \
    X(vkCmdUpdateBuffer)                                                  \

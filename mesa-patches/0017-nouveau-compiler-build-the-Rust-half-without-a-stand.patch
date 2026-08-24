@@ -1,7 +1,7 @@
-From 5da375f68972a00987b6a15899e7a9b3b13bc497 Mon Sep 17 00:00:00 2001
+From 6223d642841888c9485798aed7991e1d4e7c34a0 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:08:24 +0000
-Subject: [PATCH 17/54] nouveau,compiler: build the Rust half without a
+Subject: [PATCH 17/55] nouveau,compiler: build the Rust half without a
  standard library
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

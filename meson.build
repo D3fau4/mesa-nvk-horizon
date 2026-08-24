@@ -410,6 +410,14 @@ nvk_tests = [
   # Phase 5 item 9 — several submits in flight at once, demonstrated by
   # an unsignalled fence and by wall clock, not by absence of errors.
   't_vk_submits',
+  # Fase E: D12 asked through vkQueueBindSparse rather than through
+  # horizon_gpu talking to itself. t_sparse measured that this chip
+  # swallows a write to an unbound sparse page and restores that state
+  # when a bound block is unbound; this asks whether nvkmd_horizon and
+  # NVK carry it. One flag, nvkmd_info::has_sparse, gates eight
+  # VkPhysicalDeviceFeatures, and this exercises the two a buffer can
+  # reach — so it says which two rather than implying the rest.
+  't_vk_sparse',
   # Not an item: the two things this project's own patches changed and
   # nothing had ever measured — patch 0046's extension gating, checked
   # in both directions, and patch 0045's alloc_tiled_mem, reached

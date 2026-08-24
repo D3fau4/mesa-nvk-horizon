@@ -1,7 +1,7 @@
-From 9e17ae0aa42b0bd1d3c71fd3eebb4f071bb821ed Mon Sep 17 00:00:00 2001
+From 8434247b956e5de518891a5a6ddb500d8c27d302 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
-Subject: [PATCH 33/54] nouveau/vk: nvkmd, name a memory object to the display
+Subject: [PATCH 33/55] nouveau/vk: nvkmd, name a memory object to the display
  server
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

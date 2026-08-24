@@ -338,6 +338,97 @@ done_mem:
 done:
     t_check(t, horizon_gpu_succeeded(horizon_gpu_vm_release(sp)),
             "the sparse reservation released");
+
+    /* ---- D: THE SAME QUESTION AT 4 KiB, WHICH DECIDES FASE E -------
+     *
+     * Everything above ran at as_big_page_size, because that is the
+     * address space's own binding granularity and the size a partial
+     * bind has to work in. It is also 128 KiB, and that turns out to
+     * decide something bigger than it looks.
+     *
+     * horizon_gpu_vm_map refuses to map an object in pages larger than
+     * the object's own alignment — measured 2026-08-24, MapBufferEx
+     * accepts that pairing and the GPU's writes to it go nowhere. So a
+     * bind into a big-page sparse reservation needs backing aligned to
+     * 128 KiB. Vulkan hands NVK the other end of that: vkAllocateMemory
+     * takes no alignment, nvkmd_horizon_alloc_mem gives 4 KiB for an
+     * ordinary allocation, and vkQueueBindSparse then binds *that*
+     * memory into the resource's VA.
+     *
+     * So sparse residency needs one of two things: every device memory
+     * object aligned to the big page, which is 32x waste on a small
+     * allocation, or a sparse reservation that binds in 4 KiB pages.
+     * Nothing knows whether the second exists, and the answer is what
+     * makes has_sparse cheap or expensive.
+     *
+     * Two questions only, because the three arms above already
+     * established what sparse does here: is a small-page sparse
+     * reservation accepted, and does a 4 KiB-aligned object bind into
+     * it and take a write.
+     */
+    {
+        horizon_gpu_va_range *sp4 = NULL;
+        const uint32_t p4 = HORIZON_GPU_SMALL_PAGE_SIZE;
+        res = horizon_gpu_vm_reserve_sparse(dev, (uint64_t)p4 * 3, p4, 0,
+                                            &sp4);
+        const bool sparse4 = horizon_gpu_succeeded(res);
+        t_note(t, "MEASURED D: a sparse reservation in 0x%" PRIx32
+               " pages is %s (status=%s nv=0x%08x)", p4,
+               sparse4 ? "accepted" : "REFUSED",
+               horizon_gpu_status_str(res.status), res.nv);
+
+        if (sparse4) {
+            const uint64_t mid4 = horizon_gpu_va_range_base(sp4) + p4;
+            horizon_gpu_mem *m4 = NULL;
+            horizon_gpu_mapping *b4 = NULL;
+
+            /* align 0 — the 4 KiB an ordinary vkAllocateMemory gets. */
+            res = horizon_gpu_mem_create(dev, p4, 0, HORIZON_GPU_MEM_CACHED,
+                                         &m4);
+            if (t_check(t, horizon_gpu_succeeded(res),
+                        "D: a 4 KiB-aligned object, the kind "
+                        "vkAllocateMemory produces")) {
+                uint32_t *c4 = horizon_gpu_mem_cpu_ptr(m4);
+                c4[0] = PREFILL;
+                horizon_gpu_mem_flush(m4, 0, 4);
+
+                res = horizon_gpu_vm_map(sp4, p4, m4, 0, p4,
+                                         HORIZON_GPU_PTE_KIND_PITCH, false,
+                                         &b4);
+                const bool bound4 = horizon_gpu_succeeded(res);
+                t_check(t, bound4,
+                        "MEASURED D: a 4 KiB-aligned object binds into a "
+                        "small-page sparse reservation (status=%s "
+                        "nv=0x%08x)", horizon_gpu_status_str(res.status),
+                        res.nv);
+
+                if (bound4) {
+                    bool d_survived = false;
+                    probe_write(t, dev, &cmd, mid4, PAYLOAD_B,
+                                "D (4 KiB bound)", &d_survived);
+                    horizon_gpu_mem_invalidate(m4, 0, 4);
+                    const bool landed4 = t_check(t, c4[0] == PAYLOAD_B,
+                            "MEASURED D: the payload arrived through a "
+                            "4 KiB sparse bind (0x%08" PRIx32 ")", c4[0]);
+                    t_note(t, "MEASURED D — WHAT FASE E COSTS: %s",
+                           landed4
+                           ? "sparse binds at 4 KiB here, so device memory "
+                             "needs no special alignment and has_sparse is "
+                             "cheap"
+                           : "a 4 KiB sparse bind does not carry a write, "
+                             "so sparse needs big-page-aligned device "
+                             "memory — 32x waste on a small allocation, "
+                             "and that is what has_sparse would cost");
+                    horizon_gpu_vm_unmap(b4);
+                }
+            }
+            if (m4)
+                horizon_gpu_mem_destroy(m4);
+            t_check(t, horizon_gpu_succeeded(horizon_gpu_vm_release(sp4)),
+                    "D: the small-page sparse reservation released");
+        }
+    }
+
     buf_destroy(&cmd);
     res = horizon_gpu_device_destroy(dev);
     t_check(t, horizon_gpu_succeeded(res), "device_destroy (status=%s)",

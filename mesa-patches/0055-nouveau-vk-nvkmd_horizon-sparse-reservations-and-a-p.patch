@@ -1,0 +1,272 @@
+From a2addb91689ce8b555cc49ca53cf202f4da0c14e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 21:35:12 +0200
+Subject: [PATCH 55/55] nouveau/vk: nvkmd_horizon: sparse reservations, and a
+ partial unbind
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 10 (sparse residency)
+Why: nvkmd_horizon_alloc_va refused NVKMD_VA_SPARSE by name and
+ nvkmd_horizon_va_unbind demanded an exact (offset, range) match, both
+ saying the same thing: nobody knew what this address space does at the
+ edges of a sparse reservation, and building on a guess about that is
+ how you get an MMU fault a year later. That was decision D12 and it was
+ the right call while it was true.
+ .
+ It stopped being true on 2026-08-24. tests/t_sparse.c asked the
+ hardware the three questions D12 was closed on, and Vulkan needs both
+ halves of what came back: an unbound page inside a sparse reservation
+ swallows a write instead of faulting, and unbinding a bound block puts
+ that state back rather than punching a hole. vkQueueBindSparse lets an
+ application unbind a sub-range of a range it bound earlier, so refusing
+ a partial unbind is refusing sparse residency.
+ .
+ The unbind now finds the binding that CONTAINS the range rather than
+ the one that equals it, unmaps it, and maps the ends that survive back.
+ nvioctlNvhostAsGpu_UnmapBuffer takes an address and no length, so that
+ is what "unbind the middle" is spelled as here; the hole is left
+ unmapped and reverts to the reservation's own state, which is the
+ measured behaviour this rests on. A range spanning two bindings is
+ still refused — that is two requests wearing one shape.
+ .
+ Two things it deliberately will not do. A sparse reservation at a fixed
+ address: NvAllocSpaceFlags_Sparse and _FixedOffset are separate flags
+ and horizon_gpu has no reservation carrying both, so a caller would
+ silently get an address it did not choose. And cutting a memory
+ object's OWN VA: those bindings hold no reference to the memory (they
+ would make the pair immortal, which cost 33 leaked objects to learn),
+ so there is nothing to re-map the ends from — and alloc_mem binds that
+ VA whole and free unbinds it whole, so nothing should be cutting it.
+Evidence: NOT RUN. nvkmd_info::has_sparse is still false, so nothing
+ reaches any of this yet, and it is a cross build and no more.
+ .
+ That is deliberate rather than an oversight. has_sparse gates EIGHT
+ VkPhysicalDeviceFeatures at once (nvk_physical_device.c:395-402) and
+ makes NVK ask for a bind context — a third GPFIFO channel, which
+ t_channel measured is affordable at 44. Flipping it un-run would put
+ every one of the seventeen Vulkan tests behind a code path no console
+ has executed, and this project does not describe a successful compile
+ as working.
+ .
+ tests/t_vk_sparse.c is the run that decides it: it asks D12's three
+ questions through vkQueueBindSparse and reports which two features it
+ actually exercised rather than implying the other six. The flip is one
+ line in nvkmd_horizon_pdev.c and it belongs in the commit that quotes
+ that run's log.
+Upstream: no — it implements nvkmd ops for this backend, on a
+ measurement of this platform's address space.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 138 ++++++++++++++++--
+ 1 file changed, 123 insertions(+), 15 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index 07a849fbe52..034b73d069f 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -29,6 +29,10 @@ struct nvkmd_horizon_binding {
+    struct list_head link;
+    uint64_t va_offset_B;
+    uint64_t range_B;
++   /* Where in the memory object this binding starts. Needed only by a
++    * partial unbind, which has to re-map the parts of this binding that
++    * survive and cannot work out their memory offsets without it. */
++   uint64_t mem_offset_B;
+    horizon_gpu_mapping *mapping;
+ 
+    /* A REFERENCE, and it is what makes the two layers' ownership rules
+@@ -249,6 +253,7 @@ nvkmd_horizon_va_bind_mem(struct nvkmd_va *_va,
+ 
+    b->va_offset_B = va_offset_B;
+    b->range_B = range_B;
++   b->mem_offset_B = mem_offset_B;
+ 
+    /* NOT FOR THE MEMORY'S OWN VA, and that exception is the whole
+     * difference between a reference and a cycle.
+@@ -287,11 +292,31 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+ {
+    struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
+ 
++   const uint64_t end_B = va_offset_B + range_B;
+    struct nvkmd_horizon_binding *found = NULL;
+ 
++   /* THE BINDING THAT CONTAINS THE RANGE, not the one that equals it.
++    *
++    * An exact match was all this used to accept, because horizon_gpu
++    * maps and unmaps whole mappings and there was no measurement saying
++    * what a hole in one would do. There is now: t_sparse, 2026-08-24 —
++    * unbinding inside a sparse reservation restores the
++    * resolve-to-nothing state rather than punching a fault, so a
++    * partial unbind is a thing this address space can express.
++    *
++    * Vulkan needs it. vkQueueBindSparse lets an application unbind a
++    * sub-range of a range it bound earlier, and refusing that is
++    * refusing sparse residency.
++    *
++    * Still not an OVERLAPPING match: a range that starts inside one
++    * binding and ends inside another is two requests wearing one shape,
++    * and the caller that meant either should say so by calling twice.
++    * Guessing which is worse than saying it cannot be met.
++    */
+    simple_mtx_lock(&va->mutex);
+    list_for_each_entry(struct nvkmd_horizon_binding, b, &va->bindings, link) {
+-      if (b->va_offset_B == va_offset_B && b->range_B == range_B) {
++      if (va_offset_B >= b->va_offset_B &&
++          end_B <= b->va_offset_B + b->range_B) {
+          found = b;
+          list_del(&b->link);
+          break;
+@@ -299,15 +324,41 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+    }
+    simple_mtx_unlock(&va->mutex);
+ 
+-   /* An exact match is required, not an overlapping one. horizon_gpu
+-    * maps and unmaps whole mappings; unbinding half of one would leave
+-    * the address space and this list disagreeing, and guessing which
+-    * half was meant is worse than saying the request cannot be met.
+-    */
+    if (found == NULL) {
+       return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                        "nvkmd_horizon: nothing bound at +0x%" PRIx64
+-                       " for 0x%" PRIx64, va_offset_B, range_B);
++                       " for 0x%" PRIx64 " inside a single binding",
++                       va_offset_B, range_B);
++   }
++
++   const uint64_t found_end_B = found->va_offset_B + found->range_B;
++   const bool partial = va_offset_B > found->va_offset_B ||
++                        end_B < found_end_B;
++
++   /* A PARTIAL UNBIND NEEDS THE MEMORY, AND ONLY SOME BINDINGS HAVE IT.
++    *
++    * Re-mapping the ends means calling bind_mem again, which needs the
++    * nvkmd_mem this binding was made from. A binding holds a reference
++    * to it — except for a memory object's OWN VA, where holding one
++    * would make the two objects keep each other alive for ever
++    * (bind_mem says why, and it cost 33 leaked objects to learn).
++    *
++    * That exception is exactly the case where a partial unbind must not
++    * happen anyway: alloc_mem binds that VA whole at offset 0 and free
++    * unbinds it whole. Cutting it would be a caller doing something
++    * this backend has no reason to support, so it is refused with the
++    * binding put back rather than approximated.
++    */
++   if (partial && found->mem == NULL) {
++      simple_mtx_lock(&va->mutex);
++      list_addtail(&found->link, &va->bindings);
++      simple_mtx_unlock(&va->mutex);
++      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                       "nvkmd_horizon: refusing to cut a memory object's "
++                       "own VA (+0x%" PRIx64 " for 0x%" PRIx64 " inside "
++                       "+0x%" PRIx64 " for 0x%" PRIx64 ")",
++                       va_offset_B, range_B, found->va_offset_B,
++                       found->range_B);
+    }
+ 
+    horizon_gpu_result res = horizon_gpu_vm_unmap(found->mapping);
+@@ -334,9 +385,50 @@ nvkmd_horizon_va_unbind(struct nvkmd_va *_va,
+                        va_offset_B, (int)res.status, res.nv);
+    }
+ 
++   /* THE ENDS THAT SURVIVE GO BACK.
++    *
++    * nvioctlNvhostAsGpu_UnmapBuffer takes an address and no length, so
++    * "unbind the middle" is spelled: unmap the whole thing, then map
++    * the parts either side of the hole again. The hole is left unmapped
++    * and reverts to whatever the reservation is — resolve-to-nothing
++    * for a sparse one, which is the measured behaviour this rests on.
++    *
++    * Order matters on failure. The unmap has already happened by the
++    * time this runs, so a re-map that fails cannot be undone by putting
++    * the binding back: the address space no longer has the mapping the
++    * binding named. What it can do is keep whatever it did manage to
++    * re-map as bindings of its own, so the accounting still describes
++    * the address space, and report the failure. A caller that gets an
++    * error from an unbind is entitled to assume the range is gone; it
++    * is, and so is more of it than was asked for, which is why this
++    * says so loudly rather than quietly.
++    */
++   VkResult remap = VK_SUCCESS;
++
++   if (va_offset_B > found->va_offset_B) {
++      remap = nvkmd_horizon_va_bind_mem(_va, log_obj, found->va_offset_B,
++                                        found->mem, found->mem_offset_B,
++                                        va_offset_B - found->va_offset_B);
++   }
++   if (remap == VK_SUCCESS && end_B < found_end_B) {
++      remap = nvkmd_horizon_va_bind_mem(_va, log_obj, end_B, found->mem,
++                                        found->mem_offset_B +
++                                        (end_B - found->va_offset_B),
++                                        found_end_B - end_B);
++   }
++
+    if (found->mem != NULL)
+       nvkmd_mem_unref(found->mem);
+    FREE(found);
++
++   if (remap != VK_SUCCESS) {
++      return vk_errorf(log_obj, remap,
++                       "nvkmd_horizon: unbinding +0x%" PRIx64 " for 0x%"
++                       PRIx64 " unmapped the binding it was inside and "
++                       "could not put the remainder back — more of the "
++                       "address space is unbound than was asked for",
++                       va_offset_B, range_B);
++   }
+    return VK_SUCCESS;
+ }
+ 
+@@ -368,15 +460,28 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+     * the property a caller asking for a fixed address actually needs.
+     */
+ 
+-   /* Sparse is decision D12 and is not advertised: NVK derives
+-    * sparseBinding from cls_eng3d >= MAXWELL_B, and GM20B's queried 3D
+-    * class is exactly MAXWELL_B, so the feature would be claimed on
+-    * this chip unless the condition gains a kmd capability. Until that
+-    * is decided, asking for it here fails by name.
++   /* NVKMD_VA_SPARSE — D12, and it is no longer a refusal.
++    *
++    * MEASURED ON A CONSOLE 2026-08-24, tests/t_sparse.c: a sparse
++    * reservation is accepted; a write to a page nothing was ever bound
++    * to is swallowed rather than faulting; memory binds into the middle
++    * of one and the payload arrives; and after unbinding that block, a
++    * write to the same address is swallowed again and does not reach
++    * the memory that was unbound. Partial residency is expressible
++    * here, which is exactly what D12 said nobody knew.
++    *
++    * Sparse at a fixed address is refused rather than approximated:
++    * NvAllocSpaceFlags_Sparse and NvAllocSpaceFlags_FixedOffset are
++    * separate flags and horizon_gpu offers no reservation that carries
++    * both, so a caller asking for one would silently get an address it
++    * did not choose. NVK asks for the pair only for
++    * VK_EXT_buffer_device_address_capture_replay, which the refusal
++    * below already declines.
+     */
+-   if (flags & NVKMD_VA_SPARSE) {
++   if ((flags & NVKMD_VA_SPARSE) && (flags & NVKMD_VA_ALLOC_FIXED)) {
+       return vk_errorf(log_obj, VK_ERROR_FEATURE_NOT_PRESENT,
+-                       "nvkmd_horizon: sparse VA is decision D12");
++                       "nvkmd_horizon: a sparse reservation at a fixed "
++                       "address is not expressible here");
+    }
+ 
+    /* NVKMD_VA_REPLAY is the capture/replay pool for
+@@ -446,7 +551,10 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+       page_size = big;
+ 
+    horizon_gpu_result res;
+-   if (flags & NVKMD_VA_ALLOC_FIXED) {
++   if (flags & NVKMD_VA_SPARSE) {
++      res = horizon_gpu_vm_reserve_sparse(dev->gpu, size_B, page_size,
++                                          align_B, &va->range);
++   } else if (flags & NVKMD_VA_ALLOC_FIXED) {
+       res = horizon_gpu_vm_reserve_fixed(dev->gpu, fixed_addr, size_B,
+                                          page_size, &va->range);
+    } else {
+-- 
+2.53.0.windows.2
+

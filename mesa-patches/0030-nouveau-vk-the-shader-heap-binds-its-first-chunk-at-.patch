@@ -1,7 +1,7 @@
-From 1c881e1273b44fbf9a95461b500a47040decc7e8 Mon Sep 17 00:00:00 2001
+From 35366df769149701ed89802a95a2ef9baf64641f Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 20:00:00 +0000
-Subject: [PATCH 30/54] nouveau/vk: the shader heap binds its first chunk at
+Subject: [PATCH 30/55] nouveau/vk: the shader heap binds its first chunk at
  device creation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From 23c74b1342d3a106e4c300772b7628547c347f44 Mon Sep 17 00:00:00 2001
+From cb7a9f9526b91ba1db3b21ab4a307786432a41d8 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:18:16 +0200
-Subject: [PATCH 52/54] vulkan/wsi: Horizon, ask the queue how many buffers it
+Subject: [PATCH 52/55] vulkan/wsi: Horizon, ask the queue how many buffers it
  keeps
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

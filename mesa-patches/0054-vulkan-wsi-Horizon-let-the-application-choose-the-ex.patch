@@ -1,7 +1,7 @@
-From 3ef19926e935dfa315b624ad75a7b09bc944172a Mon Sep 17 00:00:00 2001
+From e08552e3a0b47174e7a5f224a1e9bf54dd2e5e95 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:00:02 +0200
-Subject: [PATCH 54/54] vulkan/wsi: Horizon, let the application choose the
+Subject: [PATCH 54/55] vulkan/wsi: Horizon, let the application choose the
  extent
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

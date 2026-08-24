@@ -1,7 +1,7 @@
-From 4914f8f7fbe24f7dd60de48268b77da7ea0653f5 Mon Sep 17 00:00:00 2001
+From d791141b532c0018b80970d0baf136e1aa385aad Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:49 +0000
-Subject: [PATCH 36/54] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
+Subject: [PATCH 36/55] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
  =?UTF-8?q?=20binding=20references=20the=20memory=20it=20binds=20=E2=80=94?=
  =?UTF-8?q?=20unless=20it=20is=20the=20memory's=20own?=
 MIME-Version: 1.0
