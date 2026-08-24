@@ -42,10 +42,19 @@
  *      tile. That is a real answer and it closes D12 properly, with a
  *      measurement behind it instead of an absence.
  *
- * A FAULT IS NOT A FAILING TEST. Arms A and C report what happened;
- * only arm B has an outcome it demands, because a mapping that does not
- * work inside a sparse reservation would mean the reservation itself is
- * broken rather than that sparse is unsupported.
+ * A FAULT IS NOT A FAILING TEST. Arm A reports what happened. Arm B has
+ * an outcome it demands, because a mapping that does not work inside a
+ * sparse reservation would mean the reservation itself is broken rather
+ * than that sparse is unsupported — and because without it arm C has no
+ * control and cannot answer anything. Arm C demands only that its write
+ * stayed out of the unbound memory; whether it faulted is the reading,
+ * not the verdict.
+ *
+ * ARM B IS THE CONTROL, AND IT IS EASY TO GET WRONG. It failed on run 17
+ * for a reason that had nothing to do with sparse: the backing NvMap was
+ * left at the default 4 KiB alignment while the reservation binds in
+ * 128 KiB pages. MapBufferEx accepted that and returned the requested
+ * address; the GPU's write to it went nowhere. See the allocation below.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -69,7 +78,15 @@ const char *const test_name = "t_sparse";
 const bool test_uses_display = false;
 
 #define WAIT_NS  UINT64_C(2000000000)
-#define PAYLOAD  UINT32_C(0x5A5AA5A5)
+/* Two payloads, not one. Arm C writes to the address arm B's memory was
+ * bound at, and the question is whether that write reached the memory.
+ * With a single payload it cannot be asked: the memory already holds
+ * what C would write, so "unchanged" and "written again" are the same
+ * bytes. Run 17 printed exactly that ambiguity and it is why C's answer
+ * from that run was not usable. */
+#define PAYLOAD_B UINT32_C(0x5A5AA5A5)
+#define PAYLOAD_C UINT32_C(0xC3C33C3C)
+#define PREFILL   UINT32_C(0xA5A55A5A)
 #define CMD_B    UINT32_C(0x1000)
 
 /* The command list lives in its own ordinary reservation, so a fault in
@@ -115,10 +132,10 @@ static void buf_destroy(buf *b)
     memset(b, 0, sizeof(*b));
 }
 
-/* Makes the GPU write PAYLOAD to `gpu_va` on a channel of its own.
+/* Makes the GPU write `payload` to `gpu_va` on a channel of its own.
  * Sets *out_survived to whether the channel came through it. */
 static void probe_write(test_ctx *t, horizon_gpu_device *dev, buf *cmd,
-                        uint64_t gpu_va, const char *what,
+                        uint64_t gpu_va, uint32_t payload, const char *what,
                         bool *out_survived)
 {
     *out_survived = false;
@@ -130,7 +147,7 @@ static void probe_write(test_ctx *t, horizon_gpu_device *dev, buf *cmd,
                  horizon_gpu_status_str(res.status), res.nv))
         return;
 
-    uint32_t n = horizon_cmds_semaphore_release(cmd->cpu, gpu_va, PAYLOAD);
+    uint32_t n = horizon_cmds_semaphore_release(cmd->cpu, gpu_va, payload);
     if (!t_check(t, n == HORIZON_CMDS_SEM_RELEASE_DWORDS,
                  "%s: release encoded for 0x%" PRIx64 " (%u dwords)",
                  what, gpu_va, n))
@@ -215,20 +232,37 @@ int run_test(test_ctx *t)
 
     /* ---- A: a page nothing was ever bound to ---------------------- */
     bool a_survived = false;
-    probe_write(t, dev, &cmd, mid_va, "A (never bound)", &a_survived);
+    probe_write(t, dev, &cmd, mid_va, PAYLOAD_B, "A (never bound)",
+                &a_survived);
     t_note(t, "MEASURED A: a write to a never-bound sparse page %s",
            a_survived ? "was swallowed; the reservation resolves to nothing"
                       : "FAULTED; the reservation is not backed here");
 
     /* ---- B: bind the middle block and write to it ------------------ */
+    /* ALIGNED TO THE PAGE THE RESERVATION BINDS IN, not to 4 KiB.
+     *
+     * Run 17 passed 0 here, which horizon_gpu_mem_create reads as
+     * HORIZON_GPU_SMALL_PAGE_SIZE. MapBufferEx was then handed a
+     * 4 KiB-aligned buffer and a 128 KiB page size, accepted it, and
+     * returned the requested VA — and the GPU's write to that VA went
+     * nowhere. Arm B failed and took arm C's answer down with it: a
+     * write that vanishes at an address that was never resolving says
+     * nothing about what unbinding does.
+     *
+     * A big-page mapping needs big-page-aligned backing. That is the
+     * first thing this test measured and it is worth stating in the
+     * log, because a Vulkan sparse implementation would allocate every
+     * tile this way. */
     horizon_gpu_mem *mem = NULL;
-    res = horizon_gpu_mem_create(dev, (uint32_t)blk, 0,
+    res = horizon_gpu_mem_create(dev, (uint32_t)blk, blk,
                                  HORIZON_GPU_MEM_CACHED, &mem);
-    if (!t_check(t, horizon_gpu_succeeded(res), "backing memory created"))
+    if (!t_check(t, horizon_gpu_succeeded(res),
+                 "backing memory created, aligned to the 0x%" PRIx64
+                 " page the reservation binds in", blk))
         goto done;
 
     uint32_t *cpu = horizon_gpu_mem_cpu_ptr(mem);
-    cpu[0] = ~PAYLOAD;
+    cpu[0] = PREFILL;
     horizon_gpu_mem_flush(mem, 0, 4);
 
     horizon_gpu_mapping *mid = NULL;
@@ -241,14 +275,19 @@ int run_test(test_ctx *t)
         goto done_mem;
 
     bool b_survived = false;
-    probe_write(t, dev, &cmd, mid_va, "B (bound)", &b_survived);
+    probe_write(t, dev, &cmd, mid_va, PAYLOAD_B, "B (bound)", &b_survived);
     t_check(t, b_survived,
             "B: a write to the bound block executed without a fault");
 
     horizon_gpu_mem_invalidate(mem, 0, 4);
-    t_check(t, cpu[0] == PAYLOAD,
-            "B: the payload arrived in the bound block (0x%08" PRIx32 ")",
-            cpu[0]);
+    const uint32_t after_b = cpu[0];
+    const bool b_landed = t_check(t, after_b == PAYLOAD_B,
+            "B: the payload arrived in the bound block (0x%08" PRIx32
+            ", expected 0x%08" PRIx32 ")", after_b, PAYLOAD_B);
+    if (!b_landed)
+        t_note(t, "B did not land, so arm C below cannot answer D12: a "
+               "write that disappears at an address that was never "
+               "resolving proves nothing about unbinding");
 
     /* ---- C: unbind it and write to the same address ---------------- */
     res = horizon_gpu_vm_unmap(mid);
@@ -259,21 +298,37 @@ int run_test(test_ctx *t)
         goto done_mem;
 
     bool c_survived = false;
-    probe_write(t, dev, &cmd, mid_va, "C (unbound again)", &c_survived);
-    t_note(t, "MEASURED C — THE ANSWER TO D12: after unbinding, a write "
-           "to that address %s", c_survived
-           ? "was swallowed. Unbinding restores the sparse state, so "
-             "partial residency is expressible and D12 can be reopened."
-           : "FAULTED. Unbinding punches a hole, so sparse residency "
-             "cannot be built on this without a way to re-establish the "
-             "sparse entry, and D12 stays closed — now with a "
-             "measurement behind it.");
+    probe_write(t, dev, &cmd, mid_va, PAYLOAD_C, "C (unbound again)",
+                &c_survived);
 
-    /* The memory must still be intact and unbound: a write that was
-     * swallowed must not have reached it. */
+    /* The memory must still hold what arm B left there: a write that was
+     * swallowed did not reach it. PAYLOAD_C is a value nothing has ever
+     * put in this buffer, so finding it here would mean the unmap left
+     * the old translation live — which is a different failure from a
+     * fault and would be invisible with one payload. */
     horizon_gpu_mem_invalidate(mem, 0, 4);
-    t_note(t, "C: the previously bound memory now reads 0x%08" PRIx32
-           " (it held 0x%08" PRIx32 " before the unbind)", cpu[0], PAYLOAD);
+    const uint32_t after_c = cpu[0];
+    t_note(t, "C: the previously bound memory reads 0x%08" PRIx32
+           " (it read 0x%08" PRIx32 " right after arm B)",
+           after_c, after_b);
+    t_check(t, after_c != PAYLOAD_C,
+            "C: the write did not reach the memory that was unbound");
+
+    if (!b_landed) {
+        t_note(t, "MEASURED C: not usable — arm B's control did not land, "
+               "so this address was not shown to resolve before the "
+               "unbind. D12 is unchanged by this run.");
+    } else {
+        t_note(t, "MEASURED C — THE ANSWER TO D12: after unbinding, a "
+               "write to that address %s", c_survived
+               ? "was swallowed. Unbinding restores the sparse state, so "
+                 "partial residency is expressible and D12 can be "
+                 "reopened."
+               : "FAULTED. Unbinding punches a hole, so sparse residency "
+                 "cannot be built on this without a way to re-establish "
+                 "the sparse entry, and D12 stays closed — now with a "
+                 "measurement behind it.");
+    }
 
 done_mem:
     if (mid)
