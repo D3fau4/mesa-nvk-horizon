@@ -274,6 +274,38 @@ static void nw_graphic_buffer_init(NvGraphicBuffer *gb, const nw_geometry *g,
 /* `slots_configured` and its connection.                              */
 /* ------------------------------------------------------------------ */
 
+/* NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS.
+ *
+ * libnx's switch/display/types.h transcribes the head of Android's query
+ * enum — WIDTH=0, HEIGHT=1, FORMAT=2 — and stops before this one, so the
+ * value is written out with that derivation rather than included from a
+ * header that does not carry it. Same constant, same reason, as
+ * WSI_HORIZON_NW_MIN_UNDEQUEUED_BUFFERS in wsi_horizon.c; this is the
+ * measurement that file's minImageCount was computed from without ever
+ * having been read. */
+#define NW_QUERY_MIN_UNDEQUEUED_BUFFERS 3
+
+/* Asks the queue how many buffers it keeps for its consumer, and says so.
+ * Returns the answer, or -1 when the queue would not answer. */
+static s32 nw_query_min_undequeued(test_ctx *t, NWindow *win,
+                                   const char *when)
+{
+    s32 v = -1;
+    Result rc = bqQuery(&win->bq, NW_QUERY_MIN_UNDEQUEUED_BUFFERS, &v);
+    if (R_FAILED(rc)) {
+        t_note(t, "MEASURED (%s): the queue would not answer "
+               "MIN_UNDEQUEUED_BUFFERS -> 0x%08x (module %u, desc %u). "
+               "wsi_horizon_min_image_count's fallback path is reachable "
+               "and has to stay.", when, rc, (unsigned)R_MODULE(rc),
+               (unsigned)R_DESCRIPTION(rc));
+        return -1;
+    }
+    t_note(t, "MEASURED (%s): the queue keeps %d buffer(s) for its "
+           "consumer, so minImageCount = %d is the number a producer can "
+           "obey", when, v, v + 1);
+    return v;
+}
+
 typedef struct nw_producer {
     NWindow *win;
     uint32_t slots_requested;   /* bitmask: bqRequestBuffer already done */
@@ -1339,6 +1371,13 @@ int run_test(test_ctx *t)
         goto out_dev;
     }
 
+    /* BEFORE ANY SLOT IS REGISTERED, because this is the state the WSI
+     * asks in: vkGetPhysicalDeviceSurfaceCapabilitiesKHR runs long
+     * before a swapchain exists, and whatever the queue says there is
+     * what an application is told to obey. */
+    const s32 min_undeq_before =
+        nw_query_min_undequeued(t, win, "before any buffer is registered");
+
     nw_geometry geom;
     if (!t_check(t, nw_geometry_init(&geom, w, h),
                  "the scanout geometry for %" PRIu32 "x%" PRIu32
@@ -1403,9 +1442,36 @@ int run_test(test_ctx *t)
         goto out_mem;
     }
 
+    const s32 min_undeq_after =
+        nw_query_min_undequeued(t, win, "with 3 buffers registered");
+
     concurrent3 = nw_measure_concurrent_dequeues(&s);
     t_note(t, "THE NUMBER: with 3 registered buffers, %" PRIu32
               " slot(s) could be dequeued at once", concurrent3);
+
+    /* THE QUERY AND THE MEASUREMENT, AGAINST EACH OTHER.
+     *
+     * wsi_horizon publishes minImageCount = minUndequeued + 1 on the
+     * strength of the Vulkan formula (imageCount - minImageCount + 1),
+     * which makes (count - minUndequeued) images acquirable. Here
+     * `count` is 3 and `concurrent3` is what the queue actually handed
+     * out, so the two have to agree or the published number is a promise
+     * the queue does not keep. Checked rather than noted: this is the
+     * arithmetic 0052 rests on. */
+    if (min_undeq_after >= 0) {
+        const int32_t expected = (int32_t)s.num_buffers - min_undeq_after;
+        t_check(t, (int32_t)concurrent3 == expected,
+                "the queue handed out %" PRIu32 " of 3 slots, and keeping "
+                "%d leaves %d — the arithmetic minImageCount is published "
+                "from", concurrent3, min_undeq_after, expected);
+    }
+    if (min_undeq_before >= 0 && min_undeq_after >= 0) {
+        t_check(t, min_undeq_before == min_undeq_after,
+                "the answer did not change once buffers were registered "
+                "(%d then %d), so asking before a swapchain exists is "
+                "asking the same question", min_undeq_before,
+                min_undeq_after);
+    }
 
     /* Vulkan's contract, restated as an assertion. Offering
      * minImageCount = 2 on a three-image swapchain makes two acquired
