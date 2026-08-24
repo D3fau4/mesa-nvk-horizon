@@ -224,14 +224,6 @@ Three classes, never collapsed into each other:
 A successful compile is never described as working. State which class you have, and record
 the exact commands run and their results.
 
-## Licence hazard
-
-Project code is MIT, matching Mesa/NVK so the patches stay upstreamable. The reference
-ports studied early are GPL-2.0/AGPL-3.0. **Derive facts and hardware knowledge, never
-source text** — register and class numbers, service-call ordering and documented failure
-modes are facts; implementation expression is not. Any literal reuse needs an explicit
-recorded decision and the steps in `LICENSES/README.md`.
-
 ## Working habits
 
 - Small, thematic commits. Subject says what changed and, where it fits, what was wrong
