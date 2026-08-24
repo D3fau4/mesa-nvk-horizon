@@ -1,0 +1,305 @@
+From b321661a9afd5a9d30e38b1a584fc8ad7283d520 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 21:00:02 +0200
+Subject: [PATCH 54/54] vulkan/wsi: Horizon, let the application choose the
+ extent
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: the surface published minImageExtent == currentExtent ==
+ maxImageExtent and NVK set force_swapchain_to_currentExtent, so every
+ swapchain rendered at the layer's own size and the common WSI clamped
+ any other request back to it. That was true of what the backend could
+ do at the time and is not a property of the platform: every buffer
+ registered on an NWindow must match the *window*, and this backend is
+ what sets the window — nwindowSetDimensions, at registration, after
+ nwindowReleaseBuffers and before the first nwindowConfigureBuffer,
+ which is the only moment it is allowed. The compositor then scales the
+ result onto the layer through the scalingMode every queue already
+ carries.
+ .
+ On GM20B that is the difference between a frame that fits in the budget
+ and one that does not: rendering at half the output each way is a
+ quarter of the pixels, and 720p on a docked 1080p layer is very nearly
+ exactly this.
+ .
+ THE SUBOPTIMAL TEST HAD TO CHANGE WITH IT, and getting that wrong is
+ the whole risk. `reported` comes from bqQueueBuffer's output, which
+ carries the queue's default buffer size — and two parties set that: the
+ producer through nwindowSetDimensions, which is this backend, and the
+ consumer when the display mode changes. While every swapchain matched
+ the layer those were the same number. They are not any more, and
+ comparing the application's chosen extent against the layer called
+ every frame of a deliberately-smaller swapchain suboptimal. An
+ application that recreates on SUBOPTIMAL would then loop until it gave
+ up its own choice — the loop with no exit patch 0040 removed, arrived
+ at from the other direction.
+ .
+ So: ignore our own echo, and compare against the output the swapchain
+ was created for. The native cases are bit-for-bit the behaviour 0040
+ landed.
+Evidence: RUN ON A CONSOLE 2026-08-24.
+ .
+ t_nwindow first, because a minImageExtent published without asking
+ would be a promise about an unknown: 1280x720, 960x540, 640x360,
+ 320x180, 160x90, 64x36 and 16x16 each registered two buffers on the
+ default window and presented a frame. 16x16 is the floor that ramp
+ reached, not the floor that exists.
+ .
+ t_vk_swapchain section G, added for this: a 640x360 swapchain on a
+ 1280x720 layer.
+ .
+   note surface extent: current 1280x720, min 16x16, max 1280x720
+   ok   3 images at half the layer's size: 20 of 20 frames presented
+   ok   MEASURED: rendering smaller than the layer is not reported as
+        suboptimal (0 of 20 frames were)
+ .
+ Its first run, before the echo was accounted for, reported 39
+ SUBOPTIMAL over those same 20 frames, which is what the change above
+ is for.
+ .
+ No regressions: t_vk_suboptimal 273/273, t_vk_wsi_mt 71/71,
+ t_vk_present_draw 183/183, t_vk_immediate 442/442, t_vk_caps 52/52,
+ t_vulkan 62/62, t_vk_swapchain 143/143.
+ .
+ NOT RUN, and recorded in docs/PENDING-VERIFICATION.md rather than
+ implied: the display changing under a *scaled* swapchain. Nothing in
+ this process can resize a VI layer, so the docked rows of the table in
+ wsi_horizon_extent_changed's comment need somebody to dock the console
+ while the test runs — which is what t_vk_suboptimal's section D has
+ always needed.
+Upstream: no — the whole file is Horizon-only, and the nvk_wsi.c half is
+ one line inside a VK_USE_PLATFORM_VI_NN guard.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
+---
+ src/nouveau/vulkan/nvk_wsi.c |  25 +++++--
+ src/vulkan/wsi/wsi_horizon.c | 133 +++++++++++++++++++++++++++++------
+ 2 files changed, 131 insertions(+), 27 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
+index bb06cc62c6e..16af6deed49 100644
+--- a/src/nouveau/vulkan/nvk_wsi.c
++++ b/src/nouveau/vulkan/nvk_wsi.c
+@@ -55,13 +55,24 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
+    pdev->wsi_device.horizon.get_image_info = nvk_wsi_get_image_info;
+    pdev->wsi_device.horizon.get_fence = nvk_wsi_get_fence;
+ 
+-   /* The window's size is the compositor's to choose and every buffer
+-    * registered on it must match, so the surface reports a fixed
+-    * currentExtent. This makes the common WSI clamp an application's
+-    * imageExtent to it rather than leaving the backend to refuse a
+-    * swapchain over a difference the application could not have
+-    * avoided. */
+-   pdev->wsi_device.force_swapchain_to_currentExtent = true;
++   /* NOT set, and that is the whole of Fase D on this side.
++    *
++    * It used to be true, because the surface reported a fixed
++    * currentExtent and clamping was kinder than refusing a swapchain
++    * over a difference the application could not have avoided. The
++    * surface now reports a range: every buffer registered on an NWindow
++    * must match the window, but the backend is what sets the window,
++    * and the compositor scales the result onto the layer through the
++    * scalingMode every queue carries.
++    *
++    * So an application may render at 720p and present to a docked 1080p
++    * layer, which on GM20B is the difference between a frame that fits
++    * in the budget and one that does not. Clamping it back up to
++    * currentExtent would take that choice away again — silently, which
++    * is worse than not offering it.
++    *
++    * wsi_horizon re-checks the requested extent against the range it
++    * published, because with this false nothing else does. */
+ #endif
+ 
+    pdev->vk.wsi_device = &pdev->wsi_device;
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 67b955070a8..c7183aca21c 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -120,6 +120,15 @@
+ #define WSI_HORIZON_MIN_IMAGES 2
+ #define WSI_HORIZON_MAX_IMAGES 4
+ 
++/* Smallest swapchain extent this backend offers, per side.
++ *
++ * MEASURED, not chosen: t_nwindow's extent ramp registered and presented
++ * at 16x16 on the default window, 2026-08-24. It is the smallest size
++ * that ramp reached, so it is a floor that was tested rather than a
++ * floor that was found — nothing says 8x8 would fail, and nothing here
++ * claims it would work. */
++#define WSI_HORIZON_MIN_EXTENT 16
++
+ /* NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS. libnx's display/types.h
+  * transcribes the head of Android's query enum and stops before this
+  * one, so the value is written out here: WIDTH=0, HEIGHT=1, FORMAT=2,
+@@ -430,16 +439,35 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+    caps->minImageCount = wsi_horizon_min_image_count(surface);
+    caps->maxImageCount = WSI_HORIZON_MAX_IMAGES;
+ 
+-   /* A fixed extent, and it is not a simplification: every buffer
+-    * registered on an NWindow must have the window's dimensions, and
+-    * nwindowSetDimensions refuses to change them while any buffer is
+-    * registered. When the *consumer* changes it — docking the console —
+-    * this stops matching the live swapchain's extent, which is reported
+-    * as VK_SUBOPTIMAL_KHR and not as an error: see
+-    * wsi_horizon_extent_changed for why that swapchain keeps
+-    * presenting. */
++   /* THE APPLICATION CHOOSES, AND THE COMPOSITOR SCALES.
++    *
++    * currentExtent stays the layer's own size, because that is what it
++    * means and it is what an application that just wants native
++    * resolution will use. What is no longer true is min == current ==
++    * max: every buffer registered on an NWindow must match the *window*
++    * and nwindowSetDimensions sets the window, and this backend is what
++    * calls it — at registration, after nwindowReleaseBuffers and before
++    * the first nwindowConfigureBuffer, which is the only moment it is
++    * allowed. The size it sets is the swapchain's, and the scalingMode
++    * every queue already carries puts the result on the layer.
++    *
++    * That is what lets an application render at 720p and present to a
++    * docked 1080p layer, which on this chip is the difference between a
++    * frame that fits in the budget and one that does not.
++    *
++    * MEASURED ON A CONSOLE 2026-08-24, t_nwindow: 1280x720, 960x540,
++    * 640x360, 320x180, 160x90, 64x36 and 16x16 each registered two
++    * buffers and presented a frame, on the same window, one after
++    * another. The floor below is the smallest that ramp reached rather
++    * than the smallest that works — nothing tried 8x8.
++    *
++    * The ceiling is the layer, deliberately. Rendering larger than the
++    * output and scaling down was not measured and is not offered:
++    * supersampling is a different feature and it would be a promise
++    * about memory this backend has not asked for. */
+    caps->currentExtent = extent;
+-   caps->minImageExtent = extent;
++   caps->minImageExtent = (VkExtent2D) { WSI_HORIZON_MIN_EXTENT,
++                                         WSI_HORIZON_MIN_EXTENT };
+    caps->maxImageExtent = extent;
+ 
+    caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+@@ -707,11 +735,19 @@ struct wsi_horizon_swapchain {
+    struct wsi_horizon_surface *surface;
+    NWindow *window;
+ 
++   /* What the application asked to render at, and what every registered
++    * buffer therefore is. It need not be the size of the layer: the
++    * compositor scales, through the scalingMode every queue carries. */
+    VkExtent2D extent;
+    /* The size the consumer last said this window is. Updated from every
+-    * queue; a difference from `extent` is what makes this swapchain
+-    * suboptimal — see wsi_horizon_extent_changed. */
++    * queue. */
+    VkExtent2D reported;
++   /* And the size the consumer said it was when this swapchain was
++    * built. A difference between THESE two is what makes the swapchain
++    * suboptimal — see wsi_horizon_extent_changed. Not a difference from
++    * `extent`, which is the application's own choice and is allowed to
++    * differ from the output for as long as the application likes. */
++   VkExtent2D output_at_create;
+    const struct wsi_horizon_format *format;
+    uint32_t swap_interval;
+    bool said_short_copy;      /* the fallback's narrowed-row warning, once */
+@@ -1350,7 +1386,51 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+    if (width == 0 || height == 0)
+       return false;   /* nothing has reported a size yet */
+ 
+-   return width != chain->extent.width || height != chain->extent.height;
++   /* WHAT `reported` ACTUALLY IS, and it is not one thing.
++    *
++    * It comes from bqQueueBuffer's output, which carries the queue's
++    * default buffer size. Two parties set that: the producer, through
++    * nwindowSetDimensions, which this backend calls at registration
++    * with the swapchain's own extent; and the consumer, when the
++    * display mode changes — docking takes the layer to 1920x1080, and
++    * patch 0040 measured the consumer's value arriving here over a
++    * producer that had set 1280x720.
++    *
++    * So `reported` echoes OUR request until the consumer has spoken,
++    * and is the DISPLAY's size afterwards. While every swapchain had to
++    * match the layer those were the same number and the distinction did
++    * not exist. With the application choosing its own extent they are
++    * different numbers, and comparing `reported` against `extent` would
++    * call every frame of a deliberately-smaller swapchain suboptimal —
++    * an application that recreates on SUBOPTIMAL would loop until it
++    * gave up its own choice. That is the loop with no exit patch 0040
++    * removed, arrived at from the other direction, and it is what the
++    * first run of t_vk_swapchain section G measured happening:
++    * "39 SUBOPTIMAL" over 20 frames at half the layer's size.
++    *
++    * A swapchain is suboptimal when the OUTPUT has changed under it —
++    * the size the application chose was chosen for the output it was
++    * told about at creation. So: not our own echo, and not the output
++    * we were created for.
++    *
++    *   created native, undocked   reported == extent == created -> no
++    *   created native, docked     1920x1080, neither             -> yes
++    *   created scaled, undocked   reported == extent             -> no
++    *   created scaled, docked     1920x1080, neither             -> yes
++    *   created scaled, then
++    *     docked and undocked      reported == created            -> no
++    *
++    * The native rows are exactly the behaviour patch 0040 landed and
++    * t_vk_suboptimal measured; the scaled rows are the new ones, and
++    * only their undocked case has been run — nothing in this process
++    * can resize a VI layer, so the docked transitions still need
++    * somebody to dock the console while t_vk_suboptimal's section D
++    * runs, which is what that section has always needed. */
++   if (width == chain->extent.width && height == chain->extent.height)
++      return false;   /* our own request, echoed back */
++
++   return width != chain->output_at_create.width ||
++          height != chain->output_at_create.height;
+ }
+ 
+ /* Folds one completed acquire into the meter and reports the window
+@@ -2316,10 +2396,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   if (pCreateInfo->imageExtent.width != extent.width ||
+-       pCreateInfo->imageExtent.height != extent.height) {
+-      /* The capabilities report a fixed currentExtent, so this is an
+-       * application that ignored it. */
++   /* INSIDE THE RANGE THE CAPABILITIES PUBLISHED, which is no longer a
++    * single value. An application may render smaller than the layer and
++    * let the compositor scale; what it may not do is ask for a size the
++    * surface said it would not take. Re-checked here rather than
++    * trusted, for the same reason the format is: the common WSI clamps
++    * only when force_swapchain_to_currentExtent is set, and this
++    * backend no longer sets it. */
++   if (pCreateInfo->imageExtent.width < WSI_HORIZON_MIN_EXTENT ||
++       pCreateInfo->imageExtent.height < WSI_HORIZON_MIN_EXTENT ||
++       pCreateInfo->imageExtent.width > extent.width ||
++       pCreateInfo->imageExtent.height > extent.height) {
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+ 
+@@ -2371,11 +2458,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+ 
+    chain->surface = surface;
+    chain->window = (NWindow *)surface->icd.window;
+-   chain->extent = extent;
+-   /* Starts as the size the swapchain was built for, so the resize
+-    * check compares like with like until the first queue reports one.
+-    */
++   /* The APPLICATION's size, which is what every buffer will be
++    * registered at and what nwindowSetDimensions will be told. */
++   chain->extent = pCreateInfo->imageExtent;
++   /* The OUTPUT's size, twice: what the consumer says now, and what it
++    * said when this swapchain was built. The resize check compares
++    * those two, so it starts out equal and stays equal until the
++    * consumer actually changes — which is the whole point, because the
++    * application's extent is allowed to differ from the output's and
++    * must not be read as a resize. */
+    chain->reported = extent;
++   chain->output_at_create = extent;
+    chain->format = format;
+    chain->image_count = image_count;
+ 
+-- 
+2.53.0.windows.2
+

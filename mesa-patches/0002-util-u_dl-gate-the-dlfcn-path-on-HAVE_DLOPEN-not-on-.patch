@@ -1,7 +1,7 @@
-From 3bc169976dc1ef008a2bdacb25f08a8cdb09a8b9 Mon Sep 17 00:00:00 2001
+From 3ed9f78b00ef9232691967d9132a906278927231 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:54 +0000
-Subject: [PATCH 02/53] util/u_dl: gate the dlfcn path on HAVE_DLOPEN, not on
+Subject: [PATCH 02/54] util/u_dl: gate the dlfcn path on HAVE_DLOPEN, not on
  the OS
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From e880b39ad0f527bf05fcfe8cd8d34adeca2d6478 Mon Sep 17 00:00:00 2001
+From 2a0cce39d5ec93122af2ea70cef132ba029e4a95 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:01:11 +0200
-Subject: [PATCH 50/53] vulkan/wsi: Horizon, a scanout buffer says it is a
+Subject: [PATCH 50/54] vulkan/wsi: Horizon, a scanout buffer says it is a
  framebuffer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

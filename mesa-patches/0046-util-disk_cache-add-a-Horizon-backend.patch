@@ -1,7 +1,7 @@
-From 3c9e8173e98a68d9c5918ca4583e741d85e20026 Mon Sep 17 00:00:00 2001
+From f4ffd570bbb1d29d8f7c7818726baa8747d65bd8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:51:26 +0000
-Subject: [PATCH 46/53] util/disk_cache: add a Horizon backend
+Subject: [PATCH 46/54] util/disk_cache: add a Horizon backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

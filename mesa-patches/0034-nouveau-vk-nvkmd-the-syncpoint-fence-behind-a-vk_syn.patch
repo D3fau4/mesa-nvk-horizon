@@ -1,7 +1,7 @@
-From 95473a057f7fc61316a6fe640785d7d06fbe9ed2 Mon Sep 17 00:00:00 2001
+From 89da5d2acb8514fa59956902f901ddecdcea4f4f Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:09:47 +0000
-Subject: [PATCH 34/53] nouveau/vk: nvkmd, the syncpoint fence behind a vk_sync
+Subject: [PATCH 34/54] nouveau/vk: nvkmd, the syncpoint fence behind a vk_sync
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

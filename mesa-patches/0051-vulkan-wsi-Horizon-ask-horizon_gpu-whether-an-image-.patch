@@ -1,7 +1,7 @@
-From 60fca7f2277d0ed095649c7b070cc475df8e0915 Mon Sep 17 00:00:00 2001
+From 1990014c37a229e36df66b27bed8087beac93757 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:04:22 +0200
-Subject: [PATCH 51/53] vulkan/wsi: Horizon, ask horizon_gpu whether an image
+Subject: [PATCH 51/54] vulkan/wsi: Horizon, ask horizon_gpu whether an image
  can be scanned out
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

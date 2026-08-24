@@ -1,7 +1,7 @@
-From 4b35057845d9872d14e8d09bdee2dc60e3238789 Mon Sep 17 00:00:00 2001
+From 503985176a899ae2d362b33f76d77f0e46976c8e Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 12:41:52 +0000
-Subject: [PATCH 15/53] nouveau/vk: build a static driver where there is no
+Subject: [PATCH 15/54] nouveau/vk: build a static driver where there is no
  dynamic loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

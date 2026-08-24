@@ -1,7 +1,7 @@
-From bb6789a5c29aae820bd7cabd6c8a52ed9f601ed3 Mon Sep 17 00:00:00 2001
+From f192dc6b01574eb02827b2835b6395e0a7e586ad Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:10:23 +0000
-Subject: [PATCH 23/53] nouveau/vk: privileged register writes follow a kmd
+Subject: [PATCH 23/54] nouveau/vk: privileged register writes follow a kmd
  capability (R18)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

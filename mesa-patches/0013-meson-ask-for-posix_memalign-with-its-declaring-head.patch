@@ -1,7 +1,7 @@
-From 6d5b601ba92cb77aad6a05957441b362fb6715a7 Mon Sep 17 00:00:00 2001
+From 109413a51363e4847496f1c95316fdcf988eabc6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:51:36 +0000
-Subject: [PATCH 13/53] meson: ask for posix_memalign with its declaring header
+Subject: [PATCH 13/54] meson: ask for posix_memalign with its declaring header
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

@@ -888,7 +888,38 @@ int run_test(test_ctx *t)
            caps.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
            "the surface has no transform of its own");
 
+   /* THE EXTENT IS A RANGE NOW, and section G below is what uses it.
+    * maxImageExtent is the layer, because rendering larger than the
+    * output and scaling down is a different feature and was not
+    * measured; minImageExtent is small enough that an application can
+    * trade resolution for frame time, which on this chip is the point.
+    */
+   t_note(t, "surface extent: current %" PRIu32 "x%" PRIu32 ", min "
+             "%" PRIu32 "x%" PRIu32 ", max %" PRIu32 "x%" PRIu32,
+          caps.currentExtent.width, caps.currentExtent.height,
+          caps.minImageExtent.width, caps.minImageExtent.height,
+          caps.maxImageExtent.width, caps.maxImageExtent.height);
+   t_check(t, caps.maxImageExtent.width == caps.currentExtent.width &&
+           caps.maxImageExtent.height == caps.currentExtent.height,
+           "maxImageExtent is the output's own size");
+   t_check(t, caps.minImageExtent.width < caps.currentExtent.width &&
+           caps.minImageExtent.height < caps.currentExtent.height &&
+           caps.minImageExtent.width >= 1 &&
+           caps.minImageExtent.height >= 1,
+           "minImageExtent is below it, so a swapchain may render "
+           "smaller than the layer and let the compositor scale");
+
    const VkExtent2D extent = caps.currentExtent;
+   /* Half the output each way, clamped into the published range. Half
+    * because it is the case the feature exists for — 720p on a docked
+    * 1080p layer is very nearly this — and because it is unambiguous:
+    * neither the layer's size nor anything the backend would have
+    * chosen on its own. */
+   VkExtent2D half = { extent.width / 2, extent.height / 2 };
+   if (half.width < caps.minImageExtent.width)
+      half.width = caps.minImageExtent.width;
+   if (half.height < caps.minImageExtent.height)
+      half.height = caps.minImageExtent.height;
 
    uint32_t format_count = 0;
    r = fw.wsi.vkGetPhysicalDeviceSurfaceFormatsKHR(fw.pdev, surface,
@@ -1566,6 +1597,65 @@ int run_test(test_ctx *t)
        * either way, and setenv is the call this tree already knows
        * works on this C library. */
       setenv("MESA_VK_WSI_HORIZON_FORCE_COPY", "0", 1);
+   }
+
+   /* --- G: a swapchain smaller than the layer ----------------------
+    *
+    * The one thing every section above has in common is that it renders
+    * at the window's own size, because until now that was the only size
+    * the surface offered: min == current == max, and NVK set
+    * force_swapchain_to_currentExtent so the common WSI clamped an
+    * application's request back to it.
+    *
+    * The point of lifting that is a frame budget. Rendering at half the
+    * output each way is a quarter of the pixels, and the compositor
+    * scales the result onto the layer through the scalingMode every
+    * queue already carries — the same mechanism patch 0040 measured
+    * working when the *consumer* resizes.
+    *
+    * TWO THINGS ARE CHECKED, and the second is the one that could
+    * regress. First, that such a swapchain creates and presents at all.
+    * Second, that it does NOT report VK_SUBOPTIMAL_KHR: the suboptimal
+    * test compares the output's size now against the output's size when
+    * the swapchain was built, and if it compared against the
+    * swapchain's own extent instead, every frame of this section would
+    * be suboptimal and an application obeying the result would recreate
+    * for ever. That is the loop patch 0040 removed, and this is the
+    * shape it could come back in. */
+   {
+      sc_stats st_half;
+      sc_swapchain sc_h;
+
+      t_note(t, "G: a swapchain at %" PRIu32 "x%" PRIu32 " on a "
+                "%" PRIu32 "x%" PRIu32 " layer — a quarter of the pixels, "
+                "scaled up by the compositor", half.width, half.height,
+             extent.width, extent.height);
+
+      if (sc_create(&fw, surface, 3, VK_PRESENT_MODE_FIFO_KHR,
+                    VK_FORMAT_R8G8B8A8_UNORM, half, VK_NULL_HANDLE,
+                    "half the layer's size", &sc_h)) {
+         sc_stats_init(&st_half, "3 images at half the layer's size");
+         sc_run(&fw, &sc_h, SC_SHORT_FRAMES, 0, &st_half);
+         sc_report(t, &st_half, SC_SHORT_FRAMES);
+
+         t_check(t, st_half.frames_presented == SC_SHORT_FRAMES,
+                 "MEASURED: a swapchain smaller than the layer presented "
+                 "%" PRIu32 " of %" PRIu32 " frames", st_half.frames_presented,
+                 (uint32_t)SC_SHORT_FRAMES);
+
+         /* THE REGRESSION GUARD. Nothing resized the console during
+          * those frames, so nothing about this swapchain is out of
+          * date; a SUBOPTIMAL here would mean the backend is comparing
+          * the application's chosen extent against the layer. */
+         t_check(t, st_half.suboptimal == 0,
+                 "MEASURED: rendering smaller than the layer is not "
+                 "reported as suboptimal (%" PRIu32 " of %" PRIu32
+                 " frames were)", st_half.suboptimal,
+                 st_half.frames_presented);
+
+         fw.vk.vkDeviceWaitIdle(fw.dev);
+         sc_destroy(&fw, &sc_h);
+      }
    }
 
    goto out_surface;
