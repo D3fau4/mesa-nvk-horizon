@@ -93,7 +93,7 @@ point of this PR.)
 | the compaction is tree-identical *here* | `git -C mesa rev-parse HEAD^{tree}`, both series | `bf342824…` both times |
 | four source gates | `check-{layering,no-abs-paths,mesa-test-parity,history-intact}.sh` | all PASS |
 | host suites | `scripts/run-host-tests.sh` | PASS 20/20, 21/21, 30/30, 39/39, 16/16, 8/8, 171/171 |
-| every archive, cross | `scripts/ci-build-archives.sh` | *(recorded in the follow-up commit)* |
+| every archive, cross | `scripts/ci-build-archives.sh` | **OK, exit 0** — every archive built, **37 `.nro` link them**, `check-dispatch-complete` OK (825 entry points named, 234 core, 1 allowed absence), `check-tls-relocs` OK at both stages (350 objects after Mesa's core, 1203 after NVK). The derived toolchain image rebuilt from scratch under `main`'s vendor-closure fix and came up clean |
 
 Conflicts were again in `STATUS.md` alone — the header and the dated-section insertion
 point — and again resolved by combining: the header now carries the compaction, the CI
