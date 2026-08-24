@@ -2,18 +2,15 @@
 
 **This file is a debt ledger, and it is meant to be deleted.**
 
-Everything below was written between commits `97f5fc5` and `51536da` and
-has *not* been run on a Nintendo Switch. The project's evidence
-discipline has three classes and never collapses them:
+Everything below is work that has *not* been run on a Nintendo Switch,
+or a measurement that has been made and not yet acted on. The project's
+evidence discipline has three classes and never collapses them:
 
 | Class | Means | Does **not** prove |
 |---|---|---|
 | **H** — host | Built and run via `scripts/run-host-tests.sh` | Anything about the Switch |
 | **X** — cross | Cross-compiled for aarch64 Horizon; a `.nro` exists | That it runs, or is correct |
 | **HW** — hardware | Ran on a real console, with the log | Only what the log actually shows |
-
-Almost everything here is **X**. A successful compile is never described
-as working.
 
 ## How this file dies
 
@@ -32,244 +29,167 @@ section.
 ## Running any of this
 
 ```sh
-scripts/build-switch.sh -j4                 # produces the .nro files
-# copy build/*.nro to sdmc:/switch/horizon_gpu_tests/
+scripts/build-switch.sh -j4                 # the .nro files, no Mesa
+scripts/ci-build-archives.sh                # everything, Mesa included
+# copy build/*.nro (or build/meson/*.nro) to sdmc:/switch/horizon_gpu_tests/
 ```
 
 Each test prints `RESULT: PASS (n/n)` on screen and writes
 `sdmc:/horizon_gpu_tests/<name>.log`. **A result without the
 `horizon-build-id` line in its log cannot be attributed to a build** and
-does not count.
+does not count. `tools/logcat/` reads a log back over nxlink; see
+`tests/README.md`.
 
 ---
 
-# 1. Measurements that decide something
+# 1. Open work
 
-These are not regression tests. Each one answers a question the code
-currently cannot answer, and what it answers changes what gets built
-next.
+## 1.1 Fase D — the docked transitions of a scaled swapchain
 
-## 1.1 `t_sparse` — decision D12
+The WSI can scale, and the half of it that this machine can reach has
+been measured. `nvk_wsi.c` no longer sets
+`force_swapchain_to_currentExtent`; the surface publishes
+`minImageExtent` 16x16 against a `maxImageExtent` of the layer's own
+size, and an application may render smaller and let the compositor scale
+through the `scalingMode` every queue already carries.
 
-Sparse residency is off (`nvkmd_info::has_sparse = false`, and seven
-`VkPhysicalDeviceFeatures` follow it) because the layer had no way to
-unbind part of a reservation and leave the rest addressable. That was
-recorded as a decision, never as a measurement.
+RUN ON A CONSOLE 2026-08-24 — `t_nwindow` registered and presented at
+1280x720, 960x540, 640x360, 320x180, 160x90, 64x36 and 16x16 on the same
+window; `t_vk_swapchain` section G ran a 640x360 swapchain on a 1280x720
+layer for 20 frames with **0 SUBOPTIMAL**, and `t_vk_suboptimal`,
+`t_vk_wsi_mt`, `t_vk_present_draw`, `t_vk_immediate` and `t_vk_caps` are
+unchanged.
 
-`horizon_gpu_vm_reserve_sparse()` now exists (`horizon/vm/vm.c`) and
-**nothing calls it**. `has_sparse` is still `false`. That is deliberate.
+**What has NOT been run is the display changing under a scaled
+swapchain.** `wsi_horizon_extent_changed` now has five cases and only
+the three undocked ones have executed:
 
-Three arms, each on its own channel because a fault loses one:
+| created | display | expected | run? |
+|---|---|---|---|
+| native | undocked | not suboptimal | yes |
+| native | docked | SUBOPTIMAL | patch 0040, run 21 |
+| scaled | undocked | not suboptimal | yes, section G |
+| scaled | docked | SUBOPTIMAL | **no** |
+| scaled | docked then undocked | not suboptimal | **no** |
 
-| Arm | What it writes to | Reading |
-|---|---|---|
-| A | a never-bound sparse page | survives ⇒ the reservation resolves to nothing; faults ⇒ `NvAllocSpaceFlags_Sparse` does not do that here |
-| B | the middle block, bound | must survive, and the payload must arrive |
-| C | the same address, after unbinding | **the crux** — survives ⇒ unbinding restores the sparse state; faults ⇒ it punches a hole |
+The reasoning is in the function's comment: `reported` echoes this
+backend's own `nwindowSetDimensions` until the consumer changes the mode
+and is the display's size afterwards, so a scaled swapchain must ignore
+its own echo and compare against the output it was created for. The two
+unrun rows are the ones that reasoning is load-bearing for.
 
-**If C survives**: D12 can be reopened. The remaining work is partial
-bind/unbind inside one mapping (`horizon_va_set` needs sub-interval
-removal, host-testable first), then `NVKMD_VA_SPARSE` in
-`nvkmd_horizon_va.c`, then a **new** patch flipping `has_sparse` — not
-an edit to `0022`, which is what set it false.
+Nothing in this process can resize a VI layer, which is why
+`t_vk_suboptimal`'s section D has always needed somebody to dock or
+undock the console while it runs. This adds one more thing to do during
+that same run.
 
-**If C faults**: D12 closes properly, with a measurement behind it
-instead of an absence. Record the notifier type from the log.
+**Done when**: somebody docks the console during `t_vk_suboptimal`
+section D **and** during `t_vk_swapchain` section G, and the two rows
+above are confirmed or corrected.
 
-**Also unresolved either way**: patch `0022` records that `has_sparse =
-true` makes NVK ask for a *bind context* — a third GPFIFO channel. Today
-`has_transfer_queue` is `false` precisely because there is one channel.
-How many channels a process may open has never been measured, and
-promising sparse without knowing is a promise about an unknown.
+## 1.2 Fase E steps 3 and 4 — sparse residency
 
-**Done when**: `t_sparse` has run, arm C's answer is in a commit
-message, and either D12 is reopened with the work above or closed with
-the log quoted.
+D12 is reopened, on a measurement rather than an absence. RUN ON A
+CONSOLE 2026-08-24, `t_sparse`: a write to a never-bound sparse page is
+swallowed; memory binds into the middle of a sparse reservation and the
+payload arrives; and **after unbinding, a write to that address is
+swallowed again and does not reach the memory that was unbound**. So
+partial residency is expressible on this hardware.
 
-## 1.2 `t_syncpt_incr` — whether a host signal is buildable
+Both things that blocked the work are done:
 
-`nvk_horizon_sync_signal` does not touch a syncpoint. The ioctl it
-needed (`NVHOST_IOCTL_CTRL_SYNCPT_INCR`) was always in libnx and nothing
-had called it; `horizon_gpu_syncpt_incr()` now wraps it.
+- **Step 2, the bookkeeping.** `horizon_va_set_remove_range` cuts a live
+  interval, leaving whatever lies before and after it live. Host-tested
+  under ASan+UBSan; `h_va_space` went from 21 checks to 55. Nothing
+  calls it yet.
+- **The channel budget.** `has_sparse = true` makes NVK ask for a bind
+  context, which is a third GPFIFO channel, and patch 0022 recorded that
+  as a promise about an unknown. It is no longer unknown: `t_channel`
+  measured **44 channels open at once** before libnx's nv session ran
+  out of transfer memory. The one-channel constraint was never the
+  hardware's.
 
-The danger is in `horizon/include/horizon_gpu/sync.h` and is worth
-repeating: libnx tracks a channel's next fence as `fence.value +
-fence_incr`, and this layer keeps a 64-bit shadow on top. Both count
-increments the **GPU** will make. One made behind them does not fail —
-it makes every fence that channel already handed out look reached one
-submit early. This test does that deliberately, to a channel it creates
-for the purpose.
+What remains is `NVKMD_VA_SPARSE` in `nvkmd_horizon_va.c` and then a
+**new** patch flipping `has_sparse` — not an edit to `0022`, which is
+what set it false. `nvkmd_horizon_va_unbind` requires an exact
+`(offset, range)` match today and is where the split has to be
+expressed; the comment there says so.
 
-It answers: is the increment honoured; does it satisfy a threshold the
-GPU never reached; does the channel survive, still submit, still retire.
-The counter-versus-shadow drift is printed, not just asserted.
+`has_transfer_queue` is false for the same one-channel reason and is now
+equally unblocked, though nothing has asked for it.
 
-**If it passes**: the next step needs a syncpoint that is *not* a
-channel's. `nvioctlChannel_GetSyncpt(fd, module_id, &syncpt)` is the
-candidate and **the module ids are not documented in libnx** — if
-acquisition fails, expose `has_cpu_signal = false` and leave today's
-behaviour alone. Do not invent a module id.
+**Done when**: `has_sparse` is true and a Vulkan sparse binding has run
+on a console, or the attempt has produced a reason it cannot and that
+reason is recorded.
 
-**If it fails**: the fase closes with the test and the reason. That is
-still more than existed before.
+## 1.3 The query pool's reset and write in one submission
 
-**Done when**: `t_syncpt_incr` has run and either a dedicated syncpoint
-is wired into `nvk_horizon_sync_signal` or the log's reason is recorded.
+`nvk_CmdResetQueryPool` writes 0 to a query's availability word through
+an NV9097 report semaphore and then acquires on that word from the host
+engine; `nvk_CmdWriteTimestamp2` writes the report and releases 1 to it.
+Three accesses to one address, from two engines, inside one submission.
 
-## 1.3 `t_fence_wait_many` — the ceiling under every wait
+`t_vk_timestamp` splits them into two submits, and says in as many words
+that this is not a fix. It was done while the real cause was still
+unknown, so that the timestampPeriod measurement could be made at all —
+and the real cause turned out to be elsewhere entirely: stale dirty CPU
+cache lines on a fresh allocation, fixed in `horizon/memory/mem.c`.
 
-`horizon_gpu_fence_wait` (`horizon/sync/syncpt.c`) blocks in
-`nvFenceWait` for 100 ms chunks and **deliberately ignores what the
-chunk returned** — expiry is the loop's pulse. That is right for a chunk
-that timed out and wrong for one that could not be armed: the wait still
-honours its deadline and still returns the right answer, while spending
-the whole time re-reading a counter as fast as the ioctl comes back.
-Silently, on a core, with nothing looking.
+So the combined form may well work now, and nothing has tried it.
 
-Whether that is reachable depends on how many concurrent syncpoint waits
-the platform will register. Nothing in this tree knows the number. A
-Vulkan application with a thread per queue reaches whatever it is as a
-matter of course.
-
-The test ramps 1..32 threads twice: raw `nvFenceWait` to find the
-ceiling and name the failing `Result`, then through the layer to time
-the batch — a batch near one timeout ran concurrently, a much longer one
-serialised.
-
-**Done when**: the ceiling and the batch timings are in a commit
-message, and — if the layer degrades — `horizon_gpu_fence_wait` stops
-treating an unarmed chunk as a pulse.
-
-## 1.4 `t_vk_timestamp` — `timestampPeriod`
-
-`mesa/src/nouveau/vulkan/nvk_physical_device.c:932` publishes
-`timestampPeriod = 1.0f` for every device NVK drives. True of the GPUs
-nouveau was written for; never checked here. It is the only thing
-turning a query result into a duration, so if it is wrong every
-profiler, frame-time overlay and `VK_EXT_calibrated_timestamps` is wrong
-by the same factor and none of them can tell.
-
-**Two clocks, and they must not be conflated.** Verified in the tree:
-
-- the **query** clock — `vkCmdWriteTimestamp`, which NVK emits as
-  `NV9097_SET_REPORT_SEMAPHORE`. This is the one `timestampPeriod`
-  describes.
-- the **device** clock — `horizon_gpu_device_get_timestamp`, the
-  `GET_GPU_TIME` ioctl, which patch `0025` hands to NVK's
-  `get_gpu_timestamp`, and therefore what calibrated timestamps would
-  pair with a CPU clock.
-
-Calibrated timestamps are only correct if those are one domain. The test
-measures both against `armGetSystemTick` over half a second and prints
-their ratio.
-
-**`timestampPeriod` is deliberately unchanged.** Editing it on a
-prediction would give that prediction the authority of a measurement.
-
-**Done when**: the run has printed nanoseconds per tick for both clocks
-and their ratio, and `timestampPeriod` is either confirmed at `1.0f` or
-changed in a new patch quoting the measurement.
-
-## 1.5 `minImageCount` — the number patch `0052` now asks for
-
-`0052` replaced the hardcoded `minImageCount = 2` with
-`bqQuery(NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS)` + 1. The selector value
-`3` is written out in `wsi_horizon.c` because libnx's
-`display/types.h` transcribes the head of Android's query enum and stops
-before it.
-
-**What this queue actually answers has never been read.** `t_nwindow`
-already drives the producer API one level below `NWindow` and is where
-that measurement belongs.
-
-**Done when**: `t_nwindow` reports the queue's answer, and the fallback
-path in `wsi_horizon_min_image_count` is either confirmed as unreachable
-or kept with the reason.
+**Done when**: `write_timestamp` records the reset and the timestamp in
+one command buffer again, and either the run passes — in which case the
+split comes out — or it does not, and the reason is recorded against
+this section instead.
 
 ---
 
-# 2. Cross-compiled, never run
-
-## 2.1 The `.nro` files
-
-| Test | Why it is new or changed |
-|---|---|
-| `t_sparse` | new — §1.1 |
-| `t_syncpt_incr` | new — §1.2 |
-| `t_fence_wait_many` | new — §1.3 |
-| `t_vk_timestamp` | new — §1.4 |
-| `t_init` | now asserts `gpu_va_bit_count == HORIZON_CMDS_GPU_VA_BITS` |
-
-**`t_init` is the regression risk in this batch.** Device creation now
-*fails* when the queried VA width differs from the constant the command
-builder encodes. That is the intended behaviour — a truncated GPU
-address is a valid address the GPU will write to — but it means a chip
-reporting anything other than 40 no longer comes up at all. Every other
-test depends on device creation, so **run `t_init` first**: if it fails
-on the width check, nothing else in the suite is meaningful.
-
-**Done when**: the whole `.nro` suite has been run once against this
-build and the results recorded.
-
-## 2.2 The Mesa patches — not compiled
-
-`0050`, `0051` and `0052` **apply cleanly** — verified three times by
-resetting `mesa/` to `MESA_COMMIT` and re-running
-`scripts/apply-mesa-patches.sh`, 52 of 52, no fuzz, no rejects. That
-proves the diffs fit. It proves nothing about compiling.
-
-They have not been built because the native half of the pipeline needs
-`LLVMSPIRVLib` and `libclc`, which only the toolchain image carries:
-
-```sh
-env -u DEVKITPRO scripts/build-toolchain-image.sh   # then
-env -u DEVKITPRO scripts/ci-build-archives.sh
-```
-
-(`build-toolchain-image.sh` does nothing while `$DEVKITPRO` is set — it
-concludes the toolchain is this machine.)
-
-The riskiest part is **not** the C. It is the meson change in `0051`,
-which splits `idep_horizon_gpu_util` so that `src/vulkan/wsi` can depend
-on `horizon_gpu` without the shader cache being enabled. Variable
-visibility across `subdir()` boundaries is exactly what only a real
-`meson setup` catches.
-
-`t_vk_timestamp.c` and `tests/common/vkfw.c` do compile clean with
-`-Werror` against the real Vulkan headers (`-fsyntax-only`), which is a
-type check and not a link.
-
-**Done when**: `scripts/ci-build-archives.sh` completes, including the
-two artefact-dependent gates it ends with.
-
----
-
-# 3. Not started
-
-From the approved plan, still untouched:
-
-- **Fase C steps 3–4** — a dedicated syncpoint and wiring it into
-  `nvk_horizon_sync_signal`. Blocked on §1.2.
-- **Fase D** — the WSI can scale. `nvk_wsi.c` sets
-  `force_swapchain_to_currentExtent = true` and `wsi_horizon.c`
-  publishes a fixed extent; the compositor scales, and `BqBufferInput`
-  has a `scalingMode` field this backend already fills from
-  `nw->scaling_mode`. Lifting it allows rendering at 720p and presenting
-  at 1080p docked. `nwindowSetDimensions` **cannot be called while
-  buffers are registered**, so it goes after `nwindowReleaseBuffers` and
-  before the first `nwindowConfigureBuffer`. Patch `0040`'s
-  dock/undock → `VK_SUBOPTIMAL_KHR` logic has to be rechecked when the
-  extent is the application's choice rather than the window's.
-- **Fase E steps 2–4** — partial bind/unbind and `has_sparse`. Blocked
-  on §1.1.
-
----
-
-# 4. Things that were confirmed correct
+# 2. Things that were confirmed correct
 
 Recorded so nobody "fixes" them. None of these needs action; they are
 here because the cost of re-litigating them is higher than the cost of
 the paragraph.
+
+## Measured on hardware, 2026-08-24
+
+- **`gpu_va_bit_count` is 40**, and `t_init` now fails device creation if
+  a chip reports anything else, because a truncated GPU address is a
+  valid address the GPU will write to.
+- **`NVHOST_IOCTL_CTRL_SYNCPT_INCR` does not exist here.** `nv=0x275c` —
+  `Module_LibnxNvidia`, `LibnxNvidiaError_IoctlFailed`. There is no
+  CPU-side syncpoint increment on this platform, so a dedicated
+  syncpoint would not help either: what is missing is the increment, not
+  the ownership of the counter. `nvk_horizon_sync_signal` keeps the
+  behaviour it has, and Fase C steps 3-4 are closed.
+- **32 concurrent `nvFenceWait` calls all arm**, and 32 of them cost one
+  wait's wall time (301 ms against 300 ms), so the platform does not
+  serialise them. No ceiling was found below `MAX_THREADS`.
+- **`nvFenceWait` reports a timeout as `0x00000d5c`** —
+  `Module_LibnxNvidia`, `LibnxNvidiaError_Timeout` — and not as
+  `KERNELRESULT(TimedOut)`. `horizon/sync/nv_wait.h` is the one place
+  that decides what the Result means.
+- **A threshold past the syncpoint's maximum answers success in zero
+  milliseconds.** nvhost calls such a threshold expired rather than
+  block on an increment nothing will make. Neither wait loop treats a
+  chunk that did not block as its pulse any more.
+- **The GPU timer is 1/614.4 MHz = 1.627604 ns per tick**, measured to
+  4-10 ppm across three windows and three runs, and 614.4 MHz is 32x the
+  19.2 MHz reference `armGetSystemTick` counts. The clock
+  `vkCmdWriteTimestamp` records is the same domain. `timestampPeriod`
+  was `1.0f` and is now this.
+- **The BufferQueue keeps 0 buffers for its consumer**, before and after
+  registration, so patch 0052's `minUndequeued + 1` is clamped up to
+  `WSI_HORIZON_MIN_IMAGES` and the number it publishes is unchanged.
+- **44 GPFIFO channels can be open at once**, the refusal being libnx's
+  nv session transfer memory rather than the kernel.
+- **`t_fault`: the console survives an MMU fault; the process does not.**
+  Notifier type 31, channel marked lost, teardown clean, and the GPU
+  still works in-process afterwards — but the atexit marker is never
+  written, so the process is killed during exit, after the log is
+  closed. Recovering needs one press of A on the error dialog and a
+  relaunch, not a power cycle.
+
+## Measured earlier, and still true
 
 - `NvMultiFence` holds at most **4** fences.
 - A GOB is **64 bytes × 8 rows = 512 bytes**; a block is
@@ -283,4 +203,13 @@ the paragraph.
 - **The PTE kind belongs on the GPU mapping, not on the allocation.**
   `mem.c` creates every `NvMap` with `NvKind_Pitch` and `vm.c` passes
   the real kind to `MapBufferEx`. This is not obvious and it is right.
+- **A big-page mapping needs big-page-aligned backing.** `MapBufferEx`
+  accepts a 4 KiB-aligned object with `page=0x20000`, returns the
+  requested VA, and the GPU's writes to it go nowhere — no fault, no
+  error, no data. `horizon_gpu_vm_map` refuses that pairing now.
+- **A fresh allocation's cache lines must be flushed before the GPU
+  writes it.** `aligned_alloc` plus the zero-fill leaves every line
+  dirty, and `dc civac` cleans before invalidating — so an invalidate
+  meant to see the GPU's write instead destroys it. Harmless for every
+  object the CPU writes first, fatal for the first one it does not.
 - Querying `big_page_size` instead of hardcoding it (`device.c:138`).
