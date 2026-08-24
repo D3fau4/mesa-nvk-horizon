@@ -1,7 +1,7 @@
-From 8061adcbeccca22fd3dfdf59152ae20ae803329b Mon Sep 17 00:00:00 2001
+From 1a9538de460a11f8978edb72b332c97cb09e2a8c Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 18:59:30 +0200
-Subject: [PATCH 53/55] nouveau/vk: the kernel-mode driver says what a
+Subject: [PATCH 53/56] nouveau/vk: the kernel-mode driver says what a
  timestamp tick is worth
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From 1858f098af8339ee90263e2454ecc2a6b886826b Mon Sep 17 00:00:00 2001
+From 9c938977357dc33e48690ddf0564789457baf4a5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 20:19:29 +0000
-Subject: [PATCH 39/55] vulkan/wsi: Horizon, a lost device ends the acquire
+Subject: [PATCH 39/56] vulkan/wsi: Horizon, a lost device ends the acquire
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

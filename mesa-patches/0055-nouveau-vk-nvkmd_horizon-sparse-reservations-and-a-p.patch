@@ -1,7 +1,7 @@
-From a2addb91689ce8b555cc49ca53cf202f4da0c14e Mon Sep 17 00:00:00 2001
+From 76df451e0aa8c635cd83c6f92049b50cb31a3581 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:35:12 +0200
-Subject: [PATCH 55/55] nouveau/vk: nvkmd_horizon: sparse reservations, and a
+Subject: [PATCH 55/56] nouveau/vk: nvkmd_horizon: sparse reservations, and a
  partial unbind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -61,11 +61,11 @@ Upstream: no — it implements nvkmd ops for this backend, on a
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
 ---
- .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 138 ++++++++++++++++--
- 1 file changed, 123 insertions(+), 15 deletions(-)
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 160 ++++++++++++++++--
+ 1 file changed, 145 insertions(+), 15 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index 07a849fbe52..034b73d069f 100644
+index 07a849fbe52..e814ca8cbce 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -29,6 +29,10 @@ struct nvkmd_horizon_binding {
@@ -255,9 +255,32 @@ index 07a849fbe52..034b73d069f 100644
     }
  
     /* NVKMD_VA_REPLAY is the capture/replay pool for
-@@ -446,7 +551,10 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+@@ -445,8 +550,33 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
+    if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
        page_size = big;
  
++   /* AND A SPARSE RESERVATION HAS NO CHOICE AT ALL.
++    *
++    * MEASURED ON A CONSOLE 2026-08-24, t_sparse arm D: ALLOC_SPACE with
++    * NvAllocSpaceFlags_Sparse and a 0x1000 page size is refused —
++    * 0x0000275c, Module_LibnxNvidia, LibnxNvidiaError_IoctlFailed —
++    * where the same call at as_big_page_size is accepted. Sparse exists
++    * on this address space only in big pages.
++    *
++    * That is not a preference this function can express by choosing the
++    * other half; the other half does not exist for sparse. A PITCH
++    * sparse buffer would otherwise be sent to the small-page half and
++    * fail at the reservation, which is a confusing way to report "this
++    * platform does not offer that".
++    *
++    * What it costs is in docs/PENDING-VERIFICATION.md: every bind into
++    * such a reservation must be big-page aligned on both sides, and
++    * horizon_gpu_vm_map refuses less because MapBufferEx accepts a
++    * smaller alignment and then loses the GPU's writes.
++    */
++   if ((flags & NVKMD_VA_SPARSE) && big != 0)
++      page_size = big;
++
     horizon_gpu_result res;
 -   if (flags & NVKMD_VA_ALLOC_FIXED) {
 +   if (flags & NVKMD_VA_SPARSE) {

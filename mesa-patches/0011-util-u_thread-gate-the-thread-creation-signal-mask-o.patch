@@ -1,7 +1,7 @@
-From 390cc5f002c26c39d67cc0b18ffc39091d90c927 Mon Sep 17 00:00:00 2001
+From cd55d5976eaa397ca7d821b356dd2fd6540cd08e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:08 +0000
-Subject: [PATCH 11/55] util/u_thread: gate the thread-creation signal mask on
+Subject: [PATCH 11/56] util/u_thread: gate the thread-creation signal mask on
  pthread_sigmask
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

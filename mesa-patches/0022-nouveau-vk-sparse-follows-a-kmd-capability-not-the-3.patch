@@ -1,7 +1,7 @@
-From f89a2a7b569ed6191949a77a59e47a9ccf5a7a68 Mon Sep 17 00:00:00 2001
+From 42ab65b4d87de4aa3aa3896af45f8beef569d93a Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 15:08:46 +0000
-Subject: [PATCH 22/55] nouveau/vk: sparse follows a kmd capability, not the 3D
+Subject: [PATCH 22/56] nouveau/vk: sparse follows a kmd capability, not the 3D
  class alone (D12)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
-From c97f8b75394284ba607af2f6f15fa1d6a6bc7841 Mon Sep 17 00:00:00 2001
+From 6ae8e4de7a3852b82ba27b36d2f8b05b25f7206d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:38:36 +0000
-Subject: [PATCH 25/55] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
+Subject: [PATCH 25/56] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
  item 8, extension 1)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

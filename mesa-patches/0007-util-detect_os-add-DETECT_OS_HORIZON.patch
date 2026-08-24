@@ -1,7 +1,7 @@
-From 960b6b71a0ef3cf175ce6c54490f059cef1e27ab Mon Sep 17 00:00:00 2001
+From 8df6c7988d3d8cf2bf35a9c9913fb667d57080b5 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:37:53 +0000
-Subject: [PATCH 07/55] util/detect_os: add DETECT_OS_HORIZON
+Subject: [PATCH 07/56] util/detect_os: add DETECT_OS_HORIZON
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

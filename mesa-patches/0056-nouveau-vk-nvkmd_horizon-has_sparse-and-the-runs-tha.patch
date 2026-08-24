@@ -1,0 +1,84 @@
+From 6cb955e49483a53f6de23899eb6f909efbe65f28 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 22:51:04 +0200
+Subject: [PATCH 56/56] nouveau/vk: nvkmd_horizon: has_sparse, and the runs
+ that earned it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 10 (sparse residency)
+Why: patch 0022 set nvkmd_info::has_sparse false, and said why: NVK
+ derives sparseBinding from cls_eng3d >= MAXWELL_B, GM20B's queried 3D
+ class is exactly MAXWELL_B, and the feature would have been claimed on
+ the strength of the chip while the layer had no way to unbind part of a
+ reservation and leave the rest addressable. That was decision D12.
+ .
+ It was a statement about this driver, not about this hardware, and it
+ has stopped being true. 0055 implements the two nvkmd operations that
+ were missing; this is the line that turns them on.
+ .
+ It is one line and eight features. has_sparse gates sparseBinding,
+ sparseResidencyBuffer, sparseResidencyImage2D and 3D, three
+ multisample variants and sparseResidencyAliased
+ (nvk_physical_device.c:395-402), and it makes NVK ask for a bind
+ context — a third GPFIFO channel, where this driver was built around
+ one. Both halves of that are why it is a commit of its own and why the
+ evidence below is the whole Vulkan suite rather than the sparse test
+ alone.
+Evidence: RUN ON A CONSOLE 2026-08-24.
+ .
+ tests/t_vk_sparse.c, PASS 74/74 — D12's three questions asked through
+ vkQueueBindSparse:
+ .
+   note MEASURED: the driver offers sparseBinding=true,
+        sparseResidencyBuffer=true, sparseResidencyImage2D=true
+   note MEASURED: the sparse block is 0x20000 bytes
+   ok   MEASURED A: writing to an unbound sparse block did not lose the
+        device
+   ok   MEASURED B: the bound block holds what the GPU wrote (0 of 32768
+        words wrong, first 0xc3c33c3c)
+   note MEASURED C — D12 THROUGH VULKAN: after vkQueueBindSparse unbound
+        the block, a write to it was swallowed. Sparse residency works
+        through the whole stack, not only in horizon_gpu.
+ .
+ THE BIND CONTEXT DID NOT BREAK ANYTHING, which is the risk this flip
+ actually carries. Every Vulkan test, same build, after the flip:
+ t_vulkan 62/62, t_vk_transfer 203/203, t_vk_compute 37/37, t_vk_caps
+ 52/52, t_vk_image 72/72, t_vk_triangle 84/84, t_vk_depth 66/66,
+ t_vk_texture 1685/1685, t_vk_format 282/282, t_vk_submits 287/287,
+ t_vk_present_draw 183/183, t_vk_swapchain 143/143, t_vk_wsi_mt 71/71,
+ t_vk_suboptimal 273/273, t_vk_immediate 442/442, t_vk_timestamp 60/60,
+ t_vk_cache 43/43 cold and 45/45 warm. t_channel had already measured
+ that 44 channels can be open at once, so the third one was affordable.
+ .
+ TWO OF THE EIGHT HAVE BEEN EXERCISED, and this does not pretend
+ otherwise: sparseBinding and sparseResidencyBuffer, which are the two a
+ buffer can reach. t_vk_caps asserts all eight are advertised, because
+ one flag is what gates them and half appearing would mean something
+ else had got in between — and its comment says which two the runs
+ actually touched.
+Upstream: no — it is a Horizon backend capability, measured on Horizon.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
+---
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 1101c86def1..91fef5e9021 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -432,7 +432,7 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+        * a feature that is not offered. D12 remains open on those terms:
+        * the work is known and bounded, and nothing in Phase 4 needs it.
+        */
+-      .has_sparse = false,
++      .has_sparse = true,
+       /* Horizon rejects privileged graphics-register writes from an
+        * unprivileged channel and resets the channel, after which every
+        * submit on it times out. Recorded in Phase 0 as known-risks R18,
+-- 
+2.53.0.windows.2
+

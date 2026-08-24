@@ -201,9 +201,24 @@ static void check_gates(vkfw *fw)
    }
    free(props);
 
-   /* Patch 0029: sparse follows has_sparse, which is false here,
-    * instead of following the 3D class. Checked through the feature
-    * bits because that is where an application would look. */
+   /* Patch 0029 made sparse follow nvkmd_info::has_sparse instead of
+    * the 3D class, and this check has moved with the flag rather than
+    * being deleted. has_sparse was false and this asserted that nothing
+    * sparse was advertised; it is true since 2026-08-24 and this
+    * asserts that ALL EIGHT are, because one flag is what gates them
+    * (nvk_physical_device.c:395-402) and half of them appearing would
+    * mean something else had got in between.
+    *
+    * What the flag rests on is two runs, not one: t_sparse asked the
+    * address space directly — an unbound page inside a sparse
+    * reservation swallows a write, and unbinding a bound block puts
+    * that state back — and t_vk_sparse asked the same three questions
+    * through vkQueueBindSparse and got the same answers, 74/74.
+    *
+    * ONLY TWO OF THE EIGHT HAVE BEEN EXERCISED: sparseBinding and
+    * sparseResidencyBuffer, which are the two a buffer can reach.
+    * That is recorded here rather than left for someone to assume from
+    * a green run. */
    VkPhysicalDeviceFeatures feats;
    memset(&feats, 0, sizeof(feats));
    fw->vk.vkGetPhysicalDeviceFeatures(fw->pdev, &feats);
@@ -212,8 +227,13 @@ static void check_gates(vkfw *fw)
       feats.sparseResidencyImage2D || feats.sparseResidencyImage3D ||
       feats.sparseResidency2Samples || feats.sparseResidency4Samples ||
       feats.sparseResidency8Samples || feats.sparseResidencyAliased;
-   t_check(t, !any_sparse,
-           "no sparse feature is advertised — has_sparse is false, and "
+   const bool all_sparse =
+      feats.sparseBinding && feats.sparseResidencyBuffer &&
+      feats.sparseResidencyImage2D && feats.sparseResidencyImage3D &&
+      feats.sparseResidency2Samples && feats.sparseResidency4Samples &&
+      feats.sparseResidency8Samples && feats.sparseResidencyAliased;
+   t_check(t, all_sparse && any_sparse,
+           "every sparse feature is advertised — has_sparse is true, and "
            "patch 0022 made these follow it rather than the 3D class");
 }
 

@@ -1,7 +1,7 @@
-From e6642a16b96e983899cc7260e1b2ec767af10bbb Mon Sep 17 00:00:00 2001
+From 12a36fa2b4732f748fa651d65dbe54faef327a04 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 22:02:02 +0200
-Subject: [PATCH 49/55] nouveau/vk: nvkmd_horizon: wait on the host engine, not
+Subject: [PATCH 49/56] nouveau/vk: nvkmd_horizon: wait on the host engine, not
  on the thread
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

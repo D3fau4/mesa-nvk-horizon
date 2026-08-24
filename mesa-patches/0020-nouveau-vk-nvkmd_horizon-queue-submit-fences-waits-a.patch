@@ -1,7 +1,7 @@
-From 4b687854d2deabbfa8095a581c9cb8f78446a1a5 Mon Sep 17 00:00:00 2001
+From bfd57fbcc66e405abb16595f6b54c30c16bc3b78 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:51:39 +0000
-Subject: [PATCH 20/55] nouveau/vk: nvkmd_horizon queue, submit, fences, waits
+Subject: [PATCH 20/56] nouveau/vk: nvkmd_horizon queue, submit, fences, waits
  and destruction
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
