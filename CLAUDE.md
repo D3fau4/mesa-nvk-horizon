@@ -18,16 +18,32 @@ series in `mesa-patches/`.
 
 ### Stale references
 
-`docs/`, `CONTRIBUTING.md`, `MANIFEST.sha256` and `scripts/check-history-intact.sh` do
-not exist, but are still cited widely: comments, script headers, `README.md` and the
+`CONTRIBUTING.md`, `MANIFEST.sha256` and `scripts/check-history-intact.sh` do not
+exist, but are still cited widely: comments, script headers, `README.md` and the
 patch series name `docs/architecture.md`, `docs/milestones.md`,
 `docs/reference-analysis.md`, `CONTRIBUTING.md` and "Phase N item M" throughout.
 **Do not follow those links or assume the files exist**; do not re-create them unless
 asked. When adding a Mesa patch, keep the four-field header format below even though
 the milestones list its first field cites is gone.
 
+`docs/` now exists and holds **exactly one file**, which is not any of the three
+above. The three cited there are still gone.
+
 The record of what was done, what was actually tested and what is still open lives in
 the commit messages.
+
+### `docs/PENDING-VERIFICATION.md` — read it before claiming anything works
+
+A debt ledger of everything cross-compiled and never run on a console, everything
+applied and never compiled, and the measurements that decide whether specific work
+continues. Every section carries a **Done when** line.
+
+**It is meant to be deleted.** When every section's condition is met, delete the file
+rather than hollowing it out — an empty ledger saying "all clear" is just another
+stale reference. Strike a section when its measurement has been made *and acted on*;
+a measurement that closes a question the other way is a result, not a failure.
+
+Add to it whenever work lands that is class X and not class HW.
 
 ## Commands
 
