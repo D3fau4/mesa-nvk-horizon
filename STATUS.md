@@ -89,6 +89,12 @@ written under 26.1.7 is therefore *refused*, not misread.
 | host suites | `scripts/run-host-tests.sh` | **7/7 PASS**, 305 assertions: h_align 20/20, h_va_space 21/21, h_syncpt_math 30/30, h_cmds 39/39, h_status 16/16, h_log 8/8, h_blob_cache 171/171 |
 | Mesa's non-driver core, cross | `scripts/configure-mesa.sh`, `scripts/build-mesa.sh` | configures and builds 379/379 targets; `check-tls-relocs: OK` |
 | the Switch build | `scripts/build-switch.sh` | `libhorizon_gpu.a` and every test `.nro`, including `t_threads`, `t_ostime` and `t_shader_cache` linked against 26.1.8's archives |
+| **the whole NVK driver, cross** | `build-toolchain-image.sh`, `build-mesa-clc.sh`, `configure-mesa-nvk.sh`, `build-mesa-nvk.sh` | image built and probed OK; `mesa_clc`/`vtn_bindgen2` 385/385; NVK configures (`vulkan-drivers: nouveau`, `platforms: vi`, `mesa-clc: system`) and builds **140/140** — **37 `.nro`** in `build/meson`, `t_vulkan.nro` 14 704 696 B |
+| gates that need the built driver | `check-dispatch-complete`, `check-tls-relocs`, `check-rust-target` | `825 entry points named, 234 core, 1 allowed absence`; `3 object(s) use TLS, all with relocations, 351 scanned`; the Rust target matches the snapshot |
+
+The derived toolchain image was rebuilt from scratch for this (the 2026-08-24 CI fix
+above is in it), which is what makes the NVK result a statement about 26.1.8 rather than
+about a cached sysroot.
 
 **NOT verified on hardware.** No console has run 26.1.8 — and none has run 26.1.7
 either, so every hardware number in this file is still 26.1.5 or 26.1.6 evidence.
