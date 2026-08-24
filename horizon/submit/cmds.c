@@ -66,13 +66,15 @@ horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
                                uint64_t gpu_va, uint32_t payload)
 {
     /* OFFSET_LOWER is bits 31:2 and OFFSET_UPPER is bits 7:0 of the next
-     * method, so the address must be 4-byte aligned and must fit 40 bits
-     * — which is exactly the GPU VA width this address space reports.
+     * method, so the address must be 4-byte aligned and must fit
+     * HORIZON_CMDS_GPU_VA_BITS bits. Device creation refuses an address
+     * space whose queried gpu_va_bit_count differs from that constant, so
+     * the two agree by construction rather than by assumption.
      * Reject rather than truncate: a truncated address is still a valid
      * address, and the GPU would write to it. */
     if ((gpu_va & UINT64_C(3)) != 0)
         return 0;
-    if ((gpu_va >> 40) != 0)
+    if ((gpu_va >> HORIZON_CMDS_GPU_VA_BITS) != 0)
         return 0;
 
     uint32_t n = 0;

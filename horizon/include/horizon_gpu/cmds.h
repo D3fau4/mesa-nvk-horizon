@@ -50,6 +50,19 @@ extern "C" {
 #define HORIZON_SEMAPHORED_RELEASE_WFI_EN  UINT32_C(0)
 #define HORIZON_SEMAPHORED_RELEASE_SIZE_4B (UINT32_C(1) << 24)
 
+/* GPU virtual addresses are this wide. SEMAPHOREA carries OFFSET_UPPER in
+ * bits 7:0 and SEMAPHOREB carries OFFSET_LOWER in bits 31:2, so the pair
+ * encodes exactly 40 bits and an address above that cannot be expressed —
+ * it would be truncated into a different, valid address.
+ *
+ * This file is libnx-free and cannot query anything, so the width is a
+ * constant here. It is not left as an assumption: the device layer reads
+ * gpu_va_bit_count from the GPU's characteristics and refuses to create a
+ * device whose address space is a different width (device.c), so a chip
+ * that reported something else would fail loudly at init rather than
+ * silently truncate addresses at submit time. */
+#define HORIZON_CMDS_GPU_VA_BITS 40u
+
 /* MEM_OP_C/D — memory-barrier and L2 operations, also host methods, so
  * they need no engine object either. MEM_OP_A/B were removed for gm20x
  * and C/D carry their functionality (clb06f.h:112-136). OPERATION is
@@ -145,7 +158,7 @@ horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
  * Returns the dword count, or 0 without writing anything if `gpu_va` is
  * not 4-byte aligned (OFFSET_LOWER is bits 31:2, so a misaligned address
  * would be silently truncated into a different, valid-looking one) or
- * does not fit the 40 GPU VA bits this address space has. */
+ * does not fit HORIZON_CMDS_GPU_VA_BITS. */
 uint32_t
 horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
                                uint64_t gpu_va, uint32_t payload);

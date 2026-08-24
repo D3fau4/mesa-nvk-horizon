@@ -19,6 +19,7 @@
 
 #include "device_priv.h"
 #include "../memory/align.h"
+#include "horizon_gpu/cmds.h"
 
 /* result.h mirrors libnx Result as uint32_t; hold that to be true. */
 _Static_assert(sizeof(horizon_gpu_nv_result) == sizeof(Result),
@@ -145,6 +146,23 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
         goto fail_gpu;
     }
     device_fill_info(dev, ch);
+
+    /* The command builder encodes a GPU address in SEMAPHOREA/B, which
+     * together hold exactly HORIZON_CMDS_GPU_VA_BITS bits, and it rejects
+     * anything wider rather than truncating it. That builder is libnx-free
+     * and cannot query the width, so the two have to agree — and until now
+     * nothing checked that they did. An address space wider than the
+     * builder can encode would submit truncated addresses; a narrower one
+     * would let the builder accept addresses the hardware cannot reach.
+     * Either way the failure belongs here, at init, not at submit time. */
+    if (ch->gpu_va_bit_count != HORIZON_CMDS_GPU_VA_BITS) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "gpu_va_bit_count is %u; the command builder encodes "
+                     "%u", ch->gpu_va_bit_count,
+                     (unsigned)HORIZON_CMDS_GPU_VA_BITS);
+        res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        goto fail_gpu;
+    }
 
     uint32_t as_big_page = create_info->as_big_page_size;
     if (as_big_page == 0) {

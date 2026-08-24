@@ -7,6 +7,7 @@
  */
 #include <string.h>
 
+#include "horizon_gpu/cmds.h"
 #include "horizon_gpu/device.h"
 #include "common/testfw.h"
 
@@ -129,6 +130,16 @@ static int one_cycle(test_ctx *t, int cycle)
     t_check(t, info.va_regions[1].page_size == info.big_page_size,
             "cycle %d: big-page region matches characteristics (0x%x)",
             cycle, info.va_regions[1].page_size);
+
+    /* device_create refuses an address space whose width differs from the
+     * one the command builder can encode, so reaching here already proves
+     * the equality. Assert it anyway and print both, so a chip that ever
+     * reported something else is named in the log rather than only
+     * inferred from a device that failed to come up. */
+    t_check(t, info.gpu_va_bit_count == HORIZON_CMDS_GPU_VA_BITS,
+            "cycle %d: gpu_va_bit_count %u matches the %u bits "
+            "SEMAPHOREA/B encode", cycle, info.gpu_va_bit_count,
+            (unsigned)HORIZON_CMDS_GPU_VA_BITS);
 
     horizon_gpu_device_counters c;
     res = horizon_gpu_device_get_counters(dev, &c);
