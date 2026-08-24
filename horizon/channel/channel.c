@@ -690,6 +690,12 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
     uint64_t start = armGetSystemTick();
     NvFence nvf = { .id = fence.syncpt_id, .value = fence.threshold };
+    /* How much of the last chunk the kernel did not spend blocking, and
+     * whether that has been reported once. Both explained at the bottom
+     * of this loop, which is the same defect and the same fix as
+     * horizon_gpu_fence_wait (horizon/sync/syncpt.c). */
+    uint64_t unslept_ns = 0;
+    bool reported_spin = false;
 
     for (;;) {
         uint32_t hw;
@@ -751,6 +757,22 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             elapsed_ns >= timeout_ns)
             return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
 
+        /* The previous chunk came back without blocking and the
+         * counter still has not reached. Sleep out what it did not
+         * spend, then round the loop — the counter and the notifier are
+         * both re-read at the top, so a fence that retired during the
+         * chunk and a channel that faulted during it are both answered
+         * at full speed and neither pays for this. */
+        if (unslept_ns != 0) {
+            uint64_t nap_ns = unslept_ns;
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
+                nap_ns > timeout_ns - elapsed_ns)
+                nap_ns = timeout_ns - elapsed_ns;
+            unslept_ns = 0;
+            svcSleepThread((s64)nap_ns);
+            continue;
+        }
+
         /* Bounded kernel wait per iteration; the loop re-checks the
          * notifier so a faulted channel cannot hang us forever, even
          * with HORIZON_GPU_NO_TIMEOUT. */
@@ -761,10 +783,40 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             if (rem_us < chunk_us)
                 chunk_us = rem_us;
         }
-        /* Result deliberately not treated as fatal: a timeout of this
-         * chunk is the loop's normal pulse; real failures surface via
-         * SyncptRead or the notifier above. */
-        (void)nvFenceWait(&nvf, chunk_us);
+
+        /* A chunk that expired is the loop's normal pulse and needs
+         * nothing. A chunk that returned early is the case this used to
+         * discard, and discarding it cost a core: MEASURED on
+         * 2026-08-24 (t_fence_wait_many), nvFenceWait answers success in
+         * 0 ms for a threshold past the syncpoint's maximum, because
+         * nvhost calls such a threshold expired rather than block on an
+         * increment nothing will make. The counter disagreed, so this
+         * loop kept asking — as fast as two ioctls come back, for the
+         * whole deadline, on every thread that was waiting.
+         *
+         * Success is still not turned into "reached": what this channel
+         * promises is that the GPU got there, and only the counter and
+         * channel_reached_or_lost() can say that. Real failures continue
+         * to surface through the read and the notifier above. */
+        uint64_t chunk_start = armGetSystemTick();
+        Result rc = nvFenceWait(&nvf, chunk_us);
+        if (rc == KERNELRESULT(TimedOut))
+            continue;
+
+        uint64_t spent_ns = armTicksToNs(armGetSystemTick() - chunk_start);
+        uint64_t asked_ns = (uint64_t)(uint32_t)chunk_us * 1000u;
+        unslept_ns = spent_ns < asked_ns ? asked_ns - spent_ns : 0;
+
+        if (!reported_spin && unslept_ns != 0) {
+            reported_spin = true;
+            horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
+                         "channel wait: syncpt %u chunk returned 0x%08x "
+                         "after %llu us of %d, and the counter has not "
+                         "reached %u — pacing the rest of the deadline",
+                         fence.syncpt_id, rc,
+                         (unsigned long long)(spent_ns / 1000), chunk_us,
+                         fence.threshold);
+        }
     }
 }
 

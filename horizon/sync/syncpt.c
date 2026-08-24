@@ -108,6 +108,10 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
 
     uint64_t start = armGetSystemTick();
     NvFence nvf = { .id = fence.syncpt_id, .value = fence.threshold };
+    /* How much of the last chunk the kernel did not spend blocking. See
+     * the long comment at the bottom of this loop. */
+    uint64_t unslept_ns = 0;
+    bool reported_spin = false;
 
     for (;;) {
         uint32_t value;
@@ -145,6 +149,25 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT && elapsed_ns >= timeout_ns)
             return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
 
+        /* THE LAST CHUNK DID NOT BLOCK, AND THE COUNTER STILL DISAGREES.
+         *
+         * Sleeping out what the chunk did not spend is what keeps this
+         * loop a wait instead of a spin. It happens here, after the
+         * counter has been re-read and found short and after the
+         * deadline has been re-checked, so a fence that genuinely
+         * retired during the chunk returns above at full speed and pays
+         * none of this. Then round the loop rather than waiting: the
+         * counter is what decides, and it is read at the top. */
+        if (unslept_ns != 0) {
+            uint64_t nap_ns = unslept_ns;
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
+                nap_ns > timeout_ns - elapsed_ns)
+                nap_ns = timeout_ns - elapsed_ns;
+            unslept_ns = 0;
+            svcSleepThread((s64)nap_ns);
+            continue;
+        }
+
         int32_t chunk_us = SYNC_WAIT_CHUNK_US;
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
             int32_t rem_us =
@@ -152,8 +175,49 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
             if (rem_us < chunk_us)
                 chunk_us = rem_us;
         }
-        /* Chunk expiry is the loop's pulse, not an error; genuine
-         * failures surface through SyncptRead above. */
-        (void)nvFenceWait(&nvf, chunk_us);
+
+        /* WHAT THE CHUNK RETURNED IS NOT DISCARDABLE, AND THIS IS WHY.
+         *
+         * TimedOut means the wait was armed and the whole chunk elapsed:
+         * the loop's normal pulse, nothing to do. Anything else means
+         * the kernel came back without having blocked, and issuing the
+         * next chunk immediately turns a bounded wait into a hot loop
+         * of two ioctls for the caller's entire deadline.
+         *
+         * That is not hypothetical. MEASURED on 2026-08-24
+         * (t_fence_wait_many): nvFenceWait returns *success* in 0 ms for
+         * a threshold past the syncpoint's maximum — nvhost reports such
+         * a threshold as expired rather than block forever on an
+         * increment nothing will make. The counter says otherwise, and
+         * the counter is what this function answers with, so the loop
+         * span 300 ms of ioctls per thread, 32 threads at once, and
+         * reported the right answer the whole time. Nothing above could
+         * have seen it.
+         *
+         * The success case is deliberately NOT turned into "reached".
+         * The counter is the fence's truth: returning ok on the kernel's
+         * word here would tell a caller the GPU had written memory it
+         * had not written. Honour the deadline, report, and stop
+         * burning the core.
+         */
+        uint64_t chunk_start = armGetSystemTick();
+        Result rc = nvFenceWait(&nvf, chunk_us);
+        if (rc == KERNELRESULT(TimedOut))
+            continue;
+
+        uint64_t spent_ns = armTicksToNs(armGetSystemTick() - chunk_start);
+        uint64_t asked_ns = (uint64_t)(uint32_t)chunk_us * 1000u;
+        unslept_ns = spent_ns < asked_ns ? asked_ns - spent_ns : 0;
+
+        if (!reported_spin && unslept_ns != 0) {
+            reported_spin = true;
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "fence wait: syncpt %u chunk returned 0x%08x after "
+                         "%llu us of %d, and the counter has not reached "
+                         "%u — pacing the rest of the deadline",
+                         fence.syncpt_id, rc,
+                         (unsigned long long)(spent_ns / 1000), chunk_us,
+                         fence.threshold);
+        }
     }
 }
