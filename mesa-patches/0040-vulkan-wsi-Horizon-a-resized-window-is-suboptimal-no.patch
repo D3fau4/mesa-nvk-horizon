@@ -1,7 +1,7 @@
-From 7c9986571a61db175e114eac6dd3ae4fe51dcc02 Mon Sep 17 00:00:00 2001
+From 33c54c681ba99cbf2ae0933ba1e7a4431fe8e297 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
-Subject: [PATCH 40/49] vulkan/wsi: Horizon, a resized window is suboptimal,
+Subject: [PATCH 40/51] vulkan/wsi: Horizon, a resized window is suboptimal,
  not out of date
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
@@ -140,7 +140,7 @@ Upstream: no - this file is the Horizon backend itself.
  1 file changed, 139 insertions(+), 18 deletions(-)
 
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index 6d2ae10..d22f198 100644
+index 86ce94dc45b..a48c5a5a5c6 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -347,9 +347,11 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,

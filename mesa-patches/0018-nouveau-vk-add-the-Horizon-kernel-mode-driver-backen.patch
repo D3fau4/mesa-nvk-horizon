@@ -1,7 +1,7 @@
-From 8a04aa0f9b3ecdd6a0d5f568a722ff37b9771434 Mon Sep 17 00:00:00 2001
+From 8465472ecd030b3489afd5ffbf42c06fb9d3d129 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:49:52 +0000
-Subject: [PATCH 18/49] nouveau/vk: add the Horizon kernel-mode-driver backend
+Subject: [PATCH 18/51] nouveau/vk: add the Horizon kernel-mode-driver backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -124,7 +124,7 @@ own git log):
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 
 diff --git a/meson.options b/meson.options
-index 220d46e..db48653 100644
+index 220d46eaba3..db4865324c2 100644
 --- a/meson.options
 +++ b/meson.options
 @@ -809,6 +809,16 @@ option(
@@ -145,7 +145,7 @@ index 220d46e..db48653 100644
    'install-mesa-clc',
    type : 'boolean',
 diff --git a/src/nouveau/headers/meson.build b/src/nouveau/headers/meson.build
-index 06fbcc9..0b64320 100644
+index 06fbcc92970..0b64320c36c 100644
 --- a/src/nouveau/headers/meson.build
 +++ b/src/nouveau/headers/meson.build
 @@ -109,7 +109,8 @@ nv_push_class_dump_h = custom_target(
@@ -159,7 +159,7 @@ index 06fbcc9..0b64320 100644
    c_args : [no_override_init_args],
    gnu_symbol_visibility : 'hidden',
 diff --git a/src/nouveau/headers/nv_device_info.h b/src/nouveau/headers/nv_device_info.h
-index 1532983..b586df3 100644
+index 1532983025c..b586df32f6c 100644
 --- a/src/nouveau/headers/nv_device_info.h
 +++ b/src/nouveau/headers/nv_device_info.h
 @@ -85,6 +85,16 @@ struct nv_device_info {
@@ -181,7 +181,7 @@ index 1532983..b586df3 100644
  {
 diff --git a/src/nouveau/headers/nv_device_info_chipset.c b/src/nouveau/headers/nv_device_info_chipset.c
 new file mode 100644
-index 0000000..f384962
+index 00000000000..f3849628af1
 --- /dev/null
 +++ b/src/nouveau/headers/nv_device_info_chipset.c
 @@ -0,0 +1,287 @@
@@ -473,7 +473,7 @@ index 0000000..f384962
 +   }
 +}
 diff --git a/src/nouveau/meson.build b/src/nouveau/meson.build
-index 9c98c65..c9f5dc5 100644
+index 9c98c65d2ec..c9f5dc51517 100644
 --- a/src/nouveau/meson.build
 +++ b/src/nouveau/meson.build
 @@ -3,7 +3,37 @@
@@ -516,7 +516,7 @@ index 9c98c65..c9f5dc5 100644
    subdir('rust')
    subdir('nil')
 diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
-index afaee53..60e2b6c 100644
+index afaee5319c1..60e2b6cb57f 100644
 --- a/src/nouveau/vulkan/meson.build
 +++ b/src/nouveau/vulkan/meson.build
 @@ -69,16 +69,36 @@ nvk_files = files(
@@ -598,7 +598,7 @@ index afaee53..60e2b6c 100644
  if with_platform_android
    nvk_files += files('nvk_android.c')
 diff --git a/src/nouveau/vulkan/nvk_descriptor_table.c b/src/nouveau/vulkan/nvk_descriptor_table.c
-index 4bb5e1d..900ffbe 100644
+index 4bb5e1d8942..900ffbe8222 100644
 --- a/src/nouveau/vulkan/nvk_descriptor_table.c
 +++ b/src/nouveau/vulkan/nvk_descriptor_table.c
 @@ -7,7 +7,6 @@
@@ -610,7 +610,7 @@ index 4bb5e1d..900ffbe 100644
  static VkResult
  nvk_descriptor_table_grow_locked(struct nvk_device *dev,
 diff --git a/src/nouveau/vulkan/nvk_device_memory.c b/src/nouveau/vulkan/nvk_device_memory.c
-index c035c47..e502936 100644
+index c035c471269..e502936feaa 100644
 --- a/src/nouveau/vulkan/nvk_device_memory.c
 +++ b/src/nouveau/vulkan/nvk_device_memory.c
 @@ -13,7 +13,6 @@
@@ -622,7 +622,7 @@ index c035c47..e502936 100644
  /* Supports opaque fd only */
  const VkExternalMemoryProperties nvk_opaque_fd_mem_props = {
 diff --git a/src/nouveau/vulkan/nvk_instance.c b/src/nouveau/vulkan/nvk_instance.c
-index 5a8464d..171906d 100644
+index 5a8464d0510..171906d102e 100644
 --- a/src/nouveau/vulkan/nvk_instance.c
 +++ b/src/nouveau/vulkan/nvk_instance.c
 @@ -11,6 +11,8 @@
@@ -693,7 +693,7 @@ index 5a8464d..171906d 100644
     *pInstance = nvk_instance_to_handle(instance);
     return VK_SUCCESS;
 diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
-index 1a610c5..63ad5b0 100644
+index 1a610c5e4c2..63ad5b07c5e 100644
 --- a/src/nouveau/vulkan/nvk_physical_device.c
 +++ b/src/nouveau/vulkan/nvk_physical_device.c
 @@ -28,7 +28,14 @@
@@ -783,7 +783,7 @@ index 1a610c5..63ad5b0 100644
  nvk_physical_device_destroy(struct vk_physical_device *vk_pdev)
  {
 diff --git a/src/nouveau/vulkan/nvk_physical_device.h b/src/nouveau/vulkan/nvk_physical_device.h
-index b104b15..d2a20e0 100644
+index b104b153870..d2a20e0bc42 100644
 --- a/src/nouveau/vulkan/nvk_physical_device.h
 +++ b/src/nouveau/vulkan/nvk_physical_device.h
 @@ -80,6 +80,16 @@ nvk_physical_device_instance(const struct nvk_physical_device *pdev)
@@ -805,7 +805,7 @@ index b104b15..d2a20e0 100644
                                          struct vk_physical_device **pdev_out);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 new file mode 100644
-index 0000000..a87949b
+index 00000000000..a87949b905d
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -0,0 +1,88 @@
@@ -899,7 +899,7 @@ index 0000000..a87949b
 +#endif /* NVKMD_HORIZON_H */
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 new file mode 100644
-index 0000000..14696c0
+index 00000000000..14696c089fa
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -0,0 +1,158 @@
@@ -1063,7 +1063,7 @@ index 0000000..14696c0
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
 new file mode 100644
-index 0000000..dc0ef2b
+index 00000000000..dc0ef2b8b88
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_enumerate.c
 @@ -0,0 +1,85 @@
@@ -1154,7 +1154,7 @@ index 0000000..dc0ef2b
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 new file mode 100644
-index 0000000..68b3ee5
+index 00000000000..dfb1bdbb6ef
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -0,0 +1,304 @@
@@ -1463,7 +1463,7 @@ index 0000000..68b3ee5
 +   return VK_SUCCESS;
 +}
 diff --git a/src/nouveau/winsys/nouveau_device.c b/src/nouveau/winsys/nouveau_device.c
-index f5ad9d5..69e25e1 100644
+index f5ad9d5db0f..69e25e1d894 100644
 --- a/src/nouveau/winsys/nouveau_device.c
 +++ b/src/nouveau/winsys/nouveau_device.c
 @@ -50,266 +50,6 @@ name_for_chip(uint32_t dev_id,
@@ -1765,7 +1765,7 @@ index f5ad9d5..69e25e1 100644
     nouveau_ws_context_destroy(tmp_ctx);
  
 diff --git a/src/vulkan/runtime/vk_image.c b/src/vulkan/runtime/vk_image.c
-index 0e30c25..88a6542 100644
+index 0e30c25a32e..88a654234d4 100644
 --- a/src/vulkan/runtime/vk_image.c
 +++ b/src/vulkan/runtime/vk_image.c
 @@ -96,9 +96,7 @@ vk_image_init(struct vk_device *device,
@@ -1779,7 +1779,7 @@ index 0e30c25..88a6542 100644
  #ifdef VK_USE_PLATFORM_ANDROID_KHR
     if (image->external_handle_types &
 diff --git a/src/vulkan/runtime/vk_image.h b/src/vulkan/runtime/vk_image.h
-index dfabbcf..f6a9ce8 100644
+index dfabbcfa3c6..f6a9ce8e54d 100644
 --- a/src/vulkan/runtime/vk_image.h
 +++ b/src/vulkan/runtime/vk_image.h
 @@ -76,7 +76,6 @@ struct vk_image {

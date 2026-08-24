@@ -1,7 +1,7 @@
-From a477500fc9f2922dca94f8bdfead5b80c9c171e2 Mon Sep 17 00:00:00 2001
+From 63a6f748067eaca725f98154893fcce116e4dea7 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 17:09:07 +0200
-Subject: [PATCH 47/49] nouveau/vk: make a stream push visible to the GPU
+Subject: [PATCH 47/51] nouveau/vk: make a stream push visible to the GPU
  before it is submitted
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -47,7 +47,7 @@ Upstream: yes — this is an ordering bug against nvkmd's own interface, not a
  1 file changed, 46 insertions(+), 21 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_mem_stream.c b/src/nouveau/vulkan/nvk_mem_stream.c
-index 54d2df6..b59160e 100644
+index 54d2df67887..b59160ece87 100644
 --- a/src/nouveau/vulkan/nvk_mem_stream.c
 +++ b/src/nouveau/vulkan/nvk_mem_stream.c
 @@ -180,30 +180,27 @@ nvk_mem_stream_alloc(struct nvk_device *dev,

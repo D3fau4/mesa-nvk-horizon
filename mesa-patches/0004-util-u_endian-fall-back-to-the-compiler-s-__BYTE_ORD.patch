@@ -1,7 +1,7 @@
-From 6857838d7849cba2310ca27a95eb14d6823d5d52 Mon Sep 17 00:00:00 2001
+From 66b9dfe8ab9773fce8f7be68ec573b041c9e1de5 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:31:41 +0000
-Subject: [PATCH 04/49] util/u_endian: fall back to the compiler's
+Subject: [PATCH 04/51] util/u_endian: fall back to the compiler's
  __BYTE_ORDER__
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -41,7 +41,7 @@ Upstream: yes — it is additive, unreachable on every platform that
  1 file changed, 19 insertions(+)
 
 diff --git a/src/util/u_endian.h b/src/util/u_endian.h
-index fd78642..8f6158f 100644
+index fd786423d1f..8f6158fd15b 100644
 --- a/src/util/u_endian.h
 +++ b/src/util/u_endian.h
 @@ -94,6 +94,25 @@

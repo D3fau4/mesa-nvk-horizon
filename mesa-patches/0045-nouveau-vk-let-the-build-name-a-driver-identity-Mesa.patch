@@ -1,7 +1,7 @@
-From 61781756fcd01b72d5535cd68357861d1efee92c Mon Sep 17 00:00:00 2001
+From 14d1eba36d53a3760fd82e1c38157e5d06914e8e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:41:11 +0000
-Subject: [PATCH 45/49] nouveau/vk: let the build name a driver identity Mesa's
+Subject: [PATCH 45/51] nouveau/vk: let the build name a driver identity Mesa's
  version cannot
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -48,7 +48,7 @@ Upstream: no — HORIZON_DRIVER_ID is named for the platform that needs
  3 files changed, 48 insertions(+), 6 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index b18037e..d906f6f 100644
+index b18037e9d6a..d906f6f79ce 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1173,6 +1173,18 @@ if with_shader_cache
@@ -71,7 +71,7 @@ index b18037e..d906f6f 100644
  foreach b : ['bswap32', 'bswap64', 'clz', 'clzll', 'ctz', 'expect', 'ffs',
               'ffsll', 'popcount', 'popcountll', 'unreachable', 'types_compatible_p']
 diff --git a/meson.options b/meson.options
-index 099120b..1c5a1a9 100644
+index 099120b9cb0..1c5a1a92113 100644
 --- a/meson.options
 +++ b/meson.options
 @@ -819,6 +819,19 @@ option(
@@ -95,7 +95,7 @@ index 099120b..1c5a1a9 100644
    'install-mesa-clc',
    type : 'boolean',
 diff --git a/src/nouveau/vulkan/nvk_instance.c b/src/nouveau/vulkan/nvk_instance.c
-index 0d8039f..c105a69 100644
+index 0d8039fa08c..c105a693591 100644
 --- a/src/nouveau/vulkan/nvk_instance.c
 +++ b/src/nouveau/vulkan/nvk_instance.c
 @@ -210,12 +210,25 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,

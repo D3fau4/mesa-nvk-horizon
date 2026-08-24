@@ -1,7 +1,7 @@
-From 406a83a42de1a6a0655b684019ae8416e44c42b6 Mon Sep 17 00:00:00 2001
+From 530de65924e1090c284cea1ec7a831b95d6a0a90 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 20:19:29 +0000
-Subject: [PATCH 39/49] vulkan/wsi: Horizon, a lost device ends the acquire
+Subject: [PATCH 39/51] vulkan/wsi: Horizon, a lost device ends the acquire
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -53,7 +53,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  1 file changed, 38 insertions(+)
 
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index 5dc0701..6d2ae10 100644
+index 5d6d85e2cbd..86ce94dc45b 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -51,6 +51,7 @@

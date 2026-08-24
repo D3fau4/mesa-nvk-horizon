@@ -1,7 +1,7 @@
-From 993cebe73338445c758d262ee314cd71df0df207 Mon Sep 17 00:00:00 2001
+From 2e96f35879bf8d9e8f888a96461b76d3085d6bcc Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:49 +0000
-Subject: [PATCH 36/49] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
+Subject: [PATCH 36/51] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
  =?UTF-8?q?=20binding=20references=20the=20memory=20it=20binds=20=E2=80=94?=
  =?UTF-8?q?=20unless=20it=20is=20the=20memory's=20own?=
 MIME-Version: 1.0
@@ -57,7 +57,7 @@ from its own VA".
  1 file changed, 60 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index c543c25..9ffe7c4 100644
+index 350f4c343c7..07a849fbe52 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -30,6 +30,36 @@ struct nvkmd_horizon_binding {

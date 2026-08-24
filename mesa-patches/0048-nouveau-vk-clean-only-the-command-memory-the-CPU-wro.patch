@@ -1,7 +1,7 @@
-From 56535cec3be83ca83589c987d2f4711dcd4c20ba Mon Sep 17 00:00:00 2001
+From fe67018cb17eaadf87596cbd7d188b364765c3c1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 18:49:28 +0200
-Subject: [PATCH 48/49] nouveau/vk: clean only the command memory the CPU wrote
+Subject: [PATCH 48/51] nouveau/vk: clean only the command memory the CPU wrote
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -42,7 +42,7 @@ allocates chunks a shader fills, and those need no clean at all.
  5 files changed, 34 insertions(+), 3 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.c b/src/nouveau/vulkan/nvk_cmd_buffer.c
-index 85520d3..4e14e33 100644
+index 85520d3527c..4e14e339521 100644
 --- a/src/nouveau/vulkan/nvk_cmd_buffer.c
 +++ b/src/nouveau/vulkan/nvk_cmd_buffer.c
 @@ -199,6 +199,9 @@ nvk_cmd_buffer_flush_push(struct nvk_cmd_buffer *cmd, bool incomplete)
@@ -78,7 +78,7 @@ index 85520d3..4e14e33 100644
  
  VKAPI_ATTR VkResult VKAPI_CALL
 diff --git a/src/nouveau/vulkan/nvk_cmd_draw.c b/src/nouveau/vulkan/nvk_cmd_draw.c
-index d8afc1c..14c0236 100644
+index d8afc1cd771..14c02367af6 100644
 --- a/src/nouveau/vulkan/nvk_cmd_draw.c
 +++ b/src/nouveau/vulkan/nvk_cmd_draw.c
 @@ -5678,6 +5678,7 @@ nvk_cmd_begin_cond_render_copy_engine(struct nvk_cmd_buffer *cmd,
@@ -90,7 +90,7 @@ index d8afc1c..14c0236 100644
     const uint64_t tmp_addr = cmd->cond_render_mem->mem->va->addr;
  
 diff --git a/src/nouveau/vulkan/nvk_cmd_pool.c b/src/nouveau/vulkan/nvk_cmd_pool.c
-index 7297e94..fbabd31 100644
+index 7297e94272d..fbabd31f06b 100644
 --- a/src/nouveau/vulkan/nvk_cmd_pool.c
 +++ b/src/nouveau/vulkan/nvk_cmd_pool.c
 @@ -153,6 +153,11 @@ nvk_cmd_pool_alloc_mem(struct nvk_cmd_pool *pool, bool force_gart,
@@ -106,7 +106,7 @@ index 7297e94..fbabd31 100644
     return VK_SUCCESS;
  }
 diff --git a/src/nouveau/vulkan/nvk_cmd_pool.h b/src/nouveau/vulkan/nvk_cmd_pool.h
-index 6d556ef..d1268f9 100644
+index 6d556ef3952..d1268f94f79 100644
 --- a/src/nouveau/vulkan/nvk_cmd_pool.h
 +++ b/src/nouveau/vulkan/nvk_cmd_pool.h
 @@ -17,6 +17,19 @@ struct nvkmd_mem;
@@ -130,7 +130,7 @@ index 6d556ef..d1268f9 100644
     struct list_head link;
  };
 diff --git a/src/nouveau/vulkan/nvk_mem_stream.c b/src/nouveau/vulkan/nvk_mem_stream.c
-index b59160e..16f9077 100644
+index b59160ece87..16f90772a5e 100644
 --- a/src/nouveau/vulkan/nvk_mem_stream.c
 +++ b/src/nouveau/vulkan/nvk_mem_stream.c
 @@ -201,8 +201,13 @@ nvk_mem_stream_sync_chunks_to_gpu(struct nvk_mem_stream *stream)

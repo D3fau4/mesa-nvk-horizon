@@ -1,7 +1,7 @@
-From 7b97eb5c8307e79bbb95185c2b386080a0e53b66 Mon Sep 17 00:00:00 2001
+From c36ade2874096ba77f93ac8b2a45d1be661caa97 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 09:57:37 +0000
-Subject: [PATCH 31/49] vulkan/wsi: size the platform table from the last
+Subject: [PATCH 31/51] vulkan/wsi: size the platform table from the last
  enumerator
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -30,7 +30,7 @@ Upstream: yes — it is a latent out-of-bounds for any platform above
  1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
-index 8c9f1f1..196d17d 100644
+index 8c9f1f1da50..196d17d1473 100644
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
 @@ -52,7 +52,21 @@ struct vk_queue;

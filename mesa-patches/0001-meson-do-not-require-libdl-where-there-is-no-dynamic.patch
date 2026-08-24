@@ -1,7 +1,7 @@
-From ff30289a09bd08cb59223cfba8a2ca97acb67117 Mon Sep 17 00:00:00 2001
+From 8994ccbc471d6614d9c9d233be1d2280a9e6410c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:35 +0000
-Subject: [PATCH 01/49] meson: do not require libdl where there is no dynamic
+Subject: [PATCH 01/51] meson: do not require libdl where there is no dynamic
  loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -41,7 +41,7 @@ Upstream: yes — it removes an assumption that is not universal and
  1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index c18edad..61862f6 100644
+index c18edad402f..61862f6c0b3 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1685,9 +1685,19 @@ ld_args_build_id = cc.get_supported_link_arguments('-Wl,--build-id=sha1')

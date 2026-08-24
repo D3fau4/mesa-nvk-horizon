@@ -1,7 +1,7 @@
-From cb0bd26df2c8c322017a80f73d39c0b6197857a9 Mon Sep 17 00:00:00 2001
+From f978e06a7e899e0a7432712c3e5160b1effcac23 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:26:27 +0000
-Subject: [PATCH 38/49] nouveau/vk: advertise VK_NN_vi_surface and answer the
+Subject: [PATCH 38/51] nouveau/vk: advertise VK_NN_vi_surface and answer the
  Horizon WSI
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -53,7 +53,7 @@ findings).
  3 files changed, 130 insertions(+), 1 deletion(-)
 
 diff --git a/src/nouveau/vulkan/nvk_instance.c b/src/nouveau/vulkan/nvk_instance.c
-index 171906d..0d8039f 100644
+index 171906d102e..0d8039fa08c 100644
 --- a/src/nouveau/vulkan/nvk_instance.c
 +++ b/src/nouveau/vulkan/nvk_instance.c
 @@ -36,6 +36,9 @@ static const struct vk_instance_extension_table instance_extensions = {
@@ -67,7 +67,7 @@ index 171906d..0d8039f 100644
     .KHR_wayland_surface = true,
  #endif
 diff --git a/src/nouveau/vulkan/nvk_physical_device.h b/src/nouveau/vulkan/nvk_physical_device.h
-index d2a20e0..fa9385c 100644
+index d2a20e0bc42..fa9385c4ffb 100644
 --- a/src/nouveau/vulkan/nvk_physical_device.h
 +++ b/src/nouveau/vulkan/nvk_physical_device.h
 @@ -102,7 +102,8 @@ VkExtent2D nvk_max_shading_rate(const struct nvk_physical_device *pdev,
@@ -81,7 +81,7 @@ index d2a20e0..fa9385c 100644
  #endif
  
 diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
-index deaecb7..bb06cc6 100644
+index deaecb76c77..bb06cc62c6e 100644
 --- a/src/nouveau/vulkan/nvk_wsi.c
 +++ b/src/nouveau/vulkan/nvk_wsi.c
 @@ -3,10 +3,17 @@

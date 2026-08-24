@@ -1,7 +1,7 @@
-From dfb2ab9a8cc9e5235e23ba6e50dbd827178021a0 Mon Sep 17 00:00:00 2001
+From f62eee9d4807ce4c9ebac43accd464ced710499c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 12:41:52 +0000
-Subject: [PATCH 15/49] nouveau/vk: build a static driver where there is no
+Subject: [PATCH 15/51] nouveau/vk: build a static driver where there is no
  dynamic loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -47,7 +47,7 @@ Upstream: yes — it is conditional on a property Mesa already computes,
  1 file changed, 17 insertions(+)
 
 diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
-index 21b66e8..37d8709 100644
+index 21b66e8a3b2..37d8709fd01 100644
 --- a/src/nouveau/vulkan/meson.build
 +++ b/src/nouveau/vulkan/meson.build
 @@ -157,6 +157,23 @@ libnvk = static_library(

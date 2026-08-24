@@ -1,7 +1,7 @@
-From cbbf4ee8a53ec719479e818d2cbac59c811f37cd Mon Sep 17 00:00:00 2001
+From 6ee07631bbefaa6ae2eee872aced27538bbe0e09 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:10:23 +0000
-Subject: [PATCH 23/49] nouveau/vk: privileged register writes follow a kmd
+Subject: [PATCH 23/51] nouveau/vk: privileged register writes follow a kmd
  capability (R18)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -54,7 +54,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  4 files changed, 34 insertions(+), 2 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_cmd_draw.c b/src/nouveau/vulkan/nvk_cmd_draw.c
-index 3a7c3f2..d8afc1c 100644
+index 3a7c3f2211e..d8afc1cd771 100644
 --- a/src/nouveau/vulkan/nvk_cmd_draw.c
 +++ b/src/nouveau/vulkan/nvk_cmd_draw.c
 @@ -190,7 +190,8 @@ nvk_push_draw_state_init(struct nvk_queue *queue, struct nv_push *p)
@@ -78,7 +78,7 @@ index 3a7c3f2..d8afc1c 100644
        P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_SET_PRIV_REG));
        P_INLINE_DATA(p, 0);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 1b4f13c..7fa53a8 100644
+index 93a888cb39b..199fa22db44 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -295,6 +295,24 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
@@ -107,7 +107,7 @@ index 1b4f13c..7fa53a8 100644
        .has_get_vram_used = false,
        .has_alloc_tiled = false,
 diff --git a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
-index 9d7e8fc..9088c4b 100644
+index 9d7e8fcba36..9088c4bc79d 100644
 --- a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
 @@ -101,6 +101,9 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
@@ -121,7 +121,7 @@ index 9d7e8fc..9088c4b 100644
        .has_get_vram_used = nouveau_ws_device_vram_used(ws_dev) != 0,
        .has_alloc_tiled = nouveau_ws_device_has_tiled_bo(ws_dev),
 diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
-index 8506d57..f33a405 100644
+index 8506d571ef9..f33a4051953 100644
 --- a/src/nouveau/vulkan/nvkmd/nvkmd.h
 +++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
 @@ -122,6 +122,15 @@ struct nvkmd_info {

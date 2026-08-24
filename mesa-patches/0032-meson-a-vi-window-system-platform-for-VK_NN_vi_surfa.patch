@@ -1,7 +1,7 @@
-From 4407cee7eaa3af95fd0b333950126b4ff11e70f5 Mon Sep 17 00:00:00 2001
+From 40d4753d10f6cf1dd689f27bac72f0c54a76e608 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
-Subject: [PATCH 32/49] meson: a 'vi' window-system platform for
+Subject: [PATCH 32/51] meson: a 'vi' window-system platform for
  VK_NN_vi_surface
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -31,7 +31,7 @@ Upstream: yes — it adds a platform the registry already describes, and
  3 files changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/meson.build b/meson.build
-index e5d2efd..b18037e 100644
+index e5d2efd5c9d..b18037e9d6a 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -472,6 +472,10 @@ with_platform_wayland = _platforms.contains('wayland')
@@ -46,7 +46,7 @@ index e5d2efd..b18037e 100644
  with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
  if with_gfxstream_emulated_android
 diff --git a/meson.options b/meson.options
-index db48653..099120b 100644
+index db4865324c2..099120b9cb0 100644
 --- a/meson.options
 +++ b/meson.options
 @@ -12,7 +12,7 @@ option(
@@ -59,7 +59,7 @@ index db48653..099120b 100644
    description : 'window systems to support. If this is set to `auto`, all ' +
                  'platforms applicable will be enabled.'
 diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
-index 614a33a..81a7bfb 100644
+index 614a33a47c6..81a7bfb902d 100644
 --- a/src/vulkan/meson.build
 +++ b/src/vulkan/meson.build
 @@ -68,6 +68,12 @@ endif

@@ -1,7 +1,7 @@
-From 6d198bf0d898a98328d8c4dbb2a31124f3baa841 Mon Sep 17 00:00:00 2001
+From 3625f2fdcca1f8fabf18179e20faffa7fc93edc4 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:52:29 +0000
-Subject: [PATCH 14/49] util/u_debug: decide __normal_user from the C library,
+Subject: [PATCH 14/51] util/u_debug: decide __normal_user from the C library,
  not from the OS
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -55,7 +55,7 @@ Upstream: yes — it replaces an OS test with the trait that test was
  2 files changed, 9 insertions(+), 3 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index b95e396..ccfcb4e 100644
+index b95e3968df0..ccfcb4e0b88 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1579,6 +1579,7 @@ functions_to_detect = {
@@ -67,7 +67,7 @@ index b95e396..ccfcb4e 100644
  
  foreach f, prefix: functions_to_detect
 diff --git a/src/util/u_debug.h b/src/util/u_debug.h
-index 9608e97..f74612e 100644
+index 9608e97ba65..f74612e354c 100644
 --- a/src/util/u_debug.h
 +++ b/src/util/u_debug.h
 @@ -402,10 +402,15 @@ debug_get_option_ ## suffix (void) \

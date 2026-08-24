@@ -1,7 +1,7 @@
-From c1af6dc40ad4d5200bd2ce5abb888594e8503ecc Mon Sep 17 00:00:00 2001
+From f240ffcc945e9d8c289967439b82db2d9d36e000 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:51:39 +0000
-Subject: [PATCH 20/49] nouveau/vk: nvkmd_horizon queue, submit, fences, waits
+Subject: [PATCH 20/51] nouveau/vk: nvkmd_horizon queue, submit, fences, waits
  and destruction
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -150,7 +150,7 @@ own git log):
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 
 diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
-index 8599845..537d0ea 100644
+index 8599845a7fe..537d0ea27ec 100644
 --- a/src/nouveau/vulkan/meson.build
 +++ b/src/nouveau/vulkan/meson.build
 @@ -87,7 +87,9 @@ if host_machine.system() == 'horizon'
@@ -164,7 +164,7 @@ index 8599845..537d0ea 100644
    )
  else
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 40f55e1..c5d01bd 100644
+index 40f55e1ee5d..63973504f6a 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -15,7 +15,10 @@
@@ -296,7 +296,7 @@ index 40f55e1..c5d01bd 100644
                                     struct nvkmd_pdev **pdev_out);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 new file mode 100644
-index 0000000..a9643a4
+index 00000000000..a9643a4731b
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 @@ -0,0 +1,375 @@
@@ -676,7 +676,7 @@ index 0000000..a9643a4
 +   return VK_SUCCESS;
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
-index 7720a8a..f53fd80 100644
+index 7720a8a9af0..f53fd80a2b6 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -55,15 +55,6 @@ nvkmd_horizon_dev_get_drm_fd(struct nvkmd_dev *_dev)
@@ -705,7 +705,7 @@ index 7720a8a..f53fd80 100644
  
  VkResult
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 68b3ee5..e47d7dc 100644
+index dfb1bdbb6ef..2ee6db238da 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -292,11 +292,17 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
@@ -732,7 +732,7 @@ index 68b3ee5..e47d7dc 100644
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 new file mode 100644
-index 0000000..d85c49b
+index 00000000000..d85c49b1ff7
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 @@ -0,0 +1,515 @@

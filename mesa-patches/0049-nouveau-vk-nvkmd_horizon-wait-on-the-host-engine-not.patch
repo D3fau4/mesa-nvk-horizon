@@ -1,7 +1,7 @@
-From 7d685533c8e13c148cb61ab4d5f98fbf85266786 Mon Sep 17 00:00:00 2001
+From c7895a80070b87427ffaae15eeeec070addbdfef Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 22:02:02 +0200
-Subject: [PATCH 49/49] nouveau/vk: nvkmd_horizon: wait on the host engine, not
+Subject: [PATCH 49/51] nouveau/vk: nvkmd_horizon: wait on the host engine, not
  on the thread
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -60,7 +60,7 @@ Upstream: no — it is a Horizon backend implementing a nvkmd op the DRM
  3 files changed, 205 insertions(+), 49 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 54afe5b..a2f82bb 100644
+index 8005fa6fc60..a63cc0f3669 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -217,6 +217,11 @@ struct nvkmd_horizon_meter {
@@ -106,7 +106,7 @@ index 54afe5b..a2f82bb 100644
                                    struct vk_object_base *log_obj,
                                    enum nvkmd_engines engines,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
-index 07f8c05..c3086cc 100644
+index 07f8c05f7da..c3086cc3eba 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 @@ -59,11 +59,12 @@ nvkmd_horizon_meter_report_locked(struct nvkmd_horizon_meter *m,
@@ -382,7 +382,7 @@ index 07f8c05..c3086cc 100644
  
  static VkResult
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
-index db5391c..6fa8c51 100644
+index db5391c1a25..6fa8c5157fd 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 @@ -598,6 +598,27 @@ nvk_horizon_sync_get_fence(struct vk_sync *_sync, uint64_t abs_timeout_ns,

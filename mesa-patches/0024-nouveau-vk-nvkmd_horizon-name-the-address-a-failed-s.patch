@@ -1,7 +1,7 @@
-From 1f2b4661d77dc5a601ce4469fc68aaa8bdba54c3 Mon Sep 17 00:00:00 2001
+From b144cd4e7ca0cdf0182cddfe551f6907759353ec Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:10:56 +0000
-Subject: [PATCH 24/49] nouveau/vk: nvkmd_horizon, name the address a failed
+Subject: [PATCH 24/51] nouveau/vk: nvkmd_horizon, name the address a failed
  submit handed the GPU
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -45,7 +45,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  4 files changed, 168 insertions(+), 3 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index c5d01bd..883a973 100644
+index 63973504f6a..c82f838f654 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -79,6 +79,19 @@ struct nvkmd_horizon_dev {
@@ -99,7 +99,7 @@ index c5d01bd..883a973 100644
     struct nvkmd_ctx base;
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
-index a9643a4..df58208 100644
+index a9643a4731b..df58208f702 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 @@ -177,10 +177,35 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
@@ -142,7 +142,7 @@ index a9643a4..df58208 100644
  
     ctx->last_fence = fence;
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
-index f53fd80..58bdefb 100644
+index f53fd80a2b6..58bdefbde0c 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -20,6 +20,7 @@ nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)
@@ -164,7 +164,7 @@ index f53fd80..58bdefb 100644
      * actually reported rather than from a constant. horizon_gpu returns
      * two regions — small-page and big-page — and nvkmd wants one
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index 70cca2c..8fa1682 100644
+index 884e1cb85b1..e2c800f3f82 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -13,6 +13,7 @@

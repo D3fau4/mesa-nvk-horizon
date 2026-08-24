@@ -1,7 +1,7 @@
-From 727932b49175984b2319593a9436c88d6397d6f7 Mon Sep 17 00:00:00 2001
+From f4efd6c0658e17d013d7f315d59eedbe01a584b2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:38:36 +0000
-Subject: [PATCH 25/49] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
+Subject: [PATCH 25/51] nouveau/vk: nvkmd_horizon, GPU timestamps (milestone
  item 8, extension 1)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -39,7 +39,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  2 files changed, 31 insertions(+), 7 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 883a973..8072cf3 100644
+index c82f838f654..216f551f44a 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -92,6 +92,12 @@ struct nvkmd_horizon_dev {
@@ -56,7 +56,7 @@ index 883a973..8072cf3 100644
  
  NVKMD_DECL_SUBCLASS(dev, horizon);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
-index 58bdefb..fb71079 100644
+index 58bdefbde0c..fb710792f2e 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -37,14 +37,32 @@ nvkmd_horizon_dev_destroy(struct nvkmd_dev *_dev)

@@ -1,7 +1,7 @@
-From 6a7146dc03495f1293efdb83508b8f2b0be98510 Mon Sep 17 00:00:00 2001
+From 8d3dddd46d97ae12e1364345610b07015dd63536 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:51:26 +0000
-Subject: [PATCH 46/49] util/disk_cache: add a Horizon backend
+Subject: [PATCH 46/51] util/disk_cache: add a Horizon backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -99,7 +99,7 @@ Upstream: no — it is a platform backend, named for its platform. The
  create mode 100644 src/util/disk_cache_horizon.c
 
 diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
-index 40bd6e5..0e251f4 100644
+index 40bd6e58ea5..0e251f48cae 100644
 --- a/src/util/disk_cache.c
 +++ b/src/util/disk_cache.c
 @@ -82,7 +82,17 @@ disk_cache_init_queue(struct disk_cache *cache)
@@ -232,7 +232,7 @@ index 40bd6e5..0e251f4 100644
     return memcmp(entry, key, CACHE_KEY_SIZE) == 0;
 diff --git a/src/util/disk_cache_horizon.c b/src/util/disk_cache_horizon.c
 new file mode 100644
-index 0000000..de21523
+index 00000000000..de215239dd2
 --- /dev/null
 +++ b/src/util/disk_cache_horizon.c
 @@ -0,0 +1,592 @@
@@ -829,7 +829,7 @@ index 0000000..de21523
 +
 +#endif /* ENABLE_SHADER_CACHE */
 diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
-index 8950839..ab616d5 100644
+index 8950839e463..ab616d5293d 100644
 --- a/src/util/disk_cache_os.h
 +++ b/src/util/disk_cache_os.h
 @@ -25,6 +25,7 @@
@@ -901,7 +901,7 @@ index 8950839..ab616d5 100644
  }
  #endif
 diff --git a/src/util/meson.build b/src/util/meson.build
-index 30cf227..e07b79a 100644
+index 30cf227b13d..e07b79a93a5 100644
 --- a/src/util/meson.build
 +++ b/src/util/meson.build
 @@ -38,7 +38,6 @@ files_mesa_util = files(

@@ -1,7 +1,7 @@
-From 870a4b4cb7a6d4d9590a7d17055a9bcffb47b272 Mon Sep 17 00:00:00 2001
+From 721b4bb6d9ac3fdb59e813b6473d887a20bfe3ba Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:08:24 +0000
-Subject: [PATCH 17/49] nouveau,compiler: build the Rust half without a
+Subject: [PATCH 17/51] nouveau,compiler: build the Rust half without a
  standard library
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -193,7 +193,7 @@ Upstream: partly. The core::/alloc:: spelling, the dead-code gate, the
  create mode 100644 src/nouveau/rust_runtime/meson.build
 
 diff --git a/meson.build b/meson.build
-index ccfcb4e..e790b55 100644
+index ccfcb4e0b88..e790b558322 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -847,6 +847,21 @@ if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or
@@ -232,7 +232,7 @@ index ccfcb4e..e790b55 100644
      '--raw-line', '#![allow(clippy::all)]',
      '--raw-line', '#![allow(improper_ctypes)]',
 diff --git a/src/compiler/rust/as_slice.rs b/src/compiler/rust/as_slice.rs
-index 8e6657c..c40525d 100644
+index 8e6657cc36a..c40525d23c2 100644
 --- a/src/compiler/rust/as_slice.rs
 +++ b/src/compiler/rust/as_slice.rs
 @@ -1,9 +1,10 @@
@@ -250,7 +250,7 @@ index 8e6657c..c40525d 100644
  pub enum AttrList<T: 'static> {
      Array(&'static [T]),
 diff --git a/src/compiler/rust/bitset.rs b/src/compiler/rust/bitset.rs
-index e868ac3..ba0019c 100644
+index e868ac3044a..ba0019cb177 100644
 --- a/src/compiler/rust/bitset.rs
 +++ b/src/compiler/rust/bitset.rs
 @@ -20,9 +20,10 @@
@@ -268,7 +268,7 @@ index e868ac3..ba0019c 100644
      Sub, SubAssign,
  };
 diff --git a/src/compiler/rust/cfg.rs b/src/compiler/rust/cfg.rs
-index e3d3284..f87d03f 100644
+index e3d328463e3..f87d03f21b3 100644
 --- a/src/compiler/rust/cfg.rs
 +++ b/src/compiler/rust/cfg.rs
 @@ -1,13 +1,14 @@
@@ -346,7 +346,7 @@ index e3d3284..f87d03f 100644
      fn test_loop_nesting(edges: &[(usize, usize)], expected: &[Option<usize>]) {
          let mut builder = CFGBuilder::<_, _, RandomState>::new();
 diff --git a/src/compiler/rust/dataflow.rs b/src/compiler/rust/dataflow.rs
-index 585eeab..f3363d5 100644
+index 585eeab4f41..f3363d50976 100644
 --- a/src/compiler/rust/dataflow.rs
 +++ b/src/compiler/rust/dataflow.rs
 @@ -10,9 +10,10 @@
@@ -371,7 +371,7 @@ index 585eeab..f3363d5 100644
      fn check_graph_reachability(
          edges: &[(usize, usize)],
 diff --git a/src/compiler/rust/depth_first_search.rs b/src/compiler/rust/depth_first_search.rs
-index 64c1914..f4016eb 100644
+index 64c191470a3..f4016eb8e21 100644
 --- a/src/compiler/rust/depth_first_search.rs
 +++ b/src/compiler/rust/depth_first_search.rs
 @@ -1,6 +1,7 @@
@@ -384,7 +384,7 @@ index 64c1914..f4016eb 100644
  /// A trait implementing a depth-first search over a graph
 diff --git a/src/compiler/rust/io.rs b/src/compiler/rust/io.rs
 new file mode 100644
-index 0000000..7d29021
+index 00000000000..7d2902179f5
 --- /dev/null
 +++ b/src/compiler/rust/io.rs
 @@ -0,0 +1,56 @@
@@ -445,7 +445,7 @@ index 0000000..7d29021
 +
 +pub type Result<T> = core::result::Result<T, Error>;
 diff --git a/src/compiler/rust/lib.rs b/src/compiler/rust/lib.rs
-index 68b0087..1316aa4 100644
+index 68b0087f18b..1316aa48a05 100644
 --- a/src/compiler/rust/lib.rs
 +++ b/src/compiler/rust/lib.rs
 @@ -1,11 +1,33 @@
@@ -483,7 +483,7 @@ index 68b0087..1316aa4 100644
  pub mod memstream;
  pub mod nir;
 diff --git a/src/compiler/rust/memstream.rs b/src/compiler/rust/memstream.rs
-index 622f55b..2cbbd8c 100644
+index 622f55b4b47..2cbbd8c0d53 100644
 --- a/src/compiler/rust/memstream.rs
 +++ b/src/compiler/rust/memstream.rs
 @@ -1,9 +1,12 @@
@@ -538,7 +538,7 @@ index 622f55b..2cbbd8c 100644
      let mut s = MemStream::new().unwrap();
      let test_str = "Test string";
 diff --git a/src/compiler/rust/meson.build b/src/compiler/rust/meson.build
-index 2dbf2bf..0b8bc50 100644
+index 2dbf2bfe176..0b8bc502348 100644
 --- a/src/compiler/rust/meson.build
 +++ b/src/compiler/rust/meson.build
 @@ -7,6 +7,7 @@ _compiler_rs_sources = [
@@ -576,7 +576,7 @@ index 2dbf2bf..0b8bc50 100644
  )
  
 diff --git a/src/compiler/rust/nir.rs b/src/compiler/rust/nir.rs
-index 90d9940..6dfb3aa 100644
+index 90d99407078..6dfb3aaf11d 100644
 --- a/src/compiler/rust/nir.rs
 +++ b/src/compiler/rust/nir.rs
 @@ -3,10 +3,10 @@
@@ -604,7 +604,7 @@ index 90d9940..6dfb3aa 100644
  
      pub fn get_src(&self, idx: usize) -> &nir_tex_src {
 diff --git a/src/compiler/rust/nir_instr_printer.rs b/src/compiler/rust/nir_instr_printer.rs
-index a02b411..010d356 100644
+index a02b4119cfc..010d3568227 100644
 --- a/src/compiler/rust/nir_instr_printer.rs
 +++ b/src/compiler/rust/nir_instr_printer.rs
 @@ -1,7 +1,8 @@
@@ -618,7 +618,7 @@ index a02b411..010d356 100644
  use crate::bindings;
  use crate::bindings::nir_instr;
 diff --git a/src/compiler/rust/proc/as_slice.rs b/src/compiler/rust/proc/as_slice.rs
-index 6ea2850..292199b 100644
+index 6ea28506abf..292199b28d6 100644
 --- a/src/compiler/rust/proc/as_slice.rs
 +++ b/src/compiler/rust/proc/as_slice.rs
 @@ -130,7 +130,7 @@ pub fn derive_as_slice(
@@ -640,7 +640,7 @@ index 6ea2850..292199b 100644
                          }
  
 diff --git a/src/compiler/rust/smallvec.rs b/src/compiler/rust/smallvec.rs
-index 099eb79..cc28e2d 100644
+index 099eb792442..cc28e2d828b 100644
 --- a/src/compiler/rust/smallvec.rs
 +++ b/src/compiler/rust/smallvec.rs
 @@ -11,6 +11,7 @@
@@ -661,7 +661,7 @@ index 099eb79..cc28e2d 100644
                      _ => panic!("Not a One"),
                  };
 diff --git a/src/nouveau/compiler/acorn/lib.rs b/src/nouveau/compiler/acorn/lib.rs
-index f9bd19c..afe62ef 100644
+index f9bd19c777c..afe62ef6920 100644
 --- a/src/nouveau/compiler/acorn/lib.rs
 +++ b/src/nouveau/compiler/acorn/lib.rs
 @@ -2,6 +2,20 @@
@@ -686,7 +686,7 @@ index f9bd19c..afe62ef 100644
      8235, 45378, 61861, 23858, 42241, 27301, 23697, 15333, 52828, 39161, 46572,
      7478, 11198, 4926, 21736, 23781, 37217, 20323, 32754, 61367, 12882, 35352,
 diff --git a/src/nouveau/compiler/latencies/lib_rs_gen.py b/src/nouveau/compiler/latencies/lib_rs_gen.py
-index c9d1c3f..4ce8400 100644
+index c9d1c3f2e1c..4ce840068d7 100644
 --- a/src/nouveau/compiler/latencies/lib_rs_gen.py
 +++ b/src/nouveau/compiler/latencies/lib_rs_gen.py
 @@ -17,6 +17,13 @@ TEMPLATE_RS = Template("""\
@@ -704,7 +704,7 @@ index c9d1c3f..4ce8400 100644
  pub mod ${mod};
  % endfor
 diff --git a/src/nouveau/compiler/meson.build b/src/nouveau/compiler/meson.build
-index 317ad79..0024840 100644
+index 317ad79fee1..00248407dd0 100644
 --- a/src/nouveau/compiler/meson.build
 +++ b/src/nouveau/compiler/meson.build
 @@ -9,6 +9,12 @@ dep_paste = dependency('paste',
@@ -819,7 +819,7 @@ index 317ad79..0024840 100644
    gnu_symbol_visibility : 'hidden',
  )
 diff --git a/src/nouveau/compiler/nak/api.rs b/src/nouveau/compiler/nak/api.rs
-index 527579c..50327f5 100644
+index 527579c5ce5..50327f59f22 100644
 --- a/src/nouveau/compiler/nak/api.rs
 +++ b/src/nouveau/compiler/nak/api.rs
 @@ -1,6 +1,9 @@
@@ -947,7 +947,7 @@ index 527579c..50327f5 100644
      }
  }
 diff --git a/src/nouveau/compiler/nak/assign_regs.rs b/src/nouveau/compiler/nak/assign_regs.rs
-index 82de401..824e0d0 100644
+index 82de4014b12..824e0d00078 100644
 --- a/src/nouveau/compiler/nak/assign_regs.rs
 +++ b/src/nouveau/compiler/nak/assign_regs.rs
 @@ -1,14 +1,16 @@
@@ -979,7 +979,7 @@ index 82de401..824e0d0 100644
      }
  
 diff --git a/src/nouveau/compiler/nak/builder.rs b/src/nouveau/compiler/nak/builder.rs
-index 9fb0254..8f20704 100644
+index 9fb0254eb2a..8f20704e5f7 100644
 --- a/src/nouveau/compiler/nak/builder.rs
 +++ b/src/nouveau/compiler/nak/builder.rs
 @@ -1,6 +1,7 @@
@@ -991,7 +991,7 @@ index 9fb0254..8f20704 100644
  
  pub trait Builder {
 diff --git a/src/nouveau/compiler/nak/calc_instr_deps.rs b/src/nouveau/compiler/nak/calc_instr_deps.rs
-index dd1cbea..7fdd666 100644
+index dd1cbeaee72..7fdd6662947 100644
 --- a/src/nouveau/compiler/nak/calc_instr_deps.rs
 +++ b/src/nouveau/compiler/nak/calc_instr_deps.rs
 @@ -1,17 +1,19 @@
@@ -1062,7 +1062,7 @@ index dd1cbea..7fdd666 100644
              match self.map.entry(*k) {
                  Entry::Vacant(vacant_entry) => {
 diff --git a/src/nouveau/compiler/nak/const_tracker.rs b/src/nouveau/compiler/nak/const_tracker.rs
-index 3273522..673a790 100644
+index 32735220fee..673a79041d4 100644
 --- a/src/nouveau/compiler/nak/const_tracker.rs
 +++ b/src/nouveau/compiler/nak/const_tracker.rs
 @@ -3,7 +3,7 @@
@@ -1075,7 +1075,7 @@ index 3273522..673a790 100644
  pub struct ConstTracker {
      map: FxHashMap<SSAValue, SrcRef>,
 diff --git a/src/nouveau/compiler/nak/from_nir.rs b/src/nouveau/compiler/nak/from_nir.rs
-index 04e618a..8bf0804 100644
+index 04e618a8074..8bf08041051 100644
 --- a/src/nouveau/compiler/nak/from_nir.rs
 +++ b/src/nouveau/compiler/nak/from_nir.rs
 @@ -3,6 +3,8 @@
@@ -1228,7 +1228,7 @@ index 04e618a..8bf0804 100644
          for i in 0..cfg.len() {
              if cfg[i].falls_through() {
 diff --git a/src/nouveau/compiler/nak/hw_runner.rs b/src/nouveau/compiler/nak/hw_runner.rs
-index f8a1414..d62b926 100644
+index f8a14142978..d62b926b433 100644
 --- a/src/nouveau/compiler/nak/hw_runner.rs
 +++ b/src/nouveau/compiler/nak/hw_runner.rs
 @@ -1,6 +1,7 @@
@@ -1371,7 +1371,7 @@ index f8a1414..d62b926 100644
          }
  
 diff --git a/src/nouveau/compiler/nak/hw_tests.rs b/src/nouveau/compiler/nak/hw_tests.rs
-index bb6e6d8..79001bd 100644
+index bb6e6d8d5aa..79001bde705 100644
 --- a/src/nouveau/compiler/nak/hw_tests.rs
 +++ b/src/nouveau/compiler/nak/hw_tests.rs
 @@ -1,6 +1,8 @@
@@ -1457,7 +1457,7 @@ index bb6e6d8..79001bd 100644
              check(&data)?;
          }
 diff --git a/src/nouveau/compiler/nak/ir.rs b/src/nouveau/compiler/nak/ir.rs
-index 29e3c45..5065069 100644
+index 29e3c457339..50650694f95 100644
 --- a/src/nouveau/compiler/nak/ir.rs
 +++ b/src/nouveau/compiler/nak/ir.rs
 @@ -4,6 +4,9 @@
@@ -1606,7 +1606,7 @@ index 29e3c45..5065069 100644
      /// A phi node
      ///
 diff --git a/src/nouveau/compiler/nak/legalize.rs b/src/nouveau/compiler/nak/legalize.rs
-index bc7e893..0c10570 100644
+index bc7e893f7c4..0c10570827a 100644
 --- a/src/nouveau/compiler/nak/legalize.rs
 +++ b/src/nouveau/compiler/nak/legalize.rs
 @@ -1,12 +1,13 @@
@@ -1688,7 +1688,7 @@ index bc7e893..0c10570 100644
              self.push_op(OpIAdd3 {
                  srcs: [Src::ZERO, old_src, Src::ZERO],
 diff --git a/src/nouveau/compiler/nak/lib.rs b/src/nouveau/compiler/nak/lib.rs
-index 55cb3e1..cebd70e 100644
+index 55cb3e17d16..cebd70ec803 100644
 --- a/src/nouveau/compiler/nak/lib.rs
 +++ b/src/nouveau/compiler/nak/lib.rs
 @@ -1,6 +1,79 @@
@@ -1772,7 +1772,7 @@ index 55cb3e1..cebd70e 100644
  mod assign_regs;
  mod builder;
 diff --git a/src/nouveau/compiler/nak/liveness.rs b/src/nouveau/compiler/nak/liveness.rs
-index de87d99..4efc24b 100644
+index de87d99841b..4efc24b6b5c 100644
 --- a/src/nouveau/compiler/nak/liveness.rs
 +++ b/src/nouveau/compiler/nak/liveness.rs
 @@ -1,12 +1,13 @@
@@ -1792,7 +1792,7 @@ index de87d99..4efc24b 100644
  #[derive(Clone, Default)]
  pub struct LiveSet {
 diff --git a/src/nouveau/compiler/nak/lower_copy_swap.rs b/src/nouveau/compiler/nak/lower_copy_swap.rs
-index 19e7f71..981b882 100644
+index 19e7f7178fe..981b882a944 100644
 --- a/src/nouveau/compiler/nak/lower_copy_swap.rs
 +++ b/src/nouveau/compiler/nak/lower_copy_swap.rs
 @@ -6,7 +6,7 @@ use crate::{
@@ -1805,7 +1805,7 @@ index 19e7f71..981b882 100644
  struct LowerCopySwap {
      slm_start: u32,
 diff --git a/src/nouveau/compiler/nak/lower_par_copies.rs b/src/nouveau/compiler/nak/lower_par_copies.rs
-index 3cb0b68..69afcde 100644
+index 3cb0b68be82..69afcde317c 100644
 --- a/src/nouveau/compiler/nak/lower_par_copies.rs
 +++ b/src/nouveau/compiler/nak/lower_par_copies.rs
 @@ -1,12 +1,13 @@
@@ -1824,7 +1824,7 @@ index 3cb0b68..69afcde 100644
  struct CopyNode {
      num_reads: usize,
 diff --git a/src/nouveau/compiler/nak/nvdisasm_tests.rs b/src/nouveau/compiler/nak/nvdisasm_tests.rs
-index fbcf7c8..dae4d50 100644
+index fbcf7c82013..dae4d5056b8 100644
 --- a/src/nouveau/compiler/nak/nvdisasm_tests.rs
 +++ b/src/nouveau/compiler/nak/nvdisasm_tests.rs
 @@ -1,6 +1,8 @@
@@ -1880,7 +1880,7 @@ index fbcf7c8..dae4d50 100644
          if stdout.contains("cuda_12") {
              &[70, 75, 80, 86, 89, 90, 100, 120]
 diff --git a/src/nouveau/compiler/nak/opt_bar_prop.rs b/src/nouveau/compiler/nak/opt_bar_prop.rs
-index 568c280..bcb50b7 100644
+index 568c2800e6f..bcb50b7dfd5 100644
 --- a/src/nouveau/compiler/nak/opt_bar_prop.rs
 +++ b/src/nouveau/compiler/nak/opt_bar_prop.rs
 @@ -1,11 +1,12 @@
@@ -1898,7 +1898,7 @@ index 568c280..bcb50b7 100644
  struct PhiMap {
      phi_ssa: FxHashMap<Phi, Vec<SSAValue>>,
 diff --git a/src/nouveau/compiler/nak/opt_copy_prop.rs b/src/nouveau/compiler/nak/opt_copy_prop.rs
-index f692228..12ae3c3 100644
+index f6922288019..12ae3c304c0 100644
 --- a/src/nouveau/compiler/nak/opt_copy_prop.rs
 +++ b/src/nouveau/compiler/nak/opt_copy_prop.rs
 @@ -3,7 +3,7 @@
@@ -1911,7 +1911,7 @@ index f692228..12ae3c3 100644
  enum CBufRule {
      Yes,
 diff --git a/src/nouveau/compiler/nak/opt_crs.rs b/src/nouveau/compiler/nak/opt_crs.rs
-index d9cc3ef..413d2e5 100644
+index d9cc3ef37c6..413d2e529c4 100644
 --- a/src/nouveau/compiler/nak/opt_crs.rs
 +++ b/src/nouveau/compiler/nak/opt_crs.rs
 @@ -3,7 +3,7 @@
@@ -1924,7 +1924,7 @@ index d9cc3ef..413d2e5 100644
  fn opt_crs(f: &mut Function) {
      let mut live_targets: FxHashSet<Label> = Default::default();
 diff --git a/src/nouveau/compiler/nak/opt_instr_sched_common.rs b/src/nouveau/compiler/nak/opt_instr_sched_common.rs
-index 2d8be48..95f84ea 100644
+index 2d8be486f6d..95f84eab407 100644
 --- a/src/nouveau/compiler/nak/opt_instr_sched_common.rs
 +++ b/src/nouveau/compiler/nak/opt_instr_sched_common.rs
 @@ -1,12 +1,18 @@
@@ -1987,7 +1987,7 @@ index 2d8be48..95f84ea 100644
  pub fn save_graphviz(
      instrs: &[Box<Instr>],
 diff --git a/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs b/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
-index 8f5ce6b..6817311 100644
+index 8f5ce6be000..6817311ecde 100644
 --- a/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
 +++ b/src/nouveau/compiler/nak/opt_instr_sched_postpass.rs
 @@ -1,13 +1,15 @@
@@ -2037,7 +2037,7 @@ index 8f5ce6b..6817311 100644
              block.instrs = instrs.collect();
              assert_eq!(orig_instr_count, block.instrs.len());
 diff --git a/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs b/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
-index 32652ee..a2d1cea 100644
+index 32652eeb4b2..a2d1cea24a5 100644
 --- a/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
 +++ b/src/nouveau/compiler/nak/opt_instr_sched_prepass.rs
 @@ -1,6 +1,7 @@
@@ -2108,7 +2108,7 @@ index 32652ee..a2d1cea 100644
                  let starts_block = match instr.op {
                      Op::PhiDsts(_) => true,
 diff --git a/src/nouveau/compiler/nak/opt_jump_thread.rs b/src/nouveau/compiler/nak/opt_jump_thread.rs
-index 1b73425..abad2d9 100644
+index 1b734258ea8..abad2d98aee 100644
 --- a/src/nouveau/compiler/nak/opt_jump_thread.rs
 +++ b/src/nouveau/compiler/nak/opt_jump_thread.rs
 @@ -4,7 +4,8 @@
@@ -2131,7 +2131,7 @@ index 1b73425..abad2d9 100644
  
  /// Replace jumps to the following block with fall-through
 diff --git a/src/nouveau/compiler/nak/opt_lop.rs b/src/nouveau/compiler/nak/opt_lop.rs
-index 416784e..7d7b8f2 100644
+index 416784e0885..7d7b8f20a3d 100644
 --- a/src/nouveau/compiler/nak/opt_lop.rs
 +++ b/src/nouveau/compiler/nak/opt_lop.rs
 @@ -3,8 +3,8 @@
@@ -2146,7 +2146,7 @@ index 416784e..7d7b8f2 100644
  struct LopEntry {
      op: LogicOp3,
 diff --git a/src/nouveau/compiler/nak/opt_out.rs b/src/nouveau/compiler/nak/opt_out.rs
-index d80b1aa..cf75aeb 100644
+index d80b1aaae81..cf75aebd713 100644
 --- a/src/nouveau/compiler/nak/opt_out.rs
 +++ b/src/nouveau/compiler/nak/opt_out.rs
 @@ -1,6 +1,7 @@
@@ -2158,7 +2158,7 @@ index d80b1aa..cf75aeb 100644
      api::{GetDebugFlags, DEBUG},
      ir::*,
 diff --git a/src/nouveau/compiler/nak/opt_prmt.rs b/src/nouveau/compiler/nak/opt_prmt.rs
-index 416452c..ac97692 100644
+index 416452ce966..ac97692ae94 100644
 --- a/src/nouveau/compiler/nak/opt_prmt.rs
 +++ b/src/nouveau/compiler/nak/opt_prmt.rs
 @@ -5,7 +5,7 @@
@@ -2171,7 +2171,7 @@ index 416452c..ac97692 100644
  struct PrmtSrcs {
      srcs: [SrcRef; 2],
 diff --git a/src/nouveau/compiler/nak/opt_uniform_instrs.rs b/src/nouveau/compiler/nak/opt_uniform_instrs.rs
-index e34f156..c135ba3 100644
+index e34f15694d8..c135ba37aed 100644
 --- a/src/nouveau/compiler/nak/opt_uniform_instrs.rs
 +++ b/src/nouveau/compiler/nak/opt_uniform_instrs.rs
 @@ -3,7 +3,7 @@
@@ -2184,7 +2184,7 @@ index e34f156..c135ba3 100644
  fn should_lower_to_warp(
      sm: &ShaderModelInfo,
 diff --git a/src/nouveau/compiler/nak/qmd.rs b/src/nouveau/compiler/nak/qmd.rs
-index d91d6a3..e7a75d0 100644
+index d91d6a32841..e7a75d0d624 100644
 --- a/src/nouveau/compiler/nak/qmd.rs
 +++ b/src/nouveau/compiler/nak/qmd.rs
 @@ -3,7 +3,7 @@
@@ -2206,7 +2206,7 @@ index d91d6a3..e7a75d0 100644
  ) {
      assert!(!dev.is_null());
 diff --git a/src/nouveau/compiler/nak/reg_tracker.rs b/src/nouveau/compiler/nak/reg_tracker.rs
-index 854e34e..d931792 100644
+index 854e34ef7f8..d9317925013 100644
 --- a/src/nouveau/compiler/nak/reg_tracker.rs
 +++ b/src/nouveau/compiler/nak/reg_tracker.rs
 @@ -1,11 +1,12 @@
@@ -2234,7 +2234,7 @@ index 854e34e..d931792 100644
          for (k, v) in other.regs.iter() {
              match self.regs.entry(*k) {
 diff --git a/src/nouveau/compiler/nak/repair_ssa.rs b/src/nouveau/compiler/nak/repair_ssa.rs
-index 4980e75..39e5fb3 100644
+index 4980e754024..39e5fb3dc0e 100644
 --- a/src/nouveau/compiler/nak/repair_ssa.rs
 +++ b/src/nouveau/compiler/nak/repair_ssa.rs
 @@ -1,14 +1,16 @@
@@ -2259,7 +2259,7 @@ index 4980e75..39e5fb3 100644
  struct PhiTracker {
      phi: Phi,
 diff --git a/src/nouveau/compiler/nak/sm20.rs b/src/nouveau/compiler/nak/sm20.rs
-index ada7faa..699e913 100644
+index ada7faac0c8..699e9132c3d 100644
 --- a/src/nouveau/compiler/nak/sm20.rs
 +++ b/src/nouveau/compiler/nak/sm20.rs
 @@ -1,6 +1,7 @@
@@ -2284,7 +2284,7 @@ index ada7faa..699e913 100644
  pub struct ShaderModel20 {
      sm: u8,
 diff --git a/src/nouveau/compiler/nak/sm30_instr_latencies.rs b/src/nouveau/compiler/nak/sm30_instr_latencies.rs
-index 344dd32..ee78ec2 100644
+index 344dd327002..ee78ec234a0 100644
 --- a/src/nouveau/compiler/nak/sm30_instr_latencies.rs
 +++ b/src/nouveau/compiler/nak/sm30_instr_latencies.rs
 @@ -1,5 +1,6 @@
@@ -2296,7 +2296,7 @@ index 344dd32..ee78ec2 100644
  use crate::ir::{Instr, InstrDeps, Label, Op, OpNop, Shader};
  
 diff --git a/src/nouveau/compiler/nak/sm32.rs b/src/nouveau/compiler/nak/sm32.rs
-index 04f0d4f..536b68a 100644
+index 04f0d4f8f27..536b68a2b46 100644
 --- a/src/nouveau/compiler/nak/sm32.rs
 +++ b/src/nouveau/compiler/nak/sm32.rs
 @@ -1,6 +1,7 @@
@@ -2319,7 +2319,7 @@ index 04f0d4f..536b68a 100644
  pub struct ShaderModel32 {
      sm: u8,
 diff --git a/src/nouveau/compiler/nak/sm50.rs b/src/nouveau/compiler/nak/sm50.rs
-index c17a0ec..cdd4138 100644
+index c17a0ecd9d3..cdd413882ed 100644
 --- a/src/nouveau/compiler/nak/sm50.rs
 +++ b/src/nouveau/compiler/nak/sm50.rs
 @@ -1,14 +1,15 @@
@@ -2341,7 +2341,7 @@ index c17a0ec..cdd4138 100644
  pub fn instr_latency(_sm: u8, op: &Op, dst_idx: usize) -> u32 {
      let file = match &op.dsts_as_slice()[dst_idx] {
 diff --git a/src/nouveau/compiler/nak/sm70.rs b/src/nouveau/compiler/nak/sm70.rs
-index 40e01bd..ea0394d 100644
+index 40e01bdc620..ea0394daf38 100644
 --- a/src/nouveau/compiler/nak/sm70.rs
 +++ b/src/nouveau/compiler/nak/sm70.rs
 @@ -1,6 +1,7 @@
@@ -2353,7 +2353,7 @@ index 40e01bd..ea0394d 100644
  use crate::legalize::LegalizeBuilder;
  use crate::sm120_instr_latencies::SM120Latency;
 diff --git a/src/nouveau/compiler/nak/sm70_encode.rs b/src/nouveau/compiler/nak/sm70_encode.rs
-index 69c2f69..670b004 100644
+index 69c2f6958ca..670b0046220 100644
 --- a/src/nouveau/compiler/nak/sm70_encode.rs
 +++ b/src/nouveau/compiler/nak/sm70_encode.rs
 @@ -1,6 +1,7 @@
@@ -2478,7 +2478,7 @@ index 69c2f69..670b004 100644
                      *lop = LogicOp3::new_lut(&|x, y, z| lop.eval(x, z, y))
                  }
 diff --git a/src/nouveau/compiler/nak/sph.rs b/src/nouveau/compiler/nak/sph.rs
-index e01a6cb..e6ad412 100644
+index e01a6cbb20c..e6ad41215dc 100644
 --- a/src/nouveau/compiler/nak/sph.rs
 +++ b/src/nouveau/compiler/nak/sph.rs
 @@ -12,7 +12,7 @@ use bitview::{
@@ -2491,7 +2491,7 @@ index e01a6cb..e6ad412 100644
  pub const _SPHV3_SHADER_HEADER_SIZE: usize = 20;
  pub const SPHV4_SHADER_HEADER_SIZE: usize = 32;
 diff --git a/src/nouveau/compiler/nak/spill_values.rs b/src/nouveau/compiler/nak/spill_values.rs
-index d211730..258c628 100644
+index d211730c3f9..258c6281396 100644
 --- a/src/nouveau/compiler/nak/spill_values.rs
 +++ b/src/nouveau/compiler/nak/spill_values.rs
 @@ -1,6 +1,7 @@
@@ -2518,7 +2518,7 @@ index d211730..258c628 100644
  #[derive(Default)]
  struct PhiDstMap {
 diff --git a/src/nouveau/compiler/nak/ssa_value.rs b/src/nouveau/compiler/nak/ssa_value.rs
-index ba9b75f..84ca692 100644
+index ba9b75fed3b..84ca6921b28 100644
 --- a/src/nouveau/compiler/nak/ssa_value.rs
 +++ b/src/nouveau/compiler/nak/ssa_value.rs
 @@ -1,12 +1,14 @@
@@ -2541,7 +2541,7 @@ index ba9b75f..84ca692 100644
  /// An SSA value
  ///
 diff --git a/src/nouveau/compiler/nak/to_cssa.rs b/src/nouveau/compiler/nak/to_cssa.rs
-index 0032297..0b040b3 100644
+index 00322970a30..0b040b3b243 100644
 --- a/src/nouveau/compiler/nak/to_cssa.rs
 +++ b/src/nouveau/compiler/nak/to_cssa.rs
 @@ -1,13 +1,14 @@
@@ -2609,7 +2609,7 @@ index 0032297..0b040b3 100644
                                  dst: tmp.into(),
                                  src: old_src,
 diff --git a/src/nouveau/compiler/nak/union_find.rs b/src/nouveau/compiler/nak/union_find.rs
-index 785f3f1..469e614 100644
+index 785f3f1c48a..469e61427e8 100644
 --- a/src/nouveau/compiler/nak/union_find.rs
 +++ b/src/nouveau/compiler/nak/union_find.rs
 @@ -1,8 +1,9 @@
@@ -2640,7 +2640,7 @@ index 785f3f1..469e614 100644
      fn ceil_log2(x: usize) -> u32 {
          assert!(x > 0);
 diff --git a/src/nouveau/compiler/nak_bindings.h b/src/nouveau/compiler/nak_bindings.h
-index e766da1..2787883 100644
+index e766da19f98..278788317c7 100644
 --- a/src/nouveau/compiler/nak_bindings.h
 +++ b/src/nouveau/compiler/nak_bindings.h
 @@ -5,6 +5,17 @@
@@ -2667,7 +2667,7 @@ index e766da1..2787883 100644
  };
 +#endif /* NAK_BINDINGS_HW_TESTS */
 diff --git a/src/nouveau/headers/lib_rs_gen.py b/src/nouveau/headers/lib_rs_gen.py
-index 71a40c3..1b503c6 100644
+index 71a40c3fe18..1b503c6953f 100644
 --- a/src/nouveau/headers/lib_rs_gen.py
 +++ b/src/nouveau/headers/lib_rs_gen.py
 @@ -23,8 +23,18 @@ TEMPLATE_RS = Template("""\
@@ -2690,7 +2690,7 @@ index 71a40c3..1b503c6 100644
  % if m.present:
  mod nvh_${'_'.join(path)};
 diff --git a/src/nouveau/headers/nv_push_rs/lib.rs b/src/nouveau/headers/nv_push_rs/lib.rs
-index 077358f..d34530a 100644
+index 077358fbaee..d34530a454a 100644
 --- a/src/nouveau/headers/nv_push_rs/lib.rs
 +++ b/src/nouveau/headers/nv_push_rs/lib.rs
 @@ -1,6 +1,21 @@
@@ -2725,7 +2725,7 @@ index 077358f..d34530a 100644
  
      fn deref(&self) -> &[u32] {
 diff --git a/src/nouveau/headers/struct_parser.py b/src/nouveau/headers/struct_parser.py
-index 06e3da1..84b26a9 100644
+index 06e3da18411..84b26a99221 100644
 --- a/src/nouveau/headers/struct_parser.py
 +++ b/src/nouveau/headers/struct_parser.py
 @@ -22,7 +22,7 @@ TEMPLATE_RS = Template("""\
@@ -2738,7 +2738,7 @@ index 06e3da1..84b26a9 100644
  % for s in structs:
  pub const ${s.name}_MAX_BIT: usize = ${s.max_bit};
 diff --git a/src/nouveau/meson.build b/src/nouveau/meson.build
-index 89b50de..9c98c65 100644
+index 89b50de511b..9c98c65d2ec 100644
 --- a/src/nouveau/meson.build
 +++ b/src/nouveau/meson.build
 @@ -8,6 +8,13 @@ if with_nouveau_vk
@@ -2756,7 +2756,7 @@ index 89b50de..9c98c65 100644
  if with_tools.contains('drm-shim')
    subdir('drm-shim')
 diff --git a/src/nouveau/nil/copy.rs b/src/nouveau/nil/copy.rs
-index fff1a8c..d70d9e5 100644
+index fff1a8ca91a..d70d9e5b9f2 100644
 --- a/src/nouveau/nil/copy.rs
 +++ b/src/nouveau/nil/copy.rs
 @@ -4,8 +4,8 @@
@@ -2855,7 +2855,7 @@ index fff1a8c..d70d9e5 100644
      }
  }
 diff --git a/src/nouveau/nil/descriptor.rs b/src/nouveau/nil/descriptor.rs
-index 4b6aa66..5fd72bf 100644
+index 4b6aa660ef1..5fd72bf2462 100644
 --- a/src/nouveau/nil/descriptor.rs
 +++ b/src/nouveau/nil/descriptor.rs
 @@ -18,7 +18,7 @@ use nvidia_headers::classes::clc397::VOLTA_A;
@@ -2885,7 +2885,7 @@ index 4b6aa66..5fd72bf 100644
      }
  }
 diff --git a/src/nouveau/nil/extent.rs b/src/nouveau/nil/extent.rs
-index d498c2a..ed7b06c 100644
+index d498c2ab846..ed7b06c99af 100644
 --- a/src/nouveau/nil/extent.rs
 +++ b/src/nouveau/nil/extent.rs
 @@ -6,7 +6,7 @@ use crate::image::SampleLayout;
@@ -3006,7 +3006,7 @@ index d498c2a..ed7b06c 100644
      }
  }
 diff --git a/src/nouveau/nil/image.rs b/src/nouveau/nil/image.rs
-index 52acda8..37097c6 100644
+index 52acda8a633..37097c65f55 100644
 --- a/src/nouveau/nil/image.rs
 +++ b/src/nouveau/nil/image.rs
 @@ -10,7 +10,6 @@ use crate::Minify;
@@ -3114,7 +3114,7 @@ index 52acda8..37097c6 100644
  
          image
 diff --git a/src/nouveau/nil/lib.rs b/src/nouveau/nil/lib.rs
-index 64044be..2929289 100644
+index 64044be1f6f..292928903c4 100644
 --- a/src/nouveau/nil/lib.rs
 +++ b/src/nouveau/nil/lib.rs
 @@ -1,6 +1,20 @@
@@ -3147,7 +3147,7 @@ index 64044be..2929289 100644
      }
  }
 diff --git a/src/nouveau/nil/meson.build b/src/nouveau/nil/meson.build
-index eee265d..8e58ff3 100644
+index eee265d6df5..8e58ff3b671 100644
 --- a/src/nouveau/nil/meson.build
 +++ b/src/nouveau/nil/meson.build
 @@ -47,6 +47,9 @@ _nil_bindings_rs = rust.bindgen(
@@ -3189,7 +3189,7 @@ index eee265d..8e58ff3 100644
    sources : [_nil_h],
  )
 diff --git a/src/nouveau/nil/modifiers.rs b/src/nouveau/nil/modifiers.rs
-index ba177e3..9a68f8d 100644
+index ba177e39040..9a68f8db1d6 100644
 --- a/src/nouveau/nil/modifiers.rs
 +++ b/src/nouveau/nil/modifiers.rs
 @@ -401,6 +401,6 @@ pub extern "C" fn nil_select_best_drm_format_mod(
@@ -3201,7 +3201,7 @@ index ba177e3..9a68f8d 100644
      select_best_drm_format_mod(dev, format, modifiers)
  }
 diff --git a/src/nouveau/nil/tiling.rs b/src/nouveau/nil/tiling.rs
-index 8f14245..8377295 100644
+index 8f14245d533..8377295c08b 100644
 --- a/src/nouveau/nil/tiling.rs
 +++ b/src/nouveau/nil/tiling.rs
 @@ -266,8 +266,8 @@ impl Tiling {
@@ -3216,7 +3216,7 @@ index 8f14245..8377295 100644
      }
  
 diff --git a/src/nouveau/nil/zcull.rs b/src/nouveau/nil/zcull.rs
-index 6b7a84e..ee7c670 100644
+index 6b7a84e3b86..ee7c670b2ff 100644
 --- a/src/nouveau/nil/zcull.rs
 +++ b/src/nouveau/nil/zcull.rs
 @@ -174,7 +174,7 @@ mod tests {
@@ -3229,7 +3229,7 @@ index 6b7a84e..ee7c670 100644
                  subregion_id: i.try_into().unwrap(),
                  aliquots: subregion_aliquots,
 diff --git a/src/nouveau/rust/bitview/lib.rs b/src/nouveau/rust/bitview/lib.rs
-index bc5d5e8..a2a38f5 100644
+index bc5d5e8bb1e..a2a38f582e8 100644
 --- a/src/nouveau/rust/bitview/lib.rs
 +++ b/src/nouveau/rust/bitview/lib.rs
 @@ -1,9 +1,23 @@
@@ -3259,7 +3259,7 @@ index bc5d5e8..a2a38f5 100644
      fn bits(&self) -> usize;
 diff --git a/src/nouveau/rust_runtime/lib.rs b/src/nouveau/rust_runtime/lib.rs
 new file mode 100644
-index 0000000..5a691b3
+index 00000000000..5a691b3afb7
 --- /dev/null
 +++ b/src/nouveau/rust_runtime/lib.rs
 @@ -0,0 +1,83 @@
@@ -3348,7 +3348,7 @@ index 0000000..5a691b3
 +}
 diff --git a/src/nouveau/rust_runtime/meson.build b/src/nouveau/rust_runtime/meson.build
 new file mode 100644
-index 0000000..128b715
+index 00000000000..128b715bc50
 --- /dev/null
 +++ b/src/nouveau/rust_runtime/meson.build
 @@ -0,0 +1,25 @@
@@ -3378,7 +3378,7 @@ index 0000000..128b715
 +  link_with : _libnouveau_rust_runtime,
 +)
 diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
-index 37d8709..afaee53 100644
+index 37d8709fd01..afaee5319c1 100644
 --- a/src/nouveau/vulkan/meson.build
 +++ b/src/nouveau/vulkan/meson.build
 @@ -122,6 +122,10 @@ nvk_deps = [
@@ -3393,7 +3393,7 @@ index 37d8709..afaee53 100644
    idep_mesautil,
    idep_nouveau_mme,
 diff --git a/subprojects/packagefiles/hashbrown-0.14-rs/meson.build b/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
-index 04ad19f..3c3703c 100644
+index 04ad19f612c..3c3703ca155 100644
 --- a/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
 +++ b/subprojects/packagefiles/hashbrown-0.14-rs/meson.build
 @@ -22,3 +22,20 @@ lib = static_library(
@@ -3418,7 +3418,7 @@ index 04ad19f..3c3703c 100644
 +  link_with : [lib_host],
 +)
 diff --git a/subprojects/packagefiles/rustc-hash-2-rs/meson.build b/subprojects/packagefiles/rustc-hash-2-rs/meson.build
-index 55b9549..4e2c37b 100644
+index 55b9549e04e..4e2c37b86f9 100644
 --- a/subprojects/packagefiles/rustc-hash-2-rs/meson.build
 +++ b/subprojects/packagefiles/rustc-hash-2-rs/meson.build
 @@ -6,9 +6,12 @@ project(

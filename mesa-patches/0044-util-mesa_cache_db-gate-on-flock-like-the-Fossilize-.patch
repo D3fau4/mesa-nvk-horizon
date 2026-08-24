@@ -1,7 +1,7 @@
-From e7f56de7df7f10bfefb658e97721579750a03ed9 Mon Sep 17 00:00:00 2001
+From cc42464d5ee002420680c4c7ad3441f26cfab3b5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:39:56 +0000
-Subject: [PATCH 44/49] util/mesa_cache_db: gate on flock, like the Fossilize
+Subject: [PATCH 44/51] util/mesa_cache_db: gate on flock, like the Fossilize
  database beside it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -56,7 +56,7 @@ Upstream: yes — the condition is a libc trait, written the way the file
  2 files changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
-index 0daac81..ed10c27 100644
+index 0daac81de12..ed10c27a5f5 100644
 --- a/src/util/mesa_cache_db.c
 +++ b/src/util/mesa_cache_db.c
 @@ -9,7 +9,7 @@
@@ -75,7 +75,7 @@ index 0daac81..ed10c27 100644
 -#endif /* DETECT_OS_WINDOWS */
 +#endif /* DETECT_OS_WINDOWS == 0 && HAVE_FLOCK */
 diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
-index f6097d8..6fd4f7c 100644
+index f6097d81271..6fd4f7c735a 100644
 --- a/src/util/mesa_cache_db.h
 +++ b/src/util/mesa_cache_db.h
 @@ -39,7 +39,7 @@ struct mesa_cache_db {

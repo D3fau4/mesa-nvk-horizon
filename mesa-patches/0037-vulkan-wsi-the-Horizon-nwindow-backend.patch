@@ -1,7 +1,7 @@
-From 526f2faa13fd1e4377ff655a0890d3db0af62b1e Mon Sep 17 00:00:00 2001
+From 3043a464ca2ce534135fd4d7b71df4b406579085 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:56:30 +0000
-Subject: [PATCH 37/49] vulkan/wsi: the Horizon (nwindow) backend
+Subject: [PATCH 37/51] vulkan/wsi: the Horizon (nwindow) backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -109,7 +109,7 @@ mesa-patches/'s own git log):
  create mode 100644 src/vulkan/wsi/wsi_horizon.c
 
 diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
-index 38a83d0..e7c9e3f 100644
+index 38a83d08eab..e7c9e3fbac0 100644
 --- a/src/vulkan/wsi/meson.build
 +++ b/src/vulkan/wsi/meson.build
 @@ -37,6 +37,10 @@ if with_platform_macos
@@ -124,7 +124,7 @@ index 38a83d0..e7c9e3f 100644
    files_vulkan_wsi += files('wsi_common_display.c')
  endif
 diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
-index 4d5517d..98bc213 100644
+index 4d5517d7244..98bc213aa7b 100644
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
 @@ -265,6 +265,12 @@ wsi_device_init(struct wsi_device *wsi,
@@ -192,7 +192,7 @@ index 4d5517d..98bc213 100644
     case WSI_IMAGE_TYPE_METAL: {
        const struct wsi_metal_image_params *metal_params =
 diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
-index 196d17d..60bcea1 100644
+index 196d17d1473..60bcea191c2 100644
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
 @@ -50,6 +50,46 @@ struct wsi_interface;
@@ -280,7 +280,7 @@ index 196d17d..60bcea1 100644
     bool sw;
  
 diff --git a/src/vulkan/wsi/wsi_common_private.h b/src/vulkan/wsi/wsi_common_private.h
-index 0b90eac..107bea3 100644
+index 0b90eacca85..107bea3fa10 100644
 --- a/src/vulkan/wsi/wsi_common_private.h
 +++ b/src/vulkan/wsi/wsi_common_private.h
 @@ -49,6 +49,14 @@ enum wsi_image_type {
@@ -350,7 +350,7 @@ index 0b90eac..107bea3 100644
  
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
 new file mode 100644
-index 0000000..5dc0701
+index 00000000000..5d6d85e2cbd
 --- /dev/null
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -0,0 +1,2401 @@

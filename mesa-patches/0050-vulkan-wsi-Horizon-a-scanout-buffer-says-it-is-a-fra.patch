@@ -1,0 +1,71 @@
+From 747a51635b281cab2f6d1d7f3f0c67185da87b56 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 14:01:11 +0200
+Subject: [PATCH 50/51] vulkan/wsi: Horizon, a scanout buffer says it is a
+ framebuffer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 3 (zero-copy scanout)
+Why: the usage word this backend marshals into every NvGraphicBuffer
+ carried HW_COMPOSER, HW_RENDER and HW_TEXTURE and not HW_FB. Those three
+ describe a buffer the compositor consumes, the GPU draws into and a
+ shader can sample. HW_FB is the one that says the display block itself
+ reads it, which is precisely what a zero-copy swapchain image is for,
+ and it was the only bit of the four left out.
+ A gralloc usage word is a description, not a request, so an incomplete
+ one is not rejected — it is believed. Nothing downstream can recover a
+ bit the producer never claimed.
+Evidence: GRALLOC_USAGE_HW_FB is 0x00001000 in libnx's
+ switch/display/types.h, so the word this backend sends goes from 0xb00
+ to 0x1b00. It reaches the queue through exactly two call sites, and
+ they cannot disagree: nwindowConfigureBuffer records it from the first
+ registered buffer into NWindow::usage, and wsi_horizon_try_dequeue
+ passes that same NWindow::usage to every bqDequeueBuffer.
+ NOT MEASURED ON HARDWARE. No console has run this. The claim being made
+ is about which bit describes a scanout buffer, not about an observed
+ change in behaviour, and if the queue were to refuse the bit it would
+ do so at registration or at the first dequeue — at swapchain creation,
+ loudly — rather than by handing back a buffer the display misreads.
+Upstream: no — the whole file is Horizon-only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MzkCx3cg9dXh1ncFb5ktHz
+---
+ src/vulkan/wsi/wsi_horizon.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 6a2f1155e3c..14f021926a5 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -83,9 +83,24 @@
+  * compositor expects to find, not ours to choose. */
+ #define WSI_HORIZON_GB_MAGIC 0xDAFFCAFFu
+ #define WSI_HORIZON_GB_PID   42u
++/* GRALLOC_USAGE_HW_FB is the bit that says "this buffer is a
++ * framebuffer", i.e. one the display block itself reads. Every other bit
++ * describing what this buffer is for was here from the start —
++ * HW_COMPOSER because the compositor consumes it, HW_RENDER because the
++ * GPU draws into it, HW_TEXTURE because it can be sampled — and that one
++ * was not, which made the usage word describe a buffer for compositing
++ * rather than one for scanout.
++ *
++ * The same word goes to nwindowConfigureBuffer and, through
++ * NWindow::usage, to every bqDequeueBuffer, so producer and consumer
++ * cannot disagree about it. If the queue ever refused the bit, it would
++ * refuse it at registration or at the first dequeue — loudly, at
++ * swapchain creation — rather than by handing back a buffer the display
++ * reads wrongly. */
+ #define WSI_HORIZON_GB_USAGE (GRALLOC_USAGE_HW_COMPOSER | \
+                               GRALLOC_USAGE_HW_RENDER |   \
+-                              GRALLOC_USAGE_HW_TEXTURE)
++                              GRALLOC_USAGE_HW_TEXTURE |  \
++                              GRALLOC_USAGE_HW_FB)
+ 
+ /* The page-table entry kind an uncompressed colour surface gets on this
+  * chip, and the only one the display block's "generic 16Bx2" sector
+-- 
+2.43.0
+

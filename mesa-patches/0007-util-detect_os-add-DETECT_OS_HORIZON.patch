@@ -1,7 +1,7 @@
-From 936f4d56b46afdd243101e97c2a7c9ca51c1fcb1 Mon Sep 17 00:00:00 2001
+From 0f75eaacdd5f9829c94dba0410f72fb491d54acc Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:37:53 +0000
-Subject: [PATCH 07/49] util/detect_os: add DETECT_OS_HORIZON
+Subject: [PATCH 07/51] util/detect_os: add DETECT_OS_HORIZON
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -42,7 +42,7 @@ Upstream: yes, once a Horizon port exists to justify it — it is
  1 file changed, 16 insertions(+)
 
 diff --git a/src/util/detect_os.h b/src/util/detect_os.h
-index 7403724..b59b6ce 100644
+index 74037240c74..b59b6ce141b 100644
 --- a/src/util/detect_os.h
 +++ b/src/util/detect_os.h
 @@ -91,6 +91,19 @@

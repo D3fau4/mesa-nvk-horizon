@@ -1,7 +1,7 @@
-From 51b0b942fdf9a84ce7ca5d68337ad064434f8221 Mon Sep 17 00:00:00 2001
+From 7e30496360a40ce90ecb20275ed8c4dfc91d31c0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:51:36 +0000
-Subject: [PATCH 13/49] meson: ask for posix_memalign with its declaring header
+Subject: [PATCH 13/51] meson: ask for posix_memalign with its declaring header
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -61,7 +61,7 @@ Upstream: yes — it is a property of the C library, tested through the
  1 file changed, 9 insertions(+), 8 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index ba7917e..b95e396 100644
+index ba7917e2a4b..b95e3968df0 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1646,14 +1646,15 @@ if cc.has_header_symbol('math.h', 'issignaling',

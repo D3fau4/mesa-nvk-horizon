@@ -1,7 +1,7 @@
-From 1da573746d6f825b970476de8c26bba8059f282b Mon Sep 17 00:00:00 2001
+From b37e29839f50247625aaa0fe87d49eded61ec1a9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:30:08 +0000
-Subject: [PATCH 03/49] c11/threads_posix: detect pthread_mutex_timedlock
+Subject: [PATCH 03/51] c11/threads_posix: detect pthread_mutex_timedlock
  instead of listing OSes
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -56,7 +56,7 @@ Upstream: yes — it replaces a platform blocklist with the feature test
  2 files changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/meson.build b/meson.build
-index 61862f6..cf7e752 100644
+index 61862f6c0b3..cf7e7520875 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1769,6 +1769,13 @@ if dep_thread.found()
@@ -74,7 +74,7 @@ index 61862f6..cf7e752 100644
  
  with_expat = get_option('expat') \
 diff --git a/src/c11/impl/threads_posix.c b/src/c11/impl/threads_posix.c
-index 6db8c42..1476c01 100644
+index 6db8c42f08c..1476c01da41 100644
 --- a/src/c11/impl/threads_posix.c
 +++ b/src/c11/impl/threads_posix.c
 @@ -19,7 +19,12 @@ Configuration macro:

@@ -1,7 +1,7 @@
-From b38c818f4043e60a88c7e8cf8d9362d4dbb8873a Mon Sep 17 00:00:00 2001
+From e4ad1c98ae17c20f3500e2f666b9058fcc8a7bf3 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:42:04 +0000
-Subject: [PATCH 35/49] nouveau/vk: nvkmd_horizon, a wait on this channel's own
+Subject: [PATCH 35/51] nouveau/vk: nvkmd_horizon, a wait on this channel's own
  work is already done
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -43,7 +43,7 @@ Upstream: no — it is a property of this backend's channel model.
  3 files changed, 55 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 797e267..985c870 100644
+index 4429d227821..4132b4fbcef 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -258,6 +258,13 @@ VkResult nvk_horizon_sync_get_fence(struct vk_sync *sync,
@@ -61,7 +61,7 @@ index 797e267..985c870 100644
                                    struct vk_object_base *log_obj,
                                    enum nvkmd_engines engines,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
-index df58208..e7eb770 100644
+index df58208f702..e7eb770fa16 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
 @@ -60,6 +60,37 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
@@ -103,7 +103,7 @@ index df58208..e7eb770 100644
        assert(type->wait != NULL);
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
-index fe956d7..e222108 100644
+index fe956d7471c..e2221081e27 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 @@ -556,3 +556,20 @@ nvk_horizon_sync_get_fence(struct vk_sync *_sync, uint64_t abs_timeout_ns,

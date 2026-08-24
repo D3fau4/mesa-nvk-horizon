@@ -1,7 +1,7 @@
-From 06afdf4ebe7353a0660112c0774831ff7933c6b9 Mon Sep 17 00:00:00 2001
+From 5bcc7ccb6d956d8b2819d349be09eda6cdbe6099 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:50:39 +0000
-Subject: [PATCH 19/49] nouveau/vk: nvkmd_horizon memory objects, VA heap and
+Subject: [PATCH 19/51] nouveau/vk: nvkmd_horizon memory objects, VA heap and
  bind/unbind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -117,7 +117,7 @@ own git log):
  create mode 100644 src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 
 diff --git a/src/nouveau/vulkan/meson.build b/src/nouveau/vulkan/meson.build
-index 60e2b6c..8599845 100644
+index 60e2b6cb57f..8599845a7fe 100644
 --- a/src/nouveau/vulkan/meson.build
 +++ b/src/nouveau/vulkan/meson.build
 @@ -86,7 +86,9 @@ if host_machine.system() == 'horizon'
@@ -131,7 +131,7 @@ index 60e2b6c..8599845 100644
  else
    nvk_files += files(
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index a87949b..40f55e1 100644
+index a87949b905d..40f55e1ee5d 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -67,6 +67,29 @@ struct nvkmd_horizon_dev {
@@ -185,7 +185,7 @@ index a87949b..40f55e1 100644
   *
   * The mapping is deliberately narrow: horizon_gpu reports what failed,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
-index 14696c0..7720a8a 100644
+index 14696c089fa..7720a8a9af0 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -53,27 +53,7 @@ nvkmd_horizon_dev_get_drm_fd(struct nvkmd_dev *_dev)
@@ -235,7 +235,7 @@ index 14696c0..7720a8a 100644
  
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 new file mode 100644
-index 0000000..f6901f2
+index 00000000000..f6901f2e3ff
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 @@ -0,0 +1,285 @@
@@ -526,7 +526,7 @@ index 0000000..f6901f2
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 new file mode 100644
-index 0000000..70cca2c
+index 00000000000..884e1cb85b1
 --- /dev/null
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -0,0 +1,313 @@

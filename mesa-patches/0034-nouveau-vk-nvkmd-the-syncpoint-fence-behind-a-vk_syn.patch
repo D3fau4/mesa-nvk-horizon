@@ -1,7 +1,7 @@
-From 6be12965d037497eb2a67ae65463f2efc1309812 Mon Sep 17 00:00:00 2001
+From a32733ff6d8c68d1167c84349a647ae7986c187f Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:09:47 +0000
-Subject: [PATCH 34/49] nouveau/vk: nvkmd, the syncpoint fence behind a vk_sync
+Subject: [PATCH 34/51] nouveau/vk: nvkmd, the syncpoint fence behind a vk_sync
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -46,7 +46,7 @@ Upstream: no — a syncpoint fence has no meaning on a DRM kernel driver,
  4 files changed, 146 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index d2aa0b6..797e267 100644
+index bb3cfb02a17..4429d227821 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -244,6 +244,20 @@ void nvk_horizon_sync_set_fence(struct vk_sync *sync,
@@ -71,7 +71,7 @@ index d2aa0b6..797e267 100644
                                    struct vk_object_base *log_obj,
                                    enum nvkmd_engines engines,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 3e8131c..b91a3a6 100644
+index fda3854dcaf..2d5ed9ac206 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -122,11 +122,41 @@ nvkmd_horizon_pdev_get_drm_primary_fd(struct nvkmd_pdev *_pdev)
@@ -117,7 +117,7 @@ index 3e8131c..b91a3a6 100644
  
  static void
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
-index d85c49b..fe956d7 100644
+index d85c49b1ff7..fe956d7471c 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
 @@ -513,3 +513,46 @@ nvk_horizon_sync_set_fence(struct vk_sync *_sync,
@@ -168,7 +168,7 @@ index d85c49b..fe956d7 100644
 +   return VK_SUCCESS;
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
-index bd82905..ee537cd 100644
+index bd82905e95e..ee537cd6630 100644
 --- a/src/nouveau/vulkan/nvkmd/nvkmd.h
 +++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
 @@ -26,6 +26,7 @@ struct nvkmd_va;

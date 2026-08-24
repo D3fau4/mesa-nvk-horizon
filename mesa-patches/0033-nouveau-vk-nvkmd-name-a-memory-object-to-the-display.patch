@@ -1,7 +1,7 @@
-From 8b620071d5d911ca0e00fcca1f89bb8e5232f623 Mon Sep 17 00:00:00 2001
+From cf54293a9c43b6c154f4d5edf45e677d461e3aec Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
-Subject: [PATCH 33/49] nouveau/vk: nvkmd, name a memory object to the display
+Subject: [PATCH 33/51] nouveau/vk: nvkmd, name a memory object to the display
  server
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -41,7 +41,7 @@ Upstream: no — the operation is meaningful only on a platform whose
  2 files changed, 63 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
-index a54b2ed..0d191a4 100644
+index a54b2ed90f5..0d191a4892e 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 @@ -140,6 +140,31 @@ nvkmd_horizon_mem_log_handle(struct nvkmd_mem *_mem)
@@ -85,7 +85,7 @@ index a54b2ed..0d191a4 100644
      * has_overmap and has_dma_buf are false, and nvkmd.h's wrappers
      * assert on that before dispatching.
 diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
-index f33a405..bd82905 100644
+index f33a4051953..bd82905e95e 100644
 --- a/src/nouveau/vulkan/nvkmd/nvkmd.h
 +++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
 @@ -251,6 +251,24 @@ struct nvkmd_mem_ops {

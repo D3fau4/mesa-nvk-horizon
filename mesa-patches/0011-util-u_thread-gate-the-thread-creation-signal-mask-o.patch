@@ -1,7 +1,7 @@
-From 5937dfd961fe61107577a48cfe803972d399dc97 Mon Sep 17 00:00:00 2001
+From c931bbcb6d1c7d3636512428546cbe69346fb96b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:08 +0000
-Subject: [PATCH 11/49] util/u_thread: gate the thread-creation signal mask on
+Subject: [PATCH 11/51] util/u_thread: gate the thread-creation signal mask on
  pthread_sigmask
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -50,7 +50,7 @@ Upstream: yes — it is a libc trait, not an OS name; the fallback is the
  2 files changed, 18 insertions(+), 1 deletion(-)
 
 diff --git a/meson.build b/meson.build
-index 200ff66..ba7917e 100644
+index 200ff668d58..ba7917e2a4b 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1798,6 +1798,17 @@ if dep_thread.found()
@@ -72,7 +72,7 @@ index 200ff66..ba7917e 100644
  
  with_expat = get_option('expat') \
 diff --git a/src/util/u_thread.c b/src/util/u_thread.c
-index 3a8785c..e10d5b5 100644
+index 3a8785cec92..e10d5b5974d 100644
 --- a/src/util/u_thread.c
 +++ b/src/util/u_thread.c
 @@ -47,7 +47,13 @@ util_get_current_cpu(void)

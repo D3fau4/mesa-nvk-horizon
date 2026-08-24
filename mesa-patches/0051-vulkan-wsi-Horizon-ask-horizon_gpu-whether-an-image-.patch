@@ -1,0 +1,341 @@
+From 9521520a3bd052a295e47574b571de882614e9de Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 14:04:22 +0200
+Subject: [PATCH 51/51] vulkan/wsi: Horizon, ask horizon_gpu whether an image
+ can be scanned out
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 3 (zero-copy scanout)
+Why: wsi_horizon_fill_graphic_buffer carried the block-linear
+ arithmetic itself — GOB geometry, the block-height ceiling, the PTE
+ kind, the rounding of the image height out to a whole block, and four
+ overflow checks on 32-bit fields. None of that is a window-system
+ question. It is a property of the GPU's layout and of the fixed-width
+ fields a buffer is described with, and horizon_gpu is where such
+ properties live and where the host suites can reach them.
+ The cost of it living here was not hypothetical. Several of those
+ checks guard cases no allocator produces on purpose: a stride whose
+ product with the block-rounded height wraps 32 bits, an offset past
+ UINT32_MAX, a height that cannot be rounded without overflowing. Code
+ that only runs when something has already gone wrong, in the one place
+ it can only be exercised by presenting on a console.
+ So the predicate chain becomes one call to horizon_gpu_scanout_plan(),
+ which returns the verdict and the two derived numbers this function
+ still needs — the scanout extent and the stride in pixels. What is
+ left here is the half that genuinely is the window system's:
+ marshalling the answer into an NvGraphicBuffer. The reason strings
+ shown to the debug-utils messenger now come from
+ horizon_gpu_scanout_verdict_str() and say the same things.
+ Every condition and its order are unchanged, so this is a move.
+ wsi_horizon_align_up goes with its only caller;
+ WSI_HORIZON_GOB_WIDTH_B, WSI_HORIZON_MAX_BLOCK_HEIGHT_LOG2 and
+ WSI_HORIZON_PTE_KIND_GENERIC_16BX2 go with the arithmetic that used
+ them. WSI_HORIZON_GOB_HEIGHT_ROWS had one non-arithmetic use left — a
+ log line naming the block height — which now reads the constant from
+ horizon_gpu/surface.h.
+ The build needed a second change to allow it. idep_horizon_gpu_util
+ was declared only when the shader cache was on, because the cache was
+ the only consumer, and the WSI is a second one enabled by a different
+ option (-Dplatforms=vi). The dependency object is now built once
+ whenever -Dhorizon-gpu-dir is set, and each consumer keeps its own
+ "you have to set this" error, because each knows why it needs it. A
+ Horizon build with -Dshader-cache=disabled still demands nothing,
+ which is the configuration the old comment existed to protect.
+Evidence: the arithmetic that moved is now covered by tests/host/
+ h_scanout.c, 29 checks under ASan and UBSan, all passing —
+ "RESULT: PASS (29/29) h_scanout" from scripts/run-host-tests.sh. Two of
+ those checks are cases this file could not previously be asked about:
+ an allocation sized for the unrounded height, and a stride narrower
+ than the image.
+ NOT BUILT. Mesa has not been configured or compiled with this change;
+ nothing here has run.
+Upstream: no — the whole file is Horizon-only, and the meson change
+ names a Horizon-only option.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MzkCx3cg9dXh1ncFb5ktHz
+---
+ src/util/meson.build         |  52 +++++++++-----
+ src/vulkan/wsi/meson.build   |   9 +++
+ src/vulkan/wsi/wsi_horizon.c | 131 ++++++++++-------------------------
+ 3 files changed, 81 insertions(+), 111 deletions(-)
+
+diff --git a/src/util/meson.build b/src/util/meson.build
+index e07b79a93a5..7c2a24dcdd9 100644
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -273,30 +273,46 @@ files_mesa_util += shader_stats_h
+ subdir('format')
+ files_mesa_util += files_mesa_format
+ 
+-# horizon_gpu supplies the blob store disk_cache_horizon.c writes
+-# through. It lives outside Mesa — this is a pinned checkout, never the
++# horizon_gpu lives outside Mesa — this is a pinned checkout, never the
+ # place that code lives — so it is named by the same build option the
+-# nouveau driver uses, and resolved here as well because src/util is
+-# reached long before src/nouveau.
+-# Only when the cache is actually built: disk_cache_horizon.c is wholly
+-# inside #ifdef ENABLE_SHADER_CACHE, so a Horizon build with
+-# -Dshader-cache=disabled needs none of this, and demanding the option
+-# there would break a configuration that was valid before this file
+-# changed.
++# nouveau driver uses, and resolved here because src/util is reached
++# long before src/vulkan and src/nouveau.
++#
++# THERE ARE TWO CONSUMERS AND THEY ARE ENABLED SEPARATELY. src/util
++# wants the blob store disk_cache_horizon.c writes through, and that
++# file is wholly inside #ifdef ENABLE_SHADER_CACHE, so a Horizon build
++# with -Dshader-cache=disabled needs none of it and must not be made to
++# supply the option. src/vulkan/wsi wants the scanout layout checks
++# wsi_horizon.c asks, and that is gated on -Dplatforms=vi instead.
++#
++# So the dependency object is built once, here, whenever the option is
++# set — and each consumer keeps its own "you have to set this" error,
++# because each knows why it needs it.
++horizon_gpu_dir = ''
++idep_horizon_gpu = []
++have_horizon_gpu = false
++if host_machine.system() == 'horizon'
++  horizon_gpu_dir = get_option('horizon-gpu-dir')
++  if horizon_gpu_dir != ''
++    idep_horizon_gpu = declare_dependency(
++      include_directories : include_directories(
++        horizon_gpu_dir / 'include'),
++      dependencies : [
++        meson.get_compiler('c').find_library(
++          'horizon_gpu', dirs : [horizon_gpu_dir / 'lib'], required : true),
++      ],
++    )
++    have_horizon_gpu = true
++  endif
++endif
++
+ idep_horizon_gpu_util = []
+ if host_machine.system() == 'horizon' and with_shader_cache
+-  _hz_dir = get_option('horizon-gpu-dir')
+-  if _hz_dir == ''
++  if not have_horizon_gpu
+     error('Building for Horizon with the shader cache enabled needs ' +
+           '-Dhorizon-gpu-dir=<prefix of horizon_gpu>.')
+   endif
+-  idep_horizon_gpu_util = declare_dependency(
+-    include_directories : include_directories(_hz_dir / 'include'),
+-    dependencies : [
+-      meson.get_compiler('c').find_library(
+-        'horizon_gpu', dirs : [_hz_dir / 'lib'], required : true),
+-    ],
+-  )
++  idep_horizon_gpu_util = idep_horizon_gpu
+ endif
+ 
+ deps_for_libmesa_util = [
+diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
+index e7c9e3fbac0..551208babee 100644
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -39,6 +39,15 @@ endif
+ 
+ if with_platform_vi
+   files_vulkan_wsi += files('wsi_horizon.c')
++  # wsi_horizon.c asks horizon_gpu whether an image's layout is one the
++  # display block can read. That is the same archive the shader cache
++  # uses and a different reason for needing it, so the error says this
++  # one rather than the cache's.
++  if not have_horizon_gpu
++    error('VK_NN_vi_surface needs -Dhorizon-gpu-dir=<prefix of ' +
++          'horizon_gpu>.')
++  endif
++  platform_deps += idep_horizon_gpu
+ endif
+ 
+ if system_has_kms_drm and not with_platform_android
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 14f021926a5..b427bff76d2 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -59,6 +59,8 @@
+ 
+ #include <switch.h>
+ 
++#include "horizon_gpu/surface.h"
++
+ #include <inttypes.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -71,13 +73,11 @@
+ /* TRM chapter 20.1 it in turn follows.                                 */
+ /* ------------------------------------------------------------------ */
+ 
+-/* A GOB is 64 bytes wide and 8 rows tall; a block is 2^n GOBs tall. */
+-#define WSI_HORIZON_GOB_WIDTH_B     64
+-#define WSI_HORIZON_GOB_HEIGHT_ROWS 8
+-
+-/* The largest block height the NvSurface field and the hardware agree
+- * on: 32 GOBs, i.e. log2 == 5. */
+-#define WSI_HORIZON_MAX_BLOCK_HEIGHT_LOG2 5
++/* The GOB geometry and the largest expressible block height moved to
++ * horizon_gpu/surface.h with the arithmetic that uses them
++ * (HORIZON_GPU_GOB_WIDTH_B, HORIZON_GPU_GOB_HEIGHT_ROWS,
++ * HORIZON_GPU_MAX_BLOCK_HEIGHT_LOG2). What is left here is the one use
++ * that is not arithmetic: naming the block height in a log line. */
+ 
+ /* NvGraphicBuffer marshalling constants. `magic` and `pid` are what the
+  * compositor expects to find, not ours to choose. */
+@@ -104,10 +104,11 @@
+ 
+ /* The page-table entry kind an uncompressed colour surface gets on this
+  * chip, and the only one the display block's "generic 16Bx2" sector
+- * ordering describes. NIL picks it in nvc0_choose_pte_kind() for every
+- * uncompressed colour format; anything else — a compressed kind, a
+- * depth kind — is a layout the compositor cannot read. */
+-#define WSI_HORIZON_PTE_KIND_GENERIC_16BX2 0xfe
++ * ordering describes, is HORIZON_GPU_PTE_KIND_GENERIC_16BX2. NIL picks
++ * it in nvc0_choose_pte_kind() for every uncompressed colour format;
++ * anything else — a compressed kind, a depth kind — is a layout the
++ * compositor cannot read, and horizon_gpu_scanout_plan() is what says
++ * so now. */
+ 
+ /* Buffer counts. The lower bound is what makes double buffering
+  * expressible at all; the upper bound is fixed by design,
+@@ -701,20 +702,6 @@ wsi_horizon_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
+    return &chain->images[image_index].base;
+ }
+ 
+-/* ---- geometry ---------------------------------------------------- */
+-
+-/* Rounds `v` up to a multiple of `to` (a power of two), refusing to
+- * wrap. */
+-static bool
+-wsi_horizon_align_up(uint32_t v, uint32_t to, uint32_t *out)
+-{
+-   assert(to != 0 && (to & (to - 1)) == 0);
+-   if (v > UINT32_MAX - (to - 1))
+-      return false;
+-   *out = (v + (to - 1)) & ~(to - 1);
+-   return true;
+-}
+-
+ /* ---- image memory: the zero-copy path ---------------------------- */
+ 
+ static VkResult
+@@ -813,73 +800,31 @@ wsi_horizon_fill_graphic_buffer(struct wsi_horizon_swapchain *chain,
+    const struct wsi_horizon_image_info *info = &image->info;
+    const uint32_t bpp = chain->format->bytes_per_pixel;
+ 
+-   if (!info->block_linear) {
+-      *why = "the image is pitch-linear and the display block was asked "
+-             "for a block-linear layout";
+-      return false;
+-   }
+-   if (!info->gob_layout_is_display) {
+-      *why = "the image's GOB sector ordering is not the one this display "
+-             "block reads";
+-      return false;
+-   }
+-   if (info->pte_kind != WSI_HORIZON_PTE_KIND_GENERIC_16BX2) {
+-      *why = "the image's page-table kind is not generic 16Bx2, so the "
+-             "compositor would read it with the wrong sector ordering";
+-      return false;
+-   }
+-   if (info->block_height_log2 > WSI_HORIZON_MAX_BLOCK_HEIGHT_LOG2) {
+-      *why = "the image's block height is larger than the graphic buffer "
+-             "can express";
+-      return false;
+-   }
+-   if (info->row_stride_B == 0 || (info->row_stride_B % bpp) != 0) {
+-      *why = "the image's row stride is not a whole number of pixels";
+-      return false;
+-   }
+-   /* THE ONE DIMENSION CHECK THIS FUNCTION WAS MISSING. Everything
+-    * around it validates alignment, kind, overflow and total size, and
+-    * none of that notices a stride narrower than the image: gb->stride
+-    * would go to the compositor smaller than the width and the display
+-    * would read the wrong bytes for every row after the first. The
+-    * only instrument that catches that today is the operator's eye, on
+-    * a path where the pattern does not even run. Raised in review of
+-    * PR #8. */
+-   if (info->row_stride_B < (uint64_t)chain->extent.width * bpp) {
+-      *why = "the image's row stride is narrower than the image";
+-      return false;
+-   }
+-
+-   if ((info->row_stride_B % WSI_HORIZON_GOB_WIDTH_B) != 0) {
+-      *why = "the image's row stride is not a whole number of GOBs";
+-      return false;
+-   }
+-   if (info->offset_B > UINT32_MAX || info->size_B > UINT32_MAX) {
+-      *why = "the image does not fit the 32-bit offset and size fields of "
+-             "a graphic buffer";
+-      return false;
+-   }
++   /* The layout question is horizon_gpu's: it owns the block-linear
++    * arithmetic and the fixed-width fields a buffer is described with,
++    * and its host suite exercises the overflow cases no allocator will
++    * ever hand us on purpose. This function keeps the half that is
++    * genuinely the window system's — marshalling the answer into an
++    * NvGraphicBuffer. */
++   const horizon_gpu_scanout_desc desc = {
++      .width = chain->extent.width,
++      .height = chain->extent.height,
++      .bytes_per_pixel = bpp,
++      .row_stride_B = info->row_stride_B,
++      .block_height_log2 = info->block_height_log2,
++      .offset_B = info->offset_B,
++      .size_B = info->size_B,
++      .pte_kind = info->pte_kind,
++      .block_linear = info->block_linear,
++      .gob_layout_is_display = info->gob_layout_is_display,
++   };
+ 
+-   /* The compositor reads rows of GOBs, so the allocation has to cover
+-    * the height rounded out to a whole block. An image that is short by
+-    * one row is one the display block reads past. */
+-   const uint32_t block_rows =
+-      WSI_HORIZON_GOB_HEIGHT_ROWS << info->block_height_log2;
+-   uint32_t height_aligned;
+-   if (!wsi_horizon_align_up(chain->extent.height, block_rows,
+-                             &height_aligned)) {
+-      *why = "the image's height cannot be rounded out to a whole block";
+-      return false;
+-   }
+-   if (height_aligned != 0 &&
+-       info->row_stride_B > UINT32_MAX / height_aligned) {
+-      *why = "the image's scanout size overflows 32 bits";
+-      return false;
+-   }
+-   const uint32_t scanout_size_B = info->row_stride_B * height_aligned;
+-   if ((uint64_t)scanout_size_B > info->size_B) {
+-      *why = "the allocation is smaller than the region the display block "
+-             "would read";
++   uint32_t scanout_size_B = 0;
++   uint32_t stride_px = 0;
++   const horizon_gpu_scanout_verdict verdict =
++      horizon_gpu_scanout_plan(&desc, &scanout_size_B, &stride_px);
++   if (verdict != HORIZON_GPU_SCANOUT_OK) {
++      *why = horizon_gpu_scanout_verdict_str(verdict);
+       return false;
+    }
+ 
+@@ -903,7 +848,7 @@ wsi_horizon_fill_graphic_buffer(struct wsi_horizon_swapchain *chain,
+    gb->num_planes = 1;
+ 
+    gb->nvmap_id = (s32)info->scanout_id;
+-   gb->stride = info->row_stride_B / bpp;   /* in pixels, per the header */
++   gb->stride = stride_px;                  /* in pixels, per the header */
+    gb->total_size = scanout_size_B;
+ 
+    gb->planes[0].width = chain->extent.width;
+@@ -2620,7 +2565,7 @@ done:
+               "allocation %" PRIu64 " B, scanout %" PRIu32 " B",
+               i0->row_stride_B, i0->row_stride_B / format->bytes_per_pixel,
+               1u << i0->block_height_log2, i0->block_height_log2,
+-              (unsigned)WSI_HORIZON_GOB_HEIGHT_ROWS << i0->block_height_log2,
++              (unsigned)HORIZON_GPU_GOB_HEIGHT_ROWS << i0->block_height_log2,
+               i0->pte_kind, i0->block_linear ? "" : "not ",
+               i0->gob_layout_is_display ? "yes" : "no", i0->offset_B,
+               i0->size_B, chain->images[0].scanout_size_B);
+-- 
+2.43.0
+

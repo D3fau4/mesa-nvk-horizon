@@ -1,7 +1,7 @@
-From af80acd3d334851754cb829c5b06a1585f87e5a9 Mon Sep 17 00:00:00 2001
+From 6b92de67849ab15b4676077fb6bb2d7f544460f0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:38:55 +0000
-Subject: [PATCH 43/49] util/disk_cache: include only what disk_cache.c uses
+Subject: [PATCH 43/51] util/disk_cache: include only what disk_cache.c uses
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -43,7 +43,7 @@ Upstream: yes — it removes includes no line of the file needs, on every
  1 file changed, 5 deletions(-)
 
 diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
-index 1f43388..40bd6e5 100644
+index 1f4338820dd..40bd6e58ea5 100644
 --- a/src/util/disk_cache.c
 +++ b/src/util/disk_cache.c
 @@ -24,17 +24,12 @@

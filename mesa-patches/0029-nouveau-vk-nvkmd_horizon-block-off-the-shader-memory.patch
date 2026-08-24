@@ -1,7 +1,7 @@
-From 573d137a4fea58eacb7c0d232f34e88e958318d5 Mon Sep 17 00:00:00 2001
+From a3cb89ff62e6a8fe503a4d409e8a3948a384576c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:23 +0000
-Subject: [PATCH 29/49] nouveau/vk: nvkmd_horizon, block off the shader memory
+Subject: [PATCH 29/51] nouveau/vk: nvkmd_horizon, block off the shader memory
  window; fixed VA (extension 5)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -84,7 +84,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  3 files changed, 151 insertions(+), 13 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 12d235a..d2aa0b6 100644
+index 4835ffbe8d5..bb3cfb02a17 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -70,6 +70,22 @@ struct nvkmd_horizon_pdev {
@@ -111,7 +111,7 @@ index 12d235a..d2aa0b6 100644
  
  NVKMD_DECL_SUBCLASS(pdev, horizon);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 41cf692..3e8131c 100644
+index 3813d17dfed..fda3854dcaf 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -73,6 +73,18 @@ nvkmd_horizon_pdev_destroy(struct nvkmd_pdev *_pdev)
@@ -201,7 +201,7 @@ index 41cf692..3e8131c 100644
      * about Horizon, not a gap left for later:
      *
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index 8fa1682..c543c25 100644
+index e2c800f3f82..350f4c343c7 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -296,17 +296,17 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,

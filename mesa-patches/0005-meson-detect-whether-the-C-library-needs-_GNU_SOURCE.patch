@@ -1,7 +1,7 @@
-From 99e2efd8f9971dc18cbbbfae503293d6cf998792 Mon Sep 17 00:00:00 2001
+From 647e90a1f3500fed80a21c7697c2d0abdb93bb53 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:33:49 +0000
-Subject: [PATCH 05/49] meson: detect whether the C library needs _GNU_SOURCE
+Subject: [PATCH 05/51] meson: detect whether the C library needs _GNU_SOURCE
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -48,7 +48,7 @@ Upstream: yes — it answers the TODO the code already carries, and is a
  1 file changed, 22 insertions(+)
 
 diff --git a/meson.build b/meson.build
-index cf7e752..200ff66 100644
+index cf7e7520875..200ff668d58 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1254,6 +1254,28 @@ elif host_machine.system() == 'openbsd'

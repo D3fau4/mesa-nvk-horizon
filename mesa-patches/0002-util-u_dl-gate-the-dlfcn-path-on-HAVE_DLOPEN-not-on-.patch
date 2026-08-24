@@ -1,7 +1,7 @@
-From c799564603cff2f0303e12aca5fba3371dfa733a Mon Sep 17 00:00:00 2001
+From 90076209cb6c1b8dae8422a281a108ec1c1321e7 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:54 +0000
-Subject: [PATCH 02/49] util/u_dl: gate the dlfcn path on HAVE_DLOPEN, not on
+Subject: [PATCH 02/51] util/u_dl: gate the dlfcn path on HAVE_DLOPEN, not on
  the OS
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -37,7 +37,7 @@ Upstream: yes — same reasoning as the meson change it depends on, and
  1 file changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/src/util/u_dl.c b/src/util/u_dl.c
-index 6d8b2b8..f283c7f 100644
+index 6d8b2b84061..f283c7f8d06 100644
 --- a/src/util/u_dl.c
 +++ b/src/util/u_dl.c
 @@ -29,7 +29,7 @@

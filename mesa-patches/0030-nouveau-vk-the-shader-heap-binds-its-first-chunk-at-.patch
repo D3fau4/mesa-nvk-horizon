@@ -1,7 +1,7 @@
-From 7afba7cb9b1c39ef69d5e8e0034d54c3d3ae6300 Mon Sep 17 00:00:00 2001
+From 179f57aee8b8b23f8a74ca6588e7e2aa5b89f9d7 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 20:00:00 +0000
-Subject: [PATCH 30/49] nouveau/vk: the shader heap binds its first chunk at
+Subject: [PATCH 30/51] nouveau/vk: the shader heap binds its first chunk at
  device creation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -58,7 +58,7 @@ Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
  3 files changed, 51 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvk_device.c b/src/nouveau/vulkan/nvk_device.c
-index 6dc93fd..1457092 100644
+index 6dc93fd9696..14570923fb9 100644
 --- a/src/nouveau/vulkan/nvk_device.c
 +++ b/src/nouveau/vulkan/nvk_device.c
 @@ -347,6 +347,33 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
@@ -96,7 +96,7 @@ index 6dc93fd..1457092 100644
                               NVKMD_MEM_LOCAL | NVKMD_MEM_COHERENT,
                               NVKMD_MEM_MAP_WR,
 diff --git a/src/nouveau/vulkan/nvk_heap.c b/src/nouveau/vulkan/nvk_heap.c
-index da31183..cfb1588 100644
+index da31183d79c..cfb15886b36 100644
 --- a/src/nouveau/vulkan/nvk_heap.c
 +++ b/src/nouveau/vulkan/nvk_heap.c
 @@ -98,6 +98,19 @@ nvk_heap_free_locked(struct nvk_device *dev, struct nvk_heap *heap,
@@ -120,7 +120,7 @@ index da31183..cfb1588 100644
  nvk_heap_alloc(struct nvk_device *dev, struct nvk_heap *heap,
                 uint64_t size, uint32_t alignment,
 diff --git a/src/nouveau/vulkan/nvk_heap.h b/src/nouveau/vulkan/nvk_heap.h
-index 1107a00..4c36839 100644
+index 1107a000a60..4c368393aa0 100644
 --- a/src/nouveau/vulkan/nvk_heap.h
 +++ b/src/nouveau/vulkan/nvk_heap.h
 @@ -24,6 +24,17 @@ VkResult nvk_heap_init(struct nvk_device *dev, struct nvk_heap *heap,

@@ -1,7 +1,7 @@
-From a92b16a72ab41cfb919d4c735276e9f8fe5c880d Mon Sep 17 00:00:00 2001
+From 18f9e7d082449912c410a577a1375cd8a94d0bdf Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:05:09 +0000
-Subject: [PATCH 28/49] nouveau/vk: extensions whose entry points need a kmd
+Subject: [PATCH 28/51] nouveau/vk: extensions whose entry points need a kmd
  operation follow it
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
@@ -46,7 +46,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  1 file changed, 28 insertions(+), 8 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
-index 19f267a..93452db 100644
+index 19f267a2ed5..93452db41a0 100644
 --- a/src/nouveau/vulkan/nvk_physical_device.c
 +++ b/src/nouveau/vulkan/nvk_physical_device.c
 @@ -115,9 +115,25 @@ nvk_has_astc(const struct nv_device_info *info)

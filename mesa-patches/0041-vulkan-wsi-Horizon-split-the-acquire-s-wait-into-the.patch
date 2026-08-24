@@ -1,7 +1,7 @@
-From a602f8e5aae768873492b4805ee7c0457c77f959 Mon Sep 17 00:00:00 2001
+From 237150b284778eea4622734785aca9ce9e6f7da7 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 10:39:50 +0200
-Subject: [PATCH 41/49] vulkan/wsi: Horizon, split the acquire's wait into the
+Subject: [PATCH 41/51] vulkan/wsi: Horizon, split the acquire's wait into the
  two things it can be
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
@@ -45,7 +45,7 @@ Upstream: no - the meter is about this backend's two blocking points and
  1 file changed, 139 insertions(+)
 
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index d22f198..1333f5a 100644
+index a48c5a5a5c6..6a2f1155e3c 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -115,6 +115,12 @@

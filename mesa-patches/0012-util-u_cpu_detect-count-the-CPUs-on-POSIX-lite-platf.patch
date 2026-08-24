@@ -1,7 +1,7 @@
-From 2bbf0a098eb200d71265f78398581b2b3bee9aec Mon Sep 17 00:00:00 2001
+From e03158029bfd54360e905463946e4542048d2a35 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:52 +0000
-Subject: [PATCH 12/49] util/u_cpu_detect: count the CPUs on POSIX-lite
+Subject: [PATCH 12/51] util/u_cpu_detect: count the CPUs on POSIX-lite
  platforms too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -52,7 +52,7 @@ Upstream: yes — POSIX-lite is an existing macro of Mesa's own, it
  1 file changed, 13 insertions(+), 3 deletions(-)
 
 diff --git a/src/util/u_cpu_detect.c b/src/util/u_cpu_detect.c
-index 451881d..1f6bf34 100644
+index 451881d1f7a..1f6bf34e35a 100644
 --- a/src/util/u_cpu_detect.c
 +++ b/src/util/u_cpu_detect.c
 @@ -73,7 +73,10 @@
