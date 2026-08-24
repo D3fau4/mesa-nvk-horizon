@@ -159,6 +159,14 @@ horizon_tests = [
   't_submit',
   't_syncpt',
   't_fence_wait',
+  # How many syncpoint waits the platform will hold at once, and what
+  # horizon_gpu_fence_wait does past that number. Its loop treats a
+  # chunk that expired and a chunk that could not be armed alike — the
+  # first is the pulse it is built on, the second would turn the wait
+  # into a busy spin nothing reports. Nothing in this tree knows the
+  # ceiling, and a Vulkan application with a thread per queue reaches
+  # whatever it is as a matter of course.
+  't_fence_wait_many',
   # Phase 4: does a GPU write to memory become visible to the CPU? Every
   # observation below t_vulkan is made through a syncpoint, which is a
   # host1x counter and not memory, so nothing had ever asked this.
