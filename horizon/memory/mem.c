@@ -60,12 +60,40 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
      * to the GPU. */
     memset(mem->cpu, 0, rounded);
 
+    /* AND THE ZEROING HAS TO REACH MEMORY, FOR EVERY POLICY.
+     *
+     * The memset above went through the CPU cache and left every line
+     * of this object dirty. aligned_alloc hands back heap the process
+     * has used before, so some of those lines were dirty already. A
+     * dirty line is a write that has not happened yet, and it will
+     * happen later, at an eviction nobody chose.
+     *
+     * For an object the GPU writes and the CPU then reads — a Vulkan
+     * query pool is exactly that, and it is the first thing in this
+     * project to be one — the consequence is a silent wrong answer.
+     * The GPU writes the value to memory; the CPU invalidates before
+     * reading, and the invalidate on aarch64 is `dc civac`, which
+     * CLEANS the line before invalidating it. Cleaning a line still
+     * holding the memset's zeros writes those zeros over what the GPU
+     * just wrote, and the read that follows returns them.
+     *
+     * MEASURED ON A CONSOLE 2026-08-24: t_vk_timestamp's
+     * vkGetQueryPoolResults answered VK_NOT_READY for two full seconds
+     * of polling, on some runs and not others — the run-to-run
+     * difference being whether those lines happened to have been
+     * evicted in the meantime. With this flush it stops happening.
+     *
+     * This used to run only for UNCACHED, where the same hazard is
+     * sharper still: after svcSetMemoryAttribute remaps the range, a
+     * dirty line evicted later lands on top of whatever was written
+     * uncached in between. Both are the same bug and one flush answers
+     * both. armDCacheFlush cleans and invalidates, which is what is
+     * wanted: nothing of this object should survive in the cache.
+     */
+    armDCacheFlush(mem->cpu, rounded);
+
     /* UNCACHED: hand the range to the kernel to remap without CPU
-     * caching. The zeroing above has to reach memory *first* — it went
-     * through the cache, and a dirty line evicted after the remap would
-     * land on top of whatever was written uncached in the meantime.
-     * armDCacheFlush cleans and invalidates, which is both halves of
-     * what is needed here.
+     * caching.
      *
      * svcSetMemoryAttribute wants a page-aligned range; `align` is at
      * least HORIZON_GPU_SMALL_PAGE_SIZE and `rounded` is a multiple of
@@ -76,7 +104,6 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
      * asked for, which is exactly the mismatch memory-model § 5 rule 1
      * exists to forbid. So it unwinds. */
     if (policy == HORIZON_GPU_MEM_UNCACHED) {
-        armDCacheFlush(mem->cpu, rounded);
         Result arc = svcSetMemoryAttribute(mem->cpu, rounded,
                                            MemAttr_IsUncached,
                                            MemAttr_IsUncached);
