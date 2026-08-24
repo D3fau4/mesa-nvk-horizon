@@ -1,7 +1,7 @@
-From 63a6f748067eaca725f98154893fcce116e4dea7 Mon Sep 17 00:00:00 2001
+From bf70a5cdc2eb5fb1eb18d09a353869e26c2a1873 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 17:09:07 +0200
-Subject: [PATCH 47/51] nouveau/vk: make a stream push visible to the GPU
+Subject: [PATCH 47/52] nouveau/vk: make a stream push visible to the GPU
  before it is submitted
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

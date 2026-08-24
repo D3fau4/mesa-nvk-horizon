@@ -1,0 +1,186 @@
+From bd0224de4997bd691f491fb997a6c658b8d6afe8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 14:18:16 +0200
+Subject: [PATCH 52/52] vulkan/wsi: Horizon, ask the queue how many buffers it
+ keeps
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 3 (zero-copy scanout)
+Why: VkSurfaceCapabilitiesKHR::minImageCount was the constant 2, chosen
+ so double buffering is expressible. Vulkan derives from it how many
+ images an application may hold at once — (imageCount - minImageCount +
+ 1) — so that constant is a promise about the BufferQueue underneath,
+ made without asking it.
+ A BufferQueue reserves buffers for its consumer and will not hand the
+ producer more than (count - minUndequeued) at a time. If that
+ reservation is bigger than one, an application obeying the advertised
+ minImageCount can still ask for a buffer the queue will not give up,
+ and nothing reports that: wsi_horizon_try_dequeue does not fail, it
+ simply does not return, and the acquire loop spins on its 2 ms sleep
+ until the three-second stuck warning fires. A stall, blamed on the
+ compositor, for a rule this backend never told anyone about.
+ minUndequeued + 1 is exactly the minImageCount whose Vulkan formula
+ yields (imageCount - minUndequeued) acquirable images, so asking the
+ queue turns an unstated rule into one the application can obey.
+ Both places that needed the number now get it the same way — the
+ published capabilities and the floor create_swapchain clamps to — so a
+ swapchain cannot come out below the minimum its own surface
+ advertised. A query that fails, or answers something that would leave
+ nothing to render into, falls back to the old 2 and says so: a
+ producer that cannot ask is no worse off than before, and a capability
+ query is not the place to fail a swapchain.
+Evidence: bqQuery is declared in libnx's switch/display/buffer_producer.h
+ and takes the Android query selector. libnx's switch/display/types.h
+ transcribes the head of that enum — WIDTH=0, HEIGHT=1, FORMAT=2 — and
+ stops before MIN_UNDEQUEUED_BUFFERS, so 3 is written out here with that
+ derivation beside it rather than included from a header that does not
+ carry it.
+ NOT MEASURED ON HARDWARE, and the interesting number is exactly the one
+ that has never been read: what this queue answers. t_nwindow already
+ drives the producer API one level below NWindow and is where that
+ measurement belongs.
+Upstream: no — the whole file is Horizon-only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MzkCx3cg9dXh1ncFb5ktHz
+---
+ src/vulkan/wsi/wsi_horizon.c | 90 +++++++++++++++++++++++++++++++-----
+ 1 file changed, 79 insertions(+), 11 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index b427bff76d2..67b955070a8 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -21,7 +21,7 @@
+  * WHY THE PRODUCER API AND NOT NWindow. libnx's nwindowDequeueBuffer
+  * keeps a single `cur_slot` and refuses a second dequeue before the
+  * first is queued or cancelled. Vulkan does not permit that: with
+- * VkSurfaceCapabilitiesKHR::minImageCount = 2 and a three-image
++ * VkSurfaceCapabilitiesKHR::minImageCount of 2 and a three-image
+  * swapchain, an application may hold two images acquired and block
+  * indefinitely for them, and that is valid usage. So dequeue, queue and
+  * cancel go through libnx's IGraphicBufferProducer wrappers — bq*,
+@@ -110,12 +110,24 @@
+  * compositor cannot read, and horizon_gpu_scanout_plan() is what says
+  * so now. */
+ 
+-/* Buffer counts. The lower bound is what makes double buffering
+- * expressible at all; the upper bound is fixed by design,
+- * and it is well under the 64 slots nwindowConfigureBuffer allows. */
++/* Buffer counts. The lower bound is a FLOOR, not the answer: what gets
++ * published as minImageCount is what the BufferQueue says it keeps for
++ * the consumer, plus one (wsi_horizon_min_image_count), and this is
++ * where that falls back to when the queue will not say. Two is what
++ * makes double buffering expressible at all. The upper bound is fixed
++ * by design, and it is well under the 64 slots
++ * nwindowConfigureBuffer allows. */
+ #define WSI_HORIZON_MIN_IMAGES 2
+ #define WSI_HORIZON_MAX_IMAGES 4
+ 
++/* NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS. libnx's display/types.h
++ * transcribes the head of Android's query enum and stops before this
++ * one, so the value is written out here: WIDTH=0, HEIGHT=1, FORMAT=2,
++ * MIN_UNDEQUEUED_BUFFERS=3. It is the number of buffers the consumer
++ * side of a BufferQueue keeps for itself, and therefore the number a
++ * producer may never hold at once. */
++#define WSI_HORIZON_NW_MIN_UNDEQUEUED_BUFFERS 3
++
+ /* libnx's Framebuffer — the copy fallback — takes 1 to 3 buffers. */
+ #define WSI_HORIZON_MAX_FB_IMAGES 3
+ 
+@@ -348,6 +360,43 @@ wsi_horizon_get_extent(VkIcdSurfaceBase *surface, VkExtent2D *extent)
+    return VK_SUCCESS;
+ }
+ 
++/* How many images the application must leave the queue, plus one.
++ *
++ * Falls back to WSI_HORIZON_MIN_IMAGES when the query fails or answers
++ * something that cannot be right — a producer that cannot ask is no
++ * worse off than it was before this function existed, and a swapchain
++ * is not the place to fail over a capability query. The floor of 2 also
++ * keeps double buffering expressible when the queue reserves nothing.
++ */
++static uint32_t
++wsi_horizon_min_image_count(VkIcdSurfaceBase *surface)
++{
++   NWindow *win = wsi_horizon_window(surface);
++   s32 min_undequeued = 0;
++
++   Result rc = bqQuery(&win->bq, WSI_HORIZON_NW_MIN_UNDEQUEUED_BUFFERS,
++                       &min_undequeued);
++   if (R_FAILED(rc)) {
++      mesa_logd("wsi_horizon: the queue would not say how many buffers it "
++                "keeps (0x%08x); assuming %u", rc,
++                (unsigned)WSI_HORIZON_MIN_IMAGES);
++      return WSI_HORIZON_MIN_IMAGES;
++   }
++
++   if (min_undequeued < 0 || (uint32_t)min_undequeued >=
++                             WSI_HORIZON_MAX_IMAGES) {
++      mesa_logw("wsi_horizon: the queue says it keeps %d of at most %u "
++                "buffers, which would leave nothing to render into; "
++                "assuming %u", min_undequeued,
++                (unsigned)WSI_HORIZON_MAX_IMAGES,
++                (unsigned)WSI_HORIZON_MIN_IMAGES);
++      return WSI_HORIZON_MIN_IMAGES;
++   }
++
++   const uint32_t min_images = (uint32_t)min_undequeued + 1;
++   return MAX2(min_images, WSI_HORIZON_MIN_IMAGES);
++}
++
+ static VkResult
+ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+                                      struct wsi_device *wsi_device,
+@@ -358,12 +407,27 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   /* Two, so double buffering is expressible. Everything about how many
+-    * images may be acquired at once follows from this number: Vulkan
+-    * lets an application hold (imageCount - minImageCount + 1) of them,
+-    * which is why this backend drives the producer API directly instead
+-    * of libnx's one-slot-at-a-time NWindow wrapper. */
+-   caps->minImageCount = WSI_HORIZON_MIN_IMAGES;
++   /* Everything about how many images may be acquired at once follows
++    * from minImageCount: Vulkan lets an application hold
++    * (imageCount - minImageCount + 1) of them, which is why this backend
++    * drives the producer API directly instead of libnx's
++    * one-slot-at-a-time NWindow wrapper.
++    *
++    * THE NUMBER IS THE QUEUE'S, NOT OURS. This used to be the constant
++    * 2, chosen so double buffering is expressible. But the BufferQueue
++    * keeps some buffers for the consumer and will not hand the producer
++    * more than (count - minUndequeued) at a time, and if that reservation
++    * is larger than one, an application obeying the advertised
++    * minImageCount can still ask for a buffer the queue will not give
++    * up. It does not fail: wsi_horizon_try_dequeue simply does not
++    * return, and the acquire loop spins on a 2 ms sleep until the
++    * three-second stuck warning — reporting a stall for a rule this
++    * backend never told anyone about.
++    *
++    * Asking the queue turns that into a number the application can obey.
++    * minUndequeued + 1 is exactly the minImageCount whose Vulkan formula
++    * yields (imageCount - minUndequeued) acquirable images. */
++   caps->minImageCount = wsi_horizon_min_image_count(surface);
+    caps->maxImageCount = WSI_HORIZON_MAX_IMAGES;
+ 
+    /* A fixed extent, and it is not a simplification: every buffer
+@@ -2267,7 +2331,11 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
+ 
+    uint32_t image_count = pCreateInfo->minImageCount;
+-   image_count = MAX2(image_count, WSI_HORIZON_MIN_IMAGES);
++   /* The same floor the capabilities published, asked the same way, so a
++    * swapchain cannot end up below the minimum its own surface
++    * advertised. */
++   image_count = MAX2(image_count,
++                      wsi_horizon_min_image_count(icd_surface));
+ 
+    /* IMMEDIATE TAKES THE THIRD IMAGE RATHER THAN QUIETLY BECOMING FIFO.
+     *
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
-From e03158029bfd54360e905463946e4542048d2a35 Mon Sep 17 00:00:00 2001
+From d8820d01a060a3d9eefeea73d5512fa8e8fcdf16 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:52 +0000
-Subject: [PATCH 12/51] util/u_cpu_detect: count the CPUs on POSIX-lite
+Subject: [PATCH 12/52] util/u_cpu_detect: count the CPUs on POSIX-lite
  platforms too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

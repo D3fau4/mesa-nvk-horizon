@@ -1,7 +1,7 @@
-From b12e705884e8303a5bb014a10a04bf9cbf64b982 Mon Sep 17 00:00:00 2001
+From 6ae6e1e462346cbb371e8133126e76b58a9556b6 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:04:47 +0000
-Subject: [PATCH 27/51] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
+Subject: [PATCH 27/52] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
 Why: nvkmd_dev_alloc_tiled_mem calls dev->ops->alloc_tiled_mem with no

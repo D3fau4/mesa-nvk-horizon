@@ -1,7 +1,7 @@
-From c28e614197c7aad3c869c493667de34f63bf6400 Mon Sep 17 00:00:00 2001
+From f6cc5579c393a7c3c9209435a4863a7d5886ddb9 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:50:28 +0000
-Subject: [PATCH 26/51] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
+Subject: [PATCH 26/52] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

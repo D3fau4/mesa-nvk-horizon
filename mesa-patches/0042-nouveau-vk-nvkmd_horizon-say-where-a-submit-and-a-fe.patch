@@ -1,7 +1,7 @@
-From d32a83a9cb96f827a42bdf71f3bf82dc391f8800 Mon Sep 17 00:00:00 2001
+From 80af031e19a889b27cb59eae07a86ba24d3dc032 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 12:20:11 +0200
-Subject: [PATCH 42/51] nouveau/vk: nvkmd_horizon, say where a submit and a
+Subject: [PATCH 42/52] nouveau/vk: nvkmd_horizon, say where a submit and a
  fence wait went
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)

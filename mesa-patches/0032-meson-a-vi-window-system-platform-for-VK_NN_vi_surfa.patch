@@ -1,7 +1,7 @@
-From 40d4753d10f6cf1dd689f27bac72f0c54a76e608 Mon Sep 17 00:00:00 2001
+From 27a79c998b6ebc76a80b92c7f10c338d0ca6a35c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
-Subject: [PATCH 32/51] meson: a 'vi' window-system platform for
+Subject: [PATCH 32/52] meson: a 'vi' window-system platform for
  VK_NN_vi_surface
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

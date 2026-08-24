@@ -1,7 +1,7 @@
-From 8465472ecd030b3489afd5ffbf42c06fb9d3d129 Mon Sep 17 00:00:00 2001
+From 995e5a828cfb8a735bd415f0056f3140c515b91d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:49:52 +0000
-Subject: [PATCH 18/51] nouveau/vk: add the Horizon kernel-mode-driver backend
+Subject: [PATCH 18/52] nouveau/vk: add the Horizon kernel-mode-driver backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

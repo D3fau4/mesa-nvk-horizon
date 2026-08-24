@@ -1,7 +1,7 @@
-From de236273776d6577bbe5ae4606d671a88f46f356 Mon Sep 17 00:00:00 2001
+From 49bea772753988333786646556f109ec0e81ce97 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:12:53 +0000
-Subject: [PATCH 09/51] util/os_misc: include <unistd.h> where sysconf is the
+Subject: [PATCH 09/52] util/os_misc: include <unistd.h> where sysconf is the
  answer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

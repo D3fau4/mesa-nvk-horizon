@@ -1,7 +1,7 @@
-From e4ad1c98ae17c20f3500e2f666b9058fcc8a7bf3 Mon Sep 17 00:00:00 2001
+From 3c20f78fc5200a0317042e133c8effc5fa2dee73 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:42:04 +0000
-Subject: [PATCH 35/51] nouveau/vk: nvkmd_horizon, a wait on this channel's own
+Subject: [PATCH 35/52] nouveau/vk: nvkmd_horizon, a wait on this channel's own
  work is already done
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
