@@ -141,10 +141,20 @@ build failure instead of a sysroot quietly missing `core`.
 next: every run died at resolution before it could reach the harvest, and
 the harvest failed before anything could read the sysroot it wrote.
 
+**The whole image builds.** `scripts/build-toolchain-image.sh` ran to
+completion on this host with the three fixes in: every step including the
+sysroot harvest and both § 4b probes, `probes ran inside the build; image is
+good`, `mesa-nvk-horizon/nx-dev-mesa:latest ready (1644 MB)`. That is the
+same script, the same Dockerfile and the same base image CI runs, so the
+step that had been killing every run at three minutes is closed on measured
+evidence rather than on the argument for the patch.
+
 **What is not verified:** nothing on a console — none of this is driver
-code. `scripts/fetch-rust-tools.sh` was checked for the same shape as the
-first defect and does not have it: bindgen and cbindgen are pinned in
-`toolchain/versions.env`, so they cannot drift with the nightly.
+code, and no cross build of Mesa was run here (CI does that after the image
+and is the remaining answer). `scripts/fetch-rust-tools.sh` was checked for
+the same shape as the first defect and does not have it: bindgen and
+cbindgen are pinned in `toolchain/versions.env`, so they cannot drift with
+the nightly.
 
 ---
 
