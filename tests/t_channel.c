@@ -4,9 +4,19 @@
  * Records the syncpoint value observed at creation — the R5 open
  * question about shadow initialisation.
  *
+ * AND HOW MANY CHANNELS A PROCESS MAY OPEN AT ONCE, which is a number
+ * two deferred decisions are waiting on: has_transfer_queue is false
+ * because this driver opens one channel, and patch 0022 records that
+ * has_sparse = true would make NVK ask for a bind context on top. Both
+ * were left off rather than promise something about a number nobody had
+ * read; the ramp at the end of this file reads it.
+ *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
  */
+/* R_MODULE/R_DESCRIPTION, to name the Result that ends the ramp. */
+#include <switch.h>
+
 #include "horizon_gpu/channel.h"
 #include "horizon_gpu/device.h"
 #include "common/testfw.h"
@@ -16,6 +26,13 @@ const char *const test_name = "t_channel";
 const bool test_uses_display = false;
 
 #define NUM_CHANNELS 4
+
+/* Ceiling on the "how many at once" ramp below. Not a guess at the
+ * answer — a bound on how much of the console's memory this test is
+ * willing to hold while finding out, since every channel carries a
+ * GPFIFO and a pushbuffer. If the ramp ever reaches it, the log says so
+ * and the real number is "at least this". */
+#define MAX_PROBE_CHANNELS 64
 
 int run_test(test_ctx *t)
 {
@@ -93,6 +110,62 @@ int run_test(test_ctx *t)
             t_check(t,
                     horizon_gpu_succeeded(horizon_gpu_channel_destroy(many[i])),
                     "destroy extra channel %d", i);
+    }
+
+    /* ---- HOW MANY CHANNELS A PROCESS MAY OPEN --------------------
+     *
+     * Never measured before, and two decisions are waiting on it.
+     * nvkmd_info::has_transfer_queue is false because this driver opens
+     * one channel and a transfer queue would be a second; patch 0022
+     * records that has_sparse = true makes NVK ask for a bind context,
+     * which would be a third. Both were left off rather than promise
+     * something about a number nobody had read. This reads it.
+     *
+     * Ramped one at a time and stopped at the first refusal, so the
+     * answer is the count that succeeded and the reason is the Result
+     * that did not. Everything is destroyed afterwards and the device's
+     * own counters are checked back to zero, because a test that
+     * measures a resource limit by exhausting it has to give it back. */
+    static horizon_gpu_channel *probe[MAX_PROBE_CHANNELS];
+    uint32_t opened = 0;
+    horizon_gpu_result stop_res = horizon_gpu_ok();
+
+    for (; opened < MAX_PROBE_CHANNELS; opened++) {
+        stop_res = horizon_gpu_channel_create(dev, NULL, &probe[opened]);
+        if (horizon_gpu_failed(stop_res)) {
+            probe[opened] = NULL;
+            break;
+        }
+    }
+
+    /* `chan` is still open, so the process is holding opened + 1. */
+    if (opened == MAX_PROBE_CHANNELS) {
+        t_note(t, "MEASURED: %u channels open at once (this test's own "
+               "ceiling, %u, was reached — the real limit is at least "
+               "this and was not found)", opened + 1,
+               (unsigned)MAX_PROBE_CHANNELS);
+    } else {
+        t_note(t, "MEASURED: %u channels can be open at once; the next "
+               "channel_create failed with status=%s nv=0x%08x "
+               "(module %u, desc %u)", opened + 1,
+               horizon_gpu_status_str(stop_res.status), stop_res.nv,
+               (unsigned)R_MODULE(stop_res.nv),
+               (unsigned)R_DESCRIPTION(stop_res.nv));
+    }
+
+    /* Three is the number the two deferred decisions need between them:
+     * the render channel, a transfer queue, and the bind context
+     * has_sparse would make NVK ask for. */
+    t_check(t, opened + 1 >= 3,
+            "at least three channels can be open at once, which is what a "
+            "transfer queue and a sparse bind context would cost together "
+            "(%u)", opened + 1);
+
+    for (uint32_t i = 0; i < opened; i++) {
+        if (probe[i] && !t_check(t, horizon_gpu_succeeded(
+                                 horizon_gpu_channel_destroy(probe[i])),
+                                 "destroy probe channel %u", i))
+            break;
     }
 
     res = horizon_gpu_channel_destroy(chan);
