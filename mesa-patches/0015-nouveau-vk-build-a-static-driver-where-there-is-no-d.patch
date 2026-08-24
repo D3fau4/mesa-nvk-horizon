@@ -1,7 +1,7 @@
-From b102f46719456eeb98928121b286e08c5fd349a6 Mon Sep 17 00:00:00 2001
+From 4b35057845d9872d14e8d09bdee2dc60e3238789 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 12:41:52 +0000
-Subject: [PATCH 15/52] nouveau/vk: build a static driver where there is no
+Subject: [PATCH 15/53] nouveau/vk: build a static driver where there is no
  dynamic loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -75,5 +75,5 @@ index 21b66e8a3b2..37d8709fd01 100644
    'vulkan_nouveau',
    link_whole : [libnvk],
 -- 
-2.43.0
+2.53.0.windows.2
 

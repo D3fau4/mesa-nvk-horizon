@@ -1,7 +1,7 @@
-From fc9a798dab49d3653e654daa9cd1ed696c3cdccd Mon Sep 17 00:00:00 2001
+From e3119c5144fb6e4e50b4c0a4079df558006dd6bc Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:37:53 +0000
-Subject: [PATCH 07/52] util/detect_os: add DETECT_OS_HORIZON
+Subject: [PATCH 07/53] util/detect_os: add DETECT_OS_HORIZON
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -76,5 +76,5 @@ index 74037240c74..b59b6ce141b 100644
  #define DETECT_OS_HURD 0
  #endif
 -- 
-2.43.0
+2.53.0.windows.2
 

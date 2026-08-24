@@ -1,7 +1,7 @@
-From 798991ad9c2bce19014abc5ef19c9f7c2443ad0b Mon Sep 17 00:00:00 2001
+From 6445a1b151490896a870ae41cacc143362dc3c3e Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:50:49 +0000
-Subject: [PATCH 21/52] meson,util,nouveau/vk: link the driver where there is
+Subject: [PATCH 21/53] meson,util,nouveau/vk: link the driver where there is
  no DRM and no regex
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -90,5 +90,5 @@ index 0514113d136..6dc93fd9696 100644
        result = nvk_upload_queue_init(dev, &dev->upload);
        if (result != VK_SUCCESS)
 -- 
-2.43.0
+2.53.0.windows.2
 

@@ -1,7 +1,7 @@
-From 3293ca2bdce0224db161a1ece65ee3634f221784 Mon Sep 17 00:00:00 2001
+From e63ed413834785c90d044a48889f028a00fe5b0c Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:05:09 +0000
-Subject: [PATCH 28/52] nouveau/vk: extensions whose entry points need a kmd
+Subject: [PATCH 28/53] nouveau/vk: extensions whose entry points need a kmd
  operation follow it
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
@@ -131,5 +131,5 @@ index 19f267a2ed5..93452db41a0 100644
  
     struct vk_features supported_features;
 -- 
-2.43.0
+2.53.0.windows.2
 

@@ -1,7 +1,7 @@
-From 6ae6e1e462346cbb371e8133126e76b58a9556b6 Mon Sep 17 00:00:00 2001
+From 0aad06eda104993423b06c2b7a1aba64ba35c0db Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:04:47 +0000
-Subject: [PATCH 27/52] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
+Subject: [PATCH 27/53] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
 Why: nvkmd_dev_alloc_tiled_mem calls dev->ops->alloc_tiled_mem with no
@@ -260,5 +260,5 @@ index 551144e0f3a..3813d17dfed 100644
        .has_overmap = false,
        .has_compression = false,
 -- 
-2.43.0
+2.53.0.windows.2
 

@@ -1,7 +1,7 @@
-From 7742bca1a47cb9152714065c08c327d3d241c799 Mon Sep 17 00:00:00 2001
+From 6b7b1ab1ca687bf0744ee80b795986749a4ff54d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 09:57:37 +0000
-Subject: [PATCH 31/52] vulkan/wsi: size the platform table from the last
+Subject: [PATCH 31/53] vulkan/wsi: size the platform table from the last
  enumerator
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -57,5 +57,5 @@ index 8c9f1f1da50..196d17d1473 100644
  struct wsi_device {
     /* Allocator for the instance */
 -- 
-2.43.0
+2.53.0.windows.2
 

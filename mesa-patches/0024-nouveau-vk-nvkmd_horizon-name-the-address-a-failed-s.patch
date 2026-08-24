@@ -1,7 +1,7 @@
-From 9c72d01d3c0bc84784a05139c8cd52ac3f9ef5ac Mon Sep 17 00:00:00 2001
+From 783bb838ffe63bb48beec9b5d7a92ff105240978 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:10:56 +0000
-Subject: [PATCH 24/52] nouveau/vk: nvkmd_horizon, name the address a failed
+Subject: [PATCH 24/53] nouveau/vk: nvkmd_horizon, name the address a failed
  submit handed the GPU
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -297,5 +297,5 @@ index 884e1cb85b1..e2c800f3f82 100644
  
     return VK_SUCCESS;
 -- 
-2.43.0
+2.53.0.windows.2
 

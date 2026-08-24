@@ -1,7 +1,7 @@
-From d8820d01a060a3d9eefeea73d5512fa8e8fcdf16 Mon Sep 17 00:00:00 2001
+From 16f738a852258691aa372e99913e53e6778abbbb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:52 +0000
-Subject: [PATCH 12/52] util/u_cpu_detect: count the CPUs on POSIX-lite
+Subject: [PATCH 12/53] util/u_cpu_detect: count the CPUs on POSIX-lite
  platforms too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -93,5 +93,5 @@ index 451881d1f7a..1f6bf34e35a 100644
     util_cpu_caps.nr_cpus = MAX2(1, available_cpus);
     total_cpus = MAX2(total_cpus, util_cpu_caps.nr_cpus);
 -- 
-2.43.0
+2.53.0.windows.2
 

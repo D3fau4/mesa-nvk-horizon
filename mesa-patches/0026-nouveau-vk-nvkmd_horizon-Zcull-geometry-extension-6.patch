@@ -1,7 +1,7 @@
-From f6cc5579c393a7c3c9209435a4863a7d5886ddb9 Mon Sep 17 00:00:00 2001
+From b065c50338bc403a7ca4261f98e970e9de89a71b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 19:50:28 +0000
-Subject: [PATCH 26/52] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
+Subject: [PATCH 26/53] nouveau/vk: nvkmd_horizon, Zcull geometry (extension 6)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -109,5 +109,5 @@ index 199fa22db44..551144e0f3a 100644
     /* What this backend can and cannot do. Each false is a statement
      * about Horizon, not a gap left for later:
 -- 
-2.43.0
+2.53.0.windows.2
 

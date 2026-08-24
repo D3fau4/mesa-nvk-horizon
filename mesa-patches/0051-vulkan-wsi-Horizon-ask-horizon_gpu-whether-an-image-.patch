@@ -1,7 +1,7 @@
-From 6dc6c68997e6112b584c10f8d7a97c101e2749c5 Mon Sep 17 00:00:00 2001
+From 60fca7f2277d0ed095649c7b070cc475df8e0915 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:04:22 +0200
-Subject: [PATCH 51/52] vulkan/wsi: Horizon, ask horizon_gpu whether an image
+Subject: [PATCH 51/53] vulkan/wsi: Horizon, ask horizon_gpu whether an image
  can be scanned out
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -337,5 +337,5 @@ index 14f021926a5..b427bff76d2 100644
                i0->gob_layout_is_display ? "yes" : "no", i0->offset_B,
                i0->size_B, chain->images[0].scanout_size_B);
 -- 
-2.43.0
+2.53.0.windows.2
 

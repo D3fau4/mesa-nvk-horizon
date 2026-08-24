@@ -1,7 +1,7 @@
-From edf3fd0b5c5b20686546f1ba8f9cc0108916106b Mon Sep 17 00:00:00 2001
+From 28ea0ad011b6d82fcebfda1c79504aba48c4dd47 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:23 +0000
-Subject: [PATCH 29/52] nouveau/vk: nvkmd_horizon, block off the shader memory
+Subject: [PATCH 29/53] nouveau/vk: nvkmd_horizon, block off the shader memory
  window; fixed VA (extension 5)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -305,5 +305,5 @@ index e2c800f3f82..350f4c343c7 100644
     va->base.dev = _dev;
     va->base.flags = flags;
 -- 
-2.43.0
+2.53.0.windows.2
 

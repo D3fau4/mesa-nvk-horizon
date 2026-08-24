@@ -1,7 +1,7 @@
-From 80af031e19a889b27cb59eae07a86ba24d3dc032 Mon Sep 17 00:00:00 2001
+From cf57b0e171d8f092a4d25d15664284d7877f5b87 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 12:20:11 +0200
-Subject: [PATCH 42/52] nouveau/vk: nvkmd_horizon, say where a submit and a
+Subject: [PATCH 42/53] nouveau/vk: nvkmd_horizon, say where a submit and a
  fence wait went
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
@@ -613,5 +613,5 @@ index e2221081e27..db5391c1a25 100644
     sync->signalled_value = signal_value;
     sync->state = NVK_HORIZON_SYNC_PENDING;
 -- 
-2.43.0
+2.53.0.windows.2
 

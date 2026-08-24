@@ -1,7 +1,7 @@
-From 27a79c998b6ebc76a80b92c7f10c338d0ca6a35c Mon Sep 17 00:00:00 2001
+From 0b0c818f0f4948aa0cfc91c6b251dc43464858da Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
-Subject: [PATCH 32/52] meson: a 'vi' window-system platform for
+Subject: [PATCH 32/53] meson: a 'vi' window-system platform for
  VK_NN_vi_surface
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -76,5 +76,5 @@ index 614a33a47c6..81a7bfb902d 100644
    vulkan_wsi_list += '-DVK_USE_PLATFORM_MACOS_MVK'
    vulkan_wsi_list += '-DVK_USE_PLATFORM_METAL_EXT'
 -- 
-2.43.0
+2.53.0.windows.2
 

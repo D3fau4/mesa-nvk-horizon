@@ -1,7 +1,7 @@
-From 98b27335834542e9f60c3d5c2ee5c3fc30772403 Mon Sep 17 00:00:00 2001
+From 600f068c7b5752d03c03594011d8b0853b80358e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 8 Aug 2026 20:19:29 +0000
-Subject: [PATCH 39/52] vulkan/wsi: Horizon, a lost device ends the acquire
+Subject: [PATCH 39/53] vulkan/wsi: Horizon, a lost device ends the acquire
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -116,5 +116,5 @@ index 5d6d85e2cbd..86ce94dc45b 100644
        /* A newer swapchain took the window. Nothing acquired from here
         * could be presented. */
 -- 
-2.43.0
+2.53.0.windows.2
 

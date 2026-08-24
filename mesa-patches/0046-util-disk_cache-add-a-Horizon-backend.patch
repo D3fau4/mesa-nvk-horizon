@@ -1,7 +1,7 @@
-From 5f66a671f439a80db263d292e97103eb2d255195 Mon Sep 17 00:00:00 2001
+From 3c9e8173e98a68d9c5918ca4583e741d85e20026 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:51:26 +0000
-Subject: [PATCH 46/52] util/disk_cache: add a Horizon backend
+Subject: [PATCH 46/53] util/disk_cache: add a Horizon backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -972,5 +972,5 @@ index 30cf227b13d..e07b79a93a5 100644
  
  if dep_libdrm.found()
 -- 
-2.43.0
+2.53.0.windows.2
 

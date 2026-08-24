@@ -1,7 +1,7 @@
-From 1f2c9c1d992cbd769766e692ba33b69891502867 Mon Sep 17 00:00:00 2001
+From 3f9600fea1d40c3928d7b4a183a97b7c105ec1c2 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
-Subject: [PATCH 40/52] vulkan/wsi: Horizon, a resized window is suboptimal,
+Subject: [PATCH 40/53] vulkan/wsi: Horizon, a resized window is suboptimal,
  not out of date
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
@@ -356,5 +356,5 @@ index 86ce94dc45b..a48c5a5a5c6 100644
  
  static VkResult
 -- 
-2.43.0
+2.53.0.windows.2
 

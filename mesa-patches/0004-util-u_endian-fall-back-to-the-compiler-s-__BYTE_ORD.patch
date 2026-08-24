@@ -1,7 +1,7 @@
-From 63e115f0ec70b96cba09e9313255f9eb6655072b Mon Sep 17 00:00:00 2001
+From 609ada8efe5300c13bca36a509ea08b0974e75d9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:31:41 +0000
-Subject: [PATCH 04/52] util/u_endian: fall back to the compiler's
+Subject: [PATCH 04/53] util/u_endian: fall back to the compiler's
  __BYTE_ORDER__
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -71,5 +71,5 @@ index fd786423d1f..8f6158fd15b 100644
  # error "UTIL_ARCH_LITTLE_ENDIAN and/or UTIL_ARCH_BIG_ENDIAN were unset."
  #elif UTIL_ARCH_LITTLE_ENDIAN == UTIL_ARCH_BIG_ENDIAN
 -- 
-2.43.0
+2.53.0.windows.2
 

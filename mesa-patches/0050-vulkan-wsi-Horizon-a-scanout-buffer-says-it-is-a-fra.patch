@@ -1,7 +1,7 @@
-From 104c6693e53934a4094d51b79e577349a0f0b744 Mon Sep 17 00:00:00 2001
+From e880b39ad0f527bf05fcfe8cd8d34adeca2d6478 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:01:11 +0200
-Subject: [PATCH 50/52] vulkan/wsi: Horizon, a scanout buffer says it is a
+Subject: [PATCH 50/53] vulkan/wsi: Horizon, a scanout buffer says it is a
  framebuffer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -67,5 +67,5 @@ index 6a2f1155e3c..14f021926a5 100644
  /* The page-table entry kind an uncompressed colour surface gets on this
   * chip, and the only one the display block's "generic 16Bx2" sector
 -- 
-2.43.0
+2.53.0.windows.2
 

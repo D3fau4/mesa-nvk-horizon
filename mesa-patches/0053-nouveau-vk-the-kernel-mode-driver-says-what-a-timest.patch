@@ -1,0 +1,179 @@
+From b8eecd08aba325e9faa2b95c83cbc4f0f68c9eef Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Mon, 24 Aug 2026 18:59:30 +0200
+Subject: [PATCH 53/53] nouveau/vk: the kernel-mode driver says what a
+ timestamp tick is worth
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 item 8 (extension 1, GPU timestamps)
+Why: VkPhysicalDeviceLimits::timestampPeriod was the constant 1.0f, with
+ NVK's own FIXME beside it asking whether that was right. It is the only
+ thing that turns a timestamp query into a duration, so where it is
+ wrong every profiler, every frame-time overlay and every consumer of
+ VK_EXT_calibrated_timestamps is wrong by the same factor and none of
+ them can tell. On this platform it is wrong by 1.6276.
+ .
+ The value moves to nvkmd_info, beside the other statements a
+ kernel-mode driver makes that the 3D class alone cannot answer, because
+ the timer's frequency is a property of the platform rather than of the
+ chip's class. The nouveau backend keeps 1.0f and keeps the FIXME's
+ question with it; only the backend that measured its own timer states
+ a number.
+Evidence: RUN ON A CONSOLE 2026-08-24, tests/t_vk_timestamp.c, three
+ 500 ms windows per run, each clock reading bracketed by the CPU clock
+ either side so its cost is an uncertainty rather than a bias:
+ .
+   note MEASURED DEVICE clock (GET_GPU_TIME) over 3 window(s):
+        min 1.627589, mean 1.627596, max 1.627604 ns per tick;
+        spread 9 ppm of the mean
+   note MEASURED DEVICE clock (GET_GPU_TIME): that is 1/614.4 MHz =
+        1.627604 ns, and 614.4 MHz is 32 x the 19.2 MHz reference
+        armGetSystemTick counts — 7 ppm away
+ .
+ Three consecutive runs put the mean at 1.627596, 1.627597 and 1.627597
+ with spreads of 9, 10 and 4 ppm. 614.4 MHz is 32 times the Tegra X1's
+ 19.2 MHz reference oscillator, which is the clock armGetSystemTick
+ counts, so the two are locked and the agreement is not a coincidence.
+ .
+ AND THE TWO CLOCKS ARE ONE DOMAIN, which is what decides whether
+ calibrated timestamps could ever pair them:
+ .
+   note MEASURED: query ticks per device tick = 1.004147
+   note MEASURED: that is 4147 ppm from equal, against a query-clock
+        spread of 6212 ppm across the windows
+ .
+ The query clock is noisier only because reading it costs two submits
+ and a poll — tens of milliseconds against a 550 ms window — where the
+ device clock costs one ioctl. Every run has the two agreeing to inside
+ the query reading's own spread.
+Upstream: no as written — the number is this platform's, and answering
+ the FIXME upstream would need a per-chip table nobody has. The
+ mechanism is upstreamable and the nouveau backend's behaviour is
+ unchanged: it still publishes 1.0f.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
+---
+ src/nouveau/vulkan/nvk_physical_device.c      | 11 ++++++---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 24 +++++++++++++++++++
+ .../vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c |  4 ++++
+ src/nouveau/vulkan/nvkmd/nvkmd.h              | 15 ++++++++++++
+ 4 files changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
+index 93452db41a0..2c3898a7084 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -806,6 +806,7 @@ nvk_get_device_features(const struct nv_device_info *info,
+ static void
+ nvk_get_device_properties(const struct nvk_instance *instance,
+                           const struct nv_device_info *info,
++                          const struct nvkmd_info *kmd_info,
+                           struct vk_properties *properties)
+ {
+    /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+@@ -928,8 +929,11 @@ nvk_get_device_properties(const struct nvk_instance *instance,
+       .storageImageSampleCounts = sample_counts,
+       .maxSampleMaskWords = 1,
+       .timestampComputeAndGraphics = true,
+-      /* FIXME: Is timestamp period actually 1? */
+-      .timestampPeriod = 1.0f,
++      /* The kernel-mode driver's, because the timer's frequency is a
++       * property of the platform rather than of the 3D class. The
++       * nouveau backend still says 1.0f and still carries the FIXME
++       * this line used to; the Horizon backend measured its own. */
++      .timestampPeriod = kmd_info->timestamp_period_ns,
+       .maxClipDistances = 8,
+       .maxCullDistances = 8,
+       .maxCombinedClipAndCullDistances = 8,
+@@ -1502,7 +1506,8 @@ nvk_create_physical_device(struct vk_instance *_instance,
+                            &supported_extensions, &supported_features);
+ 
+    struct vk_properties properties;
+-   nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
++   nvk_get_device_properties(instance, &nvkmd->dev_info,
++                             &nvkmd->kmd_info, &properties);
+ 
+ #ifdef NVK_USE_DRM
+    if (nvkmd->drm.render_dev) {
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 2d5ed9ac206..1101c86def1 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -451,6 +451,30 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+        * inherit a silent no-op — so it is written down here.
+        */
+       .has_priv_reg_writes = false,
++      /* MEASURED ON A CONSOLE 2026-08-24, tests/t_vk_timestamp.c:
++       *
++       *   note MEASURED DEVICE clock (GET_GPU_TIME) over 3 window(s):
++       *        min 1.627560, mean 1.627591, max 1.627612 ns per tick;
++       *        spread 31 ppm of the mean
++       *   note MEASURED DEVICE clock (GET_GPU_TIME): that is
++       *        1/614.4 MHz = 1.627604 ns, and 614.4 MHz is 32 x the
++       *        19.2 MHz reference armGetSystemTick counts — 7 ppm away
++       *   note MEASURED: query ticks per device tick = 1.004147
++       *   note MEASURED: that is 4147 ppm from equal, against a
++       *        query-clock spread of 6212 ppm across the windows
++       *
++       * So the clock vkCmdWriteTimestamp records and the one
++       * GET_GPU_TIME reads are one domain — they agree to inside the
++       * query reading's own spread — and that domain is 614.4 MHz,
++       * which is 32 times the Tegra X1's 19.2 MHz reference
++       * oscillator. One tick is 1/614400000 s.
++       *
++       * NVK published 1.0f here, which understates every duration read
++       * from a timestamp query by a factor of 1.6276. The literal is
++       * written as the reciprocal of the frequency so the derivation
++       * survives in the code rather than only in this comment.
++       */
++      .timestamp_period_ns = 1000000000.0f / 614400000.0f,
+       .has_dma_buf = false,
+       .has_get_vram_used = false,
+       .has_alloc_tiled = true,
+diff --git a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
+index 9088c4bc79d..0879588471c 100644
+--- a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
+@@ -113,6 +113,10 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
+                           ws_dev->info.cls_eng3d >= TURING_A) ||
+                          (ws_dev->nouveau_version >= 0x01000402 &&
+                           ws_dev->info.cls_eng3d >= AMPERE_A),
++      /* The value NVK has always published, moved rather than changed:
++       * this backend has no measurement to replace it with, and the
++       * FIXME it carried belongs wherever the number is still a guess. */
++      .timestamp_period_ns = 1.0f,
+    };
+ 
+    /* We get this ourselves */
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index ee537cd6630..fe98580132b 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -138,6 +138,21 @@ struct nvkmd_info {
+    bool has_map_fixed;
+    bool has_overmap;
+    bool has_compression;
++   /* Nanoseconds per tick of the clock vkCmdWriteTimestamp records, for
++    * VkPhysicalDeviceLimits::timestampPeriod.
++    *
++    * NVK published the constant 1.0f with a FIXME asking whether that
++    * was right. It is the only thing turning a query result into a
++    * duration, so where it is wrong every profiler, frame-time overlay
++    * and VK_EXT_calibrated_timestamps is wrong by the same factor and
++    * none of them can tell.
++    *
++    * It sits here, beside the other statements a kernel-mode driver
++    * makes that the 3D class alone cannot answer, because the timer's
++    * frequency is a property of the platform this driver runs on rather
++    * than of the chip's class.
++    */
++   float timestamp_period_ns;
+ };
+ 
+ /** A host1x syncpoint fence: a counter and the value that means
+-- 
+2.53.0.windows.2
+

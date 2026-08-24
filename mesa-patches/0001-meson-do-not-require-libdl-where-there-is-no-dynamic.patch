@@ -1,7 +1,7 @@
-From dd75d8b4e2e28e70acc8ddc1a4fc0effb9f66157 Mon Sep 17 00:00:00 2001
+From 8b0c8e54e87c923e390f4c837ab102d02e6ced50 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:19:35 +0000
-Subject: [PATCH 01/52] meson: do not require libdl where there is no dynamic
+Subject: [PATCH 01/53] meson: do not require libdl where there is no dynamic
  loader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -67,5 +67,5 @@ index c18edad402f..61862f6c0b3 100644
    if cc.has_function('dladdr', dependencies : dep_dl)
      # This is required for src/util
 -- 
-2.43.0
+2.53.0.windows.2
 

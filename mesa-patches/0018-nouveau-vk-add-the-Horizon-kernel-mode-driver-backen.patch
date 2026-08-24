@@ -1,7 +1,7 @@
-From 995e5a828cfb8a735bd415f0056f3140c515b91d Mon Sep 17 00:00:00 2001
+From ec0796456276ad2747b07e7f16ccfe2f527d022a Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:49:52 +0000
-Subject: [PATCH 18/52] nouveau/vk: add the Horizon kernel-mode-driver backend
+Subject: [PATCH 18/53] nouveau/vk: add the Horizon kernel-mode-driver backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -1807,5 +1807,5 @@ index dfabbcfa3c6..f6a9ce8e54d 100644
  #ifdef VK_USE_PLATFORM_ANDROID_KHR
     enum android_buffer_type android_buffer_type;
 -- 
-2.43.0
+2.53.0.windows.2
 

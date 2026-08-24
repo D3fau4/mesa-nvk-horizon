@@ -1,7 +1,7 @@
-From 122688d6c988e4a3b21f7e698acdd137876dc669 Mon Sep 17 00:00:00 2001
+From 970f4dee16eba52dea22380bfc501cdbe3d913e9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:26:27 +0000
-Subject: [PATCH 38/52] nouveau/vk: advertise VK_NN_vi_surface and answer the
+Subject: [PATCH 38/53] nouveau/vk: advertise VK_NN_vi_surface and answer the
  Horizon WSI
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -239,5 +239,5 @@ index deaecb76c77..bb06cc62c6e 100644
 +}
 +#endif /* VK_USE_PLATFORM_VI_NN */
 -- 
-2.43.0
+2.53.0.windows.2
 

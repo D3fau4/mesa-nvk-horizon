@@ -1,7 +1,7 @@
-From f96b5dae11e070006a4e5d7519f9cef9260dca03 Mon Sep 17 00:00:00 2001
+From 71bb68156b055b87734122ad352a2cb1cdcb7f2e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:41:11 +0000
-Subject: [PATCH 45/52] nouveau/vk: let the build name a driver identity Mesa's
+Subject: [PATCH 45/53] nouveau/vk: let the build name a driver identity Mesa's
  version cannot
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -142,5 +142,5 @@ index 0d8039fa08c..c105a693591 100644
     _mesa_blake3_final(&blake3_ctx, instance->driver_build_sha);
  #endif
 -- 
-2.43.0
+2.53.0.windows.2
 

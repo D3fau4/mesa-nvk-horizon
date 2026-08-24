@@ -1,7 +1,7 @@
-From a8d351ddf5acfe0ed77049315b92c617bc8b3a36 Mon Sep 17 00:00:00 2001
+From 63c9425417a71d4a80a0c2dfcaf04b38e06dd2db Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 22:02:02 +0200
-Subject: [PATCH 49/52] nouveau/vk: nvkmd_horizon: wait on the host engine, not
+Subject: [PATCH 49/53] nouveau/vk: nvkmd_horizon: wait on the host engine, not
  on the thread
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -414,5 +414,5 @@ index db5391c1a25..6fa8c5157fd 100644
  nvk_horizon_sync_is_pending_on(struct vk_sync *_sync,
                                 horizon_gpu_channel *chan)
 -- 
-2.43.0
+2.53.0.windows.2
 

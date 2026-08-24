@@ -1,7 +1,7 @@
-From a1dc0e0c2d5789807a50e7be6228576fbcfb3aee Mon Sep 17 00:00:00 2001
+From 6e26392a5881e856ba9616d3057e7f5ebdaab308 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:08:24 +0000
-Subject: [PATCH 17/52] nouveau,compiler: build the Rust half without a
+Subject: [PATCH 17/53] nouveau,compiler: build the Rust half without a
  standard library
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3438,5 +3438,5 @@ index 55b9549e04e..4e2c37b86f9 100644
  lib = static_library(
    'rustc_hash',
 -- 
-2.43.0
+2.53.0.windows.2
 

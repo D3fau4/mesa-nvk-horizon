@@ -1,7 +1,7 @@
-From cfdeded096c02505fb9dceeddfcbc8865951e826 Mon Sep 17 00:00:00 2001
+From 5f47a3b4ffe12a36cc689713f8b417f616fc314a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:38:55 +0000
-Subject: [PATCH 43/52] util/disk_cache: include only what disk_cache.c uses
+Subject: [PATCH 43/53] util/disk_cache: include only what disk_cache.c uses
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -65,5 +65,5 @@ index 1f4338820dd..40bd6e58ea5 100644
  
  #include "util/compress.h"
 -- 
-2.43.0
+2.53.0.windows.2
 

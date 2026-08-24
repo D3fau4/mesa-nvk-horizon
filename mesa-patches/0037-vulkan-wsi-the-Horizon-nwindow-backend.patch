@@ -1,7 +1,7 @@
-From ce219a9251a99d3ecdc7f6b2acb541a9acb0d19b Mon Sep 17 00:00:00 2001
+From a8084b48511172489e1fe042bdd0805c00d3ab91 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:56:30 +0000
-Subject: [PATCH 37/52] vulkan/wsi: the Horizon (nwindow) backend
+Subject: [PATCH 37/53] vulkan/wsi: the Horizon (nwindow) backend
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -2756,5 +2756,5 @@ index 00000000000..5d6d85e2cbd
 +   vk_free(alloc, wsi);
 +}
 -- 
-2.43.0
+2.53.0.windows.2
 

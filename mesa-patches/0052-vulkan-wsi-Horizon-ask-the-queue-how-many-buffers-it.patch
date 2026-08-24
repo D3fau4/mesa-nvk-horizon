@@ -1,7 +1,7 @@
-From bd0224de4997bd691f491fb997a6c658b8d6afe8 Mon Sep 17 00:00:00 2001
+From a2e91f4e2eba79dfd0f4edacab906f13153236ff Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:18:16 +0200
-Subject: [PATCH 52/52] vulkan/wsi: Horizon, ask the queue how many buffers it
+Subject: [PATCH 52/53] vulkan/wsi: Horizon, ask the queue how many buffers it
  keeps
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -182,5 +182,5 @@ index b427bff76d2..67b955070a8 100644
     /* IMMEDIATE TAKES THE THIRD IMAGE RATHER THAN QUIETLY BECOMING FIFO.
      *
 -- 
-2.43.0
+2.53.0.windows.2
 
