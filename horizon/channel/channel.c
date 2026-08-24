@@ -15,6 +15,7 @@
 #include "channel_priv.h"
 #include "horizon_gpu/submit.h"
 #include "../device/device_priv.h"
+#include "../sync/nv_wait.h"
 #include "../memory/mem_priv.h"
 #include "../memory/align.h"
 #include "horizon_gpu/cmds.h"
@@ -695,6 +696,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
      * of this loop, which is the same defect and the same fix as
      * horizon_gpu_fence_wait (horizon/sync/syncpt.c). */
     uint64_t unslept_ns = 0;
+    Result last_rc = 0;
     bool reported_spin = false;
 
     for (;;) {
@@ -729,7 +731,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
                 return channel_reached_or_lost(chan);
-            if (rc != KERNELRESULT(TimedOut))
+            if (!horizon_nv_wait_timed_out(rc))
                 return horizon_gpu_err_nv(rc);
 
             if (channel_check_fault(chan))
@@ -764,6 +766,15 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
          * chunk and a channel that faulted during it are both answered
          * at full speed and neither pays for this. */
         if (unslept_ns != 0) {
+            if (!reported_spin) {
+                reported_spin = true;
+                horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
+                             "channel wait: syncpt %u chunk returned "
+                             "0x%08x without blocking and the counter is "
+                             "still short of %u — pacing the rest of the "
+                             "deadline instead of re-asking",
+                             fence.syncpt_id, last_rc, fence.threshold);
+            }
             uint64_t nap_ns = unslept_ns;
             if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
                 nap_ns > timeout_ns - elapsed_ns)
@@ -799,24 +810,19 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
          * channel_reached_or_lost() can say that. Real failures continue
          * to surface through the read and the notifier above. */
         uint64_t chunk_start = armGetSystemTick();
-        Result rc = nvFenceWait(&nvf, chunk_us);
-        if (rc == KERNELRESULT(TimedOut))
+        last_rc = nvFenceWait(&nvf, chunk_us);
+        if (horizon_nv_wait_timed_out(last_rc))
             continue;
 
+        /* How long it blocked, not what it returned, is what says
+         * whether this was a pulse — and it is acted on at the top of
+         * the next iteration, once the counter and the notifier have
+         * been re-read. A fence that retires *during* the chunk also
+         * makes nvFenceWait return early, and that is the ordinary
+         * successful wait: it must not be paced or warned about. */
         uint64_t spent_ns = armTicksToNs(armGetSystemTick() - chunk_start);
         uint64_t asked_ns = (uint64_t)(uint32_t)chunk_us * 1000u;
         unslept_ns = spent_ns < asked_ns ? asked_ns - spent_ns : 0;
-
-        if (!reported_spin && unslept_ns != 0) {
-            reported_spin = true;
-            horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
-                         "channel wait: syncpt %u chunk returned 0x%08x "
-                         "after %llu us of %d, and the counter has not "
-                         "reached %u — pacing the rest of the deadline",
-                         fence.syncpt_id, rc,
-                         (unsigned long long)(spent_ns / 1000), chunk_us,
-                         fence.threshold);
-        }
     }
 }
 

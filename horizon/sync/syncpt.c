@@ -12,6 +12,7 @@
 
 #include "horizon_gpu/sync.h"
 #include "../device/device_priv.h"
+#include "nv_wait.h"
 #include "syncpt_math.h"
 
 /* Bounded kernel wait per loop iteration; keeps even "no deadline" waits
@@ -73,7 +74,7 @@ static horizon_gpu_result sync_fence_reached_via_wait(horizon_gpu_fence fence,
         *out_reached = true;
         return horizon_gpu_ok();
     }
-    if (rc == KERNELRESULT(TimedOut)) {
+    if (horizon_nv_wait_timed_out(rc)) {
         *out_reached = false;
         return horizon_gpu_ok();
     }
@@ -111,6 +112,7 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
     /* How much of the last chunk the kernel did not spend blocking. See
      * the long comment at the bottom of this loop. */
     uint64_t unslept_ns = 0;
+    Result last_rc = 0;
     bool reported_spin = false;
 
     for (;;) {
@@ -159,6 +161,15 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
          * none of this. Then round the loop rather than waiting: the
          * counter is what decides, and it is read at the top. */
         if (unslept_ns != 0) {
+            if (!reported_spin) {
+                reported_spin = true;
+                horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                             "fence wait: syncpt %u chunk returned 0x%08x "
+                             "without blocking and the counter is still "
+                             "short of %u — pacing the rest of the "
+                             "deadline instead of re-asking",
+                             fence.syncpt_id, last_rc, fence.threshold);
+            }
             uint64_t nap_ns = unslept_ns;
             if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
                 nap_ns > timeout_ns - elapsed_ns)
@@ -201,23 +212,21 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
          * burning the core.
          */
         uint64_t chunk_start = armGetSystemTick();
-        Result rc = nvFenceWait(&nvf, chunk_us);
-        if (rc == KERNELRESULT(TimedOut))
+        last_rc = nvFenceWait(&nvf, chunk_us);
+        if (horizon_nv_wait_timed_out(last_rc))
             continue;
 
+        /* How long it actually blocked, not what it returned, decides
+         * whether this was a pulse. A chunk that consumed its time did
+         * its job whatever Result it carries; one that came back early
+         * has left that time for the loop to burn. Recorded here and
+         * acted on at the top of the next iteration, after the counter
+         * has been re-read: a fence that retired *during* the chunk
+         * makes nvFenceWait return success early too, and that is the
+         * ordinary successful wait — it must not be slowed down or
+         * warned about. */
         uint64_t spent_ns = armTicksToNs(armGetSystemTick() - chunk_start);
         uint64_t asked_ns = (uint64_t)(uint32_t)chunk_us * 1000u;
         unslept_ns = spent_ns < asked_ns ? asked_ns - spent_ns : 0;
-
-        if (!reported_spin && unslept_ns != 0) {
-            reported_spin = true;
-            horizon_logf(&dev->log, HORIZON_LOG_WARN,
-                         "fence wait: syncpt %u chunk returned 0x%08x after "
-                         "%llu us of %d, and the counter has not reached "
-                         "%u — pacing the rest of the deadline",
-                         fence.syncpt_id, rc,
-                         (unsigned long long)(spent_ns / 1000), chunk_us,
-                         fence.threshold);
-        }
     }
 }
