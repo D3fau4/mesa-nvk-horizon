@@ -215,6 +215,13 @@ horizon_tests = [
   # instead of assumed. Uses no Mesa — the question is about the
   # compositor, not about Vulkan.
   't_nwindow',
+  # Decision D12, asked of the hardware instead of assumed. Sparse
+  # residency is off because the layer had no way to unbind part of a
+  # reservation and leave the rest addressable — but the reservation
+  # half was never the problem, and what the chip does at the edges was
+  # never measured. Three writes through the channel's own semaphore
+  # release, each on its own channel because a fault loses one.
+  't_sparse',
 ]
 
 # The build stamp every test prints in its first lines. Regenerated on

@@ -46,6 +46,29 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
                                           uint64_t align,
                                           horizon_gpu_va_range **out_range);
 
+/* Like horizon_gpu_vm_reserve, but asks the kernel for a SPARSE
+ * reservation: the whole interval gets page-table entries that resolve
+ * to nothing, rather than being left unmapped, so an access to a part of
+ * it that no memory object is bound to is defined instead of being a
+ * fault.
+ *
+ * That is the primitive Vulkan sparse residency is built on, and it is
+ * the half of it that was missing. The other half — unbinding one buffer
+ * out of the middle of such a reservation and getting the sparse state
+ * back rather than a hole — is not established, and neither is what a
+ * read of an unbacked page actually returns on this chip. Both are what
+ * t_sparse measures.
+ *
+ * SO THIS IS REACHABLE AND UNPROVEN, deliberately. Nothing in
+ * nvkmd_horizon calls it, has_sparse is still false, and no Vulkan
+ * sparse feature is advertised. Wiring any of that up before the
+ * measurement would be building on an assumption, which is the thing
+ * decision D12 was recorded to avoid. */
+horizon_gpu_result
+horizon_gpu_vm_reserve_sparse(horizon_gpu_device *dev, uint64_t size,
+                              uint32_t page_size, uint64_t align,
+                              horizon_gpu_va_range **out_range);
+
 /* Reserves exactly [base, base+size) — the caller chooses the address,
  * the kernel does not. `base` must be page_size-aligned; `size` is
  * rounded up to page_size. Fails if the range is taken.
