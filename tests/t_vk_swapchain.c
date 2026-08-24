@@ -110,6 +110,14 @@ const bool test_uses_display = true;
  * pacing. */
 #define SC_SHORT_FRAMES  20u
 
+/* How long section G waits for somebody to dock or undock the console,
+ * and how many frames it presents between checks. A bound, not a
+ * deadline for the operator: it ends the moment SUBOPTIMAL appears, and
+ * B skips it. Same shape as t_vk_suboptimal's section D, which asks for
+ * the same gesture for the native case. */
+#define SC_MODE_WAIT_NS  UINT64_C(90000000000)
+#define SC_MODE_BURST    10u
+
 #define SC_REFRESH_HZ    60u
 #define SC_REFRESH_NS    (UINT64_C(1000000000) / SC_REFRESH_HZ)
 
@@ -1652,6 +1660,129 @@ int run_test(test_ctx *t)
                  "reported as suboptimal (%" PRIu32 " of %" PRIu32
                  " frames were)", st_half.suboptimal,
                  st_half.frames_presented);
+
+         /* --- AND THE ONE THING NO PROCESS CAN DO TO ITSELF ---------
+          *
+          * Everything above ran with the display unchanged, which
+          * covers three of the five cases in
+          * wsi_horizon_extent_changed's table. The other two need the
+          * OUTPUT to change under a scaled swapchain, and nothing in
+          * this process can resize a VI layer — docking the console is
+          * the only way to produce one.
+          *
+          * It matters more here than for a native swapchain. `reported`
+          * comes from the queue's default buffer size, and this backend
+          * sets that itself at registration, to the swapchain's extent.
+          * The claim being tested is that the consumer's value
+          * overrides ours when the display mode changes, and therefore
+          * that a swapchain deliberately smaller than the layer still
+          * notices a dock. Patch 0040 measured that override for a
+          * producer that had set the SAME size as the consumer; this is
+          * the same question with a different one, and it is the reason
+          * the early return in wsi_horizon_extent_changed is written
+          * the way it is.
+          *
+          * Asks, waits a bounded time, and reports honestly either way.
+          * A run in which nobody docks records that the coverage did not
+          * happen; it does not quietly pass. */
+         t_note(t, "G: DOCK OR UNDOCK THE CONSOLE NOW. This swapchain is "
+                   "%" PRIu32 "x%" PRIu32 " on a %" PRIu32 "x%" PRIu32
+                   " layer, and a mode change must make it SUBOPTIMAL "
+                   "even though its own extent has not moved. Waiting up "
+                   "to %" PRIu64 " s while presenting; press B to skip.",
+                half.width, half.height, extent.width, extent.height,
+                SC_MODE_WAIT_NS / UINT64_C(1000000000));
+
+         PadState mode_pad;
+         padInitializeDefault(&mode_pad);
+
+         /* What the applet thinks the console is doing, either side of
+          * the wait. The surface extent says what the LAYER became;
+          * this says what the OPERATOR did, and a run where the two
+          * disagree is worth seeing rather than averaging away. */
+         const int mode_before = (int)appletGetOperationMode();
+         const u64 d_start = armGetSystemTick();
+         uint32_t d_subopt = 0, d_frames = 0;
+         VkExtent2D seen = extent;
+         bool skipped = false;
+
+         /* appletMainLoop(), NOT a bare deadline. libnx says it in as
+          * many words — "These return state which is updated by
+          * appletMainLoop() when notifications are received" — and
+          * appletGetOperationMode() is one of the three it says it
+          * about. A loop that never pumps the applet's messages never
+          * learns the console was docked.
+          *
+          * MEASURED 2026-08-24: two runs with the console genuinely
+          * docked and undocked several times, and this section reported
+          * "appletGetOperationMode() went 0 -> 0" both times, because
+          * the loop here was `while (deadline)`. t_vk_suboptimal's
+          * section D has always been `while (appletMainLoop())` and
+          * that is why. */
+         while (appletMainLoop() &&
+                armTicksToNs(armGetSystemTick() - d_start) <
+                SC_MODE_WAIT_NS) {
+            padUpdate(&mode_pad);
+            if (padGetButtonsDown(&mode_pad) & HidNpadButton_B) {
+               skipped = true;
+               break;
+            }
+
+            sc_stats burst;
+            sc_stats_init(&burst, "G: waiting for a mode change");
+            sc_run(&fw, &sc_h, SC_MODE_BURST, 0, &burst);
+            d_frames += burst.frames_presented;
+            d_subopt += burst.suboptimal;
+            if (burst.suboptimal != 0)
+               break;
+         }
+
+         const int mode_after = (int)appletGetOperationMode();
+         VkSurfaceCapabilitiesKHR after;
+         memset(&after, 0, sizeof(after));
+         if (fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+                fw.pdev, surface, &after) == VK_SUCCESS)
+            seen = after.currentExtent;
+
+         /* WHETHER THE OPERATOR ACTUALLY DID ANYTHING is the applet's
+          * answer, not the surface's. The first version of this asked
+          * the surface, and a run where nobody docked reported a
+          * "mode change" to 640x360 — which was this backend writing
+          * the swapchain's own extent into NWindow::default_* and
+          * shrinking currentExtent, a bug the surface could not
+          * distinguish from a dock. appletGetOperationMode() can. */
+         const bool docked_now = mode_after != mode_before;
+
+         /* And the surface must NOT have moved unless the operator
+          * moved it. This is the check that catches the shrinkage. */
+         t_check(t, docked_now ||
+                 (seen.width == extent.width &&
+                  seen.height == extent.height),
+                 "G: the surface still reports %" PRIu32 "x%" PRIu32
+                 " after a scaled swapchain presented — a swapchain's "
+                 "own extent must not become the surface's",
+                 extent.width, extent.height);
+
+         t_note(t, "G: %" PRIu32 " more frames, %" PRIu32 " SUBOPTIMAL; "
+                   "the surface now reports %" PRIu32 "x%" PRIu32
+                   "; appletGetOperationMode() went %d -> %d "
+                   "(0 handheld, 1 docked)%s",
+                d_frames, d_subopt, seen.width, seen.height,
+                mode_before, mode_after,
+                skipped ? " (skipped with B)" : "");
+
+         if (!docked_now) {
+            t_note(t, "G: NOBODY DOCKED, so the two rows of "
+                      "wsi_horizon_extent_changed's table that need a "
+                      "mode change are still unrun. That is coverage "
+                      "this run did not get, not a result.");
+         } else {
+            t_check(t, d_subopt != 0,
+                    "MEASURED G: the display changed to %" PRIu32 "x%"
+                    PRIu32 " and the scaled swapchain reported "
+                    "SUBOPTIMAL (%" PRIu32 " of %" PRIu32 " frames)",
+                    seen.width, seen.height, d_subopt, d_frames);
+         }
 
          fw.vk.vkDeviceWaitIdle(fw.dev);
          sc_destroy(&fw, &sc_h);

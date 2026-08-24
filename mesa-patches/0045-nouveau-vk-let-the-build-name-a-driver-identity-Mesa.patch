@@ -1,4 +1,4 @@
-From 9aa84ff53ddaf6d975a1ed878b50b20d39028d64 Mon Sep 17 00:00:00 2001
+From a656d267a5c4a29f4b914d877063be167059ba60 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:41:11 +0000
 Subject: [PATCH 45/56] nouveau/vk: let the build name a driver identity Mesa's

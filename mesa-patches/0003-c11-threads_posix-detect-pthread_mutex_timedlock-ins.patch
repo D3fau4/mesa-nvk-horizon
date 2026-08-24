@@ -1,4 +1,4 @@
-From d3f7907f3178d215281aa845b05f4d20508a96de Mon Sep 17 00:00:00 2001
+From a921e27fec8bf3a530262720b57dfabef79f3ce8 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:30:08 +0000
 Subject: [PATCH 03/56] c11/threads_posix: detect pthread_mutex_timedlock

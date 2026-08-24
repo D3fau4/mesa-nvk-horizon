@@ -1,4 +1,4 @@
-From 1a9538de460a11f8978edb72b332c97cb09e2a8c Mon Sep 17 00:00:00 2001
+From 4afa5b6153a6594f15321924d51881a36766125d Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 18:59:30 +0200
 Subject: [PATCH 53/56] nouveau/vk: the kernel-mode driver says what a

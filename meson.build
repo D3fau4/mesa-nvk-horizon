@@ -222,6 +222,12 @@ horizon_tests = [
   # never measured. Three writes through the channel's own semaphore
   # release, each on its own channel because a fault loses one.
   't_sparse',
+  # Whether a display mode change reaches this process at all. The WSI's
+  # whole notion of "suboptimal" rests on it, and two runs of
+  # t_vk_swapchain's section G reported the mode never moving while the
+  # console was being docked by hand. A console, a hook and nothing else
+  # in the way, so the operator can watch it happen.
+  't_dock',
 ]
 
 # The build stamp every test prints in its first lines. Regenerated on

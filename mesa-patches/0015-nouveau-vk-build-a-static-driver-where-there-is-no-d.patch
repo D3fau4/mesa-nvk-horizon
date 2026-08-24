@@ -1,4 +1,4 @@
-From 391b24f55ae250320f4bdec3ec62d741a41a4319 Mon Sep 17 00:00:00 2001
+From 4383cc5e2586988ad2b42d37ddc03da82fd59948 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 12:41:52 +0000
 Subject: [PATCH 15/56] nouveau/vk: build a static driver where there is no

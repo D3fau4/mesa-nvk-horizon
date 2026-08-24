@@ -1,4 +1,4 @@
-From b00217394668e06658bd0e4fd4d924ad06047cb5 Mon Sep 17 00:00:00 2001
+From 3e45a9818600be7afe52e41c332218c273a2a9d9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:50:39 +0000
 Subject: [PATCH 19/56] nouveau/vk: nvkmd_horizon memory objects, VA heap and

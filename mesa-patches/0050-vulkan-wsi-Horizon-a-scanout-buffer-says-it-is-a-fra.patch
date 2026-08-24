@@ -1,4 +1,4 @@
-From 6f9bf623d43db3017a8c6ed5479e8aa85bed4a63 Mon Sep 17 00:00:00 2001
+From b7342ad840ac995c18233d978d0e6b734d4285dc Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:01:11 +0200
 Subject: [PATCH 50/56] vulkan/wsi: Horizon, a scanout buffer says it is a

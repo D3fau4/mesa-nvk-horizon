@@ -1,4 +1,4 @@
-From c86f44b34dbc176da2754320c23ce972b1711aef Mon Sep 17 00:00:00 2001
+From b20a50c2c1093b457464e330f76e67e031545671 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:38:55 +0000
 Subject: [PATCH 43/56] util/disk_cache: include only what disk_cache.c uses

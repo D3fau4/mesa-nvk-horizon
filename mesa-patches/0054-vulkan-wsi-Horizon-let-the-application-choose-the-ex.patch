@@ -1,4 +1,4 @@
-From 3c2040ce10421387e3a75d75d88ede8e567b5a25 Mon Sep 17 00:00:00 2001
+From db01fc6e74ec993ace980bb8c27314bbee891823 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:00:02 +0200
 Subject: [PATCH 54/56] vulkan/wsi: Horizon, let the application choose the
@@ -76,9 +76,9 @@ Upstream: no — the whole file is Horizon-only, and the nvk_wsi.c half is
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
 ---
- src/nouveau/vulkan/nvk_wsi.c |  25 ++++--
- src/vulkan/wsi/wsi_horizon.c | 152 ++++++++++++++++++++++++++++++-----
- 2 files changed, 149 insertions(+), 28 deletions(-)
+ src/nouveau/vulkan/nvk_wsi.c |  25 +++--
+ src/vulkan/wsi/wsi_horizon.c | 187 ++++++++++++++++++++++++++++++-----
+ 2 files changed, 182 insertions(+), 30 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
 index bb06cc62c6e..16af6deed49 100644
@@ -117,7 +117,7 @@ index bb06cc62c6e..16af6deed49 100644
  
     pdev->vk.wsi_device = &pdev->wsi_device;
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index 67b955070a8..ee7e656df48 100644
+index 67b955070a8..ebb3359bab7 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -120,6 +120,15 @@
@@ -282,7 +282,49 @@ index 67b955070a8..ee7e656df48 100644
  }
  
  /* Folds one completed acquire into the meter and reports the window
-@@ -2316,10 +2413,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -1944,8 +2041,39 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+        * a concurrent present on the fallback path,
+        * so this adds no hazard that was not already there and is not
+        * this backend's to fix: the structure belongs to libnx. */
+-      chain->window->default_width = out.width;
+-      chain->window->default_height = out.height;
++      /* BUT NOT WHEN THAT IS OUR OWN VOICE COMING BACK.
++       *
++       * The queue's default buffer size has two authors: the consumer,
++       * on a display mode change, and this backend, through
++       * nwindowSetDimensions at registration — which sets it to the
++       * SWAPCHAIN's extent. While every swapchain matched the layer
++       * those were the same number and writing it back was harmless.
++       *
++       * Since patch 0054 they need not be. MEASURED ON A CONSOLE
++       * 2026-08-24, with a 640x360 swapchain on a 1280x720 layer:
++       *
++       *   note G: ... the surface now reports 640x360;
++       *        appletGetOperationMode() went 0 -> 0
++       *
++       * Nothing had docked. The swapchain's own extent had been written
++       * into NWindow::default_*, which wsi_horizon_get_extent reads, so
++       * VkSurfaceCapabilitiesKHR::currentExtent — and with it
++       * maxImageExtent — shrank to the size of the last swapchain and
++       * stayed there. An application that rendered small once could
++       * never ask for native again, and one that queried the surface
++       * after being told it was suboptimal would be handed the wrong
++       * answer twice over.
++       *
++       * A value equal to what this backend asked for teaches nothing:
++       * either nothing has changed, or the consumer happens to agree.
++       * A value that DIFFERS is the consumer's, which is the only case
++       * patch 0040 added this write for — a mode change is exactly when
++       * the two stop matching. */
++      if (out.width != chain->extent.width ||
++          out.height != chain->extent.height) {
++         chain->window->default_width = out.width;
++         chain->window->default_height = out.height;
++      }
+    }
+ 
+    return VK_SUCCESS;
+@@ -2316,10 +2444,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     if (result != VK_SUCCESS)
        return result;
  
@@ -304,7 +346,7 @@ index 67b955070a8..ee7e656df48 100644
        return VK_ERROR_INITIALIZATION_FAILED;
     }
  
-@@ -2371,11 +2475,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -2371,11 +2506,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
  
     chain->surface = surface;
     chain->window = (NWindow *)surface->icd.window;

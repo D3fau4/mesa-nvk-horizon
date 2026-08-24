@@ -1,4 +1,4 @@
-From 9981c8c68d905c76c6962c1dbb196b0ccda5acd8 Mon Sep 17 00:00:00 2001
+From 5dbfc49db5f6d1adf3a66c7249f2463543e5fd23 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:13:16 +0000
 Subject: [PATCH 10/56] util/os_misc: query available memory through sysconf

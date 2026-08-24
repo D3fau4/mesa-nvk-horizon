@@ -1,4 +1,4 @@
-From b8a60d61d02b143fe3228e8ed06aa7be7a6449e6 Mon Sep 17 00:00:00 2001
+From 2fe5da6f27249f96843bbbf521a0c0e5a1b3b360 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:51:26 +0000
 Subject: [PATCH 46/56] util/disk_cache: add a Horizon backend

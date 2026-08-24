@@ -1,4 +1,4 @@
-From 18b502dcc08821c989b68c9c4f9218d422b5a48f Mon Sep 17 00:00:00 2001
+From 4a4a17993658b5c8d05d617e66b2f6bb3eb348b9 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:36:18 +0000
 Subject: [PATCH 06/56] util/log: include u_process.h for the use that is not

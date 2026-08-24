@@ -1,4 +1,4 @@
-From 6d1ca3ff9521477adb0eb386b9d7efa1dfa13833 Mon Sep 17 00:00:00 2001
+From 027945c4c36abaaf117fcf97183c24f935f1aa46 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:52 +0000
 Subject: [PATCH 12/56] util/u_cpu_detect: count the CPUs on POSIX-lite

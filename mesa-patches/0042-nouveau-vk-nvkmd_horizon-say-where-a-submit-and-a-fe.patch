@@ -1,4 +1,4 @@
-From cae6eeb12ed8e9dd2a796f8bf8841bf43c702f3c Mon Sep 17 00:00:00 2001
+From 3d39ac2dd3e5664094fdd76e2296638653df35ae Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 12:20:11 +0200
 Subject: [PATCH 42/56] nouveau/vk: nvkmd_horizon, say where a submit and a

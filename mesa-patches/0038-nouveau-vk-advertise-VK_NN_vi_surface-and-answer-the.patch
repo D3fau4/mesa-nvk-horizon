@@ -1,4 +1,4 @@
-From 5c8921481f858eac28cc3da9702d38b82efc393a Mon Sep 17 00:00:00 2001
+From c095ef9bb2d87e7c0a6045814ef21615e96f81e0 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:26:27 +0000
 Subject: [PATCH 38/56] nouveau/vk: advertise VK_NN_vi_surface and answer the

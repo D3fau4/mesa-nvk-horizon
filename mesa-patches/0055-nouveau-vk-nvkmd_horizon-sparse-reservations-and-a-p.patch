@@ -1,4 +1,4 @@
-From 76df451e0aa8c635cd83c6f92049b50cb31a3581 Mon Sep 17 00:00:00 2001
+From d1b1a0072c8b8624ef29a0a0bec103b1c2552e76 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:35:12 +0200
 Subject: [PATCH 55/56] nouveau/vk: nvkmd_horizon: sparse reservations, and a

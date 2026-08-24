@@ -1,4 +1,4 @@
-From 8b8586aa628bc80c834acc411fab07e9e500149d Mon Sep 17 00:00:00 2001
+From a5efafd542981bd755d6dc46fe5c89bedab6e449 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 14:04:22 +0200
 Subject: [PATCH 51/56] vulkan/wsi: Horizon, ask horizon_gpu whether an image

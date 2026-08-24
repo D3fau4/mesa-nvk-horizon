@@ -1,4 +1,4 @@
-From 7a90215990f0006a8349c9a0e71f56ba481e5d85 Mon Sep 17 00:00:00 2001
+From 6fc644fd8c45707ca56f7b39ad748cd16eacb7bb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:39:56 +0000
 Subject: [PATCH 44/56] util/mesa_cache_db: gate on flock, like the Fossilize

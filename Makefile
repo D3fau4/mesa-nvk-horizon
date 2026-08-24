@@ -65,7 +65,7 @@ OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/)
 TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
          t_syncpt t_syncpt_incr t_fence_wait t_fence_wait_many t_gpuwrite \
          t_teardown t_uncached t_sysinfo t_va_window t_fault t_pbsize \
-         t_display t_nwindow t_sparse
+         t_display t_nwindow t_sparse t_dock
 
 # Tests 12 and 13 measure Mesa's own code on hardware (Phase 3 items 4
 # and 5): the C11 threads shim Mesa selects here, and os_time.c. They

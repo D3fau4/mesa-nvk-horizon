@@ -1,4 +1,4 @@
-From 7424138d852a2e961fbbc1f74251a52288d4f22d Mon Sep 17 00:00:00 2001
+From 78f51a590c2e7fb4d183d8f531c8445279e79a90 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:04:47 +0000
 Subject: [PATCH 27/56] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem

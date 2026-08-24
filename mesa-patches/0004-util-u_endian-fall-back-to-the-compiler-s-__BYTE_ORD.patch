@@ -1,4 +1,4 @@
-From 88e5aba1bd08d51c3c3b901a7ef97bd3387ae52e Mon Sep 17 00:00:00 2001
+From b63bd6c6dd428883deb4a077aba64ce5c05d45fe Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:31:41 +0000
 Subject: [PATCH 04/56] util/u_endian: fall back to the compiler's
