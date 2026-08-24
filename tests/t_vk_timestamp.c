@@ -91,30 +91,25 @@ const bool test_uses_display = false;
 
 /* Writes one timestamp into `pool` at `index` and waits for it.
  *
- * THE RESET IS A SUBMIT OF ITS OWN, and that is a finding rather than a
- * style. Both in one command buffer is what this test did on its first
- * run, 2026-08-24, and vkGetQueryPoolResults never saw the query become
- * available:
+ * ONE COMMAND BUFFER, and it took two runs and a fix elsewhere to get
+ * back to it. nvk_CmdResetQueryPool writes 0 to the query's
+ * availability word through an NV9097 report semaphore and then
+ * acquires on that word from the host engine; nvk_CmdWriteTimestamp2
+ * writes the report and releases 1 to it. Three accesses to one
+ * address, from two engines, inside one submission — and on 2026-08-24
+ * the query never became available, on about half the runs.
  *
- *   ok   vkQueueSubmit -> VK_SUCCESS
- *   ok   vkWaitForFences(first timestamp) -> VK_SUCCESS
- *   note vk warning [nvk_query_pool.c:662]: query timeout
- *        (VK_ERROR_DEVICE_LOST)
- *   FAIL first timestamp: vkGetQueryPoolResults -> DEVICE_LOST
+ * That looked like the two engines racing and was not. The cause was
+ * stale dirty CPU cache lines on a fresh allocation, fixed in
+ * horizon/memory/mem.c: the invalidate before reading the word cleaned
+ * the line first, writing the memset's zeros over what the GPU had
+ * written. This function ran the reset in a submit of its own while
+ * that was still unknown, so the measurement below could be made at
+ * all, and said in as many words that it was not a fix.
  *
- * The fence retired, so the channel ran the list; the availability word
- * never reached the CPU as 1. nvk_CmdResetQueryPool emits an NV9097
- * report-semaphore write of 0 to that word and then a host-class
- * NV906F semaphore ACQUIRE on the same address, and
- * nvk_CmdWriteTimestamp2 then writes the report and releases 1 to it —
- * three accesses to one address, from two engines, inside one
- * submission.
- *
- * Splitting them is what this test needs to be able to measure anything
- * at all. It is NOT a fix and it is not claimed as one: what it does is
- * put the driver defect on one side of a line and the timestampPeriod
- * measurement on the other, so the number below can be read while the
- * defect is still open.
+ * MEASURED after the fix, the same day: the combined form became
+ * available 6 of 6 times. The split is gone and so is the probe that
+ * asked for it.
  */
 static bool write_timestamp(vkfw *fw, VkQueryPool pool, uint32_t index,
                             const char *what)
@@ -122,14 +117,11 @@ static bool write_timestamp(vkfw *fw, VkQueryPool pool, uint32_t index,
    VkCommandBuffer cb;
    if (!vkfw_cmd_begin(fw, &cb))
       return false;
-   fw->vk.vkCmdResetQueryPool(cb, pool, index, 1);
-   if (!vkfw_submit_and_wait(fw, cb, what))
-      return false;
 
-   if (!vkfw_cmd_begin(fw, &cb))
-      return false;
+   fw->vk.vkCmdResetQueryPool(cb, pool, index, 1);
    fw->vk.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                               pool, index);
+
    return vkfw_submit_and_wait(fw, cb, what);
 }
 
@@ -206,57 +198,6 @@ static void bracket(clock_read *r, uint64_t before, uint64_t after,
    r->value = value;
    r->cpu_tick = before + (after - before) / 2;
    r->spread_ns = armTicksToNs(after - before);
-}
-
-/* THE COMBINED FORM, ASKED DIRECTLY.
- *
- * write_timestamp above records the reset and the timestamp in two
- * submits, and says why. That split was made while the cause was still
- * unknown; the cause turned out to be stale dirty CPU cache lines on a
- * fresh allocation, fixed in horizon/memory/mem.c, and nothing to do
- * with the two engines touching one address inside one submission.
- *
- * So the combined form — which is what every other Vulkan application
- * writes — may well work now, and this asks. ATTEMPTS times, because
- * the failure it is looking for was intermittent: roughly half of the
- * runs before the fix, which one attempt could not have distinguished
- * from luck.
- *
- * It reports rather than demands. If the combined form works, the split
- * in write_timestamp comes out and this section with it; if it does
- * not, this is the run that says so and the split stays with a reason
- * behind it instead of a suspicion.
- */
-#define COMBINED_ATTEMPTS 6u
-
-static void probe_combined(vkfw *fw, VkQueryPool pool, uint32_t index)
-{
-   test_ctx *t = fw->t;
-   uint32_t ok = 0, tried = 0;
-
-   for (uint32_t i = 0; i < COMBINED_ATTEMPTS; i++) {
-      VkCommandBuffer cb;
-      if (!vkfw_cmd_begin(fw, &cb))
-         break;
-      fw->vk.vkCmdResetQueryPool(cb, pool, index, 1);
-      fw->vk.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                 pool, index);
-      if (!vkfw_submit_and_wait(fw, cb, "combined reset+timestamp"))
-         break;
-      tried++;
-
-      uint64_t value = 0;
-      if (read_timestamp(fw, pool, index, &value, "combined"))
-         ok++;
-   }
-
-   t_note(t, "MEASURED: the reset and the timestamp in ONE command "
-          "buffer became available %" PRIu32 " of %" PRIu32 " times",
-          ok, tried);
-   t_check(t, tried > 0 && ok == tried,
-           "the combined form works, so t_vk_timestamp's two-submit "
-           "split is no longer needed (%" PRIu32 "/%" PRIu32 ")",
-           ok, tried);
 }
 
 /* One bracketed reading of each clock, at the same moment.
@@ -412,11 +353,6 @@ int run_test(test_ctx *t)
    if (!t_check(t, r == VK_SUCCESS, "vkCreateQueryPool(TIMESTAMP, %u) -> %s",
                 2u * WINDOWS, vkfw_result_str(r)))
       goto out;
-
-   /* Asked before the windows, on a slot of its own, so a failure here
-    * costs the measurement nothing. */
-   probe_combined(&fw, qpool, 2 * WINDOWS - 1);
-
    /* WINDOWS INTERVALS, NOT ONE.
     *
     * One window says what the rate was once. What has to be decided
@@ -425,6 +361,9 @@ int run_test(test_ctx *t)
     * all, or something that moves with the GPU's own state. The spread
     * across the windows is what answers that, and it is printed. */
    uint64_t q_ppm[WINDOWS], d_ppm[WINDOWS];
+   /* Worst placement uncertainty of any window, in ppm of its interval.
+    * See the comment where it is computed. */
+   uint64_t q_place_ppm = 0;
    uint32_t measured = 0;
    uint64_t q0v = 0, q1v = 0;
 
@@ -453,10 +392,33 @@ int run_test(test_ctx *t)
       }
 
       const uint64_t q_cpu_ns = armTicksToNs(q_b.cpu_tick - q_a.cpu_tick);
+
+      /* HOW MUCH THE PLACEMENT COULD BE WRONG BY, in parts per million
+       * of the interval. bracket() puts each reading at the midpoint of
+       * the CPU clock either side of it, which removes the bias of the
+       * reading's whole length and leaves half of it as an uncertainty:
+       * the GPU wrote the timestamp at some instant inside that window
+       * and nothing here knows which. Two readings, so half of each.
+       *
+       * This is the tolerance the domain comparison below has to use.
+       * The run-to-run spread is NOT that tolerance and using it was a
+       * mistake: the spread shrinks as the instrument improves, so a
+       * faster reading made the check HARDER to pass, which is exactly
+       * backwards. Removing the two-submit split halved the reading
+       * cost and turned a passing comparison into a failing one without
+       * either clock changing. */
+      const uint64_t place_ppm = q_cpu_ns
+         ? ((q_a.spread_ns / 2 + q_b.spread_ns / 2) * UINT64_C(1000000))
+           / q_cpu_ns
+         : 0;
+      if (place_ppm > q_place_ppm)
+         q_place_ppm = place_ppm;
+
       t_note(t, "window %u: query reading uncertainty %" PRIu64 " us and "
-             "%" PRIu64 " us against a %" PRIu64 " ms interval", w,
+             "%" PRIu64 " us against a %" PRIu64 " ms interval — the "
+             "timestamp's placement is good to %" PRIu64 " ppm", w,
              q_a.spread_ns / 1000, q_b.spread_ns / 1000,
-             q_cpu_ns / 1000000);
+             q_cpu_ns / 1000000, place_ppm);
 
       t_check(t, q_b.value > q_a.value,
               "window %u: the query timestamp advanced forwards "
@@ -516,12 +478,14 @@ int run_test(test_ctx *t)
          const uint64_t off_by = ratio_ppm > 1000000 ? ratio_ppm - 1000000
                                                      : 1000000 - ratio_ppm;
          t_note(t, "MEASURED: that is %" PRIu64 " ppm from equal, against "
-                "a query-clock spread of %" PRIu64 " ppm across the "
-                "windows", off_by, q_spread_ppm);
-         t_check(t, off_by <= q_spread_ppm,
-                 "the two clocks agree to within the query clock's own "
-                 "spread, so they are one domain: %" PRIu64 " ppm apart, "
-                 "spread %" PRIu64 " ppm", off_by, q_spread_ppm);
+                "a placement uncertainty of %" PRIu64 " ppm and a "
+                "run-to-run spread of %" PRIu64 " ppm", off_by,
+                q_place_ppm, q_spread_ppm);
+         t_check(t, off_by <= q_place_ppm,
+                 "the two clocks agree to within the uncertainty of where "
+                 "the query timestamp actually landed, so they are one "
+                 "domain: %" PRIu64 " ppm apart, %" PRIu64 " ppm of "
+                 "placement", off_by, q_place_ppm);
       }
    }
 
