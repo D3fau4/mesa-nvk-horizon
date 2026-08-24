@@ -45,6 +45,7 @@ LIB_SRCS := \
     horizon/channel/channel.c \
     horizon/submit/cmds.c \
     horizon/submit/submit.c \
+    horizon/surface/surface.c \
     horizon/sync/syncpt.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD)/%.o)

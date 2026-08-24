@@ -34,7 +34,7 @@ the commit messages.
 ### Host tests — the only thing that needs no toolchain
 
 ```sh
-scripts/run-host-tests.sh          # 7 suites of horizon/'s pure logic, ASan+UBSan
+scripts/run-host-tests.sh          # 8 suites of horizon/'s pure logic, ASan+UBSan
 ```
 
 There is no per-test flag. To run one suite, compile it the way the script does:
@@ -49,6 +49,7 @@ cc -std=c11 -O1 -g -Wall -Wextra -Werror -Ihorizon/include \
 
 Suite → sources: `h_align` (header only), `h_va_space` + `horizon/vm/va_space.c`,
 `h_syncpt_math` (header only), `h_cmds` + `horizon/submit/cmds.c`,
+`h_scanout` + `horizon/surface/surface.c`,
 `h_status` + `horizon/debug/status.c`, `h_log` + `horizon/debug/log.c`,
 `h_blob_cache` + `horizon/cache/{blob_cache,crc32}.c`.
 
@@ -114,7 +115,9 @@ C11 + libnx + newlib only. Modules: `device/` (nv service session, GPU character
 `memory/` (`NvMap` objects, `align.h` overflow-checked arithmetic), `vm/` (`NvAddressSpace`,
 VA reservation and mapping), `channel/` (`NvGpuChannel`, GPFIFO), `submit/` (command
 building, submission), `sync/` (syncpoints, `NvFence`), `cache/` (the shader cache's
-storage), `debug/` (logging, status strings). `surface/` is empty.
+storage), `debug/` (logging, status strings), `surface/` (block-linear scanout layout —
+the "surface-info struct" the layer rules reserve, and pure arithmetic, so the host
+suites reach it).
 
 Two properties drive its shape:
 

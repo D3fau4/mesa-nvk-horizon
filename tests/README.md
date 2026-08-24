@@ -1,6 +1,6 @@
 # Tests — running them on a Nintendo Switch
 
-Thirty-seven standalone `.nro` homebrew apps. Each prints one line per check and a final
+Thirty-eight standalone `.nro` homebrew apps. Each prints one line per check and a final
 machine-checkable verdict — `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)` —
 to the console **and** to `sdmc:/horizon_gpu_tests/<name>.log`, so results
 can be reported back as plain text (known-risks R2).
@@ -16,7 +16,7 @@ They come in three groups, and **which of them you get depends on what you built
 So the Makefile produces at most 21 and the Meson path at most 37, because the Makefile
 does not build Mesa/NVK and the Meson path does.
 
-There are also six host-side suites that need no console at all; they are at the bottom
+There are also eight host-side suites that need no console at all; they are at the bottom
 of this file.
 
 ## Building
@@ -193,9 +193,9 @@ one run being diagnosed as a driver hang that had not happened.
 scripts/run-host-tests.sh
 ```
 
-builds seven suites over the pure-logic modules (alignment/overflow, VA interval set,
-wrap-safe syncpoint math, command emitters, status strings, logging, and the shader
-cache's blob store) with the host compiler and sanitizers. These run anywhere, and CI runs them on every push and pull
+builds eight suites over the pure-logic modules (alignment/overflow, VA interval set,
+wrap-safe syncpoint math, command emitters, block-linear scanout layout, status strings,
+logging, and the shader cache's blob store) with the host compiler and sanitizers. These run anywhere, and CI runs them on every push and pull
 request.
 
 ---

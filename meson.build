@@ -118,6 +118,7 @@ horizon_gpu_sources = files(
   'horizon/channel/channel.c',
   'horizon/submit/cmds.c',
   'horizon/submit/submit.c',
+  'horizon/surface/surface.c',
   'horizon/sync/syncpt.c',
 )
 
