@@ -135,7 +135,12 @@
    X(vkCmdBeginRendering)                                                \
    X(vkCmdEndRendering)                                                  \
    X(vkCmdSetViewport)                                                   \
-   X(vkCmdSetScissor)
+   X(vkCmdSetScissor)                                                    \
+   X(vkCreateQueryPool)                                                  \
+   X(vkDestroyQueryPool)                                                 \
+   X(vkCmdResetQueryPool)                                                \
+   X(vkCmdWriteTimestamp)                                                \
+   X(vkGetQueryPoolResults)
 
 /* The window-system entry points, kept apart from the list above and
  * loaded on request.

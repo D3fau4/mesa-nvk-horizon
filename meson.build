@@ -388,6 +388,14 @@ nvk_tests = [
   # have been linked since Phase 4 and have never produced machine code
   # that executed.
   't_vk_compute',
+  # What a GPU timestamp tick is worth. NVK publishes timestampPeriod =
+  # 1.0f for every device it drives, which is true of the GPUs nouveau
+  # was written for and was never checked here — and that number is the
+  # only thing turning a query result into a duration. Measures the
+  # query clock and the GET_GPU_TIME clock separately against the system
+  # counter, because VK_EXT_calibrated_timestamps is only correct if
+  # they are the same domain and nothing has shown that they are.
+  't_vk_timestamp',
   # Phase 5 item 5 — the first draw call. Vertex processing,
   # rasterisation and the ROP, none of which any earlier item reaches.
   't_vk_triangle',
