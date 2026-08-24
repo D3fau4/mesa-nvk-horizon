@@ -1,4 +1,4 @@
-From 7e17c7229f8fc3e62eed0fd37f23e653090884c9 Mon Sep 17 00:00:00 2001
+From 84cdc84a2127b74c10527acf8cd40267124658ea Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
 Subject: [PATCH 40/54] vulkan/wsi: Horizon, a resized window is suboptimal,

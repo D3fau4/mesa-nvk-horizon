@@ -1,4 +1,4 @@
-From ee740ed40250ccb671d1f15c3d87c7c4edb07e3b Mon Sep 17 00:00:00 2001
+From 4656032b7b1bffce174f7703eb7c1208f0fd41e3 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:50:49 +0000
 Subject: [PATCH 21/54] meson,util,nouveau/vk: link the driver where there is

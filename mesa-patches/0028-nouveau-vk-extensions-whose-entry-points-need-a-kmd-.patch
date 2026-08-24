@@ -1,4 +1,4 @@
-From 7fa727a8b37bb795369a67c5bd7877570698e0ee Mon Sep 17 00:00:00 2001
+From c62d81a7b81178229f85ece0c996dd657364506a Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:05:09 +0000
 Subject: [PATCH 28/54] nouveau/vk: extensions whose entry points need a kmd

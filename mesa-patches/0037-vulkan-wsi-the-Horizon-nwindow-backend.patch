@@ -1,4 +1,4 @@
-From a43490b6177f7ffbe2bbf57254f5adb7416b1ccd Mon Sep 17 00:00:00 2001
+From 707f7fe38b1551b46c8d532f340d5a9b8dd4bd6f Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:56:30 +0000
 Subject: [PATCH 37/54] vulkan/wsi: the Horizon (nwindow) backend

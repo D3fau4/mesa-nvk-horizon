@@ -1,4 +1,4 @@
-From b321661a9afd5a9d30e38b1a584fc8ad7283d520 Mon Sep 17 00:00:00 2001
+From 3ef19926e935dfa315b624ad75a7b09bc944172a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:00:02 +0200
 Subject: [PATCH 54/54] vulkan/wsi: Horizon, let the application choose the
@@ -76,9 +76,9 @@ Upstream: no — the whole file is Horizon-only, and the nvk_wsi.c half is
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
 ---
- src/nouveau/vulkan/nvk_wsi.c |  25 +++++--
- src/vulkan/wsi/wsi_horizon.c | 133 +++++++++++++++++++++++++++++------
- 2 files changed, 131 insertions(+), 27 deletions(-)
+ src/nouveau/vulkan/nvk_wsi.c |  25 ++++--
+ src/vulkan/wsi/wsi_horizon.c | 152 ++++++++++++++++++++++++++++++-----
+ 2 files changed, 149 insertions(+), 28 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvk_wsi.c b/src/nouveau/vulkan/nvk_wsi.c
 index bb06cc62c6e..16af6deed49 100644
@@ -117,7 +117,7 @@ index bb06cc62c6e..16af6deed49 100644
  
     pdev->vk.wsi_device = &pdev->wsi_device;
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index 67b955070a8..c7183aca21c 100644
+index 67b955070a8..ee7e656df48 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -120,6 +120,15 @@
@@ -181,7 +181,33 @@ index 67b955070a8..c7183aca21c 100644
     caps->maxImageExtent = extent;
  
     caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-@@ -707,11 +735,19 @@ struct wsi_horizon_swapchain {
+@@ -486,7 +514,24 @@ wsi_horizon_surface_get_capabilities2(VkIcdSurfaceBase *surface,
+          break;
+       }
+       case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: {
+-         /* The extent is fixed, so there is nothing to scale. */
++         /* STILL ZERO, AND NO LONGER FOR THE REASON IT SAID.
++          *
++          * This read "the extent is fixed, so there is nothing to
++          * scale", which stopped being true when this backend started
++          * publishing a range: the compositor does scale a swapchain
++          * smaller than the layer, and that is the point of the range.
++          *
++          * What VK_EXT_surface_maintenance1 asks about is narrower —
++          * which scaling mode and which gravity the *presentation
++          * engine* applies, chosen per swapchain through
++          * VkSwapchainPresentScalingCreateInfoEXT. This backend does not
++          * offer that choice: the mode is NWindow::scaling_mode, which
++          * belongs to the window rather than to any swapchain, and what
++          * the compositor makes of it has not been looked at on a
++          * screen. Advertising a mode would be a promise about a
++          * measurement nobody has made; zero says "none of these are
++          * selectable here", which is true.
++          */
+          VkSurfacePresentScalingCapabilitiesKHR *scaling = (void *)ext;
+          scaling->supportedPresentScaling = 0;
+          scaling->supportedPresentGravityX = 0;
+@@ -707,11 +752,19 @@ struct wsi_horizon_swapchain {
     struct wsi_horizon_surface *surface;
     NWindow *window;
  
@@ -203,7 +229,7 @@ index 67b955070a8..c7183aca21c 100644
     const struct wsi_horizon_format *format;
     uint32_t swap_interval;
     bool said_short_copy;      /* the fallback's narrowed-row warning, once */
-@@ -1350,7 +1386,51 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+@@ -1350,7 +1403,51 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
     if (width == 0 || height == 0)
        return false;   /* nothing has reported a size yet */
  
@@ -256,7 +282,7 @@ index 67b955070a8..c7183aca21c 100644
  }
  
  /* Folds one completed acquire into the meter and reports the window
-@@ -2316,10 +2396,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -2316,10 +2413,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     if (result != VK_SUCCESS)
        return result;
  
@@ -278,7 +304,7 @@ index 67b955070a8..c7183aca21c 100644
        return VK_ERROR_INITIALIZATION_FAILED;
     }
  
-@@ -2371,11 +2458,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -2371,11 +2475,17 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
  
     chain->surface = surface;
     chain->window = (NWindow *)surface->icd.window;

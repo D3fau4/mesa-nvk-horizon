@@ -1,4 +1,4 @@
-From 109413a51363e4847496f1c95316fdcf988eabc6 Mon Sep 17 00:00:00 2001
+From 8af6ad0de8ab514bf886dc67d55c7066dbc20cd0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:51:36 +0000
 Subject: [PATCH 13/54] meson: ask for posix_memalign with its declaring header

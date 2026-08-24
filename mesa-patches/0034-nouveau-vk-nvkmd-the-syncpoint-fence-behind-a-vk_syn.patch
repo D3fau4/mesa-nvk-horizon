@@ -1,4 +1,4 @@
-From 89da5d2acb8514fa59956902f901ddecdcea4f4f Mon Sep 17 00:00:00 2001
+From 24ee2b494019da5a572a9c44b824dea3b9489d40 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:09:47 +0000
 Subject: [PATCH 34/54] nouveau/vk: nvkmd, the syncpoint fence behind a vk_sync

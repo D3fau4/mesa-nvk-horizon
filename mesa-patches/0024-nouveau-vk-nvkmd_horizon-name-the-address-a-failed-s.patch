@@ -1,4 +1,4 @@
-From 3139d90915c2d0014b0750b539f7e6f1f2a67b30 Mon Sep 17 00:00:00 2001
+From f7c71d49e7a3b68c1f662b2a0364183841e49d1c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 18:10:56 +0000
 Subject: [PATCH 24/54] nouveau/vk: nvkmd_horizon, name the address a failed

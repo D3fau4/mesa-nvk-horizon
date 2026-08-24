@@ -1,4 +1,4 @@
-From b91e068f8e62825a8eb2adde33a8f67d6ceae4e7 Mon Sep 17 00:00:00 2001
+From fa4ab492a8f093de5c0ff5d655f892449ad2d56e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 17:09:07 +0200
 Subject: [PATCH 47/54] nouveau/vk: make a stream push visible to the GPU

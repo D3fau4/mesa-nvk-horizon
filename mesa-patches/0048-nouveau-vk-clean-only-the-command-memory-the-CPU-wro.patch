@@ -1,4 +1,4 @@
-From 9fbc690656c5efb437c1404193c7d6e2d3807045 Mon Sep 17 00:00:00 2001
+From a40a7a8d0c530b381968d73a22140069e34a0fee Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Sat, 22 Aug 2026 18:49:28 +0200
 Subject: [PATCH 48/54] nouveau/vk: clean only the command memory the CPU wrote

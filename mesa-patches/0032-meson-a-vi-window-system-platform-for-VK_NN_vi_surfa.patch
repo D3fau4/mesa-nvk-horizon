@@ -1,4 +1,4 @@
-From d69ca42239132babe3de7a72c285ee24b91ecddf Mon Sep 17 00:00:00 2001
+From 54ff003bc788baad24c2455ea30a509ee455e67b Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 10:06:20 +0000
 Subject: [PATCH 32/54] meson: a 'vi' window-system platform for

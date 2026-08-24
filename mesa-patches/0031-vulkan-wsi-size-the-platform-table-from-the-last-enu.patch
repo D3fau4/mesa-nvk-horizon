@@ -1,4 +1,4 @@
-From 102f02f304b5d2280c5ddcb4202bdceadd654ad3 Mon Sep 17 00:00:00 2001
+From 4aaa836e18b3e9af14d81050e089980761fcfa03 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Wed, 5 Aug 2026 09:57:37 +0000
 Subject: [PATCH 31/54] vulkan/wsi: size the platform table from the last

@@ -1,4 +1,4 @@
-From fd9392dd24e75dcdc74d93ad4e58c42b3ae76ad1 Mon Sep 17 00:00:00 2001
+From d745aa9b94a40c29e827f7a67599f9e0fab935b0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 28 Jul 2026 10:52:29 +0000
 Subject: [PATCH 14/54] util/u_debug: decide __normal_user from the C library,

@@ -1,4 +1,4 @@
-From 1c43464234c8a3d6b9209959b219a07cb033474b Mon Sep 17 00:00:00 2001
+From d33db1ba8841555ccc730d8b6cf0b912ea9ec9d0 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:38:12 +0000
 Subject: [PATCH 08/54] util/os_time: sleep with usleep on any POSIX-lite

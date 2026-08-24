@@ -1,4 +1,4 @@
-From 0eb3d9f89e88937e4c9a5177df949f6e11494007 Mon Sep 17 00:00:00 2001
+From 8e32ef4e8713de2cdd6ccc3e1bb6b0bdfb52f1c3 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:37:53 +0000
 Subject: [PATCH 07/54] util/detect_os: add DETECT_OS_HORIZON
