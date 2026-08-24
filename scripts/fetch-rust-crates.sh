@@ -48,6 +48,31 @@ LOCKFILE=build/toolchain/rust-library-Cargo.lock
 # image. A local rustup install has the same layout under its sysroot.
 RUST_SRC_REL=lib/rustlib/src/rust/library
 
+# THE IMAGE THIS READS IS THE ONE THE SYSROOT IS COMPILED IN, AND THAT IS
+# NOT $HORIZON_IMAGE. Measured, 2026-08-24, on every branch at once:
+#
+#   error: failed to select a version for the requirement
+#          `wasip2 = "^1.0.3"` (locked to 1.0.4+wasi-0.2.12)
+#   candidate versions found which didn't match: 1.0.3+wasi-0.2.9
+#   location searched: directory source `/tmp/horizon-ctx/rust-vendor`
+#   required by package `std v0.0.0 (...nightly.../library/std)`
+#
+# $HORIZON_IMAGE prefers the *derived* image when one exists locally
+# (scripts/toolchain-env.sh), and CI pulls exactly that as a build cache
+# before scripts/build-toolchain-image.sh runs — which calls this script
+# and then builds `FROM $HORIZON_BASE_IMAGE`. So the lockfile was read
+# from the cached derived image, carrying the nightly it was built with,
+# while `cargo -Zbuild-std` ran against a freshly pulled base image
+# carrying today's. The base image's rolling nightly moved, its
+# library/Cargo.lock moved with it, and the vendor closure was built for
+# the wrong compiler.
+#
+# The script's own header says it pins nothing and therefore cannot
+# drift from the toolchain. That was true of the versions it reads and
+# false about *which* toolchain it read them from. The sysroot is built
+# in the base image, so the closure that feeds it comes from there too.
+SYSROOT_IMAGE="${HORIZON_BASE_IMAGE:-}"
+
 mkdir -p "$CRATES_DIR"
 
 # --- 1. the lockfile, taken from the toolchain rather than committed ---
@@ -63,9 +88,9 @@ fetch_lockfile() {
     # docker cp, not `docker run cat`: the container has no network and
     # we want the file on the host, not its contents through a pipe that
     # could swallow an error.
-    cid=$(docker create "$HORIZON_IMAGE")
+    cid=$(docker create "$SYSROOT_IMAGE")
     trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-    src=$(docker run --rm "$HORIZON_IMAGE" sh -c \
+    src=$(docker run --rm "$SYSROOT_IMAGE" sh -c \
               'PATH=/opt/cargo/bin:$PATH rustc --print sysroot' | tr -d '\r')
     docker cp "$cid:$src/$RUST_SRC_REL/Cargo.lock" "$LOCKFILE" >/dev/null
     docker rm -f "$cid" >/dev/null
@@ -102,10 +127,15 @@ rust_toolchain_id() {
     if [ "$HORIZON_IN_CONTAINER" -eq 0 ]; then
         rustc --version 2>/dev/null || true
     else
-        _rc_dig=$(horizon_image_digest)
+        # $SYSROOT_IMAGE for the same reason fetch_lockfile uses it: an
+        # identity taken from the derived image says nothing about
+        # whether the compiler the sysroot is built with moved, so a
+        # base image that moved under an unchanged cache read as "no
+        # change" and kept a lockfile from the wrong nightly.
+        _rc_dig=$(horizon_image_digest "$SYSROOT_IMAGE")
         case "$_rc_dig" in
         unknown|"") ;;
-        *) echo "$HORIZON_IMAGE $_rc_dig" ;;
+        *) echo "$SYSROOT_IMAGE $_rc_dig" ;;
         esac
         unset _rc_dig
     fi
