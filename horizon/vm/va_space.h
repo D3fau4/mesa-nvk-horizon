@@ -52,6 +52,30 @@ horizon_gpu_status horizon_va_set_add(horizon_va_set *set, uint64_t offset,
 horizon_gpu_status horizon_va_set_remove(horizon_va_set *set,
                                          uint64_t offset);
 
+/* Removes [offset, offset+size), which must lie entirely inside ONE
+ * live interval. Whatever of that interval lies before or after the
+ * range stays live, so one call can turn one interval into two.
+ *
+ * This is what a partial unbind needs. Vulkan sparse binding lets an
+ * application unbind a sub-range of a range it bound earlier, and D12 —
+ * measured on hardware 2026-08-24, tests/t_sparse.c — says the hardware
+ * allows it: unbinding inside a sparse reservation restores the
+ * resolve-to-nothing state rather than punching a hole. The bookkeeping
+ * had no way to express it; this is that way.
+ *
+ * Deliberately refuses a range that spans two intervals or reaches
+ * outside every one of them. Those are two different requests wearing
+ * one shape, and a caller that meant either should say so by calling
+ * twice: silently removing "as much as is live" would make an unbind of
+ * the wrong range look like a successful unbind of the right one.
+ *
+ * Fails INVALID_ARG on size == 0 or a range no single interval contains,
+ * OVERFLOW on wrap, OUT_OF_MEMORY when a split needs a slot and cannot
+ * get one — in which case the set is unchanged. */
+horizon_gpu_status horizon_va_set_remove_range(horizon_va_set *set,
+                                               uint64_t offset,
+                                               uint64_t size);
+
 static inline uint32_t horizon_va_set_count(const horizon_va_set *set)
 {
     return set->count;
