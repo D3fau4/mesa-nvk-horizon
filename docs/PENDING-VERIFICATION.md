@@ -101,7 +101,15 @@ Both things that blocked the work are done:
 - **Step 2, the bookkeeping.** `horizon_va_set_remove_range` cuts a live
   interval, leaving whatever lies before and after it live. Host-tested
   under ASan+UBSan; `h_va_space` went from 21 checks to 55. Nothing
-  calls it yet.
+  calls it yet, **and it may turn out that nothing should.**
+  `nvioctlNvhostAsGpu_UnmapBuffer` takes an address and no length, so a
+  partial unbind has to unmap the whole mapping and map the two
+  remainders back — and `horizon_gpu_vm_unmap` followed by two
+  `horizon_gpu_vm_map` calls already keeps the interval set right by
+  themselves. Whoever writes step 3 should decide that first: if the
+  remap design is the one, this primitive is scaffolding for a building
+  that was put up another way and it should be deleted, not kept
+  because it is tested.
 - **The channel budget.** `has_sparse = true` makes NVK ask for a bind
   context, which is a third GPFIFO channel, and patch 0022 recorded that
   as a promise about an unknown. It is no longer unknown: `t_channel`
