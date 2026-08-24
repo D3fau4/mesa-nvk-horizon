@@ -117,18 +117,46 @@ Both things that blocked the work are done:
   out of transfer memory. The one-channel constraint was never the
   hardware's.
 
-What remains is `NVKMD_VA_SPARSE` in `nvkmd_horizon_va.c` and then a
-**new** patch flipping `has_sparse` — not an edit to `0022`, which is
-what set it false. `nvkmd_horizon_va_unbind` requires an exact
-`(offset, range)` match today and is where the split has to be
-expressed; the comment there says so.
+**Step 3 is written and is class X.** Patch `0055`:
+`nvkmd_horizon_alloc_va` accepts `NVKMD_VA_SPARSE`, and
+`nvkmd_horizon_va_unbind` finds the binding that *contains* a range
+rather than the one that equals it — unmapping it and mapping the ends
+that survive back, because `nvioctlNvhostAsGpu_UnmapBuffer` takes an
+address and no length. Nothing reaches any of it yet.
+
+**Step 4 is one line, and it is deliberately not taken.**
+`nvkmd_info::has_sparse` gates EIGHT `VkPhysicalDeviceFeatures` at once
+(`nvk_physical_device.c:395-402`) and makes NVK ask for a bind context.
+Flipping it un-run would put all seventeen Vulkan tests behind a path no
+console has executed.
+
+**Done when**: `has_sparse` is flipped in `nvkmd_horizon_pdev.c` and
+`t_vk_sparse` has run — and either it passes, in which case the flip
+stays in the commit that quotes its log, or it does not and the flip
+comes back out with the reason.
 
 `has_transfer_queue` is false for the same one-channel reason and is now
 equally unblocked, though nothing has asked for it.
 
-**Done when**: `has_sparse` is true and a Vulkan sparse binding has run
-on a console, or the attempt has produced a reason it cannot and that
-reason is recorded.
+### 1.2.1 What sparse costs, which arm D of `t_sparse` decides
+
+Everything `t_sparse` measured ran at `as_big_page_size` — 128 KiB,
+the address space's own binding granularity. `horizon_gpu_vm_map`
+refuses to map an object in pages larger than its own alignment,
+because `MapBufferEx` accepts that pairing and the GPU's writes go
+nowhere. `vkAllocateMemory` takes no alignment and this backend gives an
+ordinary allocation 4 KiB.
+
+So sparse needs one of two things, and they cost very differently:
+
+- a sparse reservation that binds in **4 KiB pages**, and device memory
+  needs nothing special; or
+- **every device memory object aligned to 128 KiB**, which is 32x waste
+  on a small allocation.
+
+`t_sparse` arm D asks the first directly: a small-page sparse
+reservation, a 4 KiB-aligned object bound into it, and a write through
+it. Class X, never run.
 
 ## 1.3 The query pool's reset and write in one submission
 
@@ -145,10 +173,37 @@ cache lines on a fresh allocation, fixed in `horizon/memory/mem.c`.
 
 So the combined form may well work now, and nothing has tried it.
 
-**Done when**: `write_timestamp` records the reset and the timestamp in
-one command buffer again, and either the run passes — in which case the
-split comes out — or it does not, and the reason is recorded against
-this section instead.
+`t_vk_timestamp` now carries a probe that asks directly: the reset and
+the timestamp in ONE command buffer, six times, because the failure was
+intermittent at about half and one attempt could not tell it from luck.
+It runs on a query slot of its own and reports rather than demands, so a
+failure there costs the timestampPeriod measurement nothing. Class X,
+never run.
+
+**Done when**: that probe has run, and either it passes — in which case
+`write_timestamp`'s two-submit split comes out and the probe with it —
+or it does not, and the reason is recorded here instead.
+
+## 1.4 The next console session, in order
+
+Everything above except the docking is one sitting. Build with
+`scripts/ci-build-archives.sh`, then:
+
+1. **`t_sparse`** — arm D. Decides § 1.2.1, and everything after it in
+   this list depends on which way it goes.
+2. **`t_vk_timestamp`** — the combined-form probe. Closes § 1.3 either
+   way.
+3. Flip `has_sparse` to `true` in `nvkmd_horizon_pdev.c`, rebuild, then
+   **`t_vk_sparse`** — and immediately after it `t_vulkan`,
+   `t_vk_transfer` and `t_vk_swapchain`, because the flip makes NVK ask
+   for a bind context at device creation and that path is what could
+   break every Vulkan test at once rather than only the sparse one.
+4. If any of step 3 fails, the flip comes back out and § 1.2 records
+   why. That is a result, not a failure.
+
+Then, whenever somebody is holding the console: dock or undock it during
+`t_vk_suboptimal` section D **and** during `t_vk_swapchain` section G,
+which closes § 1.1.
 
 ---
 
