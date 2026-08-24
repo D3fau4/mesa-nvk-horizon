@@ -117,7 +117,111 @@ import gzip, hashlib, os, pathlib, re, shutil, subprocess, sys, urllib.request
 # genuinely absent. shutil.which() does the full platform-appropriate
 # search and hands subprocess.run() a path CreateProcess can launch
 # directly. No effect where a real dpkg is already on PATH.
-_DPKG = shutil.which('dpkg') or 'dpkg'
+_DPKG = shutil.which('dpkg')
+
+
+# WHEN THERE IS NO dpkg AT ALL, which is every Windows host and any
+# Linux one that is not Debian. This used to fall back to the literal
+# string 'dpkg' and let subprocess.run() raise FileNotFoundError, which
+# ended the whole fetch four screens below the reason:
+#
+#     FileNotFoundError: [WinError 2] ...
+#     ci-build-archives: fetch-clc-deps failed 3 times; giving up
+#
+# Answering "not satisfied" instead would be safe but wrong in a way
+# that matters: in container mode `have` is the base image's real
+# package list, so every versioned constraint would look unmet and the
+# closure would grow to include newer libc6 and friends — the same
+# class of broken install the version check was added to prevent,
+# arrived at from the other side.
+#
+# So: dpkg where there is one, and a transliteration of its own
+# verrevcmp where there is not. This is dpkg's algorithm (lib/dpkg/
+# version.c), not an approximation of it — '~' sorts before the end of
+# a string, digit runs compare numerically with leading zeros ignored,
+# letters sort before every other non-digit character. The Linux path
+# that CI runs still goes through the real dpkg and is unaffected; a
+# mistake here can only reach a host that could not have run this
+# script at all before.
+def _order(c):
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    if c == '~':
+        return -1
+    if c:
+        return ord(c) + 256
+    return 0
+
+
+def _at(s, i):
+    return s[i] if i < len(s) else ''
+
+
+def _verrevcmp(a, b):
+    i = j = 0
+    while i < len(a) or j < len(b):
+        first_diff = 0
+        while ((_at(a, i) and not _at(a, i).isdigit()) or
+               (_at(b, j) and not _at(b, j).isdigit())):
+            ac, bc = _order(_at(a, i)), _order(_at(b, j))
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while _at(a, i) == '0':
+            i += 1
+        while _at(b, j) == '0':
+            j += 1
+        while _at(a, i).isdigit() and _at(b, j).isdigit():
+            if not first_diff:
+                first_diff = ord(a[i]) - ord(b[j])
+            i += 1
+            j += 1
+        if _at(a, i).isdigit():
+            return 1
+        if _at(b, j).isdigit():
+            return -1
+        if first_diff:
+            return first_diff
+    return 0
+
+
+def _split_version(v):
+    epoch, sep, rest = v.partition(':')
+    if sep and epoch.isdigit():
+        epoch = int(epoch)
+    else:
+        epoch, rest = 0, v
+    upstream, sep, revision = rest.rpartition('-')
+    if not sep:
+        upstream, revision = rest, ''
+    return epoch, upstream, revision
+
+
+def _compare_versions(installed, op, ver):
+    e1, u1, r1 = _split_version(installed)
+    e2, u2, r2 = _split_version(ver)
+    c = (e1 > e2) - (e1 < e2)
+    if c == 0:
+        c = _verrevcmp(u1, u2)
+    if c == 0:
+        c = _verrevcmp(r1, r2)
+    if op == '<<':
+        return c < 0
+    if op == '<=':
+        return c <= 0
+    if op == '=':
+        return c == 0
+    if op == '>=':
+        return c >= 0
+    if op == '>>':
+        return c > 0
+    # An operator neither parse_alt nor a control file produces. Say so
+    # rather than guess: a silent "satisfied" here drops a package from
+    # the closure and the install fails somewhere else entirely.
+    raise SystemExit('fetch-clc-deps: unknown version operator %r' % op)
 
 dl, mirror, roots = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3].split()
 
@@ -170,6 +274,8 @@ def satisfied_by_installed(name, op, ver):
     # Debian versions have epochs, tildes and mixed alphanumeric
     # segments, and getting that subtly wrong is how a closure ends up
     # looking right and failing at install time.
+    if _DPKG is None:
+        return _compare_versions(installed, op, ver)
     return subprocess.run([_DPKG, '--compare-versions', installed, op, ver],
                           check=False).returncode == 0
 

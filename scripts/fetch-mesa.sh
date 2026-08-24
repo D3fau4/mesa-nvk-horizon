@@ -109,9 +109,26 @@ fetch_via_git() {
     # Belt and braces: prove mesa/ really is its own repository before
     # running anything that writes. A wrong answer here is destructive,
     # so it aborts rather than falling through to the archive path.
+    #
+    # BOTH SIDES GO THROUGH `cd ... && pwd`, and that is portability
+    # rather than style. Git for Windows answers rev-parse in a
+    # drive-letter spelling of an absolute path — C:/…/mesa/.git — while
+    # the shell's pwd answers in the MSYS one, /c/…/mesa/.git. The two
+    # name the same directory and compare unequal as strings, so this
+    # assertion fired on a perfectly correct tree and fetch-mesa refused
+    # to run at all. Same fix, same words, as the sibling guard in
+    # scripts/apply-mesa-patches.sh, which had it and this did not.
+    # Canonicalising git's answer the way the expectation was built
+    # compares directories instead of spellings and keeps the guard
+    # exactly as strict: mesa/.git and nothing else. A path git names
+    # but the shell cannot enter falls through unchanged and still
+    # fails.
+    canon() {
+        [ -n "$1" ] && (cd "$1" 2>/dev/null && pwd) || printf '%s' "$1"
+    }
     gitdir=$(git -C "$DEST" rev-parse --absolute-git-dir 2>/dev/null || true)
     want="$(cd "$DEST" && pwd)/.git"
-    if [ "$gitdir" != "$want" ]; then
+    if [ "$(canon "$gitdir")" != "$want" ]; then
         echo "error: $DEST did not become its own git repository." >&2
         echo "       git reports its git-dir as: ${gitdir:-<none>}" >&2
         echo "       expected: $want" >&2
