@@ -159,6 +159,12 @@ horizon_tests = [
   't_channel',
   't_submit',
   't_syncpt',
+  # Whether a syncpoint can be advanced from the CPU at all, and what
+  # that does to the channel that owns it. nvk_horizon_sync_signal does
+  # not touch a syncpoint because horizon_gpu offered no way to; the
+  # ioctl was always there and nothing had called it. Disturbs a channel
+  # it creates for the purpose, on purpose, and destroys it after.
+  't_syncpt_incr',
   't_fence_wait',
   # How many syncpoint waits the platform will hold at once, and what
   # horizon_gpu_fence_wait does past that number. Its loop treats a

@@ -45,6 +45,34 @@ horizon_gpu_result horizon_gpu_syncpt_read(horizon_gpu_device *dev,
                                            uint32_t syncpt_id,
                                            uint32_t *out_value);
 
+/* Increments a syncpoint from the CPU
+ * (NVHOST_IOCTL_CTRL_SYNCPT_INCR). Never blocks.
+ *
+ * WHAT THIS IS FOR. A Vulkan semaphore or fence signalled from the host
+ * has to become visible to waiters on the GPU side, and a syncpoint is
+ * the only thing on this platform both sides can see. Without this the
+ * host-signal path can only set a flag the GPU never reads.
+ *
+ * WHICH SYNCPOINT IT MAY BE CALLED ON, AND THIS IS THE WHOLE DANGER.
+ * NOT a channel's own syncpoint. libnx tracks a channel's next fence
+ * value as `fence.value + fence_incr` and horizon_gpu_channel keeps a
+ * 64-bit shadow on top of that; both count the increments the GPU will
+ * make, and neither can see one made behind their backs. An increment
+ * here on a channel's syncpoint makes every fence that channel has
+ * already handed out appear reached one submit early — which is not a
+ * failure that reports itself, it is a wait that returns before the work
+ * did.
+ *
+ * So the caller owns the syncpoint it names. This function does not and
+ * cannot check that; nothing in the ioctl distinguishes the two.
+ *
+ * Whether an increment from the CPU is honoured at all, and whether it
+ * disturbs the channel that owns the syncpoint, is what t_syncpt_incr
+ * measures. Until that has run on a console this is cross-compiled
+ * code, not a working mechanism. */
+horizon_gpu_result horizon_gpu_syncpt_incr(horizon_gpu_device *dev,
+                                           uint32_t syncpt_id);
+
 /* Non-blocking fence query. */
 horizon_gpu_result horizon_gpu_fence_poll(horizon_gpu_device *dev,
                                           horizon_gpu_fence fence,

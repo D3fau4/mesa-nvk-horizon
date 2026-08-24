@@ -33,6 +33,22 @@ horizon_gpu_result horizon_gpu_syncpt_read(horizon_gpu_device *dev,
     return horizon_gpu_ok();
 }
 
+horizon_gpu_result horizon_gpu_syncpt_incr(horizon_gpu_device *dev,
+                                           uint32_t syncpt_id)
+{
+    if (!dev)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* Same fd as the read above: /dev/nvhost-ctrl, open since bring-up
+     * step 2. The ioctl takes the id and nothing else — there is no way
+     * for it, or for us, to tell a syncpoint the caller owns from one a
+     * channel is counting. sync.h says whose job that is. */
+    Result rc = nvioctlNvhostCtrl_SyncptIncr(nvFenceGetFd(), syncpt_id);
+    if (R_FAILED(rc))
+        return horizon_gpu_err_nv(rc);
+    return horizon_gpu_ok();
+}
+
 /* "Has (id, threshold) been reached?", asked of the kernel directly.
  *
  * This is a *different question* from reading the counter, not a weaker
