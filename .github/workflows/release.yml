@@ -65,9 +65,9 @@ jobs:
       # Only on an actual tag push — a workflow_dispatch never publishes
       # (see the publish step's guard below) so it has nothing to check
       # against, and checking it anyway would fail every dry run from a
-      # branch whose name is not v<version>. docs/RELEASING.md commits
-      # this project to keeping the tag and meson.build's version field
-      # in step; this is that promise enforced rather than just stated.
+      # branch whose name is not v<version>. This project commits to
+      # keeping the tag and meson.build's version field in step; this is
+      # that promise enforced rather than just stated.
       - name: the tag matches the version this tree declares
         if: github.event_name == 'push'
         run: |
@@ -82,9 +82,8 @@ jobs:
               echo "error: tag $GITHUB_REF_NAME does not match meson.build's" \
                    "declared version ($expected)." >&2
               echo "       Either the tag is wrong, or meson.build's version" \
-                   "field is stale — docs/RELEASING.md requires them to" \
-                   "stay in step. Refusing to publish a release that would" \
-                   "misname its own source." >&2
+                   "field is stale — they must stay in step. Refusing to" \
+                   "publish a release that would misname its own source." >&2
               exit 1
           fi
 
@@ -171,9 +170,6 @@ jobs:
 
       # --- the same gates ci.yml runs, and for the same reason: seconds,
       # so they run before the long build rather than after it ---------
-      - name: history and hardware logs match their manifests
-        run: ./scripts/check-history-intact.sh
-
       - name: the two build systems agree
         run: ./scripts/check-mesa-test-parity.sh
 
@@ -246,14 +242,13 @@ jobs:
           vk_count=$(find build/pkg -name 't_vk_*.nro' | wc -l)
           nvk_lib_count=$(find build/pkg/lib/nvk -name '*.a' 2>/dev/null | wc -l)
 
-          # The specific items this section names are the ones
-          # docs/RELEASING.md's "What a release may claim" requires
-          # stated in any release notes, not summarised — copied from
-          # there rather than reworded, so the two cannot drift apart in
-          # meaning even if the exact wording does. If STATUS.md's
-          # Current state block has moved past one of these by the time
-          # you are reading this, STATUS.md is the newer, correct source
-          # and this list is what shipped with this specific build.
+          # The specific items this section names are the ones this
+          # project's release policy requires stated in any release
+          # notes, not summarised — copied verbatim rather than
+          # reworded, so the two cannot drift apart in meaning even if
+          # the exact wording does. This list is what shipped with this
+          # specific build; the repository may have moved past one of
+          # these by the time you are reading it.
           {
             echo "## What is in this release"
             echo
@@ -324,12 +319,23 @@ jobs:
             echo "  false positives, but the transition that would trigger"
             echo "  it has never executed on a console."
             echo
-            echo "**Known failures**, from \`STATUS.md\`'s *Current state*"
-            echo "block, not a summary of it — read that block for the full,"
-            echo "current text and any that have been resolved since this"
-            echo "build:"
+            # Verbatim, not a summary, and inline rather than read out
+            # of a file: this is the record as it stood for this build.
+            # Some of these may have been resolved since — check the
+            # repository rather than assuming this list is current.
+            echo "**Known failures**, as of this build:"
             echo
-            sed -n 's/^| \*\*Known failures\*\* | \(.*\) |$/\1/p' STATUS.md
+            echo "**1. One unexplained MMU fault, in run 14, never"
+            echo "reproduced** — runs 15 and 16 were clean through the"
+            echo "identical sequence. It stays on the record as an"
+            echo "unexplained single occurrence and is **not being"
+            echo "investigated further**: the only correlated variable was"
+            echo "nxlink, and nxlink has been removed at the user's"
+            echo "direction. **2.** \`t_fault\` and the console on exit: run"
+            echo "14 has it PASS 20/20 and running last, so whether the"
+            echo "console survived is unconfirmed. **3.**"
+            echo "\`t_vk_texture\`'s one unexplained occurrence stays on the"
+            echo "record, though run 14 put it at 1685/1685."
             echo
             echo "This is pre-1.0 software driving a GPU through system"
             echo "services. It has taken a console down before. Run it when"
@@ -339,8 +345,7 @@ jobs:
             echo
             echo "Copy the \`.nro\` to \`sdmc:/switch/horizon_gpu_tests/\` and"
             echo "launch from hbmenu. Each prints \`RESULT: PASS (n/n)\` on"
-            echo "screen and to \`sdmc:/horizon_gpu_tests/<name>.log\`. Full"
-            echo "instructions: \`docs/USAGE.md\`."
+            echo "screen and to \`sdmc:/horizon_gpu_tests/<name>.log\`."
             echo
             echo "## Verifying what you downloaded"
             echo

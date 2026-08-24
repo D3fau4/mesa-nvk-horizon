@@ -57,8 +57,7 @@ _Static_assert(HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
                "wait ring would overrun the cmdbuf page");
 
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
- * re-checked at a useful rate without busy-polling
- * (docs/synchronization.md § 6). */
+ * re-checked at a useful rate without busy-polling. */
 #define CHANNEL_WAIT_CHUNK_US INT32_C(100000)
 
 horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
@@ -269,7 +268,7 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                      chan->syncpt_id, res.nv);
         if (!dev->allow_untrusted_syncpt_baseline)
             goto fail_channel;
-        /* Opt-in path only (docs/synchronization.md § 9). The baseline is
+        /* Opt-in path only. The baseline is
          * whatever calloc left — zero — and it is recorded as untrusted so
          * no caller can mistake this channel's fences for measurements. */
         chan->syncpt_value_at_create = 0;
@@ -355,8 +354,7 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     /* And the per-submit PROLOGUE, which runs before the caller's work:
      * one MEM_OP, L2_SYSMEM_INVALIDATE.
      *
-     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04
-     * (docs/hw-logs/t_vk_transfer-run3-FAIL.log). The fence block above
+     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04. The fence block above
      * writes dirty L2 back after the work, so a GPU write reaches memory.
      * Nothing did the other direction: a line the GPU has touched stays
      * resident in L2 after that writeback, *clean*, and a later CPU write
@@ -613,10 +611,10 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
     uint32_t hw;
     horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
     if (horizon_gpu_failed(res)) {
-        /* An untrusted-baseline channel (docs/synchronization.md § 9) is
-         * one whose platform has no syncpoint read at all, so this fails
-         * every time and would fail every submit with it —
-         * horizon_gpu_submit reaps before it queues.
+        /* An untrusted-baseline channel is one whose platform has no
+         * syncpoint read at all, so this fails every time and would
+         * fail every submit with it — horizon_gpu_submit reaps before
+         * it queues.
          *
          * Report "nothing retired" and carry on. Retirement on such a
          * channel is meaningless anyway, and of the two possible
@@ -755,7 +753,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
         /* Bounded kernel wait per iteration; the loop re-checks the
          * notifier so a faulted channel cannot hang us forever, even
-         * with HORIZON_GPU_NO_TIMEOUT (docs/synchronization.md § 6). */
+         * with HORIZON_GPU_NO_TIMEOUT. */
         int32_t chunk_us = CHANNEL_WAIT_CHUNK_US;
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
             uint64_t remaining_ns = timeout_ns - elapsed_ns;

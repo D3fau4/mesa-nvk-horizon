@@ -4,10 +4,10 @@
  * WHY THIS EXISTS. Mesa's shader disk cache (`src/util/disk_cache`) was
  * turned off for this port because its OS layer is written against
  * mmap, flock, fcntl(F_SETLK), posix_fallocate, memfd_create, ftw and
- * getpwuid_r — every one of them measured absent on devkitA64's newlib
- * (docs/history/phase-3.md, the gap table). This module is the storage
- * half of the answer: a single-file, append-only, CRC-validated store
- * that needs nothing libnx's `fsdev` devoptab does not already provide
+ * getpwuid_r — every one of them measured absent on devkitA64's newlib.
+ * This module is the storage half of the answer: a single-file,
+ * append-only, CRC-validated store that needs nothing libnx's `fsdev`
+ * devoptab does not already provide
  * (fopen/fread/fwrite/fseek/ftell/ftruncate/fflush/fsync/rename/remove).
  * `src/util/disk_cache_horizon.c`, added by mesa-patches/0076, is the
  * other half and is the only thing that speaks Mesa.

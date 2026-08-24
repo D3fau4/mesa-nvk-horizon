@@ -25,7 +25,7 @@ Upstream: no -- it implements an operation for this backend.
 
 The operation is implementable here, and cheaply. A block-linear layout
 is a property of the GPU *mapping* on this platform, not of the memory
-object (docs/memory-model.md § 1 #9), and alloc_mem already reserves and
+object, and alloc_mem already reserves and
 binds a VA for every object it creates. So the only difference between
 the two entry points is the PTE kind that VA carries, and the body
 becomes one function taking the kind.
@@ -57,7 +57,7 @@ Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
 52/52 reaches this operation through the one path that can -- a
 DRM_FORMAT_MOD_LINEAR image used as a colour attachment, which makes
 NVK allocate a tiled shadow here -- and all 4096 texels come back
-correct (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
+correct.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---

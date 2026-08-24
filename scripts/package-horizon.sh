@@ -16,12 +16,13 @@
 #
 # libhorizon_gpu.a and libhorizon_compat.a are on every build this
 # script will accept at all (both build paths produce them before a
-# single test); the NVK archives are not (docs/BUILDING.md §4) and are
-# included only when $MESA_NVK_BUILD_DIR actually holds them.
+# single test); the NVK archives are not — a Makefile-only build never
+# produces them — and are included only when $MESA_NVK_BUILD_DIR
+# actually holds them.
 #
 # The point of the manifest is the Phase 2 goal itself: when a .nro is
-# copied to an SD card and run on console, the result recorded in
-# STATUS.md has to be attributable to an exact toolchain. A sha256 next
+# copied to an SD card and run on console, the result that gets
+# recorded has to be attributable to an exact toolchain. A sha256 next
 # to the pinned devkitA64/libnx/image versions is what makes "the ten
 # tests passed" a statement about a specific build — and the same
 # attribution is what tells a consuming project which commit's ABI a
@@ -332,10 +333,10 @@ mkdir -p "$OUT/lib"
 # libhorizon_gpu.a.p/, resolved against the archive's own directory. A
 # plain cp into $OUT therefore staged an archive naming members that are
 # not beside it, and every package this project has ever published
-# carried one — while docs/BUILDING.md §5 called it "what a project
-# consuming horizon_gpu actually links against". STATUS.md records the
-# workaround: the object directory copied in by hand, once, and the
-# script left alone. The same was true of all seventeen NVK archives
+# carried one — even though it is exactly what a project consuming
+# horizon_gpu actually links against. The workaround on record: the
+# object directory copied in by hand, once, and the script left
+# alone. The same was true of all seventeen NVK archives
 # below.
 #
 # scripts/fatten-archives.sh converts them, and the whole set goes
@@ -392,7 +393,7 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 #
 # Unlike libhorizon_gpu.a, this is not on every build: the Makefile-only
 # path never configures Mesa at all, and even the Meson path can be
-# configured without NVK (docs/BUILDING.md §4). $_newest_lib, set by the
+# configured without NVK. $_newest_lib, set by the
 # staleness gate above, is already this script's own answer to "does
 # $MESA_NVK_BUILD_DIR hold a real build" — asked again here would be a
 # second place that question could drift from the first.
@@ -419,8 +420,8 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # scripts/toolchain-env.sh, shared with scripts/package-portlibs.sh. The
 # `if [ -n "$_newest_lib" ]` around it stays HERE and was deliberately
 # not moved with it: this script's answer to "no NVK build at all" is to
-# omit lib/nvk/ and still succeed, which docs/BUILDING.md §5 documents,
-# while an install with no driver in it is not an install and refuses.
+# omit lib/nvk/ and still succeed, while an install with no driver in
+# it is not an install and refuses.
 # That difference is the caller's, so the condition is the caller's.
 if [ -n "$_newest_lib" ]; then
     horizon_nvk_archive_gate || exit 1

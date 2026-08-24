@@ -246,8 +246,8 @@ index 40f55e1..c5d01bd 100644
 +    * suspend on a condition, which simple_mtx has no counterpart for.
 +    * The primitives are verified on this platform rather than assumed:
 +    * t_threads exercises cnd_wait, cnd_signal, cnd_broadcast and
-+    * cnd_timedwait against their deadlines and passed 67/67 on console
-+    * (docs/hw-logs/t_threads.log).
++    * cnd_timedwait against their deadlines and passed 67/67 on
++    * console.
 +    */
 +   mtx_t mutex;
 +   cnd_t cond;

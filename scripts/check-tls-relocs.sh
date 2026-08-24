@@ -27,7 +27,7 @@
 # It reached this tree because Meson appends -fPIC to static-library
 # objects unless b_staticpic=false, after the cross file's -fPIE. All
 # three objects in the Mesa build that use TLS were affected, and it hung
-# tests/t_threads.c on its first run (STATUS.md, emulator 2026-07-28).
+# tests/t_threads.c on its first run (emulator, 2026-07-28).
 #
 # HOW IT CHECKS. An object that calls __aarch64_read_tp is accessing a
 # thread-local; correct code for that access carries at least one

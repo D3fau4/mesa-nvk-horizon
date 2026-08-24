@@ -30,7 +30,7 @@ cd "$(dirname "$0")/.."
 # tool:why, so a failure says what wanted it rather than just naming it.
 TOOLS="
 git:fetch-mesa.sh clones the pinned checkout and apply-mesa-patches.sh git-ams the series
-python3:the pinned Meson, spv-embed.py and split-status.py all need it
+python3:the pinned Meson and spv-embed.py both need it
 curl:fetch-rust-tools.sh and fetch-clc-deps.sh download the crates and the LLVM debs
 tar:unpacking the .crate and .deb payloads, and package-portlibs.sh packs with it (--sort=name, so GNU tar)
 sha256sum:every download is verified against the digest in toolchain/versions.env, and both packaging scripts sign their tarball with it
@@ -83,7 +83,6 @@ if [ -n "$missing" ]; then
         echo >&2
         ;;
     esac
-    echo "       docs/BUILDING.md lists what the build expects to find." >&2
     exit 1
 fi
 

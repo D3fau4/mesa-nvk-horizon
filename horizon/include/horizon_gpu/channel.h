@@ -62,16 +62,16 @@ uint32_t horizon_gpu_channel_syncpt_value_at_create(
     const horizon_gpu_channel *chan);
 
 /* False only when the initial syncpoint read failed and the device's
- * allow_untrusted_syncpt_baseline opt-in let the channel come up regardless
- * (docs/synchronization.md § 9). A caller that reports timing or completion
- * as observed hardware behaviour must check this first: on such a channel
- * the shadow baseline is an assumption, so every fence derived from it is
+ * allow_untrusted_syncpt_baseline opt-in let the channel come up
+ * regardless. A caller that reports timing or completion as observed
+ * hardware behaviour must check this first: on such a channel the
+ * shadow baseline is an assumption, so every fence derived from it is
  * too. */
 bool horizon_gpu_channel_syncpt_baseline_trusted(
     const horizon_gpu_channel *chan);
 
 /* 64-bit shadow of the syncpoint value once every submitted increment has
- * retired (docs/synchronization.md § 1.1). */
+ * retired. */
 uint64_t horizon_gpu_channel_shadow_target(const horizon_gpu_channel *chan);
 
 /* Fence that signals when everything submitted so far has completed. */
@@ -81,15 +81,15 @@ horizon_gpu_channel_last_fence(const horizon_gpu_channel *chan);
 bool horizon_gpu_channel_is_lost(const horizon_gpu_channel *chan);
 
 /* Emits the in-stream SET_OBJECT binds for subchannels 0..4 using the
- * device's queried class numbers and submits them asynchronously
- * (known-risks R7). Must be called once before engine methods are used;
- * calling it again is HORIZON_GPU_ERR_STATE. */
+ * device's queried class numbers and submits them asynchronously. Must
+ * be called once before engine methods are used; calling it again is
+ * HORIZON_GPU_ERR_STATE. */
 horizon_gpu_result
 horizon_gpu_channel_bind_engines(horizon_gpu_channel *chan,
                                  horizon_gpu_fence *out_fence);
 
 /* Non-blocking: reads the syncpoint once and runs every retirement
- * callback whose fence has been reached (docs/synchronization.md § 3).
+ * callback whose fence has been reached.
  *
  * Returns HORIZON_GPU_ERR_CHANNEL_LOST, and runs nothing, when the
  * channel has faulted. A faulted channel's syncpoints are force-
@@ -112,7 +112,7 @@ horizon_gpu_channel_add_retirement(horizon_gpu_channel *chan,
                                    void (*fn)(void *ctx), void *ctx);
 
 /* Fence wait that consults this channel's error notifier as well as the
- * syncpoint (docs/synchronization.md § 6).
+ * syncpoint.
  *
  * IT RETURNS HORIZON_GPU_ERR_CHANNEL_LOST FOR A FENCE THAT REACHED ITS
  * THRESHOLD, when the channel faulted — not only for one that would
@@ -127,9 +127,9 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                                horizon_gpu_fence fence, uint64_t timeout_ns);
 
 /* Waits on the fence of the most recent submit, then reaps. It does not
- * iterate or sleep (docs/synchronization.md § 5). Both halves report a
- * faulted channel, so this returns HORIZON_GPU_ERR_CHANNEL_LOST rather
- * than success for work a fault abandoned. */
+ * iterate or sleep. Both halves report a faulted channel, so this
+ * returns HORIZON_GPU_ERR_CHANNEL_LOST rather than success for work a
+ * fault abandoned. */
 horizon_gpu_result horizon_gpu_channel_wait_idle(horizon_gpu_channel *chan,
                                                  uint64_t timeout_ns);
 

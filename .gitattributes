@@ -31,19 +31,6 @@
 #    therefore the identity of every patch in the series.
 *.patch -text
 
-# 2. The hardware logs. They are evidence: verbatim console output whose
-#    sha256 is recorded in docs/hw-logs/MANIFEST.sha256 and checked by
-#    scripts/check-history-intact.sh. All 165 files there (164 logs and
-#    one console fatal report) are LF today, which is the point — a
-#    checkout that converted them, in either direction, would
-#    fail that check on a tree nobody had edited, and the failure would
-#    say the evidence had been altered.
-docs/hw-logs/** -text
-
-# 3. The working record moved out of STATUS.md, under the same manifest
-#    and the same check (decision D17).
-docs/history/** -text
-
 # --- Binaries --------------------------------------------------------
 *.nro binary
 *.nso binary
@@ -52,9 +39,4 @@ docs/history/** -text
 *.o   binary
 *.spv binary
 
-# GitHub's language statistics: docs/hw-logs/ is 166 console logs and
-# docs/history/ is the working record. Neither is source, and together
-# they are most of the repository by file count.
-docs/hw-logs/** linguist-documentation
-docs/history/** linguist-documentation
 mesa-patches/*.patch linguist-vendored

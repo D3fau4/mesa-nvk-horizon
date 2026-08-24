@@ -56,7 +56,7 @@ Why: the windows are apertures the hardware fixes, and nothing else
   stops an ordinary allocation being given that range; on this address
   space the shader heap covers both by default.
 Evidence: measured on a real console, t_va_window, 2026-08-04
-  (docs/hw-logs/t_va_window-run1-PASS.log):
+  (2026-08-04):
     small-page region [0x8000000, 0x3fffff000)      ~15.87 GiB
     P2 window fixed @0xfe000000: ok
     P3 heap 4 GiB non-fixed with the window held:
@@ -65,7 +65,7 @@ Evidence: measured on a real console, t_va_window, 2026-08-04
     P7 heap fixed first, then the window: both ok
   RUN ON A CONSOLE 2026-08-04: the shader-window overlap warning is
   gone from all four logs of that batch and vkCreateDevice still
-  succeeds (docs/hw-logs/t_vulkan-run8-window-blocked-PASS.log and the
+  succeeds, confirmed across that run and the
   three beside it).
 Upstream: no -- it uses a fixed reservation this address space provides.
 

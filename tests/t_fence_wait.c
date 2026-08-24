@@ -2,7 +2,7 @@
  * Phase 1 test 9 — t_fence_wait: a wait returns after completion; the
  * timeout path returns HORIZON_GPU_ERR_TIMEOUT after (approximately) the
  * requested time — which also catches ns/µs unit bugs, the reference's
- * 2 s -> 2000 s mistake (milestones.md; docs/synchronization.md § 6).
+ * 2 s -> 2000 s mistake.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT

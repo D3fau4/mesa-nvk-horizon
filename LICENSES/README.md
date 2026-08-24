@@ -25,15 +25,14 @@ and to keep an upstreaming path open. Every source file carries
 
 The Phase 0 audit studied four snapshots of the `switch-nvk` project. Those snapshots are
 licensed **GPL-2.0** (its `master` branch) and **AGPL-3.0** (its `switch-port/*` branches);
-the two disagree, and the README of every branch claims GPL-2.0-or-later. See
-`docs/reference-analysis.md` § Licensing.
+the two disagree, and the README of every branch claims GPL-2.0-or-later.
 
 **No source text from those snapshots is present in this repository.** The audit records
 hardware and API facts (register/class numbers, service call ordering, documented failure
 modes), which are not themselves copyrightable expression.
 
 If any literal reuse is ever proposed, it must be:
-1. recorded as a pending decision in `STATUS.md`,
+1. recorded as a pending decision, in writing, before any code is written,
 2. approved explicitly by the project owner,
 3. accompanied by the upstream copyright header and an entry in this file,
 4. placed in a clearly-delimited directory with its own licence file.

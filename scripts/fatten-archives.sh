@@ -20,8 +20,8 @@
 #   error opening thin archive member
 #
 # That is not hypothetical, it is a bug this repository already has in
-# two places. STATUS.md records build/pkg/lib/libhorizon_gpu.a shipping
-# thin, worked around once by hand-copying the .a.p directory. And
+# two places. build/pkg/lib/libhorizon_gpu.a shipped thin, worked
+# around once by hand-copying the .a.p directory. And
 # build/toolchain/horizon-gpu/lib/libhorizon_gpu.a, staged by
 # configure-mesa.sh, configure-mesa-nvk.sh and build-mesa-nvk.sh, is
 # already broken today — `ar t` on it answers "No such file or

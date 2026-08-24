@@ -13,7 +13,7 @@ Why: nothing in Mesa presents through Horizon's VI compositor. This adds
  present paths and a decision between them that is reported rather than
  assumed.
  Four things in it are answers to defects
- docs/reference-analysis.md § 7 and § 8.1 record in the reference ports,
+ Four things in it are answers to defects the reference ports share,
  and each is written where the defect was:
   - the surface owns the window's scanout registration, so two
     swapchains over one window hand it over rather than colliding. The
@@ -64,7 +64,7 @@ Evidence: cross build of build/mesa-nvk with -Dplatforms=vi
  50/50); run 21 passes t_vk_suboptimal 273/273 with 0073's 188
  client-invisible warnings taken to zero; the blocking-dequeue
  experiment that motivated the retry loop is
- docs/hw-logs/t_nwindow-run2-blocking-dequeue-FAIL.log (a dequeue that
+ experiment that motivated the retry loop is on record (a dequeue that
  never returned).
 Upstream: no — it is a window system that exists on one platform.
 
@@ -450,7 +450,7 @@ index 0000000..5dc0701
 +#define WSI_HORIZON_PTE_KIND_GENERIC_16BX2 0xfe
 +
 +/* Buffer counts. The lower bound is what makes double buffering
-+ * expressible at all; the upper bound is what docs/wsi.md § 2.3 fixes,
++ * expressible at all; the upper bound is fixed by design,
 + * and it is well under the 64 slots nwindowConfigureBuffer allows. */
 +#define WSI_HORIZON_MIN_IMAGES 2
 +#define WSI_HORIZON_MAX_IMAGES 4
@@ -887,7 +887,7 @@ index 0000000..5dc0701
 +
 +/* Slot ownership as an explicit state, with every transition named.
 + *
-+ * There is no RENDERING state, although docs/wsi.md § 2.2 planned one:
++ * There is no RENDERING state, although one was planned at design time:
 + * nothing at this layer can observe the application starting to render.
 + * The WSI hands an image over at acquire and hears nothing again until
 + * queue_present, so ACQUIRED covers both, and a fourth state would be a
@@ -1173,7 +1173,7 @@ index 0000000..5dc0701
 +   /* THE FIELD THAT DECIDES WHETHER ANY OF THIS WORKS. Left at zero,
 +    * bqSetPreallocatedBuffer succeeds and marshals an empty buffer, and
 +    * the first dequeue then blocks forever — hardware-confirmed by the
-+    * reference port (docs/reference-analysis.md § 1). num_fds is zero:
++    * reference port. num_fds is zero:
 +    * the handle carries no file descriptors. */
 +   gb->header.num_ints =
 +      (int)((sizeof(NvGraphicBuffer) - sizeof(NativeHandle)) / 4);
@@ -2628,7 +2628,7 @@ index 0000000..5dc0701
 +    * the present modes belong to the surface, which cannot know whether
 +    * a swapchain not yet created will decline zero-copy, and on the path
 +    * that is actually taken the mode is delivered. It is a reason to say
-+    * so where the rest of the decision is said. See docs/wsi.md § 2.3.
++    * so where the rest of the decision is said.
 +    */
 +   if (!chain->zero_copy && chain->swap_interval == 0) {
 +      vk_logi(VK_LOG_OBJS(&log_device->base),

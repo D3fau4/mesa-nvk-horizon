@@ -17,10 +17,10 @@
 # `gh` is preinstalled on every GitHub-hosted runner and authenticates for
 # free from $GH_TOKEN. Reaching for the simpler tool once the constraint
 # that ruled it out is gone is the same discipline as everywhere else in
-# scripts/ — CLAUDE.md's "no mass refactors" is about not touching what
-# does not need to change, not about carrying complexity nothing needs
-# any more. ci-forgejo-release.sh itself is untouched: docs/RELEASING.md
-# still uses it for the actual Forgejo instance.
+# scripts/ — "no mass refactors" is about not touching what does not
+# need to change, not about carrying complexity nothing needs any more.
+# ci-forgejo-release.sh itself is untouched: it still runs against the
+# actual Forgejo instance.
 #
 # Idempotent, same as the Forgejo version: a release that already exists
 # for the tag is reused rather than duplicated, and an asset of the same
@@ -64,8 +64,8 @@ export GH_TOKEN
 }
 
 # Same convention ci-forgejo-release.sh uses: a v0.* tag is a
-# pre-release, because that is what "there has been no release yet" from
-# docs/RELEASING.md's Versioning section means in practice.
+# pre-release, because that is what "there has been no release yet"
+# means in practice under this project's versioning scheme.
 prerelease=false
 case "$TAG" in
 v0.*) prerelease=true ;;

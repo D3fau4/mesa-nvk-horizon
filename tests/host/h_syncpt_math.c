@@ -50,7 +50,7 @@ static bool search_finds(uint32_t hidden)
 
 int main(void)
 {
-    /* Wrap-safe reached predicate (docs/synchronization.md § 1.1). */
+    /* Wrap-safe reached predicate. */
     H_CHECK(horizon_gpu_syncpt_reached(5, 5), "equal reached");
     H_CHECK(horizon_gpu_syncpt_reached(6, 5), "past reached");
     H_CHECK(!horizon_gpu_syncpt_reached(4, 5), "behind not reached");
@@ -78,8 +78,8 @@ int main(void)
     H_CHECK(horizon_syncpt_extend(5, 0xFFFFFFF0u) == 0xFFFFFFF0ull,
             "no underflow for low reference");
 
-    /* ns -> µs conversion: round up, saturate (docs/synchronization.md
-     * § 6 — the reference's 1000x unit bug). */
+    /* ns -> µs conversion: round up, saturate (the reference's 1000x
+     * unit bug). */
     H_CHECK(horizon_timeout_ns_to_us_clamped(0) == 0, "0 ns");
     H_CHECK(horizon_timeout_ns_to_us_clamped(1) == 1, "1 ns rounds up");
     H_CHECK(horizon_timeout_ns_to_us_clamped(1000) == 1, "1 us exact");
@@ -89,9 +89,9 @@ int main(void)
     H_CHECK(horizon_timeout_ns_to_us_clamped(UINT64_MAX) == INT32_MAX,
             "saturates at INT32_MAX");
 
-    /* --- Recovering the value from the wait predicate alone
-     * (docs/synchronization.md § 9.3). The counter is never read; the
-     * oracle only ever answers "has T been reached?". */
+    /* --- Recovering the value from the wait predicate alone. The
+     * counter is never read; the oracle only ever answers "has T been
+     * reached?". */
 
     /* The values a binary search over a circular order gets wrong when it
      * is written as if the order were linear. */

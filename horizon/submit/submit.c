@@ -1,7 +1,7 @@
 /*
  * horizon_gpu — asynchronous GPFIFO submission.
  *
- * The increment discipline (known-risks R4): telling libnx the expected
+ * The increment discipline: telling libnx the expected
  * fence value grew (nvGpuChannelIncrFence) and emitting the actual
  * in-stream syncpoint-increment command list are ONE indivisible
  * operation here — requesting without emitting stalls the channel
@@ -17,8 +17,7 @@
 #include "../device/device_priv.h"
 #include "../sync/syncpt_math.h"
 
-/* Debug-synchronous mode bound: generous but finite
- * (docs/synchronization.md § 8). */
+/* Debug-synchronous mode bound: generous but finite. */
 #define SUBMIT_DEBUG_SYNC_TIMEOUT_NS UINT64_C(2000000000)
 
 horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
@@ -34,8 +33,7 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     /* Bound num_spans against the queue capacity before it is used for
      * anything, so the back-pressure arithmetic further down cannot
-     * wrap silently (CLAUDE.md: overflow-check every size computation)
-     * instead of refusing the submit.
+     * wrap silently instead of refusing the submit.
      *
      * This used to also claim an unbounded count "would let the
      * validation loop below read spans[] out of the caller's array".
@@ -68,15 +66,14 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     horizon_gpu_device *dev = chan->dev;
 
-    /* Cheap reap first: one syncpoint read
-     * (docs/synchronization.md § 3). */
+    /* Cheap reap first: one syncpoint read. */
     horizon_gpu_result res = horizon_gpu_channel_reap(chan, NULL);
     if (horizon_gpu_failed(res))
         return res;
 
     /* Known-quantity back-pressure instead of retry loops: refuse when
      * the entry queue cannot take this submit; the caller may wait on an
-     * older fence and retry (docs/synchronization.md § 2.1).
+     * older fence and retry.
      *
      * TWO entries beyond the caller's spans, not one: the L2-invalidate
      * prologue before the work and the fence block after it. Counting
@@ -201,7 +198,7 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
                  (void *)chan, num_spans, fence.syncpt_id, fence.threshold);
 
     /* Diagnostic mode only — compiled in, never taken otherwise, and no
-     * test may need it to pass (docs/synchronization.md § 8). */
+     * test may need it to pass. */
     if (dev->debug_synchronous) {
         horizon_gpu_result wres =
             horizon_gpu_channel_wait_fence(chan, fence,

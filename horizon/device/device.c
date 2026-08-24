@@ -3,12 +3,11 @@
  * reverse-order teardown with leak accounting.
  *
  * Bring-up order (verified against the reference port's hardware-tested
- * sequence, docs/reference-analysis.md § 4, re-expressed on the public
- * libnx API):
+ * sequence, re-expressed on the public libnx API):
  *
  *   nvInitialize -> nvFenceInit -> nvMapInit -> nvGpuInit
  *     -> nvGpuGetCharacteristics (REQUIRED; failure is an error, never a
- *        fallback to a hardcoded big-page size — memory-model § 3.1)
+ *        fallback to a hardcoded big-page size)
  *     -> nvAddressSpaceCreate(big_page_size)
  *     -> GetVARegions
  *

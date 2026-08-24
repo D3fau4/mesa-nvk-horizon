@@ -155,8 +155,8 @@ static uint64_t now_us(void)
  *
  * ONLY VALID WITH THE STORE CLOSED, and run 27 is why this comment
  * exists. Opening a file that is already open for writing fails on this
- * platform — the SD card's device layer refuses it, which STATUS.md
- * already records for the test framework's own log file. This helper
+ * platform — the SD card's device layer refuses it, which is already
+ * on record for the test framework's own log file. This helper
  * then returned -1, and the two callers that used it while the cache was
  * open both got it wrong in opposite directions: one compared it as a
  * signed long (`-1 < 4096`, true, a check that could not fail and

@@ -6,7 +6,7 @@
  * Phase 6 set `test_uses_display`, which means no console: the log file
  * IS the whole record and nothing of it reaches a screen. testfw used to
  * stream itself over nxlink and that was removed at the user's direction
- * (STATUS.md, 2026-08-08) — the socket driver was the one variable that
+ * (2026-08-08) — the socket driver was the one variable that
  * correlated with run 14's MMU fault, and streaming per line also puts
  * network I/O inside the very loops whose pacing the swapchain tests
  * measure.

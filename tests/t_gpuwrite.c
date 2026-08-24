@@ -43,7 +43,7 @@
  * than depending on them.
  *
  * The arms can no longer prove *why* it works, only that it does; the
- * proof is the run above, kept in docs/hw-logs/. A failing arm still
+ * proof is the hardware run above. A failing arm still
  * scans the whole allocation for the payload and reports where it landed,
  * which separates "wrong offset" from "did not land" without a round trip.
  *

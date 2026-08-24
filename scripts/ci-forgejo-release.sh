@@ -14,8 +14,8 @@
 # on whatever instance this runs on, and `actions/*` there points at
 # GitHub, so the obvious spelling fetches a repository that does not
 # exist. jq is not on every runner image. python3 is already a hard
-# dependency of this build — scripts/split-status.py, scripts/spv-embed.py
-# and horizon_ensure_python_deps all need it — so using it here adds
+# dependency of this build — scripts/spv-embed.py and
+# horizon_ensure_python_deps both need it — so using it here adds
 # nothing new to install.
 #
 # Idempotent enough to re-run: a release that already exists for the tag

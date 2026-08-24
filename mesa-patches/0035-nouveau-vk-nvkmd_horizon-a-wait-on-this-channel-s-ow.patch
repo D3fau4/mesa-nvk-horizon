@@ -30,7 +30,7 @@ Why: nvkmd_horizon_ctx_wait performs a submit's waits on the CPU,
  has faulted no longer reports CHANNEL_LOST from the wait. The error
  moves rather than disappearing — the submit that follows is refused by
  the same lost channel, which t_fault measured on hardware ("a submit to
- the lost channel is refused", docs/hw-logs/t_fault-run3-*.log).
+ the lost channel is refused", measured on hardware).
 Evidence: cross build of build/mesa-nvk. THIS IS THE ONE CHANGE IN THIS
  PHASE THAT ALTERS THE SUBMIT PATH EVERY TEST GOES THROUGH, so the
  Phase 5 suite is part of what has to be re-run for it, not just the

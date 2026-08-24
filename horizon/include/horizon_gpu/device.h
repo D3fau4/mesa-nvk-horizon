@@ -34,7 +34,7 @@ typedef struct horizon_gpu_va_region_info {
 } horizon_gpu_va_region_info;
 
 /* GM20B facts. Everything here is *queried* from the nv services at device
- * creation; nothing is hardcoded (CLAUDE.md; docs/memory-model.md § 3.1). */
+ * creation; nothing is hardcoded. */
 typedef struct horizon_gpu_device_info {
     /* From NVGPU_GPU_IOCTL_GET_CHARACTERISTICS (libnx
      * nvGpuGetCharacteristics; field meanings per Linux nvgpu uapi). */
@@ -57,7 +57,7 @@ typedef struct horizon_gpu_device_info {
     uint32_t as_big_page_size;
     uint32_t gpu_va_bit_count;
     /* Engine class numbers, queried rather than assumed (used for the
-     * in-stream SET_OBJECT binds, docs/known-risks.md R7). */
+     * in-stream SET_OBJECT binds). */
     uint32_t twod_class;
     uint32_t threed_class;
     uint32_t compute_class;
@@ -95,7 +95,7 @@ typedef struct horizon_gpu_zcull_info {
     uint64_t ctx_size;
 } horizon_gpu_zcull_info;
 
-/* Live-object counters (memory-model § 8). All must be zero for
+/* Live-object counters. All must be zero for
  * horizon_gpu_device_destroy to succeed. */
 typedef struct horizon_gpu_device_counters {
     uint32_t live_mem;
@@ -108,12 +108,12 @@ typedef struct horizon_gpu_device_create_info {
     /* 0 = use the queried characteristics.big_page_size for the address
      * space; a non-zero value must be one of available_big_page_sizes. */
     uint32_t as_big_page_size;
-    /* Debug-synchronous diagnostic mode (docs/synchronization.md § 8).
-     * Also enabled by the HORIZON_GPU_SYNC=1 environment variable. */
+    /* Debug-synchronous diagnostic mode. Also enabled by the
+     * HORIZON_GPU_SYNC=1 environment variable. */
     bool debug_synchronous;
     /* Let a channel come up when the initial syncpoint read fails, with an
-     * untrusted shadow baseline (docs/synchronization.md § 9). Also enabled
-     * by HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1.
+     * untrusted shadow baseline. Also enabled by
+     * HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE=1.
      *
      * This exists for environments that do not implement
      * NVHOST_IOCTL_CTRL_SYNCPT_READ at all, so the code above a channel can
@@ -143,9 +143,9 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
                                 horizon_gpu_device_counters *out_counters);
 
 /* True once at least one channel of this device came up with an untrusted
- * syncpoint baseline (docs/synchronization.md § 9). Sticky: it stays true
- * after that channel is destroyed, because results already derived from it
- * do not become trustworthy again. Always false unless the opt-in above was
+ * syncpoint baseline. Sticky: it stays true after that channel is
+ * destroyed, because results already derived from it do not become
+ * trustworthy again. Always false unless the opt-in above was
  * requested. */
 bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev);
 

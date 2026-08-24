@@ -7,10 +7,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing: `STATUS.md` lists what is already known broken and what has
-        never been verified, and `docs/known-risks.md` lists the open risks. A bug
-        already recorded there does not need a new issue — though a *new occurrence*
-        of one, with its log, is genuinely useful.
+        Before filing: check the open issues and the recent commit history for what
+        is already known broken and what has never been verified. A bug already
+        recorded does not need a new issue — though a *new occurrence* of one, with its log,
+        is genuinely useful.
 
         **If this can crash or brick a console, do not open a public issue.** Contact
         the maintainer directly first; see `SECURITY.md`.

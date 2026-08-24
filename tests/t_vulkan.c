@@ -1,5 +1,5 @@
 /*
- * Test 14 — the mandatory Vulkan sequence (docs/milestones.md Phase 4).
+ * Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
  *
  *   vkCreateInstance
  *   vkEnumeratePhysicalDevices

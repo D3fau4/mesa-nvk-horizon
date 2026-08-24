@@ -13,8 +13,8 @@ They come in three groups, and **which of them you get depends on what you built
 | Mesa's own code, measured on hardware | 3 | Mesa's core built | both build paths |
 | Vulkan, through NVK | 16 | the full NVK driver built | **the Meson path only** |
 
-So the Makefile produces at most 21 and the Meson path at most 37 — see
-[`../docs/BUILDING.md`](../docs/BUILDING.md) for why there are two and how they differ.
+So the Makefile produces at most 21 and the Meson path at most 37, because the Makefile
+does not build Mesa/NVK and the Meson path does.
 
 There are also six host-side suites that need no console at all; they are at the bottom
 of this file.
@@ -91,7 +91,7 @@ after touching either build system.
    | 11 | `t_sysinfo` | `compat/sysconf.c`: page size bounded from both sides, process memory, `_SC_NPROCESSORS_*` |
    | 12 | `t_threads` | Mesa's C11 threads shim: `mtx_timedlock` and `cnd_timedwait` expiry (both-sided timing on the calls that must expire; an upper bound only on the ones that must not wait), mutual exclusion, condvars, TSS, and the CPU count |
    | 13 | `t_ostime` | Mesa's `os_time.c`: monotonicity, resolution, rate against the ARM counter, `os_time_sleep` accuracy |
-   | 13a | `t_shader_cache` | the shader disk cache, on the SD card it will live on **and** through Mesa's own `disk_cache_*` API. **Run it twice**: its section C leaves entries behind and reports on the next launch whether they came back, so the first run on any console is cold, which is a pass and is not the measurement. See [`../docs/shader-cache.md`](../docs/shader-cache.md) |
+   | 13a | `t_shader_cache` | the shader disk cache, on the SD card it will live on **and** through Mesa's own `disk_cache_*` API. **Run it twice**: its section C leaves entries behind and reports on the next launch whether they came back, so the first run on any console is cold, which is a pass and is not the measurement |
    | 14 | `t_gpuwrite` | does a GPU write become visible to the CPU — the question nothing below `t_vulkan` had asked |
    | 15 | `t_uncached` | the UNCACHED cache policy (decision D14) on real memory |
    | 16 | `t_pbsize` | how large a single GPFIFO entry this hardware will execute (decision D15) |
@@ -102,7 +102,7 @@ after touching either build system.
    also the cheapest to run first when triaging a console.
 
    `t_fault` provokes a fault on purpose and is best run **last**: whether the console
-   survives it on exit is one of the open items in `STATUS.md`.
+   survives it on exit is still unconfirmed.
 
    Then the display, which needs the console's own framebuffers out of the way:
 
@@ -153,7 +153,7 @@ suite is bounded, so a hang is itself a finding.
 A test that sets `test_uses_display` starts no console, so its log file
 *is* the whole record and nothing of it reaches a screen. `testfw` used
 to stream itself over nxlink and that was removed at the user's
-direction (`STATUS.md`, 2026-08-08): the socket driver was the one
+direction (2026-08-08): the socket driver was the one
 variable that correlated with run 14's MMU fault, and streaming per line
 also puts network I/O inside the very loops the swapchain tests measure
 the pacing of.
@@ -200,6 +200,6 @@ request.
 
 ---
 
-For what the logs mean, the runtime environment variables, applet mode against full
-memory, and what to include when reporting a run, see
-[`../docs/USAGE.md`](../docs/USAGE.md).
+Each test prints `RESULT: PASS (n/n)` or `RESULT: FAIL (k/n)`; that line, plus the
+`note horizon-build-id …` line and the full console output, is what to include when
+reporting a run.

@@ -24,7 +24,7 @@
  *     nothing a producer can do puts its buffer on a scanline mid-frame.
  *     The specification says "may", not "must", so its absence is not a
  *     violation — but it is a real difference from a desktop IMMEDIATE
- *     and it is documented rather than glossed (docs/wsi.md § 2.3).
+ *     and it is documented rather than glossed over.
  *
  *   - Not being throttled to the refresh IS observable, and it is the
  *     whole of what this file asserts: an application presenting as fast
@@ -94,7 +94,6 @@
  *      That is a property of the path, not a swap interval that went
  *      missing, and the section asserts the measured state so a console
  *      that behaves differently is reported rather than passed over.
- *      See docs/wsi.md § 2.3.
  *
  *   G. Nothing retained. A last swapchain created after all of the
  *      above must still get the zero-copy path and present its frames,
@@ -958,8 +957,8 @@ int run_test(test_ctx *t)
                 "A: VK_PRESENT_MODE_IMMEDIATE_KHR is offered")) {
       t_note(t, "A: IMMEDIATE is not advertised, so there is nothing here "
                 "to measure. That is a legitimate state for this backend "
-                "to be in — see docs/wsi.md — and this test then has no "
-                "verdict to give beyond this line");
+                "to be in, and this test then has no verdict to give "
+                "beyond this line");
       goto out_surface;
    }
 
@@ -1313,8 +1312,8 @@ int run_test(test_ctx *t)
           * driver defect that is not one, and relaxing them would say
           * nothing. What is asserted instead is the state that was
           * measured, so that a console on which this path *does* get
-          * ahead fails these checks and sends somebody to update
-          * docs/wsi.md § 2.3 — which is the only outcome worth being
+          * ahead fails these checks and sends somebody to update the
+          * design documentation — which is the only outcome worth being
           * told about. The hard checks stay: every frame is presented,
           * and the interval the mode implies is registered. */
          imm_stats cf, ci;
@@ -1361,8 +1360,8 @@ int run_test(test_ctx *t)
                     m_ci * IMM_FAST_DEN > IMM_REFRESH_NS * IMM_FAST_NUM,
                     "F: on the copy fallback the swap interval does not "
                     "change the pacing (%" PRIu64 " us at 0 against %" PRIu64
-                    " us at 1) — the limitation docs/wsi.md records. If this "
-                    "check fails, that documentation is out of date",
+                    " us at 1) — a known limitation of the copy fallback. "
+                    "If this check fails, that limitation no longer holds",
                     m_ci / 1000, m_cf / 1000);
          }
       }

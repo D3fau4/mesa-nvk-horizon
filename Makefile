@@ -1,7 +1,7 @@
 # mesa-nvk-horizon — Phase 1 build: libhorizon_gpu.a + standalone test .nros.
 #
 # Requires devkitA64 + libnx, resolved through $(DEVKITPRO) only (no
-# machine-specific absolute paths; docs/milestones.md Phase 2 gate).
+# machine-specific absolute paths; Phase 2 gate).
 # Host-side unit tests are separate: scripts/run-host-tests.sh.
 #
 # Copyright (c) mesa-nvk-horizon contributors

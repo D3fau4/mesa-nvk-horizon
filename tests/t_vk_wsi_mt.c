@@ -4,7 +4,7 @@
  * WHY THIS IS A SECOND TEST AND NOT A SECTION OF t_vk_swapchain. That
  * one asks whether a swapchain presents; this one asks whether it keeps
  * presenting while something else legitimately happens at the same
- * time. STATUS.md listed "anything multi-threaded" as never verified,
+ * time. "Anything multi-threaded" had never been verified,
  * and the WSI's own comments reason about concurrent creation and
  * eviction — reasoning nothing had ever executed.
  *

@@ -18,7 +18,7 @@
 # repository. Before it has a .git of its own, `git -C mesa rev-parse`
 # succeeds by walking up and answering for the PARENT — which during
 # Phase 2 caused a fetch script to run its checkout against
-# mesa-nvk-horizon itself (recorded at the end of STATUS.md). Anything
+# mesa-nvk-horizon itself — observed, not hypothetical. Anything
 # here that writes therefore proves first that mesa/ really is its own
 # repository, and aborts if it is not.
 #

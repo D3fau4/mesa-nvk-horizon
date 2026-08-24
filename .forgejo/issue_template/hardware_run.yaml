@@ -9,8 +9,8 @@ body:
     attributes:
       value: |
         **This is the most useful thing you can file here.** Nobody working on this
-        project is guaranteed to have a console in front of them (`docs/known-risks.md`
-        R2), so a run somebody else did is often the only way a change gets verified.
+        project is guaranteed to have a console in front of them, so a run somebody
+        else did is often the only way a change gets verified.
 
         A passing run is worth reporting too. Please attach the log file rather than
         retyping it — the exact text is the evidence.

@@ -369,9 +369,9 @@ horizon_nvk_build_stamp_gate() {
 #
 # The caller decides whether "no NVK build at all" is an error:
 # package-horizon.sh calls this only when it has already established
-# there is one, because a Makefile-only package legitimately has none
-# (docs/BUILDING.md §5), while package-portlibs.sh refuses outright
-# because an install with no driver in it is not an install.
+# there is one, because a Makefile-only package legitimately has none,
+# while package-portlibs.sh refuses outright because an install with no
+# driver in it is not an install.
 horizon_nvk_archive_gate() {
     _hz_nvk_missing=$(horizon_nvk_missing_libs | tr '\n' ' ')
     if [ -n "$_hz_nvk_missing" ]; then

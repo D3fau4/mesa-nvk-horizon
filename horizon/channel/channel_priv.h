@@ -97,7 +97,7 @@ struct horizon_gpu_channel {
     horizon_gpu_mem *zcull_mem;
     horizon_gpu_mapping *zcull_map;
 
-    /* 64-bit syncpoint shadow (docs/synchronization.md § 1.1):
+    /* 64-bit syncpoint shadow:
      * shadow_target is the 64-bit value the counter will hold once every
      * submitted increment has retired. Initialised from the hardware
      * value observed at creation (R5: that value is recorded and
@@ -105,12 +105,12 @@ struct horizon_gpu_channel {
     uint32_t syncpt_value_at_create;
     uint64_t shadow_target;
     /* False when the initial read failed and the device's untrusted-baseline
-     * opt-in let the channel come up anyway (docs/synchronization.md § 9).
+     * opt-in let the channel come up anyway.
      * Every fence this channel produces is then arithmetic on a baseline of
      * zero that nobody measured. */
     bool syncpt_baseline_trusted;
 
-    /* Retirement list (docs/synchronization.md § 3). */
+    /* Retirement list. */
     horizon_retire_entry *retire;
     uint32_t retire_count;
     uint32_t retire_capacity;

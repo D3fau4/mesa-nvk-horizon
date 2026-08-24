@@ -1312,7 +1312,7 @@ index 0000000..68b3ee5
 +   nv_device_info_init_shared_mem_sizes(info);
 +
 +   /* Engine classes, queried from the nv services rather than assumed
-+    * from the chipset (docs/known-risks.md R7).
++    * from the chipset.
 +    */
 +   info->cls_copy = gpu->dma_copy_class;
 +   info->cls_eng2d = gpu->twod_class;

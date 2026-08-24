@@ -3,7 +3,6 @@
 #
 # No contact_links here on purpose. They need absolute URLs, which would
 # hard-code one instance's hostname into the repository and break the
-# moment it is mirrored or moved. The two templates point at the files
-# by name instead — `STATUS.md`, `docs/USAGE.md`, `SECURITY.md` — which
-# are unambiguous and cannot rot.
+# moment it is mirrored or moved. The two templates point at the file
+# by name instead — `SECURITY.md` — which is unambiguous and cannot rot.
 blank_issues_enabled: true

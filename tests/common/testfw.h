@@ -4,7 +4,7 @@
  * Each test prints one line per check and a machine-checkable summary
  * ("RESULT: PASS (n/n)" / "RESULT: FAIL (k/n)") to stdout AND to
  * sdmc:/horizon_gpu_tests/<name>.log, so a hardware run can be reported
- * back as text (docs/known-risks.md R2).
+ * back as text — no console access is required to read a result.
  *
  * Each test translation unit defines:
  *     const char *const test_name;

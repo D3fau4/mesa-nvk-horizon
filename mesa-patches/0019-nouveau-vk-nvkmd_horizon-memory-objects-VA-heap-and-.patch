@@ -811,8 +811,8 @@ index 0000000..70cca2c
 +    * of the big page will have its bind size rounded past the end of the
 +    * object and fail. It needs the allocation rounded up to the big page
 +    * where the kind is block-linear, which is nvkmd_horizon_mem's
-+    * decision, not this one — recorded in STATUS.md rather than guessed
-+    * at here.
++    * decision, not this one — recorded as a known risk rather than
++    * guessed at here.
 +    */
 +   if (pte_kind != HORIZON_GPU_PTE_KIND_PITCH && big != 0)
 +      page_size = big;

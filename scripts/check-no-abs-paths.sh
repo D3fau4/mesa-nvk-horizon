@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Absolute-path gate (docs/milestones.md Phase 2 exit criterion):
+# Absolute-path gate (Phase 2 exit criterion):
 #
 #   "grep for /home/, /work, D:\, /mnt/ in toolchain/ and scripts/
 #    returns nothing"

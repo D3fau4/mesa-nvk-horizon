@@ -57,7 +57,7 @@ echo "rustc              $(rustc --version 2>/dev/null || echo absent)"
 # Why the libnx package version above is not an identifier: the image
 # builds switchbrew/libnx from git HEAD on top of the package, so most
 # of the installed tree is newer than the version number claims. This
-# line measures how much (docs/known-risks.md R15).
+# line measures how much (known risk R15).
 altered=$(dkp-pacman -Qkk libnx 2>&1 | sed -n 's/.*, \([0-9]*\) altered files/\1/p')
 total=$(dkp-pacman -Qkk libnx 2>&1 | sed -n 's/^libnx: \([0-9]*\) total files.*/\1/p')
 echo "libnx (installed)  git build over the package: ${altered:-unknown} of ${total:-unknown} files differ"

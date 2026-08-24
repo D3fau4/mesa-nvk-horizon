@@ -5,12 +5,11 @@
 #   scripts/fetch-mesa.sh [--force]
 #
 # mesa/ is a pinned checkout, never our source: our changes to Mesa live
-# as patches in mesa-patches/ (docs/architecture.md §4.1, CLAUDE.md
-# rejected design 7). D3 chose a script-fetched checkout over a
-# submodule so the pin lives in exactly one place — MESA_COMMIT in
-# toolchain/versions.env — instead of being split between a gitlink and
-# a text file, and so a patched Phase 3 tree is not permanently a dirty
-# submodule.
+# as patches in mesa-patches/ instead. D3 chose a script-fetched
+# checkout over a submodule so the pin lives in exactly one place —
+# MESA_COMMIT in toolchain/versions.env — instead of being split between
+# a gitlink and a text file, and so a patched Phase 3 tree is not
+# permanently a dirty submodule.
 #
 # Idempotent: if mesa/ is already at MESA_COMMIT it does nothing. It
 # never discards a modified tree; --force is required for that, and even

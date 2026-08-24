@@ -1,13 +1,12 @@
 # mesa-nvk-horizon — Meson build for libhorizon_gpu.a and the ten
 # Phase 1 test .nros.
 #
-# This exists to exercise toolchain/horizon-aarch64.cross
-# (docs/milestones.md Phase 2: "Phase 1 tests cross-compile with the new
-# cross file"), and to be the build system the Mesa work in Phase 3
-# plugs into.
+# This exists to exercise toolchain/horizon-aarch64.cross (Phase 2:
+# "Phase 1 tests cross-compile with the new cross file"), and to be the
+# build system the Mesa work in Phase 3 plugs into.
 #
 # It does NOT replace the Makefile. The Makefile produced the .nro files
-# that were verified on real hardware (STATUS.md: 10/10 PASS), so it
+# that were verified on real hardware (ten .nro, 10/10 PASS), so it
 # stays as the reference path; both are expected to emit the same flags
 # and comparable artefacts. Host-side unit tests remain separate
 # (scripts/run-host-tests.sh) — they are built with the *host* compiler
@@ -122,9 +121,8 @@ horizon_gpu_sources = files(
   'horizon/sync/syncpt.c',
 )
 
-# horizon/include/ is the only public surface of the layer
-# (docs/architecture.md §4.4); the implementation directories are not on
-# the include path.
+# horizon/include/ is the only public surface of the layer; the
+# implementation directories are not on the include path.
 horizon_gpu_inc = include_directories('horizon/include')
 
 libhorizon_gpu = static_library(
@@ -394,14 +392,14 @@ nvk_tests = [
   # Phase 6, the part t_vk_swapchain does not reach: the swapchain while
   # something else legitimately happens at the same time, and over a
   # length that a slot leaked once per generation would show up in.
-  # STATUS.md listed "anything multi-threaded" as never verified.
+  # "Anything multi-threaded" had never been verified before it.
   't_vk_wsi_mt',
   # Phase 6: VK_SUBOPTIMAL_KHR, and the line between it and
-  # VK_ERROR_OUT_OF_DATE_KHR. STATUS.md listed it as one of the things
-  # that "never had a test".
+  # VK_ERROR_OUT_OF_DATE_KHR. It was one of the things that never had
+  # a test.
   't_vk_suboptimal',
-  # Phase 6: VK_PRESENT_MODE_IMMEDIATE_KHR, which STATUS.md listed
-  # beside VK_SUBOPTIMAL_KHR as advertised and never measured through
+  # Phase 6: VK_PRESENT_MODE_IMMEDIATE_KHR, which stood beside
+  # VK_SUBOPTIMAL_KHR as advertised and never measured through
   # Vulkan. It compares the two present modes against each other in one
   # run, so the verdict is a ratio on one console rather than a number
   # carried between runs.
@@ -706,7 +704,8 @@ endforeach
 
 # No meson `test()` entries: these binaries run on a Nintendo Switch, not
 # here. needs_exe_wrapper is true in the cross file for the same reason.
-# Their results are recorded in STATUS.md as hardware (HW) runs.
+# Their results are hardware (HW) runs, and are recorded as such
+# together with the log that produced them.
 
 summary({
   'toolchain' : meson.get_external_property('devkitpro_prefix', 'unknown'),

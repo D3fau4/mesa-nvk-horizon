@@ -48,10 +48,10 @@ Why: a display mode change - docking the console, which takes the layer
  that is not a retry, the compositor handed back a slot we already hold,
  the copy fallback has no framebuffer, or the application holds every
  image and is blocking for one only it can free. The full table is in
- docs/wsi.md 5.1 and in the comment above wsi_horizon_extent_changed().
+ The full table is in
 Evidence: hardware, run 21 (2026-08-10, build 2026-08-10T13:44:43.834Z
  13336c0-dirty mesa:c5e9e66, game mode 3155 MiB), tests/t_vk_suboptimal.c:
- RESULT PASS (273/273), docs/hw-logs/t_vk_suboptimal-run21-PASS.log.
+ RESULT PASS (273/273).
  .
  AND THE BOUNDARY OF THAT PASS, because it is not the whole claim. With
  the console undocked and nothing resizing the layer, a backend that
@@ -315,7 +315,7 @@ index 6d2ae10..d22f198 100644
 +       * Two aligned u32s, written where libnx writes them and read
 +       * where libnx reads them. It is the same unsynchronised pair
 +       * vkGetPhysicalDeviceSurfaceCapabilitiesKHR already reads beside
-+       * a concurrent present on the fallback path (docs/wsi.md § 7),
++       * a concurrent present on the fallback path,
 +       * so this adds no hazard that was not already there and is not
 +       * this backend's to fix: the structure belongs to libnx. */
 +      chain->window->default_width = out.width;

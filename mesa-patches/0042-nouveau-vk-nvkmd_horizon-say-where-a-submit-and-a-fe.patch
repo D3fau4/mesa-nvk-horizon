@@ -54,7 +54,7 @@ Evidence: cross build only. `scripts/build-mesa-nvk.sh` in the
  ms above are the reporter's application-side measurement, not this
  meter's output - the patch exists because that number cannot be
  attributed yet. The 100/115/126/137 us are this project's, from
- docs/hw-logs/t_vk_submits-run{14,6-pr7-rerun,5-batch5,-phase6-samechannel}
+ meter's output - the patch exists because that number cannot be
  -PASS.log.
 Upstream: no - the meter is about this backend's channels, its D16
  condition variable and its CPU-side cross-channel wait, and the

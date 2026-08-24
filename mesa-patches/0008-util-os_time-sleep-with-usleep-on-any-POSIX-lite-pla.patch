@@ -23,7 +23,7 @@ terms; the branch above still gives Linux, Managarm and Fuchsia
 clock_nanosleep.
 
 mesa-nvk-horizon: Phase 3 item 5 (timers / clocks) — a DEVIATION from
-  this session's item 3 scope, recorded in STATUS.md. It is one line
+  this session's item 3 scope, recorded as such. It is one line
   and it is what stops src/util compiling.
 Why: newlib has usleep and the headers the file wants, but Horizon is
   POSIX-lite, not POSIX (no syslog, no shm, no loader), so the existing

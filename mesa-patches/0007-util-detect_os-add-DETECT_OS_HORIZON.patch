@@ -25,7 +25,7 @@ through, so no existing platform's macros move.
 
 mesa-nvk-horizon: Phase 3 item 1 (OS detection) — a DEVIATION from this
   session's item 3 scope, kept to the minimum item 5 needed and
-  recorded in STATUS.md. Nothing else from item 1 is included.
+  recorded as such. Nothing else from item 1 is included.
 Why: util/os_time.c dispatches on DETECT_OS_*, and with every macro 0
   it cannot select any implementation.
 Evidence: building src/util for aarch64/horizon fails with

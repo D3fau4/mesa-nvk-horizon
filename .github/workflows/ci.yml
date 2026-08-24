@@ -55,12 +55,11 @@
 # containerised job nesting another one; a host job nesting one is fine.
 #
 # WHY ghcr.io AT ALL, THEN. Rebuilding the derived image from scratch
-# costs ~11 minutes and 7.3 GB (docs/BUILDING.md) on every run without a
-# cache, and GitHub-hosted runners are a fresh VM per job with nothing to
+# costs ~11 minutes and 7.3 GB on every run without a cache, and
+# GitHub-hosted runners are a fresh VM per job with nothing to
 # reuse between runs — unlike Forgejo's persistent runner, where the
 # image just stayed in the daemon. ghcr.io is HTTPS, so it can hold that
-# cache; the Forgejo instance never could (plain HTTP, tasks 1275/1276 —
-# see STATUS.md, "CI switched off"). scripts/build-toolchain-image.sh
+# cache; the Forgejo instance never could (plain HTTP, tasks 1275/1276). scripts/build-toolchain-image.sh
 # needed no change for this: it already resolves the image to build or
 # reuse through $HORIZON_NX_DERIVED_IMAGE, and its own identity check —
 # base image ID, pinned bindgen/cbindgen/LLVM versions, the resolved
@@ -72,7 +71,7 @@
 #
 # WHY THE FULL BUILD RUNS ON EVERY PUSH, PR AND DISPATCH, UNIFORMLY. The
 # whole point of scripts/ci-build-archives.sh is catching a broken patch
-# in mesa-patches/ before it lands — the one thing five cheap gates
+# in mesa-patches/ before it lands — the one thing four cheap gates
 # cannot see. This is affordable because the repository is public (no
 # metered Actions minutes) and because the registry cache above turns
 # the expensive part of "compile Mesa entero" into a one-time cost per
@@ -218,9 +217,6 @@ jobs:
         run: docker push "$TOOLCHAIN_IMAGE"
 
       # --- seconds, and they run first for that reason ---------------
-      - name: history and hardware logs match their manifests
-        run: ./scripts/check-history-intact.sh
-
       - name: the two build systems agree
         run: ./scripts/check-mesa-test-parity.sh
 

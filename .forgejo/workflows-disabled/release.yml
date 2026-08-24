@@ -12,8 +12,8 @@
 #
 # The path it drives is not gone either: scripts/package-horizon.sh
 # produces the package, licence included, and scripts/ci-forgejo-release.sh
-# uploads one through the Forgejo API. docs/RELEASING.md describes the
-# manual route, which is the one with a hardware run behind it anyway.
+# uploads one through the Forgejo API. The manual route is the one with
+# a hardware run behind it anyway.
 #
 # TO BRING IT BACK: copy this file to .forgejo/workflows/release.yml and
 # uncomment it.
@@ -51,7 +51,7 @@
 # # eighteen .nro of the Makefile path — the image carries the toolchain
 # # but not a Mesa checkout, so the Vulkan tests are not built here. They
 # # come from archives.yml, which takes far longer; publishing those is
-# # docs/RELEASING.md's manual path, with a hardware run behind it.
+# # the manual path, with a hardware run behind it.
 # #
 # # Copyright (c) mesa-nvk-horizon contributors
 # # SPDX-License-Identifier: MIT
@@ -176,20 +176,17 @@
 #             echo "them.** This project keeps *host build*, *cross build* and"
 #             echo "*verified on real hardware* strictly apart, and a release"
 #             echo "does not blur them: a \`.nro\` that compiles is not a"
-#             echo "\`.nro\` that works. What has run on hardware, and what has"
-#             echo "not, is in \`STATUS.md\` — read its *Current state* block"
-#             echo "before assuming."
+#             echo "\`.nro\` that works."
 #             echo
 #             echo "**The Vulkan half is not here.** The thirteen \`t_vk_*\`"
 #             echo "tests and the NVK driver need the derived toolchain image"
-#             echo "and a full Mesa build. See \`docs/RELEASING.md\`."
+#             echo "and a full Mesa build."
 #             echo
 #             echo "## Running these"
 #             echo
 #             echo "Copy the \`.nro\` to \`sdmc:/switch/horizon_gpu_tests/\` and"
 #             echo "launch from hbmenu. Each prints \`RESULT: PASS (n/n)\` on"
-#             echo "screen and to \`sdmc:/horizon_gpu_tests/<name>.log\`. Full"
-#             echo "instructions: \`docs/USAGE.md\`."
+#             echo "screen and to \`sdmc:/horizon_gpu_tests/<name>.log\`."
 #             echo
 #             echo "This is pre-1.0 software driving a GPU through system"
 #             echo "services. It has taken a console down before. Run it when"
@@ -229,9 +226,9 @@
 #       # called "main" — with notes and assets naming it as a version.
 #       # The GitHub workflow this was ported from had the guard on a
 #       # separate publishing job; collapsing the two jobs into one for
-#       # Forgejo dropped it, and docs/RELEASING.md was already promising
-#       # the behaviour restored here: dispatch builds and packages
-#       # without cutting anything.
+#       # Forgejo dropped it, and the release policy was already
+#       # promising the behaviour restored here: dispatch builds and
+#       # packages without cutting anything.
 #       - name: publish
 #         if: startsWith(github.ref, 'refs/tags/v')
 #         env:

@@ -1,4 +1,4 @@
-# Pinned Mesa checkout (populated by scripts/fetch-mesa.sh; see docs/architecture.md §4.1)
+# Pinned Mesa checkout (populated by scripts/fetch-mesa.sh)
 /mesa/*
 !/mesa/.gitkeep
 
@@ -19,11 +19,6 @@
 
 # Logs
 *.log
-# ...except the hardware runs, which are evidence rather than output.
-# They were being force-added one at a time; a log that silently fails to
-# be committed is the one kind of file this project cannot afford to lose,
-# since a result nobody can re-run is only as good as its record.
-!/docs/hw-logs/*.log
 
 # Agent tooling. Vendored skills and installer-managed state for the
 # assistant this project is developed with — 251 files against 408 of

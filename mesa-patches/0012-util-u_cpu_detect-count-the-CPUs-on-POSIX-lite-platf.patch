@@ -26,7 +26,7 @@ paths enabled. The <unistd.h> include above moves for the same reason
 and in the same way.
 
 mesa-nvk-horizon: Phase 3 item 1 (OS detection) — the CPU-count half of
-  it, and the quality defect recorded in STATUS.md at the end of item 6
+  it, and the quality defect recorded at the end of item 6
 Why: Horizon is POSIX-lite (patch 0007: no <syslog.h>, no <sys/shm.h>,
   no dynamic loader), so it matched neither arm of the DETECT_OS_WINDOWS
   / DETECT_OS_POSIX pair and set no CPU count at all. newlib does define

@@ -163,7 +163,7 @@ int run_test(test_ctx *t)
          * that reintroduced a drain-per-submit wait (CLAUDE.md rejected
          * design #6) must fail this, not just print a different number in
          * a note nobody diffs. 50 ms is generous — hardware measured
-         * ~148 us for both submits together (STATUS.md) — while being far
+         * ~148 us for both submits together — while being far
          * below any realistic full CPU-wait-drain regression. */
         t_check(t, submit_ns < UINT64_C(50000000),
                 "both submits issued in %" PRIu64 " us, well under a "

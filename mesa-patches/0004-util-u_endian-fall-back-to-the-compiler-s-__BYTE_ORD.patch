@@ -22,7 +22,7 @@ change an existing answer. Nothing is removed: the libc branches stay
 first, so a C library that disagrees with the compiler still wins.
 
 mesa-nvk-horizon: Phase 3 item 7 (endianness) — a DEVIATION from this
-  session's item 3 scope, recorded as such in STATUS.md. It is not a
+  session's item 3 scope, recorded as such. It is not a
   newlib gap, it is an OS-detection gap, and it was the last thing
   stopping the non-driver core from compiling, so leaving it would have
   ended the item 3 loop with no result.

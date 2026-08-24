@@ -33,7 +33,7 @@ Why: meson gates regex on the operating system and NVK installs a DRM
   left NULL.
 Evidence: t_vulkan.nro links at 14 000 184 bytes with zero undefined
   symbols and zero multiple definitions. That last number also answers
-  the question docs/rust-toolchain.md left open since step 3: linking
+  the question left open since step 3: linking
   compiler_builtins beside newlib does NOT collide on the memcpy family.
 Upstream: yes, both.
 ---

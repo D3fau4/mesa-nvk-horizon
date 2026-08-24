@@ -92,8 +92,8 @@ Everything above is a no-op where that says a standard library exists.
 
 mesa-nvk-horizon: Phase 4 — the nouveau Vulkan driver for Horizon
 Why: aarch64-nintendo-switch-freestanding has no prebuilt std, and
-  building one would produce the `unsupported` PAL
-  (docs/rust-toolchain.md § 6).
+Why: aarch64-nintendo-switch-freestanding has no prebuilt std, and
+  building one would produce the `unsupported` PAL.
 Evidence: `meson compile` for aarch64/horizon with
   -Dvulkan-drivers=nouveau produced 500+ rustc errors that were one
   fact — with no std there is no prelude:

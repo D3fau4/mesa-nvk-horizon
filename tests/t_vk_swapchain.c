@@ -868,10 +868,10 @@ int run_test(test_ctx *t)
           caps.supportedUsageFlags);
 
    /* Two, because that is what makes double buffering expressible; four,
-    * because that is the cap docs/wsi.md § 2.3 fixes. Both are asserted
-    * rather than noted: they are the contract every count below rests
-    * on, and Vulkan derives from minImageCount how many images an
-    * application may hold at once. */
+    * because that is the cap the design fixes the swapchain count at.
+    * Both are asserted rather than noted: they are the contract every
+    * count below rests on, and Vulkan derives from minImageCount how
+    * many images an application may hold at once. */
    t_check(t, caps.minImageCount == 2,
            "minImageCount is 2, so double buffering exists (%" PRIu32 ")",
            caps.minImageCount);

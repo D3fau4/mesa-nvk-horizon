@@ -24,8 +24,8 @@
  *      on a three-image swapchain. If the BufferQueue underneath libnx
  *      hands out two slots at once, the WSI can drive the producer API
  *      directly and track ownership itself; if it cannot, the buffer
- *      count design in docs/wsi.md § 2.3 has to change. A number is
- *      measured here rather than assumed anywhere.
+ *      count design has to change. A number is measured here rather
+ *      than assumed anywhere.
  *
  *   3. Does anything actually reach the compositor, and at what rate?
  *      "No errors" is not evidence. Three independent things are
@@ -121,7 +121,7 @@ const bool test_uses_display = true;
                            GRALLOC_USAGE_HW_TEXTURE)
 
 /* Slots this test will ever register. nwindowConfigureBuffer accepts up
- * to 64; four is what docs/wsi.md § 2.3 caps a swapchain at. */
+ * to 64; four is what the design caps a swapchain's image count at. */
 #define NW_MAX_BUFFERS    4u
 
 /* How long a single dequeue may take before the test calls it a
@@ -230,8 +230,8 @@ static void nw_graphic_buffer_init(NvGraphicBuffer *gb, const nw_geometry *g,
     /* THE FIELD THAT DECIDES WHETHER ANY OF THIS WORKS. Left at zero,
      * bqSetPreallocatedBuffer returns success and marshals an empty
      * buffer, and the first dequeue then blocks forever
-     * (docs/reference-analysis.md § 1, hardware-confirmed by the
-     * reference). num_fds stays 0: the handle carries no file
+     * (hardware-confirmed against the reference implementation).
+     * num_fds stays 0: the handle carries no file
      * descriptors, only the ints that follow the header. */
     gb->header.num_ints =
         (int)((sizeof(NvGraphicBuffer) - sizeof(NativeHandle)) / 4);
@@ -371,9 +371,8 @@ static Result nw_try_dequeue(nw_producer *p, bool blocking, nw_slot *out)
  * loop in nwindowDequeueBuffer expects. On hardware, two registered
  * buffers with both of them queued gives 0x115d — LibnxBinderError_NoInit,
  * which is Android's NO_INIT (-ENODEV) through binderConvertErrorCode —
- * and every two-buffer session failed at frame 2
- * (docs/hw-logs/t_nwindow-run1-*.log). Three buffers never reached the
- * condition and never saw it.
+ * and every two-buffer session failed at frame 2 (hardware run 1).
+ * Three buffers never reached the condition and never saw it.
  *
  * InvalidOperation is included for the same reason without having been
  * observed: Android's producer returns it when a dequeue would exceed
@@ -613,7 +612,7 @@ typedef struct nw_session {
 
 /* Registers `num_buffers` slots. On any failure every slot already
  * registered is released before returning, so the window is never left
- * half-configured (docs/wsi.md § 5). */
+ * half-configured. */
 static bool nw_session_register(nw_session *s)
 {
     Result rc = nwindowSetDimensions(s->prod.win, s->geom.width,
@@ -1410,8 +1409,8 @@ int run_test(test_ctx *t)
 
     /* Vulkan's contract, restated as an assertion. Offering
      * minImageCount = 2 on a three-image swapchain makes two acquired
-     * images valid usage, so anything less than two here means
-     * docs/wsi.md § 2.3 cannot stand as written. */
+     * images valid usage, so anything less than two here means the
+     * swapchain design cannot stand as written. */
     t_check(t, concurrent3 >= 2,
             "at least two slots can be held at once, which is what "
             "minImageCount = 2 on a 3-image swapchain requires");

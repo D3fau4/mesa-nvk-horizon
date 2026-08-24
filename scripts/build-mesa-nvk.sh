@@ -83,7 +83,8 @@ fi
 
 # The same property scripts/build-mesa.sh checks on the C objects, on
 # the artefacts this build produces. -mtp=soft -fPIC miscompiles
-# thread-local storage on this toolchain (STATUS.md), and a Rust
+# thread-local storage on this toolchain — measured, see
+# scripts/check-tls-relocs.sh — and a Rust
 # staticlib is one more place TLS could appear.
 #
 # This has to be the gate, not a count. The miscompile's signature is a

@@ -135,9 +135,6 @@
 #         uses: actions/checkout@v5
 #
 #       # --- seconds, and they run first for that reason ---------------
-#       - name: history and hardware logs match their manifests
-#         run: ./scripts/check-history-intact.sh
-#
 #       - name: the two build systems agree
 #         run: ./scripts/check-mesa-test-parity.sh
 #

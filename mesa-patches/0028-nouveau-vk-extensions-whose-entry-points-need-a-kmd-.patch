@@ -38,7 +38,7 @@ an extension the same physical device does not support.
 Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
 52/52 checks the gate in both directions -- the three extensions
 absent, EXT_image_drm_format_modifier present, and no sparse feature
-advertised (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
+advertised.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---

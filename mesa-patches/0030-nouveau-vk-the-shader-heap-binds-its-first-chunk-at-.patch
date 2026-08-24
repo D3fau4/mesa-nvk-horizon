@@ -41,7 +41,7 @@ Evidence: measured on hardware (GM20B), 2026-08-04. t_vk_image run 1
  faulted with nothing written; run 3, identical except for a throwaway
  shader compiled first, passed 76/76. With this patch the workaround is
  gone from the test and it passes 72/72 -- the four missing checks are
- the workaround's own (docs/hw-logs/t_vk_image-run5-batch5-PASS.log).
+ the workaround's own.
 Upstream: candidate. The defect is not Horizon-specific -- any KMD that
  faults on an unmapped read rather than absorbing it will see it -- but
  nobody else has reported it, so it would need a reproducer on a

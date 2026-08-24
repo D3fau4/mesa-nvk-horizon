@@ -13,7 +13,7 @@ Why: Horizon's compositor takes an NvMultiFence with a queued buffer and
  is still running. Without a way to obtain that fence, a WSI backend has
  only one option left — wait on the CPU for the render to finish and
  then queue with no fence — which is precisely the defect
- docs/reference-analysis.md § 7 records in both reference ports
+ is precisely the defect both reference ports share
  (wsi_common_switch.c:374 and nxvk's wsi_switch.c:446-458), and which
  CLAUDE.md's rule 6 forbids: a CPU stall is allowed only where Vulkan's
  own semantics put one.

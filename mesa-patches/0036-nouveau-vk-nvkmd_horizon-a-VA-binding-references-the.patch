@@ -39,12 +39,12 @@ Evidence: HARDWARE. t_vk_swapchain on the owner's console, 2026-08-05:
  fourteen images — each one "destroy refused, 1 live mapping(s)", and
  vkDestroyDevice then refused outright with "device destroy refused:
  live mem=14 va_ranges=0 mappings=0 channels=0"
- (docs/hw-logs/t_vk_swapchain-run1-*.log). With the reference but
+ live mem=14 va_ranges=0 mappings=0 channels=0". With the reference but
  without the self-binding exception (the intermediate state, patch 0058
  of the pre-compaction series): "device destroy refused: live mem=33
  va_ranges=33 mappings=33 channels=0" — the VAs leaking too is the
  signature of the cycle
- (docs/hw-logs/t_vk_swapchain-run2-refcycle-FAIL.log). The cycle fix
+ signature of the cycle. The cycle fix
  was patch 0060; run 4 shows "device destroy refused" absent from the
  whole log.
 Upstream: no — it is this backend's ownership rules meeting nvkmd's.

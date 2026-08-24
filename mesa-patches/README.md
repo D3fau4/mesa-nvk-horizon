@@ -6,9 +6,8 @@ series applied on top of `MESA_COMMIT` (`toolchain/versions.env`).
 **`mesa/` is a pinned checkout, never our source.** No Mesa file is ever copied
 into this repository and edited — that is rejected design 7 in `CLAUDE.md`, and
 it is the specific failure mode of the reference ports, which carry whole edited
-Mesa files *and* an overlapping patch, so the real delta cannot be read
-(`docs/reference-analysis.md` § Inconsistencies). A patch series is reviewable,
-rebasable onto a newer Mesa, and can be sent upstream.
+Mesa files *and* an overlapping patch, so the real delta cannot be read. A patch
+series is reviewable, rebasable onto a newer Mesa, and can be sent upstream.
 
 ## Layout
 
@@ -32,7 +31,7 @@ Everything below the `Subject:` line, before the diff, is the commit message.
 It must carry these four fields, in this order:
 
 ```
-mesa-nvk-horizon: Phase <N> item <M> (<item name from docs/milestones.md>)
+mesa-nvk-horizon: Phase <N> item <M> (<item name from the milestones list>)
 Why: <the assumption Mesa makes that does not hold on newlib/libnx>
 Evidence: <the exact measurement — configure line, compiler error, command>
 Upstream: <yes|no> — <why>
@@ -50,10 +49,10 @@ makes the patch defensible upstream and what keeps this series small.
 ## Rules a patch must obey
 
 - **No mixed changes.** A patch is one functional change. No reformatting, no
-  renaming, no drive-by cleanups (`docs/milestones.md` Phase 3 exit criteria).
+  renaming, no drive-by cleanups (Phase 3 exit criterion).
 - **No copied text from the Phase 0 reference ports.** They are GPL-2.0 /
   AGPL-3.0; Mesa is MIT. Derive facts and hardware knowledge, never source text.
-  Any literal reuse needs an explicit decision recorded in `STATUS.md`
+  Any literal reuse needs an explicit recorded decision
   (`CLAUDE.md` § Licence hazard).
 - **Bisectable.** Each patch must leave the tree consistent on its own, so a
   series is split where the intermediate state still builds — not merged to
@@ -101,9 +100,9 @@ evidence that supports its final state, and lists what it absorbed under
 `Absorbs:`; the full pre-compaction narrative is in this directory's own git
 history.
 
-Documents that are *records* — `docs/history/`, `docs/hw-logs/README.md`, and
-dated `STATUS.md` entries — keep the old numbers, because they describe the
-series as it was when those runs happened. The map, old → new:
+Dated hardware-run entries and other point-in-time records keep the old numbers,
+because they describe the series as it was when those runs happened. The map,
+old → new:
 
 | old | new | old | new |
 |---|---|---|---|

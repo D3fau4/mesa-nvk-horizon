@@ -38,7 +38,7 @@ mesa-nvk-horizon: Phase 3 item 3 (newlib/libnx gaps)
 Why: devkitA64's newlib has no pthread_mutex_timedlock, so Mesa's C11
   threads implementation does not compile for Horizon. It is a libc
   gap, but it surfaces in the file milestone item 4 (threads) owns —
-  recorded as a deviation in STATUS.md.
+  recorded as a deviation.
 Evidence: building src/c11/impl for aarch64/horizon fails with
     threads_posix.c:207:10: error: implicit declaration of function
     'pthread_mutex_timedlock'; did you mean 'pthread_mutex_trylock'?

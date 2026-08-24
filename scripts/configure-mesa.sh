@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Configures the pinned Mesa checkout for Horizon/aarch64 with no
-# drivers at all — the "non-driver core" of Phase 3's exit criterion
-# (docs/milestones.md).
+# drivers at all — the "non-driver core" of Phase 3's exit criterion.
 #
 #   scripts/configure-mesa.sh [extra meson setup args...]
 #
@@ -10,8 +9,7 @@
 # android_stub, util, compiler and tool unconditionally, which is that
 # core; every driver is behind a with_* condition. It also keeps the
 # Rust question out of the way — without the nouveau Vulkan driver Mesa
-# never calls add_languages('rust'), so R13 does not block here
-# (docs/rust-toolchain.md).
+# never calls add_languages('rust'), so R13 does not block here.
 #
 # The build directory is deliberately NOT the horizon one: this
 # configures Mesa's meson.build, not ours, and the two must not share
@@ -90,9 +88,9 @@ echo "configure-mesa: driver id $HORIZON_DRIVER_ID"
 # newlib does not have; the feature also needs flock, posix_fallocate and
 # memfd_create, all measured absent, and a writable cache directory this
 # project had not designed. That was recorded as a decision rather than
-# hidden, and the pagaré was written down in what is now
-# docs/history/phase-4.md: "If a later phase enables the shader cache ...
-# flock comes back and needs an answer then."
+# hidden, and the pagaré was written down in the Phase 4 record: "If a
+# later phase enables the shader cache ... flock comes back and needs
+# an answer then."
 #
 # The answer is four patches and a module, and none of it makes newlib
 # pretend to have anything:

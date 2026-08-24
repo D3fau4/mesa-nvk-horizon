@@ -18,8 +18,7 @@ Delete any section that does not apply. Do not delete the evidence section.
 
 - [ ] **H — host.** `scripts/run-host-tests.sh` passes. Output:
 - [ ] **X — cross.** It cross-compiles and produces the `.nro`. Command:
-- [ ] **HW — hardware.** It ran on a real console. `RESULT:` line, build id, and the log
-      added under `docs/hw-logs/` with its digest in `MANIFEST.sha256`:
+- [ ] **HW — hardware.** It ran on a real console. `RESULT:` line, build id, and the log:
 
 <!-- If you have no console, say so here. That is normal and the change is still
      welcome — it just means the claim stops at X. -->
@@ -28,15 +27,13 @@ Delete any section that does not apply. Do not delete the evidence section.
 
 - [ ] `scripts/check-layering.sh`
 - [ ] `scripts/check-no-abs-paths.sh`
-- [ ] `scripts/check-history-intact.sh`
 - [ ] `scripts/check-mesa-test-parity.sh`
 - [ ] Not applicable — this touches no code (documentation only)
 
 ## Record
 
-- [ ] `STATUS.md` updated: what was done, what was tested, what is still open
-- [ ] Nothing under `docs/hw-logs/` or `docs/history/` was edited — or, if it was, its
-      digest is updated in the same commit
+- [ ] The commit message says what was done, what was actually tested, and what
+      is still open
 - [ ] No file was deleted without saying why
 
 ## If this touches Mesa

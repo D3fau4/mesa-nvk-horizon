@@ -71,7 +71,7 @@ uint32_t horizon_gpu_va_range_page_size(const horizon_gpu_va_range *range);
 /* Fails with HORIZON_GPU_ERR_BUSY while mappings inside it are alive.
  * Note that Phase 1 offers no deferred recycling: the caller must also
  * ensure every submit that referenced the range has retired before
- * releasing it (memory-model § 3.2, docs/synchronization.md § 3). */
+ * releasing it. */
 horizon_gpu_result horizon_gpu_vm_release(horizon_gpu_va_range *range);
 
 /* FIXED-maps mem[mem_offset, mem_offset+size) at

@@ -9,7 +9,7 @@
 #
 # This is the Meson path. scripts/build-switch.sh is the Makefile path,
 # which is the one whose output was verified on real hardware; keep both
-# working (STATUS.md).
+# working.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT

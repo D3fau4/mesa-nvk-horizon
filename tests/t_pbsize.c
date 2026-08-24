@@ -6,8 +6,7 @@
  * kicking off synthetic fence-only push buffers of increasing size (32,
  * 128, 512, … 8192 dwords) and CPU-waiting each, so that a ring-size
  * fault is pinned to the size that caused it at channel-creation time
- * rather than surfacing later as a mystery
- * (`docs/reference-analysis.md` § 12.5.2). D15 recorded the idea as
+ * rather than surfacing later as a mystery. D15 recorded the idea as
  * genuinely new and left it undesigned.
  *
  * WHY THIS PROJECT SHOULD NOT ADOPT THE RAMP AND SHOULD ADOPT THE

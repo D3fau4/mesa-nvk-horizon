@@ -15,7 +15,7 @@
 #include "syncpt_math.h"
 
 /* Bounded kernel wait per loop iteration; keeps even "no deadline" waits
- * re-checkable (docs/synchronization.md § 6). */
+ * re-checkable. */
 #define SYNC_WAIT_CHUNK_US INT32_C(100000)
 
 horizon_gpu_result horizon_gpu_syncpt_read(horizon_gpu_device *dev,
