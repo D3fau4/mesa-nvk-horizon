@@ -81,9 +81,31 @@ with a hand on the console: three runs have now had that.
 
 ---
 
-Recorded so nobody "fixes" them. None of these needs action; they are
-here because the cost of re-litigating them is higher than the cost of
-the paragraph.
+## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
+
+A Mesa patch's message records what had been measured *when it was
+written*, and it is never rewritten afterwards: a patch is identified by
+its subject and its diff, so editing one to refresh a claim is exactly
+the divergence the applier exists to report. Four patches therefore
+carry statements that were true in August and are no longer the current
+state. **This file is where the current state lives**, not the patch.
+
+- **`0035`** (a wait on this channel's own syncpoint) says the Phase 5
+  suite "is part of what has to be re-run for it, not just the swapchain
+  tests. NOT RUN ON A CONSOLE." That re-run has happened: all seventeen
+  `t_vk_*` tests pass on hardware on the current series.
+- **`0038`** (`VK_NN_vi_surface`) says "NOT RUN ON A CONSOLE." It has
+  run. `vkCreateViSurfaceNN` is how every surface on this platform is
+  created, and the five tests that create one all pass — `t_vk_swapchain`
+  143/143 and `t_vk_suboptimal` 273/273 among them, both measured with
+  the console docked.
+- **`0040`** says "VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON
+  HARDWARE." Still literally true, and no longer a gap in coverage: see
+  the section above. There is nothing to cover.
+- **`0054`** defers "the display changing under a *scaled* swapchain" to
+  `docs/PENDING-VERIFICATION.md`, a file that no longer exists. The
+  question was settled: `t_vk_swapchain` section G ran docked for its
+  whole 90-second window and the surface never moved off 1280x720.
 
 ## Measured 2026-08-24
 
