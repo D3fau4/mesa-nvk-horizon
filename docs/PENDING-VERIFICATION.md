@@ -44,166 +44,68 @@ does not count. `tools/logcat/` reads a log back over nxlink; see
 
 # 1. Open work
 
-## 1.1 Fase D — the docked transitions of a scaled swapchain
+## 1.1 The WSI reads a source that cannot see a dock
 
-The WSI can scale, and the half of it that this machine can reach has
-been measured. `nvk_wsi.c` no longer sets
-`force_swapchain_to_currentExtent`; the surface publishes
-`minImageExtent` 16x16 against a `maxImageExtent` of the layer's own
-size, and an application may render smaller and let the compositor scale
-through the `scalingMode` every queue already carries.
+Fase D landed — `nvk_wsi.c` no longer forces the swapchain to
+`currentExtent`, the surface publishes 16x16 to the layer's own size,
+and a 640x360 swapchain on a 1280x720 layer presents 20 of 20 frames
+with 0 SUBOPTIMAL (patch `0054`, `t_vk_swapchain` section G). What was
+left was the two rows of `wsi_horizon_extent_changed`'s table that need
+the display to change under a scaled swapchain.
 
-RUN ON A CONSOLE 2026-08-24 — `t_nwindow` registered and presented at
-1280x720, 960x540, 640x360, 320x180, 160x90, 64x36 and 16x16 on the same
-window; `t_vk_swapchain` section G ran a 640x360 swapchain on a 1280x720
-layer for 20 frames with **0 SUBOPTIMAL**, and `t_vk_suboptimal`,
-`t_vk_wsi_mt`, `t_vk_present_draw`, `t_vk_immediate` and `t_vk_caps` are
-unchanged.
+**They cannot happen, and `t_dock` says why.** RUN ON A CONSOLE
+2026-08-24, docking and undocking three times, with a buffer queued
+every 50 ms so the consumer's answer was being refreshed throughout:
 
-**What has NOT been run is the display changing under a scaled
-swapchain.** `wsi_horizon_extent_changed` now has five cases and only
-the three undocked ones have executed:
+```
+CHANGE 1 at 7201 ms: mode 0 -> 1, dimensions 1280x720 -> 1280x720,
+  default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 -> 1280x720
+CHANGE 2 at 7554 ms: mode 1 -> 1, dimensions 1280x720 -> 1280x720,
+  default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 -> 1920x1080
+```
 
-| created | display | expected | run? |
-|---|---|---|---|
-| native | undocked | not suboptimal | yes |
-| native | docked | SUBOPTIMAL | patch 0040, run 21 |
-| scaled | undocked | not suboptimal | yes, section G |
-| scaled | docked | SUBOPTIMAL | **no** |
-| scaled | docked then undocked | not suboptimal | **no** |
+Three things, and they disagree:
 
-The reasoning is in the function's comment: `reported` echoes this
-backend's own `nwindowSetDimensions` until the consumer changes the mode
-and is the display's size afterwards, so a scaled swapchain must ignore
-its own echo and compare against the output it was created for. The two
-unrun rows are the ones that reasoning is load-bearing for.
+- `appletGetOperationMode()` moves, and `AppletHookType_OnOperationMode`
+  fires. **A dock does reach this process.**
+- `nwindowGetDimensions()` and `NWindow::default_*` never move —
+  1280x720 from beginning to end. The compositor scales this layer to
+  the television rather than resizing it, so the BufferQueue never hears
+  about the mode change.
+- `appletGetDefaultDisplayResolution()` **does** follow it, to 1920x1080
+  and back, about 350 ms after the mode.
 
-Nothing in this process can resize a VI layer, which is why
-`t_vk_suboptimal`'s section D has always needed somebody to dock or
-undock the console while it runs. This adds one more thing to do during
-that same run.
+`wsi_horizon_get_extent` reads `NWindow::default_*`. That is the second
+one — the one that cannot move. So `VkSurfaceCapabilitiesKHR::
+currentExtent` never changes, `wsi_horizon_extent_changed` never returns
+true, and no swapchain can be suboptimal because of a dock.
 
-**Done when**: somebody docks the console during `t_vk_suboptimal`
-section D **and** during `t_vk_swapchain` section G, and the two rows
-above are confirmed or corrected.
+**This explains a line patch 0040 has carried since August**:
+"VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON HARDWARE." That was
+written as coverage nobody had managed to get. It was not coverage. It
+was a source that cannot move.
 
-## 1.2 Fase E steps 3 and 4 — sparse residency
+**What to do about it**, and it is bounded: `wsi_horizon_get_extent`
+reads `appletGetDefaultDisplayResolution()`, falling back to
+`NWindow::default_*` when it fails. Undocked the two agree — both
+1280x720 — so the undocked behaviour of every existing test is
+unchanged by construction, which is why this is a small change and not
+a redesign.
 
-D12 is reopened, on a measurement rather than an absence. RUN ON A
-CONSOLE 2026-08-24, `t_sparse`: a write to a never-bound sparse page is
-swallowed; memory binds into the middle of a sparse reservation and the
-payload arrives; and **after unbinding, a write to that address is
-swallowed again and does not reach the memory that was unbound**. So
-partial residency is expressible on this hardware.
+It was written and then **reverted unbuilt-upon**, because the
+regression run it needs was interrupted. A change on the live path of
+every `get_extent` call is not something to land on reasoning.
 
-Both things that blocked the work are done:
+**Done when**: `wsi_horizon_get_extent` reads the display resolution,
+`t_vk_swapchain`, `t_vk_suboptimal`, `t_vk_wsi_mt`, `t_vk_present_draw`
+and `t_vk_immediate` pass undocked, and one run has somebody dock the
+console during `t_vk_swapchain` section G or `t_vk_suboptimal`
+section D — which can now actually fire.
 
-- **Step 2, the bookkeeping.** `horizon_va_set_remove_range` cuts a live
-  interval, leaving whatever lies before and after it live. Host-tested
-  under ASan+UBSan; `h_va_space` went from 21 checks to 55. Nothing
-  calls it yet, **and it may turn out that nothing should.**
-  `nvioctlNvhostAsGpu_UnmapBuffer` takes an address and no length, so a
-  partial unbind has to unmap the whole mapping and map the two
-  remainders back — and `horizon_gpu_vm_unmap` followed by two
-  `horizon_gpu_vm_map` calls already keeps the interval set right by
-  themselves. Whoever writes step 3 should decide that first: if the
-  remap design is the one, this primitive is scaffolding for a building
-  that was put up another way and it should be deleted, not kept
-  because it is tested.
-- **The channel budget.** `has_sparse = true` makes NVK ask for a bind
-  context, which is a third GPFIFO channel, and patch 0022 recorded that
-  as a promise about an unknown. It is no longer unknown: `t_channel`
-  measured **44 channels open at once** before libnx's nv session ran
-  out of transfer memory. The one-channel constraint was never the
-  hardware's.
-
-**Step 3 is written and is class X.** Patch `0055`:
-`nvkmd_horizon_alloc_va` accepts `NVKMD_VA_SPARSE`, and
-`nvkmd_horizon_va_unbind` finds the binding that *contains* a range
-rather than the one that equals it — unmapping it and mapping the ends
-that survive back, because `nvioctlNvhostAsGpu_UnmapBuffer` takes an
-address and no length. Nothing reaches any of it yet.
-
-**Step 4 is one line, and it is deliberately not taken.**
-`nvkmd_info::has_sparse` gates EIGHT `VkPhysicalDeviceFeatures` at once
-(`nvk_physical_device.c:395-402`) and makes NVK ask for a bind context.
-Flipping it un-run would put all seventeen Vulkan tests behind a path no
-console has executed.
-
-**Done when**: `has_sparse` is flipped in `nvkmd_horizon_pdev.c` and
-`t_vk_sparse` has run — and either it passes, in which case the flip
-stays in the commit that quotes its log, or it does not and the flip
-comes back out with the reason.
-
-`has_transfer_queue` is false for the same one-channel reason and is now
-equally unblocked, though nothing has asked for it.
-
-### 1.2.1 What sparse costs, which arm D of `t_sparse` decides
-
-Everything `t_sparse` measured ran at `as_big_page_size` — 128 KiB,
-the address space's own binding granularity. `horizon_gpu_vm_map`
-refuses to map an object in pages larger than its own alignment,
-because `MapBufferEx` accepts that pairing and the GPU's writes go
-nowhere. `vkAllocateMemory` takes no alignment and this backend gives an
-ordinary allocation 4 KiB.
-
-So sparse needs one of two things, and they cost very differently:
-
-- a sparse reservation that binds in **4 KiB pages**, and device memory
-  needs nothing special; or
-- **every device memory object aligned to 128 KiB**, which is 32x waste
-  on a small allocation.
-
-`t_sparse` arm D asks the first directly: a small-page sparse
-reservation, a 4 KiB-aligned object bound into it, and a write through
-it. Class X, never run.
-
-## 1.3 The query pool's reset and write in one submission
-
-`nvk_CmdResetQueryPool` writes 0 to a query's availability word through
-an NV9097 report semaphore and then acquires on that word from the host
-engine; `nvk_CmdWriteTimestamp2` writes the report and releases 1 to it.
-Three accesses to one address, from two engines, inside one submission.
-
-`t_vk_timestamp` splits them into two submits, and says in as many words
-that this is not a fix. It was done while the real cause was still
-unknown, so that the timestampPeriod measurement could be made at all —
-and the real cause turned out to be elsewhere entirely: stale dirty CPU
-cache lines on a fresh allocation, fixed in `horizon/memory/mem.c`.
-
-So the combined form may well work now, and nothing has tried it.
-
-`t_vk_timestamp` now carries a probe that asks directly: the reset and
-the timestamp in ONE command buffer, six times, because the failure was
-intermittent at about half and one attempt could not tell it from luck.
-It runs on a query slot of its own and reports rather than demands, so a
-failure there costs the timestampPeriod measurement nothing. Class X,
-never run.
-
-**Done when**: that probe has run, and either it passes — in which case
-`write_timestamp`'s two-submit split comes out and the probe with it —
-or it does not, and the reason is recorded here instead.
-
-## 1.4 The next console session, in order
-
-Everything above except the docking is one sitting. Build with
-`scripts/ci-build-archives.sh`, then:
-
-1. **`t_sparse`** — arm D. Decides § 1.2.1, and everything after it in
-   this list depends on which way it goes.
-2. **`t_vk_timestamp`** — the combined-form probe. Closes § 1.3 either
-   way.
-3. Flip `has_sparse` to `true` in `nvkmd_horizon_pdev.c`, rebuild, then
-   **`t_vk_sparse`** — and immediately after it `t_vulkan`,
-   `t_vk_transfer` and `t_vk_swapchain`, because the flip makes NVK ask
-   for a bind context at device creation and that path is what could
-   break every Vulkan test at once rather than only the sparse one.
-4. If any of step 3 fails, the flip comes back out and § 1.2 records
-   why. That is a result, not a failure.
-
-Then, whenever somebody is holding the console: dock or undock it during
-`t_vk_suboptimal` section D **and** during `t_vk_swapchain` section G,
-which closes § 1.1.
+**Also worth deciding then**: with the surface reporting 1920x1080 while
+the layer stays 1280x720, `maxImageExtent` allows a 1080p swapchain on a
+720p layer. The compositor would scale it down. Nothing has measured
+that and section G should, in the same run.
 
 ---
 
@@ -214,6 +116,27 @@ here because the cost of re-litigating them is higher than the cost of
 the paragraph.
 
 ## Measured on hardware, 2026-08-24
+
+- **Sparse residency works, through the whole stack.** `t_sparse` asked
+  the address space (an unbound page swallows a write; unbinding a bound
+  block puts that state back) and `t_vk_sparse` asked the same three
+  questions through `vkQueueBindSparse` — PASS 74/74, block size
+  0x20000, 0 of 32768 words wrong on the readback. `has_sparse` is true
+  (patches `0055`, `0056`) and all seventeen Vulkan tests pass with the
+  bind context it makes NVK ask for. Two of the eight features it gates
+  have been exercised: `sparseBinding` and `sparseResidencyBuffer`.
+- **Sparse exists only in big pages.** A reservation with
+  `NvAllocSpaceFlags_Sparse` and a 0x1000 page size is refused —
+  `0x0000275c`, `LibnxNvidiaError_IoctlFailed` — where the same call at
+  `as_big_page_size` is accepted. `NVKMD_VA_SPARSE` forces the big-page
+  half regardless of the PTE kind because of it.
+- **A query pool's reset and timestamp belong in one submission.** Six
+  of six after the `mem.c` cache fix; the two-submit split that was
+  working around it is gone.
+- **A dock reaches the process but not the layer.** See § 1.1 — the
+  operation mode and its applet hook both move,
+  `appletGetDefaultDisplayResolution()` follows to 1920x1080, and
+  `NWindow::default_*` never moves at all.
 
 - **`gpu_va_bit_count` is 40**, and `t_init` now fails device creation if
   a chip reports anything else, because a truncated GPU address is a
