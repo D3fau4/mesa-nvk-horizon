@@ -1,7 +1,7 @@
-From 51655177e88d60714e7a46d6336c7bac56dcc2e8 Mon Sep 17 00:00:00 2001
+From b251e2adb3da983a178c9c6d3663432ea7b9a1ac Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 10 Aug 2026 23:41:11 +0000
-Subject: [PATCH 45/57] nouveau/vk: let the build name a driver identity Mesa's
+Subject: [PATCH 45/56] nouveau/vk: let the build name a driver identity Mesa's
  version cannot
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

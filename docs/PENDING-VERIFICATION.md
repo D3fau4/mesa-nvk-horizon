@@ -44,72 +44,56 @@ does not count. `tools/logcat/` reads a log back over nxlink; see
 
 # 1. Open work
 
-## 1.1 The WSI reads a source that cannot see a dock
+## 1.1 A dock cannot make a swapchain suboptimal here
 
-Fase D landed — `nvk_wsi.c` no longer forces the swapchain to
-`currentExtent`, the surface publishes 16x16 to the layer's own size,
-and a 640x360 swapchain on a 1280x720 layer presents 20 of 20 frames
-with 0 SUBOPTIMAL (patch `0054`, `t_vk_swapchain` section G). What was
-left was the two rows of `wsi_horizon_extent_changed`'s table that need
-the display to change under a scaled swapchain.
+This is closed as a measurement, not as a feature. The answer is that
+the transition patch 0040 was written for cannot be delivered on this
+platform, and the three runs below are why.
 
-**They cannot happen, and `t_dock` says why.** RUN ON A CONSOLE
-2026-08-24, docking and undocking three times, with a buffer queued
-every 50 ms so the consumer's answer was being refreshed throughout:
-
-```
-CHANGE 1 at 7201 ms: mode 0 -> 1, dimensions 1280x720 -> 1280x720,
-  default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 -> 1280x720
-CHANGE 2 at 7554 ms: mode 1 -> 1, dimensions 1280x720 -> 1280x720,
-  default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 -> 1920x1080
-```
-
-Three things, and they disagree:
+`t_dock`, docking and undocking three times with a buffer queued every
+50 ms so every source was being refreshed:
 
 - `appletGetOperationMode()` moves, and `AppletHookType_OnOperationMode`
   fires. **A dock does reach this process.**
-- `nwindowGetDimensions()` and `NWindow::default_*` never move —
-  1280x720 from beginning to end. The compositor scales this layer to
-  the television rather than resizing it, so the BufferQueue never hears
-  about the mode change.
-- `appletGetDefaultDisplayResolution()` **does** follow it, to 1920x1080
-  and back, about 350 ms after the mode.
+- `nwindowGetDimensions()` and `NWindow::default_*` — what
+  `wsi_horizon_get_extent` reads — never move. 1280x720 throughout. The
+  compositor scales this layer to the television rather than resizing
+  it, so the BufferQueue has nothing to report.
+- `appletGetDefaultDisplayResolution()` moves to 1920x1080 **and back
+  to 1280x720 while still docked**, about 350 ms after the mode and
+  2.8 s before it fell again. It is a transient around the transition,
+  not a state.
 
-`wsi_horizon_get_extent` reads `NWindow::default_*`. That is the second
-one — the one that cannot move. So `VkSurfaceCapabilitiesKHR::
-currentExtent` never changes, `wsi_horizon_extent_changed` never returns
-true, and no swapchain can be suboptimal because of a dock.
+`t_vk_swapchain` section G then ran with the console docked for the
+whole 90-second window — `appletGetOperationMode() went 1 -> 1` — and
+the surface reported **1280x720 from beginning to end**, sampled inside
+the loop rather than once at the end.
+
+So no source available to this process reports a stable docked output
+size. A swapchain cannot be told the output changed, because as far as
+everything it can read is concerned, it did not.
+
+**What was tried and reverted.** Patch `0057` made
+`wsi_horizon_get_extent` read `appletGetDefaultDisplayResolution()`, and
+`wsi_horizon_extent_changed` compare that against the size at creation.
+It passed every undocked regression — `t_vk_suboptimal` 273/273 twice,
+`t_vk_wsi_mt` 71/71, `t_vk_present_draw` 183/183, `t_vk_immediate`
+442/442, `t_vk_swapchain` 144/144 — and it is still wrong, because the
+value it reads is a 2.8-second excursion. It would make
+`VkSurfaceCapabilitiesKHR::currentExtent` flicker to 1920x1080 around
+every dock, so an application querying inside that window would build a
+1080p swapchain for a layer that is 720p and stays 720p. A stable wrong
+answer beats an unstable one; `default_*` at least matches the layer.
 
 **This explains a line patch 0040 has carried since August**:
-"VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON HARDWARE." That was
-written as coverage nobody had managed to get. It was not coverage. It
-was a source that cannot move.
+"VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON HARDWARE." It was written
+as coverage nobody had managed to get. It is not coverage. There is
+nothing to cover.
 
-**That is fixed.** Patch `0057`: `wsi_horizon_get_extent` reads
-`appletGetDefaultDisplayResolution()`, falling back to
-`NWindow::default_*` when it fails. Undocked the two agree — both
-1280x720 — so the undocked behaviour of every existing test is
-unchanged by construction, and that is checked rather than asserted:
-`t_vk_suboptimal` 273/273 twice, `t_vk_wsi_mt` 71/71,
-`t_vk_present_draw` 183/183, `t_vk_immediate` 442/442,
-`t_vk_swapchain` 144/144, with the surface still publishing "current
-1280x720, min 16x16, max 1280x720".
-
-**What is left is one gesture.** Nothing in a process can resize a VI
-layer, so the docked half needs somebody to dock the console during
-`t_vk_swapchain` section G or `t_vk_suboptimal` section D. Both wait 90
-and 30 seconds for it and report honestly when nobody does. For the
-first time that wait can actually be satisfied — before `0057` the
-value they watch could not move, so those two sections were asking for
-something that could never arrive.
-
-**Done when**: one run has somebody dock the console during either
-section, and the table's two docked rows are confirmed or corrected.
-
-**Also worth deciding then**: with the surface reporting 1920x1080 while
-the layer stays 1280x720, `maxImageExtent` allows a 1080p swapchain on a
-720p layer. The compositor would scale it down. Nothing has measured
-that and section G should, in the same run.
+**If it is ever wanted**, what it needs is a source that is stable while
+docked — `viGetDisplayResolution` on a display handle this process does
+not have, or an applet path nobody here has found. Not a longer wait
+with a hand on the console: three runs have now had that.
 
 ---
 
@@ -120,6 +104,27 @@ here because the cost of re-litigating them is higher than the cost of
 the paragraph.
 
 ## Measured on hardware, 2026-08-24
+
+### Docked is a different machine, and two tests had to learn it
+
+The suite had only ever run handheld. Running it in the dock found two
+differences that are the compositor's and the clocks', not this
+driver's:
+
+- **The compositor attaches no release fence when docked.** Handheld,
+  87 of 90 dequeues carried one, the first on syncpoint 103; docked, 0
+  of 90 — while still presenting all 90 frames at the refresh, so the
+  buffers were being released without a fence attached. A producer must
+  cope with that, because the queue is allowed not to give one.
+  `t_nwindow` reports the count and no longer fails on it.
+- **Docking raises the clocks enough to stop the buffer-count
+  experiment running.** The bursty-load check compares two buffers
+  against three and wants two to be 10% slower. Handheld the two-buffer
+  mean ran about 25 ms against a 16.7 ms refresh; docked, both counts
+  sat on the refresh — 16944 us against 16851, with 45 of 89 intervals
+  overrunning either way. Nothing regressed: the producer stopped being
+  the bottleneck. `t_nwindow` and `t_vk_swapchain` now make that
+  comparison only when two buffers actually fall behind the display.
 
 - **Sparse residency works, through the whole stack.** `t_sparse` asked
   the address space (an unbound page swallows a write; unbinding a bound

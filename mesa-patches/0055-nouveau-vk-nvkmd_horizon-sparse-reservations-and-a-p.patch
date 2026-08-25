@@ -1,7 +1,7 @@
-From dbcdbedee35eb4475d03aa25a3679d33daf04eac Mon Sep 17 00:00:00 2001
+From d1fe41058e9729a0b1358f0f98a4e0f4cf16db8a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 21:35:12 +0200
-Subject: [PATCH 55/57] nouveau/vk: nvkmd_horizon: sparse reservations, and a
+Subject: [PATCH 55/56] nouveau/vk: nvkmd_horizon: sparse reservations, and a
  partial unbind
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

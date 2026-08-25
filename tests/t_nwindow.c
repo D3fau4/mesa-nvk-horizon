@@ -1592,11 +1592,32 @@ int run_test(test_ctx *t)
 
     /* Something outside this process consumed the buffers: with three
      * registered and 90 presented, at least 87 releases had to happen,
-     * and this process performs none of them. */
-    t_check(t, ran3 && st3.release_fences > 0,
-            "the compositor handed back a release fence: %" PRIu32
-            " of %u dequeues carried one, the first on syncpoint %" PRIu32,
-            st3.release_fences, NW_FRAMES, st3.first_fence_syncpt);
+     * and this process performs none of them.
+     *
+     * WHETHER THE RELEASE CARRIES A FENCE IS THE COMPOSITOR'S CHOICE,
+     * and it is not the same choice in both display modes. MEASURED
+     * 2026-08-24: handheld, 87 of 90 dequeues came back with one, the
+     * first on syncpoint 103. DOCKED, on the same build minutes later,
+     * 0 of 90 — and the session still presented all 90 frames at the
+     * refresh, so the buffers were being released, just without a fence
+     * attached.
+     *
+     * That is worth knowing and it is not this test's to fail on: a
+     * producer must cope with a release that carries no fence, because
+     * the queue is allowed not to give one. What the run below still
+     * demands is that the frames went somewhere, which the cadence
+     * checks already establish. The fence count is reported either way.
+     */
+    t_note(t, "release fences: %" PRIu32 " of %" PRIu32 " dequeues carried "
+           "one; %s", st3.release_fences, st3.frames_presented,
+           st3.release_fences > 0
+              ? "the compositor attaches them in this display mode"
+              : "the compositor attached NONE in this display mode, which "
+                "docking is known to do");
+    t_check(t, ran3 && st3.frames_presented == NW_FRAMES,
+            "the compositor consumed the frames: %" PRIu32 " of %u "
+            "presented, which this process could not have done alone",
+            st3.frames_presented, NW_FRAMES);
 
     if (ran3)
         t_check(t, st3.within_10pct * 10 >= st3.intervals * 9,
@@ -1639,11 +1660,30 @@ int run_test(test_ctx *t)
                   "refreshes: %" PRIu32 " with 3, %" PRIu32 " with 2",
                m3 / 1000, m2 / 1000, st3_load.over_1p5_refresh,
                st2_load.over_1p5_refresh);
-        t_check(t, m2 * 10 > m3 * 11,
-                "under the same bursty load two buffers deliver the same "
-                "frames at least 10%% slower than three (%" PRIu64 " us vs "
-                "%" PRIu64 " us mean interval)",
-                m2 / 1000, m3 / 1000);
+        /* ONLY WHILE TWO BUFFERS ACTUALLY FALL BEHIND THE DISPLAY.
+         *
+         * The threshold was chosen against a two-buffer mean of about
+         * 25 ms on a 16.7 ms refresh — half again over, which is the
+         * state this claim describes. MEASURED with the console DOCKED,
+         * 2026-08-24, in t_vk_swapchain's identical check: docking
+         * raises the clocks, the producer stops being the bottleneck,
+         * and both counts sit on the refresh — 16944 us against 16851,
+         * with 45 of 89 intervals overrunning either way. Neither
+         * number is wrong and nothing regressed; the experiment did not
+         * run, the way a wind-tunnel test does not run without wind. */
+        if (m2 > NW_REFRESH_NS * 6 / 5) {
+            t_check(t, m2 * 10 > m3 * 11,
+                    "under the same bursty load two buffers deliver the "
+                    "same frames at least 10%% slower than three (%" PRIu64
+                    " us vs %" PRIu64 " us mean interval)",
+                    m2 / 1000, m3 / 1000);
+        } else {
+            t_note(t, "two buffers kept up with the display on this run "
+                      "(%" PRIu64 " us against a %" PRIu64 " us refresh), "
+                      "so the buffer count had nothing to express and the "
+                      "comparison is not made", m2 / 1000,
+                   NW_REFRESH_NS / 1000);
+        }
     }
 
     if (ran3_free && ran3)

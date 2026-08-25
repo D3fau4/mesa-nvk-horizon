@@ -1,7 +1,7 @@
-From cc9ceb3822325bb75e79d9331f14283419f231f5 Mon Sep 17 00:00:00 2001
+From 5554de6bf60b9a1979559b1584b491dba26c01dd Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
 Date: Mon, 24 Aug 2026 22:51:04 +0200
-Subject: [PATCH 56/57] nouveau/vk: nvkmd_horizon: has_sparse, and the runs
+Subject: [PATCH 56/56] nouveau/vk: nvkmd_horizon: has_sparse, and the runs
  that earned it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
