@@ -85,22 +85,26 @@ true, and no swapchain can be suboptimal because of a dock.
 written as coverage nobody had managed to get. It was not coverage. It
 was a source that cannot move.
 
-**What to do about it**, and it is bounded: `wsi_horizon_get_extent`
-reads `appletGetDefaultDisplayResolution()`, falling back to
+**That is fixed.** Patch `0057`: `wsi_horizon_get_extent` reads
+`appletGetDefaultDisplayResolution()`, falling back to
 `NWindow::default_*` when it fails. Undocked the two agree — both
 1280x720 — so the undocked behaviour of every existing test is
-unchanged by construction, which is why this is a small change and not
-a redesign.
+unchanged by construction, and that is checked rather than asserted:
+`t_vk_suboptimal` 273/273 twice, `t_vk_wsi_mt` 71/71,
+`t_vk_present_draw` 183/183, `t_vk_immediate` 442/442,
+`t_vk_swapchain` 144/144, with the surface still publishing "current
+1280x720, min 16x16, max 1280x720".
 
-It was written and then **reverted unbuilt-upon**, because the
-regression run it needs was interrupted. A change on the live path of
-every `get_extent` call is not something to land on reasoning.
+**What is left is one gesture.** Nothing in a process can resize a VI
+layer, so the docked half needs somebody to dock the console during
+`t_vk_swapchain` section G or `t_vk_suboptimal` section D. Both wait 90
+and 30 seconds for it and report honestly when nobody does. For the
+first time that wait can actually be satisfied — before `0057` the
+value they watch could not move, so those two sections were asking for
+something that could never arrive.
 
-**Done when**: `wsi_horizon_get_extent` reads the display resolution,
-`t_vk_swapchain`, `t_vk_suboptimal`, `t_vk_wsi_mt`, `t_vk_present_draw`
-and `t_vk_immediate` pass undocked, and one run has somebody dock the
-console during `t_vk_swapchain` section G or `t_vk_suboptimal`
-section D — which can now actually fire.
+**Done when**: one run has somebody dock the console during either
+section, and the table's two docked rows are confirmed or corrected.
 
 **Also worth deciding then**: with the surface reporting 1920x1080 while
 the layer stays 1280x720, `maxImageExtent` allows a 1080p swapchain on a

@@ -1,7 +1,7 @@
-From 5d90550631d62b1adf72bdba573d274529892991 Mon Sep 17 00:00:00 2001
+From 7196b4865c759639da1c40c4f5d3b64a4d02b038 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Tue, 11 Aug 2026 10:39:50 +0200
-Subject: [PATCH 41/56] vulkan/wsi: Horizon, split the acquire's wait into the
+Subject: [PATCH 41/57] vulkan/wsi: Horizon, split the acquire's wait into the
  two things it can be
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)

@@ -1,0 +1,136 @@
+From b568e51f120a255dc77ba9b499a2ecd7077db118 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Tue, 25 Aug 2026 17:34:53 +0200
+Subject: [PATCH 57/57] vulkan/wsi: Horizon, ask the system for the output's
+ size
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
+Why: wsi_horizon_get_extent read NWindow::default_*, the BufferQueue's
+ answer, and that is why patch 0040's dock path has never fired on
+ hardware. 0040 wrote "VK_SUBOPTIMAL_KHR HAS NEVER BEEN RETURNED ON
+ HARDWARE" and treated it as coverage nobody had managed to get. It was
+ not coverage. The queue cannot report a display mode change, so
+ currentExtent could never move, so wsi_horizon_extent_changed could
+ never return true, and no swapchain could be suboptimal because of a
+ dock.
+ .
+ Patch 0054 made that matter more rather than less: with the application
+ choosing its own extent, a mode change is the ONLY thing left that can
+ make a swapchain suboptimal.
+Evidence: RUN ON A CONSOLE 2026-08-24, tests/t_dock.c, docking and
+ undocking three times with a buffer queued every 50 ms so the
+ consumer's answer was being refreshed throughout:
+ .
+   CHANGE 1 at 7201 ms: mode 0 -> 1, dimensions 1280x720 -> 1280x720,
+     default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 ->
+     1280x720
+   CHANGE 2 at 7554 ms: mode 1 -> 1, dimensions 1280x720 -> 1280x720,
+     default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 ->
+     1920x1080
+ .
+ Three sources and they disagree. appletGetOperationMode() moves and
+ AppletHookType_OnOperationMode fires, so a dock does reach the process.
+ nwindowGetDimensions() and NWindow::default_* never move at all — the
+ compositor scales this layer to the television rather than resizing it.
+ appletGetDefaultDisplayResolution() follows to 1920x1080 and back, on
+ every one of the three docks, about 350 ms behind the mode. That is the
+ source this now reads.
+ .
+ UNDOCKED THE TWO AGREE, both 1280x720, which is why this is a small
+ change and not a redesign — and it is checked rather than asserted.
+ With it, on the same build: t_vk_suboptimal 273/273 twice, t_vk_wsi_mt
+ 71/71, t_vk_present_draw 183/183, t_vk_immediate 442/442,
+ t_vk_swapchain 144/144, and the surface still publishes "current
+ 1280x720, min 16x16, max 1280x720" exactly as before.
+ .
+ NOT RUN: the docked half. Nothing in a process can resize a VI layer,
+ so somebody has to dock the console during t_vk_swapchain's section G
+ or t_vk_suboptimal's section D — which, for the first time, can now
+ actually fire. docs/PENDING-VERIFICATION.md § 1.1 carries it, together
+ with the second question that opens: the surface then reports 1920x1080
+ while the layer stays 1280x720, so maxImageExtent allows a 1080p
+ swapchain the compositor would scale down, and nothing has measured
+ that either.
+Upstream: no — the whole file is Horizon-only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Fj3whqEXnojZt37wn4R2jU
+---
+ src/vulkan/wsi/wsi_horizon.c | 53 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index ebb3359bab7..25a8fa18a18 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -338,17 +338,58 @@ wsi_horizon_surface_get_support(VkIcdSurfaceBase *surface,
+  * NOT nwindowGetDimensions, and the difference matters. That returns
+  * NWindow::width when it is set, which is whatever the last
+  * nwindowSetDimensions asked for — and this backend is what calls it,
+- * so asking would be reading back our own request. NWindow::default_*
+- * is the consumer's answer: libnx fills it from the BufferQueue's
+- * output at connect and at every queue. It is what changes when the
+- * console is docked and the display becomes 1920x1080.
++ * so asking would be reading back our own request.
++ *
++ * AND NOT NWindow::default_* EITHER, which is what this used to read
++ * and why patch 0040's dock path has never fired on hardware. That
++ * field is the BufferQueue's answer, and the BufferQueue does not hear
++ * about a display mode change.
++ *
++ * MEASURED ON A CONSOLE 2026-08-24, tests/t_dock.c, docking and
++ * undocking three times with a buffer queued every 50 ms so the
++ * consumer's answer was being refreshed throughout:
++ *
++ *   CHANGE 1 at 7201 ms: mode 0 -> 1, dimensions 1280x720 -> 1280x720,
++ *     default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 ->
++ *     1280x720
++ *   CHANGE 2 at 7554 ms: mode 1 -> 1, dimensions 1280x720 -> 1280x720,
++ *     default_ 1280x720 -> 1280x720, DisplayResolution 1280x720 ->
++ *     1920x1080
++ *
++ * The operation mode moves, the applet hook fires, and the *display
++ * resolution* follows about 350 ms later — while the window and the
++ * queue stay at 1280x720 from beginning to end. The compositor scales
++ * this layer to the television rather than resizing it, so a producer
++ * watching the queue can never learn that the output changed.
++ *
++ * appletGetDefaultDisplayResolution() is the system's own answer to
++ * "how big is the output now", it moved on every one of those three
++ * docks, and it is what this reads. Patch 0040 wrote "VK_SUBOPTIMAL_KHR
++ * HAS NEVER BEEN RETURNED ON HARDWARE" and treated that as coverage it
++ * had not got; it was not coverage, it was a source that cannot move.
++ *
++ * Undocked the two agree — both 1280x720 — which is why this is a small
++ * change and not a redesign: every existing test's behaviour is
++ * unchanged by construction, and that is checked rather than assumed.
+  */
+ static VkResult
+ wsi_horizon_get_extent(VkIcdSurfaceBase *surface, VkExtent2D *extent)
+ {
+    NWindow *win = wsi_horizon_window(surface);
+-   u32 width = win->default_width;
+-   u32 height = win->default_height;
++   u32 width = 0, height = 0;
++
++   s32 disp_w = 0, disp_h = 0;
++   if (R_SUCCEEDED(appletGetDefaultDisplayResolution(&disp_w, &disp_h)) &&
++       disp_w > 0 && disp_h > 0) {
++      width = (u32)disp_w;
++      height = (u32)disp_h;
++   } else {
++      /* The consumer's answer, which is where this used to start. It
++       * cannot follow a dock, but it is right whenever nothing has
++       * docked, and something has to be returned. */
++      width = win->default_width;
++      height = win->default_height;
++   }
+ 
+    if (width == 0 || height == 0) {
+       /* Nothing has been queued yet and the connect told us nothing.
+-- 
+2.53.0.windows.2
+
