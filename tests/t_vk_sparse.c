@@ -139,8 +139,10 @@ int run_test(test_ctx *t)
 
    if (!have_binding) {
       t_note(t, "MEASURED: sparseBinding is not offered, so nothing below "
-             "can run. nvkmd_info::has_sparse is what decides this, and it "
-             "is false — see docs/PENDING-VERIFICATION.md.");
+             "can run. nvkmd_info::has_sparse is what decides this. It was "
+             "true when this test last passed 74/74 on hardware (patch "
+             "0056), so reaching this line is a regression and not a "
+             "platform limit.");
       return 0;
    }
 

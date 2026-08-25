@@ -26,24 +26,34 @@ patch series name `docs/architecture.md`, `docs/milestones.md`,
 asked. When adding a Mesa patch, keep the four-field header format below even though
 the milestones list its first field cites is gone.
 
-`docs/` now exists and holds **exactly one file**, which is not any of the three
-above. The three cited there are still gone.
+`docs/` holds **exactly one file**, `MEASURED-ON-HARDWARE.md`, which is not any of
+the three above. The three cited there are still gone.
+
+`docs/PENDING-VERIFICATION.md` is gone too, and two Mesa patches still cite it:
+`0054` in its commit message, and `0055` in a comment its diff adds to
+`nvkmd_horizon.c`. Both were left alone deliberately — a patch is identified by its
+subject and its diff, so editing one to chase a filename is exactly the churn the
+divergence check exists to catch. What they point at is in
+`docs/MEASURED-ON-HARDWARE.md`.
 
 The record of what was done, what was actually tested and what is still open lives in
 the commit messages.
 
-### `docs/PENDING-VERIFICATION.md` — read it before claiming anything works
+### `docs/MEASURED-ON-HARDWARE.md` — read it before re-measuring anything
 
-A debt ledger of everything cross-compiled and never run on a console, everything
-applied and never compiled, and the measurements that decide whether specific work
-continues. Every section carries a **Done when** line.
+Facts established by running code on a console, collected so nobody re-litigates
+them. Everything in it is class **HW**; nothing in it needs action.
 
-**It is meant to be deleted.** When every section's condition is met, delete the file
-rather than hollowing it out — an empty ledger saying "all clear" is just another
-stale reference. Strike a section when its measurement has been made *and acted on*;
-a measurement that closes a question the other way is a result, not a failure.
+**It is not a debt ledger and must not become one.** It replaced
+`docs/PENDING-VERIFICATION.md`, which was one: that file tracked work cross-compiled
+and never run, every section carried a **Done when** line, and it was deleted on
+2026-08-25 when its last section closed — as its own rules demanded, rather than
+being hollowed out into an "all clear" that says nothing.
 
-Add to it whenever work lands that is class X and not class HW.
+So work that is still owed does **not** belong here. It goes in a commit message, or
+in a new ledger with the same discipline: a **Done when** line per section, and the
+file deleted rather than emptied when they are all met. Add to this file only when a
+measurement on hardware settles something that would otherwise get measured twice.
 
 ## Commands
 

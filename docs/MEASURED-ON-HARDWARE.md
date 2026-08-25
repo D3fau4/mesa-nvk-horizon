@@ -1,10 +1,20 @@
-# Pending verification
+# Measured on hardware
 
-**This file is a debt ledger, and it is meant to be deleted.**
+Facts about this platform that were established by running code on a
+Nintendo Switch, kept in one place **so nobody re-litigates them**. None
+of it needs action. Each entry is here because the cost of measuring it
+again is higher than the cost of the paragraph.
 
-Everything below is work that has *not* been run on a Nintendo Switch,
-or a measurement that has been made and not yet acted on. The project's
-evidence discipline has three classes and never collapses them:
+**This file is not a debt ledger, and it must never become one.** Its
+predecessor, `docs/PENDING-VERIFICATION.md`, was: it tracked work that
+had been cross-compiled and never run, and every section carried a
+"Done when" line. It was deleted when its last section closed — as its
+own rules demanded, rather than being hollowed out into an "all clear"
+that says nothing. Work that is still owed belongs in a commit message
+or in a new ledger, not appended here.
+
+The project's evidence discipline has three classes and never collapses
+them. Everything below is class **HW**:
 
 | Class | Means | Does **not** prove |
 |---|---|---|
@@ -12,43 +22,17 @@ evidence discipline has three classes and never collapses them:
 | **X** — cross | Cross-compiled for aarch64 Horizon; a `.nro` exists | That it runs, or is correct |
 | **HW** — hardware | Ran on a real console, with the log | Only what the log actually shows |
 
-## How this file dies
-
-Each section below has a **Done when** line. When every section's
-condition is met — the run happened, the log says what it had to say,
-and whatever the measurement decided has been acted on — **delete this
-file**. Do not leave a hollowed-out version behind saying "all clear":
-the commit messages are the permanent record, and an empty ledger is
-just another stale reference.
-
-If a measurement comes back and closes a question the *other* way — a
-capability that turns out not to exist — that is a result, not a
-failure. Record it in the commit that acts on it, then strike the
-section.
-
-## Running any of this
-
-```sh
-scripts/build-switch.sh -j4                 # the .nro files, no Mesa
-scripts/ci-build-archives.sh                # everything, Mesa included
-# copy build/*.nro (or build/meson/*.nro) to sdmc:/switch/horizon_gpu_tests/
-```
-
-Each test prints `RESULT: PASS (n/n)` on screen and writes
-`sdmc:/horizon_gpu_tests/<name>.log`. **A result without the
-`horizon-build-id` line in its log cannot be attributed to a build** and
-does not count. `tools/logcat/` reads a log back over nxlink; see
-`tests/README.md`.
+A result whose log has no `horizon-build-id` line cannot be attributed
+to a build and does not belong here.
 
 ---
 
-# 1. Open work
+## A dock cannot make a swapchain suboptimal here
 
-## 1.1 A dock cannot make a swapchain suboptimal here
-
-This is closed as a measurement, not as a feature. The answer is that
-the transition patch 0040 was written for cannot be delivered on this
-platform, and the three runs below are why.
+The transition patch `0040` was written for cannot be delivered on this
+platform. This is the single most expensive thing on this page to
+re-measure, because getting it wrong costs a person standing at a
+console plugging it in and out, so it is written out in full.
 
 `t_dock`, docking and undocking three times with a buffer queued every
 50 ms so every source was being refreshed:
@@ -97,13 +81,11 @@ with a hand on the console: three runs have now had that.
 
 ---
 
-# 2. Things that were confirmed correct
-
 Recorded so nobody "fixes" them. None of these needs action; they are
 here because the cost of re-litigating them is higher than the cost of
 the paragraph.
 
-## Measured on hardware, 2026-08-24
+## Measured 2026-08-24
 
 ### Docked is a different machine, and two tests had to learn it
 
@@ -142,7 +124,7 @@ driver's:
 - **A query pool's reset and timestamp belong in one submission.** Six
   of six after the `mem.c` cache fix; the two-submit split that was
   working around it is gone.
-- **A dock reaches the process but not the layer.** See § 1.1 — the
+- **A dock reaches the process but not the layer.** See the section at the top of this file — the
   operation mode and its applet hook both move,
   `appletGetDefaultDisplayResolution()` follows to 1920x1080, and
   `NWindow::default_*` never moves at all.
