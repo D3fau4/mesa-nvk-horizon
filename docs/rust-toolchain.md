@@ -25,6 +25,13 @@ under `src/compiler/rust/`, and **none of the files cited below is among them**:
 file:line references are therefore still exact. Checked with
 `git -C mesa diff --name-only mesa-26.1.6^{} mesa-26.1.7^{}`.
 
+It moved a third time, to `mesa-26.1.8`
+(`0fadfea4f394211946f308458f614839ef253ee8`) on 2026-08-31, and the Rust half
+did **not** move with it: of the 98 files the 26.1.7 → 26.1.8 diff touches, not
+one is under `src/nouveau/compiler/` or `src/compiler/rust/` — the release has
+no `src/nouveau/` commit at all. Every file:line below is therefore still exact.
+Checked with `git -C mesa diff --name-only mesa-26.1.7^{} mesa-26.1.8^{}`.
+
 ---
 
 ## 1. The question

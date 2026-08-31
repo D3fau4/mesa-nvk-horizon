@@ -344,15 +344,62 @@ So exactly one upstream change in this release can alter code generated for a Sw
 it is a correctness fix in the instruction scheduler. **Verified as a cross build, not on
 hardware** — no console has run 26.1.7.
 
-**The 26.2 series is a decision, and it is D21, not this.** `mesa-26.2.0` (2026-08-05)
-is a development release whose own notes tell stability-minded users to wait for 26.2.1,
-and it moves the ground under this port: 3588 files changed since 26.1.6, **53 of the 121
-we patch among them** — 20 NAK files, 8 under `src/nouveau/vulkan/`, 4 in
-`src/vulkan/wsi/`, both `src/vulkan/runtime/vk_image.{c,h}`, and the Rust helper crates
-NAK is built on (`src/compiler/rust/{as_slice,smallvec,cfg,dataflow,bitset,nir,lib}.rs`,
-plus `proc/as_slice.rs`). Rebasing onto it is a real piece of work with a real risk of
-silent behaviour change on a driver whose evidence is all hardware runs, so it is put to
-the owner rather than taken.
+**Point release taken, 2026-08-31: `mesa-26.1.7` → `mesa-26.1.8`**, commit
+`0fadfea4f394211946f308458f614839ef253ee8` (tag object `d6393a37abc5`, released
+2026-08-19, [release notes](https://docs.mesa3d.org/relnotes/26.1.8.html)). Inside the
+series D2 chose, "New features: None", 76 commits over 98 files — and unlike 26.1.7 it is
+a **clean miss**: of the **117** existing Mesa files `mesa-patches/` modifies, **none** is
+among the 98. The series applies unmodified, **49 of 49**, no fuzz and no rejects, and the
+delta it produces is *byte-identical* on the two bases:
+
+```
+git diff mesa-26.1.7^{} <series applied>  ─┐
+                                           ├─ sha256 e5a6593f60eeb96b4bbf03c473c0dbe3a
+git diff mesa-26.1.8^{} <series applied>  ─┘   13021 lines, both
+```
+
+There is **no `src/nouveau/` commit in the range at all**, so NVK, NAK, NIL and `nvkmd`
+are untouched by this bump — the first point release since the series began of which that
+is true. What can still reach a Switch shader is the shared middle-end, and it is four
+correctness fixes rather than any feature:
+
+| file | what 26.1.8 does to it | reaches a Switch? |
+|---|---|---|
+| `src/compiler/nir/nir_opt_peephole_select.c` | do not select on `read_invocation` | **yes** — a common NIR pass, and NVK runs it |
+| `src/compiler/nir/nir_search.c` | reset FP state between commutative match attempts | **yes** — the algebraic optimiser, common to every driver |
+| `src/compiler/nir/nir_gather_info.c` | set `fs.color_is_dual_source` for `DUAL_SRC_BLEND` var locations | only through a dual-source-blend fragment shader; nothing here uses one |
+| `src/compiler/spirv/vtn_variables.c` (with the `glsl` and `mesa/shader_query` halves) | mark `Location`-decorated variables `explicit_location` | **yes** — SPIR-V is how every shader enters NVK |
+
+One build-side change is worth naming because this project reached the same conclusion
+independently: **"subprojects: Use CDN URLs for crates.io"** rewrites every
+`subprojects/*-rs.wrap` `source_url` from `crates.io/api/v1` to `static.crates.io` — same
+`source_filename`, same version, same `source_hash`. `scripts/fetch-rust-tools.sh` and
+`scripts/fetch-rust-crates.sh` already fetch from `static.crates.io`, so Mesa's own wraps
+now agree with our fetchers instead of diverging from them; this is the same failure
+`scripts/fetch-mesa-subprojects.sh`'s header quotes.
+
+**Verified as a cross build, not on hardware** — no console has run 26.1.8, and none has
+run 26.1.7 either.
+
+**The 26.2 series is a decision, and it is D21, not this** — but the thing D21 was waiting
+for has arrived. `mesa-26.2.0` (2026-08-05) is a development release whose own notes tell
+stability-minded users to wait for 26.2.1, and **`mesa-26.2.1` now exists**
+(`da14d65e4499e66468094be52bff9ea0915a695e`, tag object `0a4021394f88`, released
+2026-08-20, [release notes](https://docs.mesa3d.org/relnotes/26.2.1.html); "New features:
+None", 16 documented fixes, and it carries two NAK changes — `Do not encode a RZ for src2
+on FMNMX` and the same `Serialize carry access in instr_sched_prepass` that 26.1.7
+brought here — plus a Kepler *Failed to find free register* compiler-panic fix). So the
+reason the decision could not be taken has gone; the decision itself has not been taken,
+because the cost has not changed. Measured against the pin as it now stands: **3569 files
+changed between `mesa-26.1.8` and `mesa-26.2.1`, 55 of the 117 we patch among them** — 21
+under `src/nouveau/compiler/`, 8 under `src/nouveau/vulkan/` (`nvk_wsi.c`,
+`nvk_physical_device.{c,h}`, `nvk_device.c`, `nvk_instance.c`, `nvk_cmd_buffer.c`,
+`nvk_cmd_draw.c`, `meson.build`), 4 in `src/vulkan/wsi/` (`wsi_common.{c,h}`,
+`wsi_common_private.h`, `meson.build`), both `src/vulkan/runtime/vk_image.{c,h}`, 2 in
+`src/nouveau/nil/`, 2 in `src/nouveau/headers/`, and 9 of the Rust helper crates NAK is
+built on under `src/compiler/rust/`. Rebasing onto it is a real piece of work with a real
+risk of silent behaviour change on a driver whose evidence is all hardware runs, so it
+stays put to the owner rather than taken.
 
 ---
 
