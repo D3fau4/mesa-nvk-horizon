@@ -461,6 +461,12 @@ nvk_tests = [
   # with NVK_HORIZON_ZCULL=0, and compares the two images. It is what
   # decides whether the capability keeps being advertised.
   't_vk_zcull',
+  # Volume, not features: many distinct compute pipelines back to back,
+  # which is the only thing that makes NVK's contiguous shader heap grow
+  # past the first chunk it binds at device creation, plus the churn that
+  # exercises its free list and the per-pipeline compile times that are
+  # what an application feels as stutter.
+  't_vk_pipelines',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -526,6 +532,10 @@ nvk_test_shaders = {
   # dispatched — the pipeline is built and destroyed so that NVK uploads
   # a shader through the upload queue, which is a different channel.
   't_vk_zcull' : ['depth_vert_z', 'depth_frag_pc', 'comp_write_id'],
+  # One shader, specialized many times. comp_write_id would not do: it
+  # is four instructions and identical every time, so a hundred
+  # pipelines built from it are one compile and one heap allocation.
+  't_vk_pipelines' : ['comp_chain'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
