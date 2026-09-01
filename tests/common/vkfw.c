@@ -946,9 +946,8 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
    };
    const VkPipelineLayoutCreateInfo plci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = desc->set_layout != VK_NULL_HANDLE ? 1u : 0u,
-      .pSetLayouts = desc->set_layout != VK_NULL_HANDLE ? &desc->set_layout
-                                                        : NULL,
+      .setLayoutCount = desc->set_layout_count,
+      .pSetLayouts = desc->set_layouts,
       .pushConstantRangeCount = desc->push_constant_B != 0 ? 1u : 0u,
       .pPushConstantRanges = desc->push_constant_B != 0 ? &pcr : NULL,
    };

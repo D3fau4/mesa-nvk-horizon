@@ -966,7 +966,8 @@ int run_test(test_ctx *t)
       .fs_spv = tex_frag_sample_spv, .fs_B = sizeof(tex_frag_sample_spv),
       .colour_format = VK_FORMAT_R8G8B8A8_UNORM,
       .depth_format = VK_FORMAT_UNDEFINED,
-      .set_layout = smp.set_layout,
+      .set_layout_count = 1,
+      .set_layouts = &smp.set_layout,
       .width = W, .height = H,
    };
    if (!vkfw_gfx_create(&fw, "implicit LOD", &desc_sample, &smp.gfx_sample))

@@ -435,8 +435,11 @@ typedef struct vkfw_gfx_desc {
    /* VK_FORMAT_UNDEFINED when the pass has no depth attachment. */
    VkFormat depth_format;
 
-   /* VK_NULL_HANDLE when the shaders declare no descriptors. */
-   VkDescriptorSetLayout set_layout;
+   /* The descriptor set layouts, set 0 first, so a pipeline whose
+    * shaders read set 1 can say so. Count zero when the shaders declare
+    * no descriptors. */
+   uint32_t set_layout_count;
+   const VkDescriptorSetLayout *set_layouts;
 
    /* One push constant range at offset 0, or zero bytes for none. The
     * stages must be exactly the ones whose SPIR-V declares the block:
