@@ -467,6 +467,11 @@ nvk_tests = [
   # exercises its free list and the per-pipeline compile times that are
   # what an application feels as stutter.
   't_vk_pipelines',
+  # The other half of volume: hundreds of draws with the pipeline
+  # changing between them, the same draws split across many render
+  # passes, and blending — which the fixture refused to do until now
+  # because every earlier test wanted the destination out of its answer.
+  't_vk_draws',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -536,6 +541,10 @@ nvk_test_shaders = {
   # is four instructions and identical every time, so a hundred
   # pipelines built from it are one compile and one heap allocation.
   't_vk_pipelines' : ['comp_chain'],
+  # The same depth pair again. What this test varies is the number of
+  # draws, the pipeline between them and the blend state — none of which
+  # is a property of the shaders.
+  't_vk_draws' : ['depth_vert_z', 'depth_frag_pc'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

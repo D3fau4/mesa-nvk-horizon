@@ -417,7 +417,9 @@ bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what);
  *                       part of any item here
  *   1 sample            multisampling is not in Phase 5
  *   blending off        every item compares written values; a blend
- *                       would make the destination part of the answer
+ *                       would make the destination part of the answer.
+ *                       The DEFAULT, not a rule: a test that is
+ *                       measuring blending sets `blend` below
  *   one colour att.     items 5 to 8 each render to exactly one
  *
  * Dynamic rendering only: there is no VkRenderPass anywhere in this
@@ -459,6 +461,20 @@ typedef struct vkfw_gfx_desc {
    bool depth_test;
    bool depth_write;
    VkCompareOp depth_compare;    /* only read when depth_test */
+
+   /* The colour blend state for the single attachment, or NULL for the
+    * "blending off, all four components written" default the list above
+    * describes.
+    *
+    * WHY THE WHOLE STRUCT AND NOT A FLAG. There is no one blend a test
+    * would mean by "on": the factors, the op and the write mask are the
+    * thing being measured whenever blending is being measured at all.
+    * Passing the state through keeps the fixture from having an opinion
+    * about which blend is the interesting one.
+    *
+    * Copied by value into the pipeline, so it need not outlive the
+    * vkfw_gfx_create call. */
+   const VkPipelineColorBlendAttachmentState *blend;
 } vkfw_gfx_desc;
 
 typedef struct vkfw_gfx {

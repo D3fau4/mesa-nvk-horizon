@@ -1036,11 +1036,19 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
                                          : VK_COMPARE_OP_ALWAYS,
    };
 
-   const VkPipelineColorBlendAttachmentState cba = {
+   /* Blending off unless the caller states otherwise, which is what
+    * every test written before this field existed depends on: a blend
+    * would make the destination part of an answer that is supposed to
+    * be about what was written. `desc->blend` is the whole attachment
+    * state, not a flag, because a test that wants a blend wants to say
+    * which one. */
+   const VkPipelineColorBlendAttachmentState cba_off = {
       .blendEnable = VK_FALSE,
       .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
    };
+   const VkPipelineColorBlendAttachmentState cba =
+      desc->blend != NULL ? *desc->blend : cba_off;
    const VkPipelineColorBlendStateCreateInfo cb = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
       .attachmentCount = 1,
