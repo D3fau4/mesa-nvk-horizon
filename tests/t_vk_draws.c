@@ -649,12 +649,24 @@ int run_test(test_ctx *t)
                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             };
+            /* BOTH fragment-test stages on BOTH sides, for the same
+             * reason copy_out() gives: nothing here writes gl_FragDepth
+             * or discards, so the implementation may do the depth test
+             * and the depth write in the EARLY stage. A source mask of
+             * LATE alone would not cover the previous pass's writes if
+             * they happened early, and a destination mask of EARLY alone
+             * would not cover this pass's if they happen late — either
+             * way the two rendering instances race and the A/B this test
+             * is built on becomes device-dependent. Found by review on
+             * PR #22. */
             fw.vk.vkCmdPipelineBarrier(
                cb,
                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                0, 1, &mb, 0, NULL, 0, NULL);
          }
          begin_pass(&fw, cb, &fx, pass == 0);

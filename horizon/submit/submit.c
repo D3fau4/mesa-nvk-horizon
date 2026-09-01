@@ -44,12 +44,18 @@
  * Nothing else differs, including the entry accounting: a false
  * `memory_barrier` appends one own entry (the increment) instead of two
  * (prologue and fence block).
+ *
+ * `is_wait` is only bookkeeping — which of the two public entry points
+ * this submit came from. It is a separate parameter and not derived
+ * from `memory_barrier` because the two are independent:
+ * HORIZON_GPU_FULL_BARRIER_WAITS=1 makes a wait submit take the full
+ * barrier, and a caller's submit is never a wait.
  */
 static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                                       const horizon_gpu_cmd_span *spans,
                                       uint32_t num_spans,
                                       horizon_gpu_submit_flags flags,
-                                      bool memory_barrier,
+                                      bool memory_barrier, bool is_wait,
                                       horizon_gpu_fence *out_fence)
 {
     if (!chan || (num_spans > 0 && !spans))
@@ -207,9 +213,20 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
         return horizon_gpu_err_nv(rc);
     }
 
+    /* All three counters move together, here, one line after the kickoff
+     * that made them true. They were not: wait_submits was incremented
+     * by the caller after submit_impl returned, so the post-kickoff
+     * shadow-versus-kernel fence check below — which returns
+     * CHANNEL_LOST for work that HAS reached hardware — skipped it while
+     * the other two had already counted. That breaks the subset relation
+     * channel.h documents, and makes `wait_submits - bare_fence_submits`
+     * underflow instead of reporting the full-barrier waits. Found by
+     * review on PR #22. */
     chan->stats.submits++;
     if (!memory_barrier)
         chan->stats.bare_fence_submits++;
+    if (is_wait)
+        chan->stats.wait_submits++;
 
     chan->shadow_target += 1;
 
@@ -269,7 +286,8 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
      * what it read, what it wrote, and which engine did it are things
      * this layer does not know, and the cheap answer is only correct
      * when it is known. */
-    return submit_impl(chan, spans, num_spans, flags, true, out_fence);
+    return submit_impl(chan, spans, num_spans, flags, true, false,
+                       out_fence);
 }
 
 /* Finds a slot in the channel's wait ring that the GPU is provably done
@@ -398,10 +416,9 @@ horizon_gpu_result horizon_gpu_submit_waits(horizon_gpu_channel *chan,
 
     horizon_gpu_fence fence;
     res = submit_impl(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
-                      memory_barrier, &fence);
+                      memory_barrier, true, &fence);
     if (horizon_gpu_failed(res))
         return res;
-    chan->stats.wait_submits++;
 
     /* Claimed only now. A slot marked busy before a submit that was
      * refused would never come back: nothing would ever reach its

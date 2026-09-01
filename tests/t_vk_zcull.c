@@ -365,14 +365,27 @@ static void self_barrier(vkfw *fw, VkCommandBuffer cb, VkImage colour,
 
 /* Creates a compute pipeline and destroys it again, purely so NVK
  * uploads a shader — which goes through the upload queue, and therefore
- * through a channel that is not the one rendering. Failures are noted
- * and not fatal: this is the test trying to disturb the scheduler, not
- * something it measures. */
+ * through a channel that is not the one rendering.
+ *
+ * THE LAYOUT HAS TO MATCH THE SHADER even though nothing dispatches it.
+ * comp_write_id declares an SSBO at set 0 binding 0, and pipeline-layout
+ * consistency is required at pipeline *creation*, not only at dispatch:
+ * a layout declaring no set makes vkCreateComputePipelines invalid
+ * usage, and a driver that refuses it takes the upload — the whole point
+ * of this function — with it. An earlier version did exactly that and
+ * argued its way out of it in a comment; found by review on PR #22.
+ *
+ * A failure is not fatal — this is the test trying to disturb the
+ * scheduler, not something it measures — but it IS reported, because a
+ * poke that silently did not happen would leave section B claiming a
+ * cross-channel disturbance it never caused. */
 static void poke_upload_queue(vkfw *fw)
 {
    VkShaderModule module = VK_NULL_HANDLE;
+   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
    VkPipelineLayout layout = VK_NULL_HANDLE;
    VkPipeline pipeline = VK_NULL_HANDLE;
+   const char *failed = NULL;
 
    const VkShaderModuleCreateInfo smci = {
       .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -380,34 +393,68 @@ static void poke_upload_queue(vkfw *fw)
       .pCode = comp_write_id_spv,
    };
    if (fw->vk.vkCreateShaderModule(fw->dev, &smci, NULL, &module) !=
-       VK_SUCCESS)
-      return;
+       VK_SUCCESS) {
+      failed = "vkCreateShaderModule";
+      goto out;
+   }
+
+   const VkDescriptorSetLayoutBinding binding = {
+      .binding = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      .descriptorCount = 1,
+      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+   };
+   const VkDescriptorSetLayoutCreateInfo dslci = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .bindingCount = 1,
+      .pBindings = &binding,
+   };
+   if (fw->vk.vkCreateDescriptorSetLayout(fw->dev, &dslci, NULL,
+                                          &set_layout) != VK_SUCCESS) {
+      failed = "vkCreateDescriptorSetLayout";
+      goto out;
+   }
 
    const VkPipelineLayoutCreateInfo plci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = 1,
+      .pSetLayouts = &set_layout,
    };
-   if (fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL, &layout) ==
+   if (fw->vk.vkCreatePipelineLayout(fw->dev, &plci, NULL, &layout) !=
        VK_SUCCESS) {
-      /* The shader declares an SSBO at set 0 binding 0 and this layout
-       * declares no set, which would be invalid usage to *dispatch*.
-       * Nothing dispatches it: the pipeline is created for the upload
-       * its creation performs and destroyed on the next line. */
-      const VkComputePipelineCreateInfo cpci = {
-         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-         .stage = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = module,
-            .pName = "main",
-         },
-         .layout = layout,
-      };
-      if (fw->vk.vkCreateComputePipelines(fw->dev, VK_NULL_HANDLE, 1, &cpci,
-                                          NULL, &pipeline) == VK_SUCCESS)
-         fw->vk.vkDestroyPipeline(fw->dev, pipeline, NULL);
-      fw->vk.vkDestroyPipelineLayout(fw->dev, layout, NULL);
+      failed = "vkCreatePipelineLayout";
+      goto out;
    }
-   fw->vk.vkDestroyShaderModule(fw->dev, module, NULL);
+
+   const VkComputePipelineCreateInfo cpci = {
+      .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .stage = {
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+         .module = module,
+         .pName = "main",
+      },
+      .layout = layout,
+   };
+   if (fw->vk.vkCreateComputePipelines(fw->dev, VK_NULL_HANDLE, 1, &cpci,
+                                       NULL, &pipeline) != VK_SUCCESS)
+      failed = "vkCreateComputePipelines";
+
+out:
+   if (failed != NULL) {
+      t_note(fw->t, "the upload-queue poke did not happen: %s failed — "
+                    "no shader was uploaded between the passes, so this "
+                    "run disturbed one channel less than it meant to",
+             failed);
+   }
+   if (pipeline != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipeline(fw->dev, pipeline, NULL);
+   if (layout != VK_NULL_HANDLE)
+      fw->vk.vkDestroyPipelineLayout(fw->dev, layout, NULL);
+   if (set_layout != VK_NULL_HANDLE)
+      fw->vk.vkDestroyDescriptorSetLayout(fw->dev, set_layout, NULL);
+   if (module != VK_NULL_HANDLE)
+      fw->vk.vkDestroyShaderModule(fw->dev, module, NULL);
 }
 
 /* Renders the whole workload on an already-initialised fixture and
