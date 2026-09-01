@@ -241,12 +241,18 @@ passing and with `probe12` and `probe13`, nothing about the fragment shader
 explains it: not the loop, the back edge, the kill, the convergence stack,
 the descriptors, or the instruction latencies.
 
-**The next thing to read is nvgpu's error record**, not the shader.
-`nvGpuChannelGetErrorInfo()` returns `NvError` — a type and 31 words, where
-a graphics exception keeps the class, the method and the offset the engine
-stopped on. `horizon_gpu_channel_get_error()` only ever read the
-notification *type*, which is why five weeks of this bug have had one
-number to go on.
+**nvgpu's error record was read, and it is empty.**
+`nvGpuChannelGetErrorInfo()` returns `NvError` — a type and 31 words, where a
+graphics exception keeps the class, the method and the offset the engine
+stopped on. On this fault it answers `type=0x00000004` with **all 31 words
+zero**. So the engine raised no graphics exception: nothing in the command
+buffer was rejected as illegal, malformed or out of bounds. It accepted the
+work and never finished it.
+
+That is the last thing the kernel knows, and it agrees with the
+debug-synchronous picture. Anything further has to come from the GPU side —
+where in the pushbuffer the GPFIFO GET pointer stopped, which is the one
+number that would say how far into those 21406 dwords the engine got.
 
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
