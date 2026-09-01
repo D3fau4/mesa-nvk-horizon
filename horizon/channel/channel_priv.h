@@ -72,6 +72,12 @@ struct horizon_gpu_channel {
      * See horizon_gpu_channel_create for the hardware measurement. */
     uint64_t prologue_cmds_va;
     uint32_t prologue_cmds_dwords;
+    /* The increment-only fence block, used instead of fence_cmds_* by a
+     * submit whose command list is host methods with no memory effect.
+     * horizon_gpu/cmds.h states when that is; horizon_gpu_submit_waits
+     * is the only caller. */
+    uint64_t bare_fence_cmds_va;
+    uint32_t bare_fence_cmds_dwords;
 
     /* The GPU-side wait ring (horizon_gpu_submit_waits).
      *
@@ -92,6 +98,17 @@ struct horizon_gpu_channel {
         horizon_gpu_fence fence;
         bool busy;
     } wait_slots[HORIZON_CHANNEL_WAIT_SLOTS];
+
+    /* Submit-path counters (horizon_gpu_channel_get_stats).
+     *
+     * Plain, not atomic, and that is the same rule as the rest of this
+     * struct: a channel is externally synchronised. They exist because
+     * two changes to this path — the increment-only fence block for a
+     * memory-free submit, and skipping the syncpoint read when nothing
+     * can retire — are claims about how much work a submit does, and a
+     * claim about work done should be a number a test reads back rather
+     * than a sentence in a commit message. */
+    horizon_gpu_channel_stats stats;
 
     /* Zcull context (optional). */
     horizon_gpu_mem *zcull_mem;

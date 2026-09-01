@@ -84,7 +84,45 @@ git -C mesa format-patch -o ../mesa-patches "$MESA_COMMIT"
 
 That rewrites the whole series, so re-read the diff before committing: the
 numbering, the subjects and the headers above are the contract the applier
-relies on.
+relies on. To add patches to the end without renumbering the ones already
+there, give the range and where it starts:
+
+```sh
+git -C mesa format-patch --start-number 59 -o ../mesa-patches HEAD~2..HEAD
+```
+
+**Never `git add -A` inside `mesa/`.** The enclosing repository *tracks*
+`mesa/.gitkeep` — `.gitignore` has `/mesa/*` with `!/mesa/.gitkeep`, so the
+directory survives a clone — and from inside `mesa/`, which `fetch-mesa.sh`
+creates with its own `git init`, that file is just another untracked one.
+`git add -A` sweeps it into the commit, `format-patch` writes a
+`create mode 100644 .gitkeep` into the patch, and `git am` on a fresh
+checkout then refuses the whole series with
+
+```
+error: .gitkeep: already exists in working directory
+```
+
+Stage the paths you edited by name, and read the patch's own diffstat before
+believing it:
+
+```sh
+sed -n '/^---$/,/^diff /p' mesa-patches/00NN-*.patch
+```
+
+**Verifying a new patch means applying the FILE, not trusting the history.**
+`apply-mesa-patches.sh --list` matches each patch's subject and diff against
+what `mesa/`'s history already records, so a patch you just committed there
+reports `applied` whether or not the file it was generated into would apply to
+anything. The check worth running is the one CI runs:
+
+```sh
+scripts/fetch-mesa.sh --force        # back to MESA_COMMIT, history dropped
+scripts/apply-mesa-patches.sh        # the whole series through git am
+```
+
+That is what found the `.gitkeep` above, three hours after `--list` had said
+everything was fine.
 
 ## The 2026-08-23 compaction (84 → 49)
 

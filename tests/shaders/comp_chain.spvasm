@@ -1,0 +1,547 @@
+; comp_chain -- a compute shader that is deliberately long, and whose
+; machine code is different for every specialization of it.
+;
+; WHAT IT IS FOR. t_vk_pipelines needs many DISTINCT shaders, not many
+; copies of one: NVK caches a compiled shader by the hash of its SPIR-V
+; plus its specialization, so a hundred pipelines built from identical
+; inputs are one compile and one shader-heap upload. A specialization
+; constant folded into the arithmetic changes the immediates NAK emits,
+; so each pipeline is its own compile, its own cache entry and its own
+; allocation out of the shader heap -- which is what makes the heap grow
+; past its first 64 KiB chunk and what makes a per-pipeline compile time
+; mean anything.
+;
+; WHY IT IS LONG. A four-instruction shader would measure the driver's
+; pipeline-creation overhead and nothing about compiling. 64 blocks of
+; seven arithmetic instructions is 448, plus the load, the address
+; computation and the store.
+;
+; WHAT IT COMPUTES, and why none of it folds away:
+;
+;     acc = gl_GlobalInvocationID.x
+;     64 times:
+;         acc = acc * 0x9E3779B9 + spec       ; spec is the constant
+;         acc = acc ^ (acc >> 13)
+;         acc = acc + (acc << 7)
+;         acc = acc ^ 0xA5C3F00D
+;     out[gl_GlobalInvocationID.x] = acc
+;
+; Every step depends on the invocation id, so the chain cannot be
+; constant-folded however many of its inputs are known; and it is four
+; different kinds of operation rather than a repeated multiply-add, so
+; there is no closed form for an optimiser to collapse it into. The C
+; side of the test recomputes it with the same loop, so a wrong answer
+; names the word and the value rather than "the dispatch failed".
+;
+; GENERATED, MECHANICALLY. The 64 blocks below are the same seven lines
+; with the ids renumbered. Reproduce with:
+;
+;     python3 - <<'EOF' > tests/shaders/comp_chain.spvasm
+;     ... the generator recorded in the commit that added this file ...
+;     EOF
+;
+; Do not hand-edit a block: change the generator's template and re-emit,
+; or the file stops being the thing it says it is.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1): StorageBuffer is a core storage
+; class from 1.3 on, and before 1.4 OpEntryPoint's interface lists only
+; Input and Output variables, which is why the SSBO is not in it.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 64 1 1
+
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %Buf 0 Offset 0
+               OpDecorate %Buf Block
+               OpDecorate %ssbo DescriptorSet 0
+               OpDecorate %ssbo Binding 0
+               OpDecorate %spec SpecId 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+   %ptr_in_v = OpTypePointer Input %v3uint
+   %ptr_in_u = OpTypePointer Input %uint
+        %gid = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+        %Buf = OpTypeStruct %rta
+    %ptr_ssb = OpTypePointer StorageBuffer %Buf
+       %ssbo = OpVariable %ptr_ssb StorageBuffer
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+
+     %uint_0 = OpConstant %uint 0
+      %int32 = OpTypeInt 32 1
+      %int_0 = OpConstant %int32 0
+       %mult = OpConstant %uint 2654435769
+       %xorv = OpConstant %uint 2781138957
+      %sh_13 = OpConstant %uint 13
+       %sh_7 = OpConstant %uint 7
+
+; The specialization constant. Default 1 so an unspecialized pipeline is
+; still a valid, different shader rather than a degenerate one.
+       %spec = OpSpecConstant %uint 1
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+      %gidxp = OpAccessChain %ptr_in_u %gid %uint_0
+       %gidx = OpLoad %uint %gidxp
+       %a0_0 = OpIMul %uint %gidx %mult
+       %a0_1 = OpIAdd %uint %a0_0 %spec
+       %a0_2 = OpShiftRightLogical %uint %a0_1 %sh_13
+       %a0_3 = OpBitwiseXor %uint %a0_1 %a0_2
+       %a0_4 = OpShiftLeftLogical %uint %a0_3 %sh_7
+       %a0_5 = OpIAdd %uint %a0_3 %a0_4
+       %a0_6 = OpBitwiseXor %uint %a0_5 %xorv
+       %a1_0 = OpIMul %uint %a0_6 %mult
+       %a1_1 = OpIAdd %uint %a1_0 %spec
+       %a1_2 = OpShiftRightLogical %uint %a1_1 %sh_13
+       %a1_3 = OpBitwiseXor %uint %a1_1 %a1_2
+       %a1_4 = OpShiftLeftLogical %uint %a1_3 %sh_7
+       %a1_5 = OpIAdd %uint %a1_3 %a1_4
+       %a1_6 = OpBitwiseXor %uint %a1_5 %xorv
+       %a2_0 = OpIMul %uint %a1_6 %mult
+       %a2_1 = OpIAdd %uint %a2_0 %spec
+       %a2_2 = OpShiftRightLogical %uint %a2_1 %sh_13
+       %a2_3 = OpBitwiseXor %uint %a2_1 %a2_2
+       %a2_4 = OpShiftLeftLogical %uint %a2_3 %sh_7
+       %a2_5 = OpIAdd %uint %a2_3 %a2_4
+       %a2_6 = OpBitwiseXor %uint %a2_5 %xorv
+       %a3_0 = OpIMul %uint %a2_6 %mult
+       %a3_1 = OpIAdd %uint %a3_0 %spec
+       %a3_2 = OpShiftRightLogical %uint %a3_1 %sh_13
+       %a3_3 = OpBitwiseXor %uint %a3_1 %a3_2
+       %a3_4 = OpShiftLeftLogical %uint %a3_3 %sh_7
+       %a3_5 = OpIAdd %uint %a3_3 %a3_4
+       %a3_6 = OpBitwiseXor %uint %a3_5 %xorv
+       %a4_0 = OpIMul %uint %a3_6 %mult
+       %a4_1 = OpIAdd %uint %a4_0 %spec
+       %a4_2 = OpShiftRightLogical %uint %a4_1 %sh_13
+       %a4_3 = OpBitwiseXor %uint %a4_1 %a4_2
+       %a4_4 = OpShiftLeftLogical %uint %a4_3 %sh_7
+       %a4_5 = OpIAdd %uint %a4_3 %a4_4
+       %a4_6 = OpBitwiseXor %uint %a4_5 %xorv
+       %a5_0 = OpIMul %uint %a4_6 %mult
+       %a5_1 = OpIAdd %uint %a5_0 %spec
+       %a5_2 = OpShiftRightLogical %uint %a5_1 %sh_13
+       %a5_3 = OpBitwiseXor %uint %a5_1 %a5_2
+       %a5_4 = OpShiftLeftLogical %uint %a5_3 %sh_7
+       %a5_5 = OpIAdd %uint %a5_3 %a5_4
+       %a5_6 = OpBitwiseXor %uint %a5_5 %xorv
+       %a6_0 = OpIMul %uint %a5_6 %mult
+       %a6_1 = OpIAdd %uint %a6_0 %spec
+       %a6_2 = OpShiftRightLogical %uint %a6_1 %sh_13
+       %a6_3 = OpBitwiseXor %uint %a6_1 %a6_2
+       %a6_4 = OpShiftLeftLogical %uint %a6_3 %sh_7
+       %a6_5 = OpIAdd %uint %a6_3 %a6_4
+       %a6_6 = OpBitwiseXor %uint %a6_5 %xorv
+       %a7_0 = OpIMul %uint %a6_6 %mult
+       %a7_1 = OpIAdd %uint %a7_0 %spec
+       %a7_2 = OpShiftRightLogical %uint %a7_1 %sh_13
+       %a7_3 = OpBitwiseXor %uint %a7_1 %a7_2
+       %a7_4 = OpShiftLeftLogical %uint %a7_3 %sh_7
+       %a7_5 = OpIAdd %uint %a7_3 %a7_4
+       %a7_6 = OpBitwiseXor %uint %a7_5 %xorv
+       %a8_0 = OpIMul %uint %a7_6 %mult
+       %a8_1 = OpIAdd %uint %a8_0 %spec
+       %a8_2 = OpShiftRightLogical %uint %a8_1 %sh_13
+       %a8_3 = OpBitwiseXor %uint %a8_1 %a8_2
+       %a8_4 = OpShiftLeftLogical %uint %a8_3 %sh_7
+       %a8_5 = OpIAdd %uint %a8_3 %a8_4
+       %a8_6 = OpBitwiseXor %uint %a8_5 %xorv
+       %a9_0 = OpIMul %uint %a8_6 %mult
+       %a9_1 = OpIAdd %uint %a9_0 %spec
+       %a9_2 = OpShiftRightLogical %uint %a9_1 %sh_13
+       %a9_3 = OpBitwiseXor %uint %a9_1 %a9_2
+       %a9_4 = OpShiftLeftLogical %uint %a9_3 %sh_7
+       %a9_5 = OpIAdd %uint %a9_3 %a9_4
+       %a9_6 = OpBitwiseXor %uint %a9_5 %xorv
+       %a10_0 = OpIMul %uint %a9_6 %mult
+       %a10_1 = OpIAdd %uint %a10_0 %spec
+       %a10_2 = OpShiftRightLogical %uint %a10_1 %sh_13
+       %a10_3 = OpBitwiseXor %uint %a10_1 %a10_2
+       %a10_4 = OpShiftLeftLogical %uint %a10_3 %sh_7
+       %a10_5 = OpIAdd %uint %a10_3 %a10_4
+       %a10_6 = OpBitwiseXor %uint %a10_5 %xorv
+       %a11_0 = OpIMul %uint %a10_6 %mult
+       %a11_1 = OpIAdd %uint %a11_0 %spec
+       %a11_2 = OpShiftRightLogical %uint %a11_1 %sh_13
+       %a11_3 = OpBitwiseXor %uint %a11_1 %a11_2
+       %a11_4 = OpShiftLeftLogical %uint %a11_3 %sh_7
+       %a11_5 = OpIAdd %uint %a11_3 %a11_4
+       %a11_6 = OpBitwiseXor %uint %a11_5 %xorv
+       %a12_0 = OpIMul %uint %a11_6 %mult
+       %a12_1 = OpIAdd %uint %a12_0 %spec
+       %a12_2 = OpShiftRightLogical %uint %a12_1 %sh_13
+       %a12_3 = OpBitwiseXor %uint %a12_1 %a12_2
+       %a12_4 = OpShiftLeftLogical %uint %a12_3 %sh_7
+       %a12_5 = OpIAdd %uint %a12_3 %a12_4
+       %a12_6 = OpBitwiseXor %uint %a12_5 %xorv
+       %a13_0 = OpIMul %uint %a12_6 %mult
+       %a13_1 = OpIAdd %uint %a13_0 %spec
+       %a13_2 = OpShiftRightLogical %uint %a13_1 %sh_13
+       %a13_3 = OpBitwiseXor %uint %a13_1 %a13_2
+       %a13_4 = OpShiftLeftLogical %uint %a13_3 %sh_7
+       %a13_5 = OpIAdd %uint %a13_3 %a13_4
+       %a13_6 = OpBitwiseXor %uint %a13_5 %xorv
+       %a14_0 = OpIMul %uint %a13_6 %mult
+       %a14_1 = OpIAdd %uint %a14_0 %spec
+       %a14_2 = OpShiftRightLogical %uint %a14_1 %sh_13
+       %a14_3 = OpBitwiseXor %uint %a14_1 %a14_2
+       %a14_4 = OpShiftLeftLogical %uint %a14_3 %sh_7
+       %a14_5 = OpIAdd %uint %a14_3 %a14_4
+       %a14_6 = OpBitwiseXor %uint %a14_5 %xorv
+       %a15_0 = OpIMul %uint %a14_6 %mult
+       %a15_1 = OpIAdd %uint %a15_0 %spec
+       %a15_2 = OpShiftRightLogical %uint %a15_1 %sh_13
+       %a15_3 = OpBitwiseXor %uint %a15_1 %a15_2
+       %a15_4 = OpShiftLeftLogical %uint %a15_3 %sh_7
+       %a15_5 = OpIAdd %uint %a15_3 %a15_4
+       %a15_6 = OpBitwiseXor %uint %a15_5 %xorv
+       %a16_0 = OpIMul %uint %a15_6 %mult
+       %a16_1 = OpIAdd %uint %a16_0 %spec
+       %a16_2 = OpShiftRightLogical %uint %a16_1 %sh_13
+       %a16_3 = OpBitwiseXor %uint %a16_1 %a16_2
+       %a16_4 = OpShiftLeftLogical %uint %a16_3 %sh_7
+       %a16_5 = OpIAdd %uint %a16_3 %a16_4
+       %a16_6 = OpBitwiseXor %uint %a16_5 %xorv
+       %a17_0 = OpIMul %uint %a16_6 %mult
+       %a17_1 = OpIAdd %uint %a17_0 %spec
+       %a17_2 = OpShiftRightLogical %uint %a17_1 %sh_13
+       %a17_3 = OpBitwiseXor %uint %a17_1 %a17_2
+       %a17_4 = OpShiftLeftLogical %uint %a17_3 %sh_7
+       %a17_5 = OpIAdd %uint %a17_3 %a17_4
+       %a17_6 = OpBitwiseXor %uint %a17_5 %xorv
+       %a18_0 = OpIMul %uint %a17_6 %mult
+       %a18_1 = OpIAdd %uint %a18_0 %spec
+       %a18_2 = OpShiftRightLogical %uint %a18_1 %sh_13
+       %a18_3 = OpBitwiseXor %uint %a18_1 %a18_2
+       %a18_4 = OpShiftLeftLogical %uint %a18_3 %sh_7
+       %a18_5 = OpIAdd %uint %a18_3 %a18_4
+       %a18_6 = OpBitwiseXor %uint %a18_5 %xorv
+       %a19_0 = OpIMul %uint %a18_6 %mult
+       %a19_1 = OpIAdd %uint %a19_0 %spec
+       %a19_2 = OpShiftRightLogical %uint %a19_1 %sh_13
+       %a19_3 = OpBitwiseXor %uint %a19_1 %a19_2
+       %a19_4 = OpShiftLeftLogical %uint %a19_3 %sh_7
+       %a19_5 = OpIAdd %uint %a19_3 %a19_4
+       %a19_6 = OpBitwiseXor %uint %a19_5 %xorv
+       %a20_0 = OpIMul %uint %a19_6 %mult
+       %a20_1 = OpIAdd %uint %a20_0 %spec
+       %a20_2 = OpShiftRightLogical %uint %a20_1 %sh_13
+       %a20_3 = OpBitwiseXor %uint %a20_1 %a20_2
+       %a20_4 = OpShiftLeftLogical %uint %a20_3 %sh_7
+       %a20_5 = OpIAdd %uint %a20_3 %a20_4
+       %a20_6 = OpBitwiseXor %uint %a20_5 %xorv
+       %a21_0 = OpIMul %uint %a20_6 %mult
+       %a21_1 = OpIAdd %uint %a21_0 %spec
+       %a21_2 = OpShiftRightLogical %uint %a21_1 %sh_13
+       %a21_3 = OpBitwiseXor %uint %a21_1 %a21_2
+       %a21_4 = OpShiftLeftLogical %uint %a21_3 %sh_7
+       %a21_5 = OpIAdd %uint %a21_3 %a21_4
+       %a21_6 = OpBitwiseXor %uint %a21_5 %xorv
+       %a22_0 = OpIMul %uint %a21_6 %mult
+       %a22_1 = OpIAdd %uint %a22_0 %spec
+       %a22_2 = OpShiftRightLogical %uint %a22_1 %sh_13
+       %a22_3 = OpBitwiseXor %uint %a22_1 %a22_2
+       %a22_4 = OpShiftLeftLogical %uint %a22_3 %sh_7
+       %a22_5 = OpIAdd %uint %a22_3 %a22_4
+       %a22_6 = OpBitwiseXor %uint %a22_5 %xorv
+       %a23_0 = OpIMul %uint %a22_6 %mult
+       %a23_1 = OpIAdd %uint %a23_0 %spec
+       %a23_2 = OpShiftRightLogical %uint %a23_1 %sh_13
+       %a23_3 = OpBitwiseXor %uint %a23_1 %a23_2
+       %a23_4 = OpShiftLeftLogical %uint %a23_3 %sh_7
+       %a23_5 = OpIAdd %uint %a23_3 %a23_4
+       %a23_6 = OpBitwiseXor %uint %a23_5 %xorv
+       %a24_0 = OpIMul %uint %a23_6 %mult
+       %a24_1 = OpIAdd %uint %a24_0 %spec
+       %a24_2 = OpShiftRightLogical %uint %a24_1 %sh_13
+       %a24_3 = OpBitwiseXor %uint %a24_1 %a24_2
+       %a24_4 = OpShiftLeftLogical %uint %a24_3 %sh_7
+       %a24_5 = OpIAdd %uint %a24_3 %a24_4
+       %a24_6 = OpBitwiseXor %uint %a24_5 %xorv
+       %a25_0 = OpIMul %uint %a24_6 %mult
+       %a25_1 = OpIAdd %uint %a25_0 %spec
+       %a25_2 = OpShiftRightLogical %uint %a25_1 %sh_13
+       %a25_3 = OpBitwiseXor %uint %a25_1 %a25_2
+       %a25_4 = OpShiftLeftLogical %uint %a25_3 %sh_7
+       %a25_5 = OpIAdd %uint %a25_3 %a25_4
+       %a25_6 = OpBitwiseXor %uint %a25_5 %xorv
+       %a26_0 = OpIMul %uint %a25_6 %mult
+       %a26_1 = OpIAdd %uint %a26_0 %spec
+       %a26_2 = OpShiftRightLogical %uint %a26_1 %sh_13
+       %a26_3 = OpBitwiseXor %uint %a26_1 %a26_2
+       %a26_4 = OpShiftLeftLogical %uint %a26_3 %sh_7
+       %a26_5 = OpIAdd %uint %a26_3 %a26_4
+       %a26_6 = OpBitwiseXor %uint %a26_5 %xorv
+       %a27_0 = OpIMul %uint %a26_6 %mult
+       %a27_1 = OpIAdd %uint %a27_0 %spec
+       %a27_2 = OpShiftRightLogical %uint %a27_1 %sh_13
+       %a27_3 = OpBitwiseXor %uint %a27_1 %a27_2
+       %a27_4 = OpShiftLeftLogical %uint %a27_3 %sh_7
+       %a27_5 = OpIAdd %uint %a27_3 %a27_4
+       %a27_6 = OpBitwiseXor %uint %a27_5 %xorv
+       %a28_0 = OpIMul %uint %a27_6 %mult
+       %a28_1 = OpIAdd %uint %a28_0 %spec
+       %a28_2 = OpShiftRightLogical %uint %a28_1 %sh_13
+       %a28_3 = OpBitwiseXor %uint %a28_1 %a28_2
+       %a28_4 = OpShiftLeftLogical %uint %a28_3 %sh_7
+       %a28_5 = OpIAdd %uint %a28_3 %a28_4
+       %a28_6 = OpBitwiseXor %uint %a28_5 %xorv
+       %a29_0 = OpIMul %uint %a28_6 %mult
+       %a29_1 = OpIAdd %uint %a29_0 %spec
+       %a29_2 = OpShiftRightLogical %uint %a29_1 %sh_13
+       %a29_3 = OpBitwiseXor %uint %a29_1 %a29_2
+       %a29_4 = OpShiftLeftLogical %uint %a29_3 %sh_7
+       %a29_5 = OpIAdd %uint %a29_3 %a29_4
+       %a29_6 = OpBitwiseXor %uint %a29_5 %xorv
+       %a30_0 = OpIMul %uint %a29_6 %mult
+       %a30_1 = OpIAdd %uint %a30_0 %spec
+       %a30_2 = OpShiftRightLogical %uint %a30_1 %sh_13
+       %a30_3 = OpBitwiseXor %uint %a30_1 %a30_2
+       %a30_4 = OpShiftLeftLogical %uint %a30_3 %sh_7
+       %a30_5 = OpIAdd %uint %a30_3 %a30_4
+       %a30_6 = OpBitwiseXor %uint %a30_5 %xorv
+       %a31_0 = OpIMul %uint %a30_6 %mult
+       %a31_1 = OpIAdd %uint %a31_0 %spec
+       %a31_2 = OpShiftRightLogical %uint %a31_1 %sh_13
+       %a31_3 = OpBitwiseXor %uint %a31_1 %a31_2
+       %a31_4 = OpShiftLeftLogical %uint %a31_3 %sh_7
+       %a31_5 = OpIAdd %uint %a31_3 %a31_4
+       %a31_6 = OpBitwiseXor %uint %a31_5 %xorv
+       %a32_0 = OpIMul %uint %a31_6 %mult
+       %a32_1 = OpIAdd %uint %a32_0 %spec
+       %a32_2 = OpShiftRightLogical %uint %a32_1 %sh_13
+       %a32_3 = OpBitwiseXor %uint %a32_1 %a32_2
+       %a32_4 = OpShiftLeftLogical %uint %a32_3 %sh_7
+       %a32_5 = OpIAdd %uint %a32_3 %a32_4
+       %a32_6 = OpBitwiseXor %uint %a32_5 %xorv
+       %a33_0 = OpIMul %uint %a32_6 %mult
+       %a33_1 = OpIAdd %uint %a33_0 %spec
+       %a33_2 = OpShiftRightLogical %uint %a33_1 %sh_13
+       %a33_3 = OpBitwiseXor %uint %a33_1 %a33_2
+       %a33_4 = OpShiftLeftLogical %uint %a33_3 %sh_7
+       %a33_5 = OpIAdd %uint %a33_3 %a33_4
+       %a33_6 = OpBitwiseXor %uint %a33_5 %xorv
+       %a34_0 = OpIMul %uint %a33_6 %mult
+       %a34_1 = OpIAdd %uint %a34_0 %spec
+       %a34_2 = OpShiftRightLogical %uint %a34_1 %sh_13
+       %a34_3 = OpBitwiseXor %uint %a34_1 %a34_2
+       %a34_4 = OpShiftLeftLogical %uint %a34_3 %sh_7
+       %a34_5 = OpIAdd %uint %a34_3 %a34_4
+       %a34_6 = OpBitwiseXor %uint %a34_5 %xorv
+       %a35_0 = OpIMul %uint %a34_6 %mult
+       %a35_1 = OpIAdd %uint %a35_0 %spec
+       %a35_2 = OpShiftRightLogical %uint %a35_1 %sh_13
+       %a35_3 = OpBitwiseXor %uint %a35_1 %a35_2
+       %a35_4 = OpShiftLeftLogical %uint %a35_3 %sh_7
+       %a35_5 = OpIAdd %uint %a35_3 %a35_4
+       %a35_6 = OpBitwiseXor %uint %a35_5 %xorv
+       %a36_0 = OpIMul %uint %a35_6 %mult
+       %a36_1 = OpIAdd %uint %a36_0 %spec
+       %a36_2 = OpShiftRightLogical %uint %a36_1 %sh_13
+       %a36_3 = OpBitwiseXor %uint %a36_1 %a36_2
+       %a36_4 = OpShiftLeftLogical %uint %a36_3 %sh_7
+       %a36_5 = OpIAdd %uint %a36_3 %a36_4
+       %a36_6 = OpBitwiseXor %uint %a36_5 %xorv
+       %a37_0 = OpIMul %uint %a36_6 %mult
+       %a37_1 = OpIAdd %uint %a37_0 %spec
+       %a37_2 = OpShiftRightLogical %uint %a37_1 %sh_13
+       %a37_3 = OpBitwiseXor %uint %a37_1 %a37_2
+       %a37_4 = OpShiftLeftLogical %uint %a37_3 %sh_7
+       %a37_5 = OpIAdd %uint %a37_3 %a37_4
+       %a37_6 = OpBitwiseXor %uint %a37_5 %xorv
+       %a38_0 = OpIMul %uint %a37_6 %mult
+       %a38_1 = OpIAdd %uint %a38_0 %spec
+       %a38_2 = OpShiftRightLogical %uint %a38_1 %sh_13
+       %a38_3 = OpBitwiseXor %uint %a38_1 %a38_2
+       %a38_4 = OpShiftLeftLogical %uint %a38_3 %sh_7
+       %a38_5 = OpIAdd %uint %a38_3 %a38_4
+       %a38_6 = OpBitwiseXor %uint %a38_5 %xorv
+       %a39_0 = OpIMul %uint %a38_6 %mult
+       %a39_1 = OpIAdd %uint %a39_0 %spec
+       %a39_2 = OpShiftRightLogical %uint %a39_1 %sh_13
+       %a39_3 = OpBitwiseXor %uint %a39_1 %a39_2
+       %a39_4 = OpShiftLeftLogical %uint %a39_3 %sh_7
+       %a39_5 = OpIAdd %uint %a39_3 %a39_4
+       %a39_6 = OpBitwiseXor %uint %a39_5 %xorv
+       %a40_0 = OpIMul %uint %a39_6 %mult
+       %a40_1 = OpIAdd %uint %a40_0 %spec
+       %a40_2 = OpShiftRightLogical %uint %a40_1 %sh_13
+       %a40_3 = OpBitwiseXor %uint %a40_1 %a40_2
+       %a40_4 = OpShiftLeftLogical %uint %a40_3 %sh_7
+       %a40_5 = OpIAdd %uint %a40_3 %a40_4
+       %a40_6 = OpBitwiseXor %uint %a40_5 %xorv
+       %a41_0 = OpIMul %uint %a40_6 %mult
+       %a41_1 = OpIAdd %uint %a41_0 %spec
+       %a41_2 = OpShiftRightLogical %uint %a41_1 %sh_13
+       %a41_3 = OpBitwiseXor %uint %a41_1 %a41_2
+       %a41_4 = OpShiftLeftLogical %uint %a41_3 %sh_7
+       %a41_5 = OpIAdd %uint %a41_3 %a41_4
+       %a41_6 = OpBitwiseXor %uint %a41_5 %xorv
+       %a42_0 = OpIMul %uint %a41_6 %mult
+       %a42_1 = OpIAdd %uint %a42_0 %spec
+       %a42_2 = OpShiftRightLogical %uint %a42_1 %sh_13
+       %a42_3 = OpBitwiseXor %uint %a42_1 %a42_2
+       %a42_4 = OpShiftLeftLogical %uint %a42_3 %sh_7
+       %a42_5 = OpIAdd %uint %a42_3 %a42_4
+       %a42_6 = OpBitwiseXor %uint %a42_5 %xorv
+       %a43_0 = OpIMul %uint %a42_6 %mult
+       %a43_1 = OpIAdd %uint %a43_0 %spec
+       %a43_2 = OpShiftRightLogical %uint %a43_1 %sh_13
+       %a43_3 = OpBitwiseXor %uint %a43_1 %a43_2
+       %a43_4 = OpShiftLeftLogical %uint %a43_3 %sh_7
+       %a43_5 = OpIAdd %uint %a43_3 %a43_4
+       %a43_6 = OpBitwiseXor %uint %a43_5 %xorv
+       %a44_0 = OpIMul %uint %a43_6 %mult
+       %a44_1 = OpIAdd %uint %a44_0 %spec
+       %a44_2 = OpShiftRightLogical %uint %a44_1 %sh_13
+       %a44_3 = OpBitwiseXor %uint %a44_1 %a44_2
+       %a44_4 = OpShiftLeftLogical %uint %a44_3 %sh_7
+       %a44_5 = OpIAdd %uint %a44_3 %a44_4
+       %a44_6 = OpBitwiseXor %uint %a44_5 %xorv
+       %a45_0 = OpIMul %uint %a44_6 %mult
+       %a45_1 = OpIAdd %uint %a45_0 %spec
+       %a45_2 = OpShiftRightLogical %uint %a45_1 %sh_13
+       %a45_3 = OpBitwiseXor %uint %a45_1 %a45_2
+       %a45_4 = OpShiftLeftLogical %uint %a45_3 %sh_7
+       %a45_5 = OpIAdd %uint %a45_3 %a45_4
+       %a45_6 = OpBitwiseXor %uint %a45_5 %xorv
+       %a46_0 = OpIMul %uint %a45_6 %mult
+       %a46_1 = OpIAdd %uint %a46_0 %spec
+       %a46_2 = OpShiftRightLogical %uint %a46_1 %sh_13
+       %a46_3 = OpBitwiseXor %uint %a46_1 %a46_2
+       %a46_4 = OpShiftLeftLogical %uint %a46_3 %sh_7
+       %a46_5 = OpIAdd %uint %a46_3 %a46_4
+       %a46_6 = OpBitwiseXor %uint %a46_5 %xorv
+       %a47_0 = OpIMul %uint %a46_6 %mult
+       %a47_1 = OpIAdd %uint %a47_0 %spec
+       %a47_2 = OpShiftRightLogical %uint %a47_1 %sh_13
+       %a47_3 = OpBitwiseXor %uint %a47_1 %a47_2
+       %a47_4 = OpShiftLeftLogical %uint %a47_3 %sh_7
+       %a47_5 = OpIAdd %uint %a47_3 %a47_4
+       %a47_6 = OpBitwiseXor %uint %a47_5 %xorv
+       %a48_0 = OpIMul %uint %a47_6 %mult
+       %a48_1 = OpIAdd %uint %a48_0 %spec
+       %a48_2 = OpShiftRightLogical %uint %a48_1 %sh_13
+       %a48_3 = OpBitwiseXor %uint %a48_1 %a48_2
+       %a48_4 = OpShiftLeftLogical %uint %a48_3 %sh_7
+       %a48_5 = OpIAdd %uint %a48_3 %a48_4
+       %a48_6 = OpBitwiseXor %uint %a48_5 %xorv
+       %a49_0 = OpIMul %uint %a48_6 %mult
+       %a49_1 = OpIAdd %uint %a49_0 %spec
+       %a49_2 = OpShiftRightLogical %uint %a49_1 %sh_13
+       %a49_3 = OpBitwiseXor %uint %a49_1 %a49_2
+       %a49_4 = OpShiftLeftLogical %uint %a49_3 %sh_7
+       %a49_5 = OpIAdd %uint %a49_3 %a49_4
+       %a49_6 = OpBitwiseXor %uint %a49_5 %xorv
+       %a50_0 = OpIMul %uint %a49_6 %mult
+       %a50_1 = OpIAdd %uint %a50_0 %spec
+       %a50_2 = OpShiftRightLogical %uint %a50_1 %sh_13
+       %a50_3 = OpBitwiseXor %uint %a50_1 %a50_2
+       %a50_4 = OpShiftLeftLogical %uint %a50_3 %sh_7
+       %a50_5 = OpIAdd %uint %a50_3 %a50_4
+       %a50_6 = OpBitwiseXor %uint %a50_5 %xorv
+       %a51_0 = OpIMul %uint %a50_6 %mult
+       %a51_1 = OpIAdd %uint %a51_0 %spec
+       %a51_2 = OpShiftRightLogical %uint %a51_1 %sh_13
+       %a51_3 = OpBitwiseXor %uint %a51_1 %a51_2
+       %a51_4 = OpShiftLeftLogical %uint %a51_3 %sh_7
+       %a51_5 = OpIAdd %uint %a51_3 %a51_4
+       %a51_6 = OpBitwiseXor %uint %a51_5 %xorv
+       %a52_0 = OpIMul %uint %a51_6 %mult
+       %a52_1 = OpIAdd %uint %a52_0 %spec
+       %a52_2 = OpShiftRightLogical %uint %a52_1 %sh_13
+       %a52_3 = OpBitwiseXor %uint %a52_1 %a52_2
+       %a52_4 = OpShiftLeftLogical %uint %a52_3 %sh_7
+       %a52_5 = OpIAdd %uint %a52_3 %a52_4
+       %a52_6 = OpBitwiseXor %uint %a52_5 %xorv
+       %a53_0 = OpIMul %uint %a52_6 %mult
+       %a53_1 = OpIAdd %uint %a53_0 %spec
+       %a53_2 = OpShiftRightLogical %uint %a53_1 %sh_13
+       %a53_3 = OpBitwiseXor %uint %a53_1 %a53_2
+       %a53_4 = OpShiftLeftLogical %uint %a53_3 %sh_7
+       %a53_5 = OpIAdd %uint %a53_3 %a53_4
+       %a53_6 = OpBitwiseXor %uint %a53_5 %xorv
+       %a54_0 = OpIMul %uint %a53_6 %mult
+       %a54_1 = OpIAdd %uint %a54_0 %spec
+       %a54_2 = OpShiftRightLogical %uint %a54_1 %sh_13
+       %a54_3 = OpBitwiseXor %uint %a54_1 %a54_2
+       %a54_4 = OpShiftLeftLogical %uint %a54_3 %sh_7
+       %a54_5 = OpIAdd %uint %a54_3 %a54_4
+       %a54_6 = OpBitwiseXor %uint %a54_5 %xorv
+       %a55_0 = OpIMul %uint %a54_6 %mult
+       %a55_1 = OpIAdd %uint %a55_0 %spec
+       %a55_2 = OpShiftRightLogical %uint %a55_1 %sh_13
+       %a55_3 = OpBitwiseXor %uint %a55_1 %a55_2
+       %a55_4 = OpShiftLeftLogical %uint %a55_3 %sh_7
+       %a55_5 = OpIAdd %uint %a55_3 %a55_4
+       %a55_6 = OpBitwiseXor %uint %a55_5 %xorv
+       %a56_0 = OpIMul %uint %a55_6 %mult
+       %a56_1 = OpIAdd %uint %a56_0 %spec
+       %a56_2 = OpShiftRightLogical %uint %a56_1 %sh_13
+       %a56_3 = OpBitwiseXor %uint %a56_1 %a56_2
+       %a56_4 = OpShiftLeftLogical %uint %a56_3 %sh_7
+       %a56_5 = OpIAdd %uint %a56_3 %a56_4
+       %a56_6 = OpBitwiseXor %uint %a56_5 %xorv
+       %a57_0 = OpIMul %uint %a56_6 %mult
+       %a57_1 = OpIAdd %uint %a57_0 %spec
+       %a57_2 = OpShiftRightLogical %uint %a57_1 %sh_13
+       %a57_3 = OpBitwiseXor %uint %a57_1 %a57_2
+       %a57_4 = OpShiftLeftLogical %uint %a57_3 %sh_7
+       %a57_5 = OpIAdd %uint %a57_3 %a57_4
+       %a57_6 = OpBitwiseXor %uint %a57_5 %xorv
+       %a58_0 = OpIMul %uint %a57_6 %mult
+       %a58_1 = OpIAdd %uint %a58_0 %spec
+       %a58_2 = OpShiftRightLogical %uint %a58_1 %sh_13
+       %a58_3 = OpBitwiseXor %uint %a58_1 %a58_2
+       %a58_4 = OpShiftLeftLogical %uint %a58_3 %sh_7
+       %a58_5 = OpIAdd %uint %a58_3 %a58_4
+       %a58_6 = OpBitwiseXor %uint %a58_5 %xorv
+       %a59_0 = OpIMul %uint %a58_6 %mult
+       %a59_1 = OpIAdd %uint %a59_0 %spec
+       %a59_2 = OpShiftRightLogical %uint %a59_1 %sh_13
+       %a59_3 = OpBitwiseXor %uint %a59_1 %a59_2
+       %a59_4 = OpShiftLeftLogical %uint %a59_3 %sh_7
+       %a59_5 = OpIAdd %uint %a59_3 %a59_4
+       %a59_6 = OpBitwiseXor %uint %a59_5 %xorv
+       %a60_0 = OpIMul %uint %a59_6 %mult
+       %a60_1 = OpIAdd %uint %a60_0 %spec
+       %a60_2 = OpShiftRightLogical %uint %a60_1 %sh_13
+       %a60_3 = OpBitwiseXor %uint %a60_1 %a60_2
+       %a60_4 = OpShiftLeftLogical %uint %a60_3 %sh_7
+       %a60_5 = OpIAdd %uint %a60_3 %a60_4
+       %a60_6 = OpBitwiseXor %uint %a60_5 %xorv
+       %a61_0 = OpIMul %uint %a60_6 %mult
+       %a61_1 = OpIAdd %uint %a61_0 %spec
+       %a61_2 = OpShiftRightLogical %uint %a61_1 %sh_13
+       %a61_3 = OpBitwiseXor %uint %a61_1 %a61_2
+       %a61_4 = OpShiftLeftLogical %uint %a61_3 %sh_7
+       %a61_5 = OpIAdd %uint %a61_3 %a61_4
+       %a61_6 = OpBitwiseXor %uint %a61_5 %xorv
+       %a62_0 = OpIMul %uint %a61_6 %mult
+       %a62_1 = OpIAdd %uint %a62_0 %spec
+       %a62_2 = OpShiftRightLogical %uint %a62_1 %sh_13
+       %a62_3 = OpBitwiseXor %uint %a62_1 %a62_2
+       %a62_4 = OpShiftLeftLogical %uint %a62_3 %sh_7
+       %a62_5 = OpIAdd %uint %a62_3 %a62_4
+       %a62_6 = OpBitwiseXor %uint %a62_5 %xorv
+       %a63_0 = OpIMul %uint %a62_6 %mult
+       %a63_1 = OpIAdd %uint %a63_0 %spec
+       %a63_2 = OpShiftRightLogical %uint %a63_1 %sh_13
+       %a63_3 = OpBitwiseXor %uint %a63_1 %a63_2
+       %a63_4 = OpShiftLeftLogical %uint %a63_3 %sh_7
+       %a63_5 = OpIAdd %uint %a63_3 %a63_4
+       %a63_6 = OpBitwiseXor %uint %a63_5 %xorv
+
+       %outp = OpAccessChain %ptr_ssb_u %ssbo %int_0 %gidx
+               OpStore %outp %a63_6
+               OpReturn
+               OpFunctionEnd

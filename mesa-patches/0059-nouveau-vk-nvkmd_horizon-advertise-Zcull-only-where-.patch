@@ -1,0 +1,115 @@
+From 1de013a29e4eb7204408f012a932508564c7e2d8 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 1 Sep 2026 18:21:42 +0000
+Subject: [PATCH 59/60] nouveau/vk: nvkmd_horizon, advertise Zcull only where a
+ context can be bound
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+has_zcull_info was set from the geometry query alone. That query is
+cached by nvGpuInit and answers independently of nvGpuGetZcullCtxSize,
+so the two can disagree: the ten numbers arrive and the context size is
+0. A context size of 0 is exactly what horizon_gpu_channel_create
+refuses to bind a Zcull context for — there is no buffer to allocate —
+so the pdev could advertise a capability that no channel in the process
+is able to be given. Require both.
+
+And an opt-out, NVK_HORIZON_ZCULL=0, which forces has_zcull_info false
+without a rebuild. Zcull is the one capability in this backend whose
+failure mode is silent: a fragment wrongly rejected looks like geometry
+that was never drawn, not like an error. A console therefore needs a way
+to take the other path and compare against it in the same run, which is
+what t_vk_zcull is built on, and a way to stand the feature down if that
+comparison ever comes back wrong. Read with debug_get_bool_option rather
+than a cached DEBUG_GET_ONCE_BOOL_OPTION, so a test may change it
+between two instances in one process — the same choice
+MESA_VK_WSI_HORIZON_FORCE_COPY made, for the same reason.
+
+The refusal is logged with which of the three reasons it was, because
+"Zcull is off" and "Zcull is off because you asked" are different facts
+to find in a log.
+
+mesa-nvk-horizon: Phase 4 — extension 6 (Zcull geometry)
+Why: nvGpuGetZcullCtxSize and the cached geometry query are two
+ independent answers, and NVK reads has_zcull_info as if one implied the
+ other; a device where the geometry arrives and the context size is 0
+ advertises Zcull that horizon_gpu_channel_create then refuses to bind
+ (horizon/channel/channel.c: "Zcull requested but
+ nvGpuGetZcullCtxSize() == 0").
+Evidence: source, and the series applies from the files. Verified the
+ way CI does it and not against mesa/'s history: `scripts/fetch-mesa.sh
+ --force` back to MESA_COMMIT, then `scripts/apply-mesa-patches.sh` —
+ 60 of 60 through `git am`, no fuzz. The first version of this patch
+ carried a stray empty `.gitkeep` at the root of the Mesa tree and CI
+ refused it ("error: .gitkeep: already exists in working directory");
+ mesa-patches/README.md now records where that file comes from.
+ NOT run on a console: no hardware has reported ctx_size 0, so this
+ closes a state that is reachable by construction rather than one that
+ has been observed.
+Upstream: no — it is about two Horizon queries and an environment
+ variable named for this backend.
+
+Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 27 ++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 91fef5e..13dcd92 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -11,6 +11,7 @@
+ #include "util/cache_ops.h"
+ #include "util/log.h"
+ #include "util/macros.h"
++#include "util/u_debug.h"
+ #include "util/u_memory.h"
+ 
+ #include "util/u_math.h"
+@@ -254,10 +255,29 @@ fill_dev_info(struct nv_device_info *info,
+     *
+     * A failure leaves has_zcull_info false, which is what NVK checks
+     * before touching the struct; nouveau lets this query fail too.
++    *
++    * SO DOES A ctxsw_size OF ZERO, and that is not the same failure.
++    * The geometry query is cached by nvGpuInit and answers independently
++    * of nvGpuGetZcullCtxSize, so the two can disagree: the ten numbers
++    * arrive and the context size is 0.  A context size of 0 is exactly
++    * the case horizon_gpu_channel_create refuses to bind a Zcull context
++    * for -- there is no buffer to allocate -- so advertising Zcull on
++    * such a device would promise something no channel in this process
++    * can be given.  Announce only what a channel can actually be handed.
++    *
++    * NVK_HORIZON_ZCULL=0 forces the same answer without a rebuild.  It
++    * exists because Zcull is the one capability here whose failure mode
++    * is silent -- a fragment wrongly rejected looks like geometry that
++    * was never drawn, not like an error -- so a console needs a way to
++    * take the other path and compare, and t_vk_zcull is built on exactly
++    * that comparison.  Read through debug_get_bool_option rather than a
++    * cached DEBUG_GET_ONCE, so a test may change it between two
++    * instances in one process.
+     */
+    horizon_gpu_zcull_info zc;
+    horizon_gpu_result zres = horizon_gpu_device_get_zcull_info(dev, &zc);
+-   if (zres.status == HORIZON_GPU_OK) {
++   const bool zcull_allowed = debug_get_bool_option("NVK_HORIZON_ZCULL", true);
++   if (zres.status == HORIZON_GPU_OK && zc.ctx_size > 0 && zcull_allowed) {
+       info->zcull_info = (struct nv_zcull_device_info) {
+          .width_align_pixels = zc.width_align_pixels,
+          .height_align_pixels = zc.height_align_pixels,
+@@ -275,6 +295,11 @@ fill_dev_info(struct nv_device_info *info,
+       info->has_zcull_info = true;
+    } else {
+       info->has_zcull_info = false;
++      mesa_logi("nvkmd_horizon: Zcull is not advertised (%s)",
++                !zcull_allowed        ? "NVK_HORIZON_ZCULL=0" :
++                zres.status != HORIZON_GPU_OK
++                                      ? "the geometry query failed" :
++                                        "the context size is 0");
+    }
+ }
+ 
+-- 
+2.43.0
+
