@@ -205,6 +205,49 @@ with `USE_SUBGROUPS`. 104 GPRs is what holds occupancy down to 16 of 64
 warps, and register pressure is the one property that both a loop and an
 added `frag_color` paint change.
 
+## The Forward+ hang is one command buffer, and it is not size, time or a race
+
+Measured 2026-09-01 by putting the driver in debug-synchronous mode
+(`HORIZON_GPU_SYNC=1`, and `HORIZON_GPU_LOG=3` because the line it prints
+is INFO and the default level is WARN). Every submit then waits for its own
+fence, so each one is timed and sized on its own:
+
+```
+-- phase 4/8: 3d_cubes_200
+[sync-mode] fence 27:12057 wait=ok      339 us dw=37
+[sync-mode] fence 27:12058 wait=ok      139 us dw=72
+[sync-mode] fence 27:12059 wait=timeout 2000099 us dw=21406
+channel: fault notification 8 (fifo idle timeout) — marking lost
+```
+
+**One command buffer, the third of the first 3D frame, with every submit
+before it already retired.** That is the whole failure, and it excludes
+three families at once:
+
+- **Not a race between submits.** Debug-synchronous waits for each one; the
+  GPU is idle when this buffer is pushed and it still never retires.
+- **Not a size limit.** 1716 submits went through that channel in the same
+  run and the largest that completed was **87099 dwords**, four times the
+  21406 that hangs. The 2D phases push `dw=85219` every frame.
+- **Not a time budget.** The same hang happens with
+  `rendering/scaling_3d/scale=0.25`, which is sixteen times fewer 3D
+  fragments. (`window/size/viewport_*` does **not** work for this on NX —
+  the display server pins the window to 1280x720, and a run that changes it
+  produces byte-identical 2D numbers, which is how to tell it was ignored.)
+
+So the engine chokes on the contents of that one buffer, whatever the load.
+Together with `t_vk_loop`/`t_vk_loop2`/`t_vk_crs`/`t_vk_kill`/`t_vk_set1`
+passing and with `probe12` and `probe13`, nothing about the fragment shader
+explains it: not the loop, the back edge, the kill, the convergence stack,
+the descriptors, or the instruction latencies.
+
+**The next thing to read is nvgpu's error record**, not the shader.
+`nvGpuChannelGetErrorInfo()` returns `NvError` — a type and 31 words, where
+a graphics exception keeps the class, the method and the offset the engine
+stopped on. `horizon_gpu_channel_get_error()` only ever read the
+notification *type*, which is why five weeks of this bug have had one
+number to go on.
+
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
 A Mesa patch's message records what had been measured *when it was

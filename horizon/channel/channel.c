@@ -178,10 +178,41 @@ static horizon_gpu_result channel_check_fault(horizon_gpu_channel *chan)
         return res;
 
     if (type != 0) {
-        if (!chan->lost)
+        if (!chan->lost) {
             horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                          "channel %p: fault notification %u (%s) — marking "
                          "lost", (void *)chan, type, desc);
+            /* The notification is a type and nothing else. nvgpu also
+             * keeps an error record for the channel — NvError, 31 words
+             * of it — and for a graphics exception that is where the
+             * class, the method and the offset the engine stopped on
+             * live. A fault that says only "8" costs a bisection; one
+             * that names a method costs a lookup, so it is read here on
+             * the path that has already decided the channel is lost and
+             * is never taken again for the same channel.
+             *
+             * Only the non-zero words are printed, with their index: the
+             * block is mostly zero and 31 zeroes in a log are 31 lines
+             * nobody reads. */
+            NvError err;
+            memset(&err, 0, sizeof(err));
+            Result erc = nvGpuChannelGetErrorInfo(&chan->gc, &err);
+            if (R_SUCCEEDED(erc)) {
+                horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                             "channel %p: error info type=0x%08x",
+                             (void *)chan, err.type);
+                for (uint32_t i = 0; i < 31; i++) {
+                    if (err.info[i] != 0)
+                        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                                     "channel %p:   info[%u] = 0x%08x",
+                                     (void *)chan, i, err.info[i]);
+                }
+            } else {
+                horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                             "channel %p: error info unavailable: 0x%08x",
+                             (void *)chan, erc);
+            }
+        }
         chan->lost = true;
     }
     return chan->lost ? horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST)
@@ -272,6 +303,35 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                      "nvGpuChannelCreate failed: 0x%08x", rc);
         res = horizon_gpu_err_nv(rc);
         goto fail_free;
+    }
+
+    /* DIAGNOSTIC (uncommitted): scheduling knobs from the environment.
+     * The Godot Forward+ draw stalls in quanta of ~165 ms, the period
+     * of the host scheduler's ctxsw-timeout check; the working
+     * hypothesis is a preemption request that cannot complete. Priority
+     * maps to the channel timeslice in nvgpu (low/medium/high =
+     * 1300/2600/5200 us); NVGPU_IOCTL_CHANNEL_SET_TIMESLICE (0xC004481D,
+     * switchbrew NV_services) sets it directly. */
+    {
+        const char *p = getenv("HORIZON_GPU_CHANNEL_PRIO");
+        if (p) {
+            NvChannelPriority np = NvChannelPriority_Medium;
+            if (!strcmp(p, "low")) np = NvChannelPriority_Low;
+            else if (!strcmp(p, "high")) np = NvChannelPriority_High;
+            Result prc = nvChannelSetPriority(&chan->gc.base, np);
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "diag: channel %p SetPriority(%s=%u) -> 0x%08x",
+                         (void *)chan, p, (unsigned)np, prc);
+        }
+        const char *t = getenv("HORIZON_GPU_CHANNEL_TIMESLICE_US");
+        if (t) {
+            u32 us = (u32)strtoul(t, NULL, 0);
+            Result trc = nvIoctl(chan->gc.base.fd, 0xC004481D, &us);
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "diag: channel %p SetTimeslice(%u us) -> 0x%08x "
+                         "(returned %u)", (void *)chan,
+                         (unsigned)strtoul(t, NULL, 0), trc, (unsigned)us);
+        }
     }
 
     chan->syncpt_id = nvGpuChannelGetSyncpointId(&chan->gc);
