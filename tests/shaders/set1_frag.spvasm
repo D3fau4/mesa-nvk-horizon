@@ -1,0 +1,119 @@
+; set1_frag -- a fragment shader that reads descriptor set 1.
+;
+; WHY THIS EXISTS. Godot 4.1's Forward+ scene shader reads garbage out of
+; descriptor set 1 on GM20B, and it is the whole set rather than one
+; binding: the SSBO's contents are wrong, the SSBO's runtime-array length
+; is wrong (`cluster_buffer.data.length()` is not 176640, and that length
+; comes from the descriptor's own size field, so the descriptor is wrong
+; and not the index), and the UBO at binding 1 is wrong too. The vertex
+; shader's view of the same set is fine, because its UBO is promoted to a
+; constant buffer whose address NVK resolves on the CPU -- it never reads
+; set memory at all. That asymmetry is the shape of the bug.
+;
+; Everything about the *control flow* of that shader has been excluded on
+; hardware: t_vk_loop, t_vk_loop2, t_vk_crs and t_vk_kill all pass, so a
+; loop, a deep convergence stack, the fragment stage and a kill are all
+; fine on this chip. What is left is the descriptor read, and this asks
+; it directly, with nothing else in the shader.
+;
+; Four things per texel, so one run says which of them broke:
+;
+;   .x  data0[idx]           set 0, binding 0 -- the control
+;   .y  data1[idx]           set 1, binding 0 -- the suspect
+;   .z  data1.length()       set 1's descriptor size field
+;   .w  ubo1.v.x             set 1, binding 1 -- a second descriptor type
+;
+; idx is the texel's own index, so every lane reads a different word and a
+; stale or shifted base address shows up as a shifted value rather than as
+; a single wrong constant. A UINT attachment so the numbers come back
+; exactly.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1), same reasons as comp_write_id.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour %frag_coord
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+               OpDecorate %frag_coord BuiltIn FragCoord
+
+               OpDecorate %rta ArrayStride 4
+
+               OpMemberDecorate %Buf0 0 Offset 0
+               OpDecorate %Buf0 Block
+               OpDecorate %ssbo0 DescriptorSet 0
+               OpDecorate %ssbo0 Binding 0
+
+               OpMemberDecorate %Buf1 0 Offset 0
+               OpDecorate %Buf1 Block
+               OpDecorate %ssbo1 DescriptorSet 1
+               OpDecorate %ssbo1 Binding 0
+
+               OpMemberDecorate %Ubo1 0 Offset 0
+               OpDecorate %Ubo1 Block
+               OpDecorate %ubo1 DescriptorSet 1
+               OpDecorate %ubo1 Binding 1
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+    %v4float = OpTypeVector %float 4
+     %v4uint = OpTypeVector %uint 4
+
+  %ptr_out_v = OpTypePointer Output %v4uint
+ %out_colour = OpVariable %ptr_out_v Output
+   %ptr_in_v = OpTypePointer Input %v4float
+ %frag_coord = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+
+       %Buf0 = OpTypeStruct %rta
+   %ptr_ssb0 = OpTypePointer StorageBuffer %Buf0
+      %ssbo0 = OpVariable %ptr_ssb0 StorageBuffer
+
+       %Buf1 = OpTypeStruct %rta
+   %ptr_ssb1 = OpTypePointer StorageBuffer %Buf1
+      %ssbo1 = OpVariable %ptr_ssb1 StorageBuffer
+
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+
+       %Ubo1 = OpTypeStruct %v4uint
+   %ptr_ubo1 = OpTypePointer Uniform %Ubo1
+       %ubo1 = OpVariable %ptr_ubo1 Uniform
+ %ptr_ubo1_v = OpTypePointer Uniform %v4uint
+
+      %int_0 = OpConstant %int32 0
+    %uint_16 = OpConstant %uint 16
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+
+         %fc = OpLoad %v4float %frag_coord
+        %fcx = OpCompositeExtract %float %fc 0
+        %fcy = OpCompositeExtract %float %fc 1
+         %ix = OpConvertFToU %uint %fcx
+         %iy = OpConvertFToU %uint %fcy
+       %rowo = OpIMul %uint %iy %uint_16
+        %idx = OpIAdd %uint %rowo %ix
+
+         %p0 = OpAccessChain %ptr_ssb_u %ssbo0 %int_0 %idx
+         %v0 = OpLoad %uint %p0
+
+         %p1 = OpAccessChain %ptr_ssb_u %ssbo1 %int_0 %idx
+         %v1 = OpLoad %uint %p1
+
+        %len = OpArrayLength %uint %ssbo1 0
+
+         %pu = OpAccessChain %ptr_ubo1_v %ubo1 %int_0
+         %uv = OpLoad %v4uint %pu
+        %uvx = OpCompositeExtract %uint %uv 0
+
+        %res = OpCompositeConstruct %v4uint %v0 %v1 %len %uvx
+               OpStore %out_colour %res
+               OpReturn
+               OpFunctionEnd

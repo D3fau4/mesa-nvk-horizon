@@ -125,6 +125,7 @@ after touching either build system.
    | 24 | `t_vk_image` | off-screen images and clears |
    | 25 | `t_vk_triangle` | the first draw call |
    | 25a | `t_vk_kill` | a loop in a *fragment* shader, with and without a kill in front of it: never entered, entered, and entered after half the lanes are gone. The kill is the one thing a compute test cannot ask, and Godot's scene shader reports `uses_kill` |
+   | 25b | `t_vk_set1` | whether a fragment shader reads descriptor set 1 correctly: an SSBO from set 0 as the control, an SSBO and a UBO from set 1 as the suspects, and the set-1 SSBO's runtime-array length, which comes from the descriptor's own size field. Five cases over identical sets: three binding shapes (both in one `vkCmdBindDescriptorSets`, two calls in Godot's order, two calls in the other), then the same read after the *GPU* writes the set-1 SSBO in the same command buffer — once with `vkCmdFillBuffer` and once with `vkCmdCopyBuffer`, which is what Godot's `buffer_clear` and `buffer_update` are. A failure says whether the binding call, the set itself, or the write side is at fault |
    | 26 | `t_vk_texture` | textures: upload, read back, and sample three ways |
    | 27 | `t_vk_depth` | depth, four draws in one render pass differing only in push constants |
    | 27c | `t_vk_draws` | 512 draws with the pipeline changing between them, the same draws split across 64 render passes, and an alpha blend chain checked against the same chain evaluated on the CPU |

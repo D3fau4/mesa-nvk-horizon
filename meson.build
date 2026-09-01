@@ -408,6 +408,12 @@ nvk_tests = [
   # the two rules, so this asks whether that regime works at all. It
   # does, at twelve levels around a loop.
   't_vk_crs',
+  # Whether a fragment shader reads descriptor set 1 correctly, which is
+  # what survives now that the four control-flow tests below all pass.
+  # Three binding shapes over identical sets: both sets in one
+  # vkCmdBindDescriptorSets, two calls in Godot's order, and two calls in
+  # the other order.
+  't_vk_set1',
   # The same question in the fragment stage, where a kill exists:
   # a loop that is never entered, one that runs, and one that runs
   # after half the lanes have been killed. The scene shader reports
@@ -514,6 +520,7 @@ nvk_test_shaders = {
   't_vk_loop2' : ['comp_loop2'],
   't_vk_crs' : ['comp_crs'],
   't_vk_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
+  't_vk_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
   # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
   # should be about the cache and not about a shader nothing else runs.
   't_vk_cache' : ['comp_write_id'],
