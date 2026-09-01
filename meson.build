@@ -454,6 +454,13 @@ nvk_tests = [
   # pipeline's ROP into a scanout surface, and a report of 157 ms frames
   # from an application that does had no control to be measured against.
   't_vk_present_draw',
+  # Zcull. The pdev advertises has_zcull_info and NVK programs Zcull
+  # whenever a depth attachment is cleared, and the failure mode is a
+  # fragment wrongly rejected — no fault, no notifier, just geometry that
+  # is not there. So this renders one workload twice in one run, once
+  # with NVK_HORIZON_ZCULL=0, and compares the two images. It is what
+  # decides whether the capability keeps being advertised.
+  't_vk_zcull',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -513,6 +520,12 @@ nvk_test_shaders = {
   # a slow frame here would be one more thing to rule out rather than a
   # measurement. Same triangle, same sampler, a surface-sized texture.
   't_vk_present_draw' : ['tex_vert_fullscreen', 'tex_frag_sample'],
+  # The depth pair t_vk_depth already uses, on purpose: what t_vk_zcull
+  # measures is which fragments survive, so the draws should be ones
+  # whose behaviour is already established. comp_write_id is never
+  # dispatched — the pipeline is built and destroyed so that NVK uploads
+  # a shader through the upload queue, which is a different channel.
+  't_vk_zcull' : ['depth_vert_z', 'depth_frag_pc', 'comp_write_id'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

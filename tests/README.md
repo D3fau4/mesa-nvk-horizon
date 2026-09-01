@@ -11,7 +11,7 @@ They come in three groups, and **which of them you get depends on what you built
 |---|---|---|---|
 | `horizon_gpu` — Phases 1, 5 and 6 | 18 | nothing but the toolchain | both build paths |
 | Mesa's own code, measured on hardware | 3 | Mesa's core built | both build paths |
-| Vulkan, through NVK | 16 | the full NVK driver built | **the Meson path only** |
+| Vulkan, through NVK | 17 | the full NVK driver built | **the Meson path only** |
 
 So the Makefile produces at most 21 and the Meson path at most 37, because the Makefile
 does not build Mesa/NVK and the Meson path does.
@@ -123,6 +123,7 @@ after touching either build system.
    | 25 | `t_vk_triangle` | the first draw call |
    | 26 | `t_vk_texture` | textures: upload, read back, and sample three ways |
    | 27 | `t_vk_depth` | depth, four draws in one render pass differing only in push constants |
+   | 27a | `t_vk_zcull` | whether Zcull is correct. Renders one depth workload twice in one run — once with `NVK_HORIZON_ZCULL=0`, which withholds `has_zcull_info` — and compares the colour and depth images pixel for pixel. Zcull only ever *rejects*, so a fault shows up as geometry that is not drawn rather than as an error; a difference between the two halves is the finding, and the answer to it is to stop advertising Zcull |
    | 28 | `t_vk_format` | format coverage — everything before this proved one format |
    | 29 | `t_vk_submits` | two or more submits in flight with no CPU wait between them |
    | 30 | `t_vk_caps` | what the driver claims, measured against what the backend can do |

@@ -1,0 +1,118 @@
+From 9c227a908eb5800f6da72670fa3c8ce5df5f2af5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 1 Sep 2026 14:48:25 +0000
+Subject: [PATCH 60/60] nouveau/vk: nvkmd_horizon, bind a Zcull context on 3D
+ contexts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The pdev has advertised has_zcull_info since the geometry query landed,
+and every channel has been created with horizon_gpu_channel_create's
+NULL create_info — whose defaults are medium priority and bind_zcull
+false. So NVK has been programming Zcull on channels that have nowhere
+to save it.
+
+That is not a theoretical gap. nvk_CmdBeginRendering emits
+SET_ZCULL_REGION_LOCATION, the subregion allocation, SET_ZCULL_CRITERION
+and CLEAR_ZCULL_REGION whenever has_zcull_info is true and a depth
+attachment is being cleared, which is the ordinary shape of a frame.
+Zcull's aliquot allocation lives in on-chip RAM and the channel's
+context image is where the hardware saves and restores it across a
+context switch; nvGpuChannelZcullBind is what gives the channel that
+area. Without it the state is switched out with no home, and the failure
+mode is silent in the worst way: a fragment rejected that should have
+passed reaches the screen as geometry that is simply not drawn — no
+fault, no notifier, nothing in a log.
+
+Only where the engine can use it. `engines` decided nothing in this
+function before; now it decides exactly this. The upload queue asks for
+NVKMD_ENGINE_COPY and the sparse-binding queue for NVKMD_ENGINE_BIND,
+and a Zcull buffer on either is an allocation plus a 128 KiB-aligned VA
+reservation nothing will ever read — and a bind ioctl that can fail, on
+a context that could not have used the result.
+
+And only where it is advertised. has_zcull_info now means "the geometry
+answered and the context size is non-zero", which is exactly the
+precondition horizon_gpu_channel_create needs; reading the same flag NVK
+reads is what stops the two halves drifting apart a second time.
+
+Cost on a graphics context: one allocation of nvGpuGetZcullCtxSize()
+bytes and a reservation whose Zcull half is 128 KiB-aligned. The
+reservation already had that shape in horizon_gpu_channel_create — it
+has carried both cases since Phase 1 and only the false one was reached.
+
+mesa-nvk-horizon: Phase 4 — extension 6 (Zcull geometry)
+Why: the pdev advertises Zcull and NVK programs it, while every channel
+ is created with bind_zcull false, so the on-chip Zcull state has no
+ context-switch save area — horizon/channel/channel.c has implemented
+ the bind since Phase 1 and nothing had ever asked for it.
+Evidence: source, and the series applies and cross-builds. NOT RUN ON A
+ CONSOLE. Whether Zcull is correct on this chip is what tests/t_vk_zcull
+ exists to answer: it renders the same depth workload twice in one
+ process, once with NVK_HORIZON_ZCULL=0 and once without, and compares
+ the colour and depth read-back pixel for pixel. If the two differ, the
+ action is to stop advertising Zcull, not to debug it blind.
+Upstream: no — it is the binding between this backend's channel object
+ and libnx's nvGpuChannelZcullBind.
+
+Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 39 ++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index c3086cc..668ac1c 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -712,9 +712,46 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+     * the stream (known-risks R7), and horizon_gpu_channel_bind_engines
+     * does all five subchannels at once with the device's *queried*
+     * class numbers. There is no channel that can do 3D but not compute.
++    *
++    * `engines` decides exactly one thing, and it is the Zcull context.
++    *
++    * WHY A CHANNEL NEEDS ONE AT ALL. Zcull's aliquot allocation lives in
++    * on-chip RAM, and the channel's context image is where the hardware
++    * saves and restores it across a context switch.
++    * nvGpuChannelZcullBind is what gives the channel somewhere to do
++    * that; without it the channel is switched out with Zcull state that
++    * has no home. nvk_CmdBeginRendering programs SET_ZCULL_REGION_*,
++    * SET_ZCULL_SUBREGION_* and CLEAR_ZCULL_REGION whenever
++    * has_zcull_info is true and a depth attachment is being cleared —
++    * so until now this backend was announcing the capability, NVK was
++    * using it, and no channel had the buffer that makes it survive
++    * another process touching the GPU. The failure mode is not a fault:
++    * it is a fragment rejected that should have passed, which reaches
++    * the screen as geometry that is simply not there.
++    *
++    * ONLY 3D CONTEXTS. Zcull is a graphics-pipeline structure and
++    * nothing else can program it: the upload queue asks for
++    * NVKMD_ENGINE_COPY and the sparse-binding queue for
++    * NVKMD_ENGINE_BIND, and a Zcull buffer on either would be an
++    * allocation and a 128 KiB-aligned VA reservation that nothing ever
++    * reads. Asking for it also has a real failure path — the bind is an
++    * ioctl — so a context that cannot use Zcull should not be able to
++    * fail on it.
++    *
++    * AND ONLY WHERE IT IS ADVERTISED. has_zcull_info already means "the
++    * geometry query answered and the context size is non-zero", which is
++    * precisely the precondition horizon_gpu_channel_create needs to
++    * allocate the buffer. Reading the same flag NVK reads is what keeps
++    * the two halves from drifting apart again.
+     */
++   const struct nv_device_info *dev_info = &_dev->pdev->dev_info;
++   const horizon_gpu_channel_create_info chan_info = {
++      .prio = HORIZON_GPU_CHANNEL_PRIO_MEDIUM,
++      .bind_zcull = (engines & NVKMD_ENGINE_3D) && dev_info->has_zcull_info,
++   };
++
+    horizon_gpu_result res =
+-      horizon_gpu_channel_create(dev->gpu, NULL, &ctx->chan);
++      horizon_gpu_channel_create(dev->gpu, &chan_info, &ctx->chan);
+    if (res.status != HORIZON_GPU_OK) {
+       FREE(ctx);
+       return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-- 
+2.43.0
+
