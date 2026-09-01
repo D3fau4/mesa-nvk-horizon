@@ -1,6 +1,6 @@
-From 9c227a908eb5800f6da72670fa3c8ce5df5f2af5 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Tue, 1 Sep 2026 14:48:25 +0000
+From 9d1e1b8bc9ae09303904d3a0220594ef9c949ef9 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 1 Sep 2026 18:21:42 +0000
 Subject: [PATCH 60/60] nouveau/vk: nvkmd_horizon, bind a Zcull context on 3D
  contexts
 MIME-Version: 1.0
@@ -47,8 +47,10 @@ Why: the pdev advertises Zcull and NVK programs it, while every channel
  is created with bind_zcull false, so the on-chip Zcull state has no
  context-switch save area — horizon/channel/channel.c has implemented
  the bind since Phase 1 and nothing had ever asked for it.
-Evidence: source, and the series applies and cross-builds. NOT RUN ON A
- CONSOLE. Whether Zcull is correct on this chip is what tests/t_vk_zcull
+Evidence: the series applies from the files — `scripts/fetch-mesa.sh
+ --force` then `scripts/apply-mesa-patches.sh`, 60 of 60 through `git
+ am`, no fuzz — and libnvk.a and the 46 .nro cross-build against it with
+ devkitA64. NOT RUN ON A CONSOLE. Whether Zcull is correct on this chip is what tests/t_vk_zcull
  exists to answer: it renders the same depth workload twice in one
  process, once with NVK_HORIZON_ZCULL=0 and once without, and compares
  the colour and depth read-back pixel for pixel. If the two differ, the

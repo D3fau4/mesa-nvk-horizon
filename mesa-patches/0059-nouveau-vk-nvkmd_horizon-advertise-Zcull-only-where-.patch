@@ -1,6 +1,6 @@
-From acf407075812c641411f2291fa68ca553d82b700 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Tue, 1 Sep 2026 14:47:40 +0000
+From 1de013a29e4eb7204408f012a932508564c7e2d8 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 1 Sep 2026 18:21:42 +0000
 Subject: [PATCH 59/60] nouveau/vk: nvkmd_horizon, advertise Zcull only where a
  context can be bound
 MIME-Version: 1.0
@@ -37,8 +37,13 @@ Why: nvGpuGetZcullCtxSize and the cached geometry query are two
  advertises Zcull that horizon_gpu_channel_create then refuses to bind
  (horizon/channel/channel.c: "Zcull requested but
  nvGpuGetZcullCtxSize() == 0").
-Evidence: source, and the patch series applies and builds. mesa/ at
- MESA_COMMIT + the series, `git am` clean, 58 of 58 before this patch.
+Evidence: source, and the series applies from the files. Verified the
+ way CI does it and not against mesa/'s history: `scripts/fetch-mesa.sh
+ --force` back to MESA_COMMIT, then `scripts/apply-mesa-patches.sh` —
+ 60 of 60 through `git am`, no fuzz. The first version of this patch
+ carried a stray empty `.gitkeep` at the root of the Mesa tree and CI
+ refused it ("error: .gitkeep: already exists in working directory");
+ mesa-patches/README.md now records where that file comes from.
  NOT run on a console: no hardware has reported ctx_size 0, so this
  closes a state that is reachable by construction rather than one that
  has been observed.
@@ -47,14 +52,9 @@ Upstream: no — it is about two Horizon queries and an environment
 
 Signed-off-by: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 ---
- .gitkeep                                      |  0
  .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 27 ++++++++++++++++++-
- 2 files changed, 26 insertions(+), 1 deletion(-)
- create mode 100644 .gitkeep
+ 1 file changed, 26 insertions(+), 1 deletion(-)
 
-diff --git a/.gitkeep b/.gitkeep
-new file mode 100644
-index 0000000..e69de29
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 index 91fef5e..13dcd92 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
