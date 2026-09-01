@@ -78,6 +78,10 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     dev->debug_synchronous = create_info->debug_synchronous ||
                              (sync_env && sync_env[0] == '1');
 
+    /* Read once, at device creation, so a submit path never calls
+     * getenv: it walks environ, and the submit path is the hot one. */
+    const char *barrier_env = getenv("HORIZON_GPU_FULL_BARRIER_WAITS");
+    dev->full_barrier_waits = barrier_env && barrier_env[0] == '1';
     const char *untrusted_env = getenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE");
     dev->allow_untrusted_syncpt_baseline =
         create_info->allow_untrusted_syncpt_baseline ||

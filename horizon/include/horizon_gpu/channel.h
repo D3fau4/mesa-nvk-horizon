@@ -42,6 +42,35 @@ typedef struct horizon_gpu_channel_create_info {
     bool bind_zcull;
 } horizon_gpu_channel_create_info;
 
+/* What the submit path actually did, per channel.
+ *
+ * WHY THIS IS PUBLIC. Two properties of this layer are claims about how
+ * much work a submit does — a memory-free submit uses an increment-only
+ * fence block instead of wait-for-idle plus an L2 writeback, and the
+ * syncpoint is not read when the retirement list is empty and nothing
+ * can retire. Neither is observable from outside without these numbers,
+ * and a performance claim nobody can check is a comment.
+ *
+ * Monotonic for the life of the channel; never reset. A caller
+ * measuring a phase takes a copy before and subtracts. Counted only
+ * when the operation reached hardware: a submit refused before its
+ * kickoff increments nothing.
+ *
+ * NOT thread-safe, for the same reason nothing else about a channel is:
+ * a channel is externally synchronised (§ horizon_gpu_channel). */
+typedef struct horizon_gpu_channel_stats {
+    /* Submits whose kickoff succeeded. */
+    uint64_t submits;
+    /* Of those, the ones horizon_gpu_submit_waits made. */
+    uint64_t wait_submits;
+    /* Of those, the ones that used the increment-only fence block —
+     * so `wait_submits - bare_fence_submits` is how many wait submits
+     * still paid for the full barrier. */
+    uint64_t bare_fence_submits;
+    /* SyncptRead ioctls this channel has issued, from every path. */
+    uint64_t syncpt_reads;
+} horizon_gpu_channel_stats;
+
 /* `create_info` may be NULL: medium priority, no Zcull. */
 horizon_gpu_result
 horizon_gpu_channel_create(horizon_gpu_device *dev,
@@ -54,6 +83,11 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
 horizon_gpu_result horizon_gpu_channel_destroy(horizon_gpu_channel *chan);
 
 uint32_t horizon_gpu_channel_syncpt_id(const horizon_gpu_channel *chan);
+
+/* Copies this channel's counters out. Does nothing if either argument
+ * is NULL. */
+void horizon_gpu_channel_get_stats(const horizon_gpu_channel *chan,
+                                   horizon_gpu_channel_stats *out);
 
 /* Hardware syncpoint value observed when the channel was created —
  * measurement input for the R5 open question (shadow initialisation).

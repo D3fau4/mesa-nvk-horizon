@@ -26,6 +26,11 @@
 #define CHANNEL_FENCE_CMDS_OFFSET  UINT64_C(0x000)
 #define CHANNEL_SETOBJ_CMDS_OFFSET UINT64_C(0x100)
 #define CHANNEL_PROLOGUE_CMDS_OFFSET UINT64_C(0x200)
+/* The increment-only fence block a memory-free submit uses
+ * (horizon_cmds_fence_incr_bare). It sits in the gap the prologue leaves
+ * before the wait ring rather than after the ring: the ring already ends
+ * exactly on the last byte of the page, so there is no "after". */
+#define CHANNEL_BARE_FENCE_CMDS_OFFSET UINT64_C(0x300)
 
 /* Zcull context buffer VA alignment. Source: the reference's
  * hardware-tested channel bring-up (reference-analysis § 4: Zcull BO
@@ -46,8 +51,12 @@ _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
                HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
                "prologue list would overrun the cmdbuf page");
 _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
-               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= HORIZON_CHANNEL_WAIT_CMDS_OFFSET,
-               "prologue list would overrun the wait ring");
+               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_BARE_FENCE_CMDS_OFFSET,
+               "prologue list would overrun the bare fence list");
+_Static_assert(CHANNEL_BARE_FENCE_CMDS_OFFSET +
+               HORIZON_CMDS_FENCE_INCR_BARE_DWORDS * 4 <=
+               HORIZON_CHANNEL_WAIT_CMDS_OFFSET,
+               "bare fence list would overrun the wait ring");
 /* The wait ring takes what is left of the page, and how much that is has
  * to be checked rather than believed: the slot count and the per-slot
  * size are two constants in another header, and either growing would
@@ -73,11 +82,20 @@ horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
 {
     /* /dev/nvhost-ctrl fd owned by libnx's fence module (open since
      * device bring-up step 2). */
+    chan->stats.syncpt_reads++;
     Result rc = nvioctlNvhostCtrl_SyncptRead(nvFenceGetFd(),
                                              chan->syncpt_id, out_hw);
     if (R_FAILED(rc))
         return horizon_gpu_err_nv(rc);
     return horizon_gpu_ok();
+}
+
+void horizon_gpu_channel_get_stats(const horizon_gpu_channel *chan,
+                                   horizon_gpu_channel_stats *out)
+{
+    if (!chan || !out)
+        return;
+    *out = chan->stats;
 }
 
 static const char *channel_error_desc(uint32_t type)
@@ -415,6 +433,25 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         goto fail_cmdbuf_map;
     }
 
+    /* And the increment-only fence block, for a submit whose command
+     * list is host methods with no memory effect. cmds.h states exactly
+     * when that is; horizon_gpu_submit_waits is the only caller.
+     *
+     * Encoded even on a channel that never submits a wait: it is four
+     * dwords in a page that is already allocated, and building it here
+     * means the submit path never has a "write the commands first"
+     * branch to get wrong. */
+    chan->bare_fence_cmds_dwords =
+        horizon_cmds_fence_incr_bare(cmds + CHANNEL_BARE_FENCE_CMDS_OFFSET / 4,
+                                     chan->syncpt_id);
+    if (chan->bare_fence_cmds_dwords == 0) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "syncpoint id %u out of encoding range (bare fence)",
+                     chan->syncpt_id);
+        res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        goto fail_cmdbuf_map;
+    }
+
     /* One flush covering both blocks: they share the page, and the
      * cmdbuf is CPU-cached like everything else here.
      *
@@ -426,9 +463,11 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
      * this one was not. Found in review of PR #7. */
     _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET > CHANNEL_FENCE_CMDS_OFFSET,
                    "the prologue block must follow the fence block");
+    _Static_assert(CHANNEL_BARE_FENCE_CMDS_OFFSET > CHANNEL_PROLOGUE_CMDS_OFFSET,
+                   "the bare fence block must follow the prologue block");
     const uint64_t flush_len =
-        (CHANNEL_PROLOGUE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
-        (uint64_t)chan->prologue_cmds_dwords * 4;
+        (CHANNEL_BARE_FENCE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
+        (uint64_t)chan->bare_fence_cmds_dwords * 4;
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
                                 flush_len);
     if (horizon_gpu_failed(res))
@@ -440,6 +479,8 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                            CHANNEL_SETOBJ_CMDS_OFFSET;
     chan->prologue_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                              CHANNEL_PROLOGUE_CMDS_OFFSET;
+    chan->bare_fence_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
+                               CHANNEL_BARE_FENCE_CMDS_OFFSET;
     chan->wait_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                          HORIZON_CHANNEL_WAIT_CMDS_OFFSET;
     /* The channel is callocated, so every slot already reads as free and

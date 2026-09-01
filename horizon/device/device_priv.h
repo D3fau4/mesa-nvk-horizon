@@ -26,6 +26,19 @@ struct horizon_gpu_device {
     horizon_log log;
     bool debug_synchronous;
 
+    /* Two opt-outs that exist so a single console run can measure the
+     * change against the behaviour it replaced, rather than a number
+     * from this build being compared with a number from another one.
+     * Both restore exactly what the code did before; neither is a
+     * supported configuration.
+     *
+     * full_barrier_waits  HORIZON_GPU_FULL_BARRIER_WAITS=1 — put the
+     *                     L2-invalidate prologue and the wait-for-idle
+     *                     + L2-writeback fence block back on a
+     *                     memory-free wait submit.
+     */
+    bool full_barrier_waits;
+
     /* Opt-in (device.h) and the sticky record of it having been used. The
      * flag is written by channel creation from any thread, so it is atomic
      * like the counters below. */
