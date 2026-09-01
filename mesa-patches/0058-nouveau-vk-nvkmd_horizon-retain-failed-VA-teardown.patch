@@ -1,0 +1,90 @@
+From 848b39f0fc687899d66b25b9e473e63c768c60da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Tue, 1 Sep 2026 13:12:05 +0200
+Subject: [PATCH 58/58] nouveau/vk: nvkmd_horizon: retain failed VA teardown
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 items 3-5 (VA lifetime)
+Why: va_free discarded every vm_unmap result and removed the VA from the device list before teardown. A failed unmap therefore left a live kernel mapping whose binding and diagnostic registry entry had both been destroyed.
+Evidence: env -u DEVKITPRO scripts/build-mesa-nvk.sh completed the full 877-target NVK cross build with devkitA64 GCC 15.2.0; nvkmd_horizon_va.c compiled, libnvk.a linked, and check-tls-relocs passed over 1203 objects.
+Upstream: no — this fixes the Horizon backend's own VA teardown.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_va.c   | 39 +++++++++++++++----
+ 1 file changed, 32 insertions(+), 7 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+index e814ca8..0a4a5e1 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
+@@ -166,10 +166,6 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+    struct nvkmd_horizon_va *va = nvkmd_horizon_va(_va);
+    struct nvkmd_horizon_dev *dev = nvkmd_horizon_dev(_va->dev);
+ 
+-   simple_mtx_lock(&dev->va_list_mutex);
+-   list_del(&va->dev_link);
+-   simple_mtx_unlock(&dev->va_list_mutex);
+-
+    /* Freeing a VA that still has memory bound is nvkmd's ordinary path,
+     * not a caller error: nvkmd_horizon_mem_free releases the VA its
+     * object owns without unbinding first, and nvk_mem_arena_finish says
+@@ -182,10 +178,30 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+     * thing printed on a failed vkCreateDevice, so it read as the cause
+     * while the real failure was silent.
+     */
+-   list_for_each_entry_safe(struct nvkmd_horizon_binding, b,
+-                            &va->bindings, link) {
+-      horizon_gpu_vm_unmap(b->mapping);
++   for (;;) {
++      simple_mtx_lock(&va->mutex);
++      if (list_is_empty(&va->bindings)) {
++         simple_mtx_unlock(&va->mutex);
++         break;
++      }
++
++      struct nvkmd_horizon_binding *b =
++         list_first_entry(&va->bindings, struct nvkmd_horizon_binding, link);
++      horizon_gpu_result res = horizon_gpu_vm_unmap(b->mapping);
++      if (res.status != HORIZON_GPU_OK) {
++         /* vm_unmap deliberately keeps a failed mapping alive so it can
++          * be retried. Keep its binding and the VA's registry entry too;
++          * dropping either would make that live kernel mapping
++          * unreachable. */
++         mesa_loge("horizon_gpu_vm_unmap failed while freeing VA: "
++                   "status %d, nv 0x%08" PRIx32,
++                   (int)res.status, res.nv);
++         simple_mtx_unlock(&va->mutex);
++         return;
++      }
+       list_del(&b->link);
++      simple_mtx_unlock(&va->mutex);
++
+       /* Last, and after the unmap: this may be the reference that
+        * destroys the object, and horizon_gpu_mem_destroy refuses while
+        * the mapping is still alive. NULL for a memory object's own VA,
+@@ -195,13 +211,22 @@ nvkmd_horizon_va_free(struct nvkmd_va *_va)
+       FREE(b);
+     }
+ 
++   /* describe_addr and dump_va_map hold va_list_mutex for the whole
++    * time they inspect a VA. Holding it across release keeps `range`
++    * valid for an inspector and keeps a failed release discoverable,
++    * without reversing their va_list_mutex -> va->mutex lock order. */
++   simple_mtx_lock(&dev->va_list_mutex);
+    horizon_gpu_result res = horizon_gpu_vm_release(va->range);
+    if (res.status != HORIZON_GPU_OK) {
+       mesa_loge("horizon_gpu_vm_release failed: status %d, nv 0x%08" PRIx32,
+                 (int)res.status, res.nv);
++      simple_mtx_unlock(&dev->va_list_mutex);
+       return;
+    }
+ 
++   list_del(&va->dev_link);
++   simple_mtx_unlock(&dev->va_list_mutex);
++
+    simple_mtx_destroy(&va->mutex);
+    FREE(va);
+ }
+-- 
+2.43.0

@@ -146,21 +146,28 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
     return horizon_gpu_ok();
 }
 
-/* Checks the notifier; marks the channel lost when it reports an error. */
-static bool channel_check_fault(horizon_gpu_channel *chan)
+/* Checks the notifier; marks the channel lost when it reports an error.
+ * A notifier query failure is not the same as an empty notifier: callers
+ * must not retire work or report a successful wait when channel health
+ * could not be established. */
+static horizon_gpu_result channel_check_fault(horizon_gpu_channel *chan)
 {
     uint32_t type = 0;
     const char *desc = NULL;
     horizon_gpu_result res = horizon_gpu_channel_get_error(chan, &type,
                                                            &desc);
-    if (horizon_gpu_succeeded(res) && type != 0) {
+    if (horizon_gpu_failed(res))
+        return res;
+
+    if (type != 0) {
         if (!chan->lost)
             horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                          "channel %p: fault notification %u (%s) — marking "
                          "lost", (void *)chan, type, desc);
         chan->lost = true;
     }
-    return chan->lost;
+    return chan->lost ? horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST)
+                      : horizon_gpu_ok();
 }
 
 /* "The fence says reached" is the answer a waiter wants, and on this
@@ -188,9 +195,7 @@ static bool channel_check_fault(horizon_gpu_channel *chan)
  * can tell the two apart from the outside. */
 static horizon_gpu_result channel_reached_or_lost(horizon_gpu_channel *chan)
 {
-    if (channel_check_fault(chan))
-        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
-    return horizon_gpu_ok();
+    return channel_check_fault(chan);
 }
 
 /* Logs a teardown step's failure during horizon_gpu_channel_create's error
@@ -613,11 +618,12 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
      * against the 85 us of CPU a vkQueueSubmit already costs on this
      * platform (t_vk_submits), it is not the expensive part — and a
      * cheap wrong answer here is what this whole fix is about. */
-    if (channel_check_fault(chan))
-        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+    horizon_gpu_result res = channel_check_fault(chan);
+    if (horizon_gpu_failed(res))
+        return res;
 
     uint32_t hw;
-    horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
+    res = horizon_channel_read_syncpt(chan, &hw);
     if (horizon_gpu_failed(res)) {
         /* An untrusted-baseline channel is one whose platform has no
          * syncpoint read at all, so this fails every time and would
@@ -741,8 +747,9 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             if (!horizon_nv_wait_timed_out(rc))
                 return horizon_gpu_err_nv(rc);
 
-            if (channel_check_fault(chan))
-                return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+            res = channel_check_fault(chan);
+            if (horizon_gpu_failed(res))
+                return res;
             /* Round the loop rather than returning: one expired chunk is
              * not the caller's deadline. Returning TIMEOUT here made
              * every finite wait on this path last CHANNEL_WAIT_CHUNK_US
@@ -758,8 +765,9 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
             return channel_reached_or_lost(chan);
 
-        if (channel_check_fault(chan))
-            return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+        res = channel_check_fault(chan);
+        if (horizon_gpu_failed(res))
+            return res;
 
         uint64_t elapsed_ns = armTicksToNs(armGetSystemTick() - start);
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
@@ -822,6 +830,8 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
         last_rc = nvFenceWait(&nvf, chunk_us);
         if (horizon_nv_wait_timed_out(last_rc))
             continue;
+        if (R_FAILED(last_rc))
+            return horizon_gpu_err_nv(last_rc);
 
         /* How long it blocked, not what it returned, is what says
          * whether this was a pulse — and it is acted on at the top of
