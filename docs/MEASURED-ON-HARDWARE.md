@@ -81,6 +81,47 @@ with a hand on the console: three runs have now had that.
 
 ---
 
+## The Forward+ hang is not the loop, the stack, the fragment stage or the kill
+
+Four tests built to reproduce Godot 4.1's Forward+ hang outside Godot all
+pass on GM20B (2026-09-01, build `1b49911-dirty mesa:5554de6-dirty`, logs
+in `sdmc:/horizon_gpu_tests/`):
+
+| Test | Result | What it takes off the table |
+|---|---|---|
+| `t_vk_loop` | PASS 38/38 | a loop whose trip count comes from memory, including every bound 0 |
+| `t_vk_loop2` | PASS 38/38 | the cluster loops' exact bound idiom: packed min/max, prmt-style extract, bcsel |
+| `t_vk_crs` | PASS 35/35 | twelve nesting levels around a loop — the unbacked convergence stack |
+| `t_vk_kill` | PASS 83/83 | a fragment loop, and a fragment loop entered after half the lanes are killed |
+
+Together with the passes recorded elsewhere, **the whole "it is the control
+flow, the compiler, the fragment stage or the kill" family is excluded on
+hardware.** `t_vk_kill` is the one that closes it: its three cases are
+256/256 texels right, including "bound 4, half the lanes killed first"
+with 128 texels killed. A counted fragment loop with a kill in front of it
+works on this chip.
+
+**This contradicts a reading of the Godot measurement, and the Godot
+reading is the one that was wrong.** Bisecting inside the engine on
+2026-08-29 produced "with the bound forced to a compile-time four, the body
+replaced by an increment, and the whole induction replaced by a plain
+counted loop, it still hung", which was taken to mean the loop itself hangs
+the channel. It cannot mean that: the loop it was reduced to is the loop
+`t_vk_kill` runs. Whatever still hung was not the shape that was left.
+
+**Do not re-measure this by shrinking Godot's shader further.** Painting a
+value into `frag_color` to inspect it changes register allocation enough to
+hide the bug, so a reduction inside the engine cannot be trusted to still
+contain the fault it started with. The way to ask a question about this
+hang is a test in `tests/`, which is why these four exist.
+
+What survives is the reading of descriptor set 1 from the fragment stage.
+Not from a missing cache flush: the descriptor writer does clean its dirty
+range at `nvk_descriptor_set.c` `nvk_descriptor_writer_finish`, at
+`set->mem_offset_B + dirty_start` aligned both ends to `nc_atom_size_B`,
+and on aarch64 `util_has_cache_ops()` is true and `cache_ops_aarch64.c`
+(`dc cvac` + `dsb sy`) is the implementation compiled in, not the null stub.
+
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
 A Mesa patch's message records what had been measured *when it was
