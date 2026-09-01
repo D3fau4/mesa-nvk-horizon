@@ -122,6 +122,47 @@ range at `nvk_descriptor_set.c` `nvk_descriptor_writer_finish`, at
 and on aarch64 `util_has_cache_ops()` is true and `cache_ops_aarch64.c`
 (`dc cvac` + `dsb sy`) is the implementation compiled in, not the null stub.
 
+## A fragment shader reads descriptor set 1 correctly
+
+`t_vk_set1`, PASS 170/170 on GM20B (2026-09-01). Four numbers per texel --
+an SSBO from set 0 as the control, an SSBO and a UBO from set 1, and the
+set-1 SSBO's runtime-array length -- all right on 256/256 texels in five
+cases: the two sets bound in one `vkCmdBindDescriptorSets`, in two calls in
+Godot's order, in two calls in the other order, and then the same read after
+the **GPU** wrote the set-1 SSBO in the same command buffer, once with
+`vkCmdFillBuffer` and once with `vkCmdCopyBuffer` -- which is what Godot's
+`buffer_clear` and `buffer_update` are.
+
+So the read of set 1 from the fragment stage is not broken on this chip, and
+neither is the write side: a transfer write with a TRANSFER_WRITE to
+SHADER_READ barrier is visible to the draw that follows it. **The hypothesis
+that Godot's Forward+ shader hangs because it reads a wrong descriptor is
+excluded.**
+
+## The convergence-stack fix is already in the Godot build that fails
+
+`crs_size()` in `sm50.rs` counts one stack slot per nesting level and
+reserves nothing below 16, where nouveau counts two for the same field. The
+working tree carries a fix that multiplies by two, and it is tempting to
+conclude that Godot's `max_crs_depth = 13` shader therefore runs on the
+16-entry on-chip stack with nothing behind it.
+
+**It does not, because that fix is already compiled into the binary that
+hangs.** `bin/godot.nx.template_debug.arm64.elf` (2026-08-29) contains the
+`crsbig` and `crsinfo` strings the fix adds, as does the
+`libnouveau_rust_runtime.a` installed in the portlibs prefix it linked
+against. Whatever hangs the Forward+ draw, it is not the size of the
+convergence stack.
+
+Recorded because it was re-derived and nearly re-tested at the cost of a
+full Godot rebuild. Two traps made it look unproven: `build/mesa-nvk`'s
+`libnak.a` is the **C helpers** archive and is not where `sm50.rs` lands
+(that is `libnak_rs.rlib`, bundled into `libnouveau_rust_runtime.a`), so its
+old mtime means nothing; and **`strings` does not exist on the Windows
+development box**, so a `strings ... | grep -c` check reports 0 matches for
+every file whether or not the string is there. `grep -ac <string> <archive>`
+is the check that works.
+
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
 A Mesa patch's message records what had been measured *when it was
