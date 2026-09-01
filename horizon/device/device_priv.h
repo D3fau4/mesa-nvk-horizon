@@ -36,8 +36,11 @@ struct horizon_gpu_device {
      *                     L2-invalidate prologue and the wait-for-idle
      *                     + L2-writeback fence block back on a
      *                     memory-free wait submit.
-     */
+     * eager_reap          HORIZON_GPU_EAGER_REAP=1 — read the syncpoint
+     *                     on every reap even when the retirement list
+     *                     is empty and nothing can retire. */
     bool full_barrier_waits;
+    bool eager_reap;
 
     /* Opt-in (device.h) and the sticky record of it having been used. The
      * flag is written by channel creation from any thread, so it is atomic

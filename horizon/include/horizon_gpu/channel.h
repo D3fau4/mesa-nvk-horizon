@@ -69,6 +69,10 @@ typedef struct horizon_gpu_channel_stats {
     uint64_t bare_fence_submits;
     /* SyncptRead ioctls this channel has issued, from every path. */
     uint64_t syncpt_reads;
+    /* Reap calls, and the ones that returned without reading the
+     * syncpoint because the retirement list was empty. */
+    uint64_t reaps;
+    uint64_t reaps_without_read;
 } horizon_gpu_channel_stats;
 
 /* `create_info` may be NULL: medium priority, no Zcull. */
@@ -122,8 +126,14 @@ horizon_gpu_result
 horizon_gpu_channel_bind_engines(horizon_gpu_channel *chan,
                                  horizon_gpu_fence *out_fence);
 
-/* Non-blocking: reads the syncpoint once and runs every retirement
- * callback whose fence has been reached.
+/* Non-blocking: runs every retirement callback whose fence has been
+ * reached, reading the syncpoint once to find out which those are.
+ *
+ * The read is skipped when no retirement is registered, because then
+ * there is nothing the value could be compared against and nothing else
+ * derives state from it. That matters because horizon_gpu_submit reaps
+ * before it queues, so this is an ioctl per submit.
+ * HORIZON_GPU_EAGER_REAP=1 restores the unconditional read.
  *
  * Returns HORIZON_GPU_ERR_CHANNEL_LOST, and runs nothing, when the
  * channel has faulted. A faulted channel's syncpoints are force-

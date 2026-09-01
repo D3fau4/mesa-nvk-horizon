@@ -659,9 +659,37 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
      * against the 85 us of CPU a vkQueueSubmit already costs on this
      * platform (t_vk_submits), it is not the expensive part — and a
      * cheap wrong answer here is what this whole fix is about. */
+    chan->stats.reaps++;
+
     horizon_gpu_result res = channel_check_fault(chan);
     if (horizon_gpu_failed(res))
         return res;
+
+    /* NOTHING TO RETIRE IS NOTHING TO READ.
+     *
+     * The syncpoint read below is an ioctl, and horizon_gpu_submit reaps
+     * before it queues — so it is an ioctl per submit. What it buys is
+     * the retirement callbacks, and it buys nothing at all when no
+     * caller has registered one: the value read is compared against an
+     * empty list and then discarded. Nothing else in this function, or
+     * in the two that call it, keeps state derived from it —
+     * shadow_target is advanced by the submit, not by the reap.
+     *
+     * The fault check above is NOT part of this and stays
+     * unconditional. It is the safety property (a faulted channel's
+     * counter says "finished" for work that never ran), it costs a
+     * non-blocking event wait rather than an ioctl, and the callers on
+     * the submit path see the fault through it.
+     *
+     * HORIZON_GPU_EAGER_REAP=1 restores the read, so one console run can
+     * measure the submit path both ways instead of comparing a number
+     * from this build with a number from another one. */
+    if (chan->retire_count == 0 && !chan->dev->eager_reap) {
+        chan->stats.reaps_without_read++;
+        if (out_retired)
+            *out_retired = 0;
+        return horizon_gpu_ok();
+    }
 
     uint32_t hw;
     res = horizon_channel_read_syncpt(chan, &hw);
