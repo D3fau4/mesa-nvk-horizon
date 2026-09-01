@@ -1,0 +1,222 @@
+; comp_crs -- nested control flow deep enough to need a backed convergence
+; stack, wrapped around one loop, so the convergence stack can be asked
+; about directly instead of through a 4700-instruction scene shader.
+;
+; Godot 4.1's Forward+ fragment shader reports max_crs_depth = 13 and its
+; whole depth sits inside the cluster loop bodies: entering a body once is
+; enough to hang the draw on GM20B, with a bound of four and an empty body.
+; sm50's crs_size() reserves nothing below 16, counting one stack slot per
+; nesting level; nouveau counts two (nvc0_program.c, "factor 2 only needed
+; where joinat/precont is used"). This shader reproduces that shape.
+;
+; One storage buffer of 32-bit words, LANES = 64 (2 warps of 32):
+;
+;   [  0.. 63]  cond[id]   bitmask of the 12 nesting conditions
+;   [ 64..127]  to[id]     upper bound of the innermost loop
+;   [128..191]  out_n[id]  what the loop accumulated
+;   [192..255]  out_i[id]  the value of i when the loop exited
+;
+; The invocation does:
+;
+;   n = 0; i = 0;
+;   if (cond & 1) { if (cond & 2) { ... 12 deep ...
+;       for (i = 0; i < to; i++) n += i + 1;
+;   ... } }
+;   out_n[id] = n; out_i[id] = i;
+;
+; The CPU recomputes both words exactly.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1), same reasons as comp_write_id.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 32 1 1
+
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %Buf 0 Offset 0
+               OpDecorate %Buf Block
+               OpDecorate %ssbo DescriptorSet 0
+               OpDecorate %ssbo Binding 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %bool = OpTypeBool
+       %uint = OpTypeInt 32 0
+      %int32 = OpTypeInt 32 1
+     %v3uint = OpTypeVector %uint 3
+   %ptr_in_v = OpTypePointer Input %v3uint
+   %ptr_in_u = OpTypePointer Input %uint
+        %gid = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+        %Buf = OpTypeStruct %rta
+    %ptr_ssb = OpTypePointer StorageBuffer %Buf
+       %ssbo = OpVariable %ptr_ssb StorageBuffer
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+   %ptr_fn_u = OpTypePointer Function %uint
+
+      %int_0 = OpConstant %int32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+    %uint_64 = OpConstant %uint 64
+   %uint_128 = OpConstant %uint 128
+   %uint_192 = OpConstant %uint 192
+  %uint_b0  = OpConstant %uint 1
+  %uint_b1  = OpConstant %uint 2
+  %uint_b2  = OpConstant %uint 4
+  %uint_b3  = OpConstant %uint 8
+  %uint_b4  = OpConstant %uint 16
+  %uint_b5  = OpConstant %uint 32
+  %uint_b6  = OpConstant %uint 64
+  %uint_b7  = OpConstant %uint 128
+  %uint_b8  = OpConstant %uint 256
+  %uint_b9  = OpConstant %uint 512
+  %uint_b10 = OpConstant %uint 1024
+  %uint_b11 = OpConstant %uint 2048
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+         %pn = OpVariable %ptr_fn_u Function
+         %pi = OpVariable %ptr_fn_u Function
+               OpStore %pn %uint_0
+               OpStore %pi %uint_0
+      %gidxp = OpAccessChain %ptr_in_u %gid %uint_0
+         %id = OpLoad %uint %gidxp
+        %cp  = OpAccessChain %ptr_ssb_u %ssbo %int_0 %id
+       %cond = OpLoad %uint %cp
+       %tidx = OpIAdd %uint %id %uint_64
+        %tp  = OpAccessChain %ptr_ssb_u %ssbo %int_0 %tidx
+         %to = OpLoad %uint %tp
+
+      %bit0  = OpBitwiseAnd %uint %cond %uint_b0
+      %cmp0  = OpINotEqual %bool %bit0 %uint_0
+               OpSelectionMerge %merge0 None
+               OpBranchConditional %cmp0 %then0 %merge0
+     %then0  = OpLabel
+
+      %bit1  = OpBitwiseAnd %uint %cond %uint_b1
+      %cmp1  = OpINotEqual %bool %bit1 %uint_0
+               OpSelectionMerge %merge1 None
+               OpBranchConditional %cmp1 %then1 %merge1
+     %then1  = OpLabel
+
+      %bit2  = OpBitwiseAnd %uint %cond %uint_b2
+      %cmp2  = OpINotEqual %bool %bit2 %uint_0
+               OpSelectionMerge %merge2 None
+               OpBranchConditional %cmp2 %then2 %merge2
+     %then2  = OpLabel
+
+      %bit3  = OpBitwiseAnd %uint %cond %uint_b3
+      %cmp3  = OpINotEqual %bool %bit3 %uint_0
+               OpSelectionMerge %merge3 None
+               OpBranchConditional %cmp3 %then3 %merge3
+     %then3  = OpLabel
+
+      %bit4  = OpBitwiseAnd %uint %cond %uint_b4
+      %cmp4  = OpINotEqual %bool %bit4 %uint_0
+               OpSelectionMerge %merge4 None
+               OpBranchConditional %cmp4 %then4 %merge4
+     %then4  = OpLabel
+
+      %bit5  = OpBitwiseAnd %uint %cond %uint_b5
+      %cmp5  = OpINotEqual %bool %bit5 %uint_0
+               OpSelectionMerge %merge5 None
+               OpBranchConditional %cmp5 %then5 %merge5
+     %then5  = OpLabel
+
+      %bit6  = OpBitwiseAnd %uint %cond %uint_b6
+      %cmp6  = OpINotEqual %bool %bit6 %uint_0
+               OpSelectionMerge %merge6 None
+               OpBranchConditional %cmp6 %then6 %merge6
+     %then6  = OpLabel
+
+      %bit7  = OpBitwiseAnd %uint %cond %uint_b7
+      %cmp7  = OpINotEqual %bool %bit7 %uint_0
+               OpSelectionMerge %merge7 None
+               OpBranchConditional %cmp7 %then7 %merge7
+     %then7  = OpLabel
+
+      %bit8  = OpBitwiseAnd %uint %cond %uint_b8
+      %cmp8  = OpINotEqual %bool %bit8 %uint_0
+               OpSelectionMerge %merge8 None
+               OpBranchConditional %cmp8 %then8 %merge8
+     %then8  = OpLabel
+
+      %bit9  = OpBitwiseAnd %uint %cond %uint_b9
+      %cmp9  = OpINotEqual %bool %bit9 %uint_0
+               OpSelectionMerge %merge9 None
+               OpBranchConditional %cmp9 %then9 %merge9
+     %then9  = OpLabel
+
+      %bit10 = OpBitwiseAnd %uint %cond %uint_b10
+      %cmp10 = OpINotEqual %bool %bit10 %uint_0
+               OpSelectionMerge %merge10 None
+               OpBranchConditional %cmp10 %then10 %merge10
+     %then10 = OpLabel
+
+      %bit11 = OpBitwiseAnd %uint %cond %uint_b11
+      %cmp11 = OpINotEqual %bool %bit11 %uint_0
+               OpSelectionMerge %merge11 None
+               OpBranchConditional %cmp11 %then11 %merge11
+     %then11 = OpLabel
+
+               OpBranch %l_hdr
+      %l_hdr = OpLabel
+               OpLoopMerge %l_exit %l_cont None
+               OpBranch %l_test
+     %l_test = OpLabel
+        %iv0 = OpLoad %uint %pi
+      %l_lt  = OpULessThan %bool %iv0 %to
+               OpBranchConditional %l_lt %l_body %l_exit
+     %l_body = OpLabel
+        %nv0 = OpLoad %uint %pn
+        %iv1 = OpLoad %uint %pi
+       %sum0 = OpIAdd %uint %nv0 %iv1
+       %sum1 = OpIAdd %uint %sum0 %uint_1
+               OpStore %pn %sum1
+               OpBranch %l_cont
+     %l_cont = OpLabel
+        %iv2 = OpLoad %uint %pi
+       %inext = OpIAdd %uint %iv2 %uint_1
+               OpStore %pi %inext
+               OpBranch %l_hdr
+     %l_exit = OpLabel
+               OpBranch %merge11
+    %merge11 = OpLabel
+               OpBranch %merge10
+    %merge10 = OpLabel
+               OpBranch %merge9
+    %merge9  = OpLabel
+               OpBranch %merge8
+    %merge8  = OpLabel
+               OpBranch %merge7
+    %merge7  = OpLabel
+               OpBranch %merge6
+    %merge6  = OpLabel
+               OpBranch %merge5
+    %merge5  = OpLabel
+               OpBranch %merge4
+    %merge4  = OpLabel
+               OpBranch %merge3
+    %merge3  = OpLabel
+               OpBranch %merge2
+    %merge2  = OpLabel
+               OpBranch %merge1
+    %merge1  = OpLabel
+               OpBranch %merge0
+    %merge0  = OpLabel
+
+       %nfin = OpLoad %uint %pn
+       %ifin = OpLoad %uint %pi
+      %nidx  = OpIAdd %uint %id %uint_128
+       %np   = OpAccessChain %ptr_ssb_u %ssbo %int_0 %nidx
+               OpStore %np %nfin
+      %iidx  = OpIAdd %uint %id %uint_192
+       %ip   = OpAccessChain %ptr_ssb_u %ssbo %int_0 %iidx
+               OpStore %ip %ifin
+               OpReturn
+               OpFunctionEnd

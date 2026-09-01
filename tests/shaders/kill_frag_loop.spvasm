@@ -1,0 +1,125 @@
+; kill_frag_loop -- a loop in a fragment shader, with and without a kill
+; in front of it.
+;
+; Godot 4.1's Forward+ scene shader hangs the channel on GM20B as soon as
+; one of its cluster loops takes its back edge, and stays at 2.77 ms a
+; frame when the same loop is present but never entered. Everything the
+; loop reads, everything it computes and the loop's own bound were taken
+; away one at a time and it still hung with a bound of four and an empty
+; body (2026-08-29). The shader also reports uses_kill, and a compute
+; shader with twelve levels of nesting around a loop passes
+; (t_vk_crs) -- so this asks the fragment stage directly.
+;
+; Push constant: uvec4(n, kill_mode, 0, 0)
+;
+;   if (kill_mode != 0 && ((x ^ y) & 1) != 0) discard;
+;   acc = 0; for (i = 0; i < n; i++) acc += i + 1;
+;   colour = uvec4(acc, i, kill_mode, n);
+;
+; The three cases the test drives:
+;
+;   n = 0, kill_mode = 0   the loop is present and never entered
+;   n = 4, kill_mode = 0   the loop runs, nothing is killed
+;   n = 4, kill_mode = 1   the loop runs after half the lanes are gone
+;
+; A UINT attachment so the numbers come back exactly.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1), same reasons as comp_write_id.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour %frag_coord
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+               OpDecorate %frag_coord BuiltIn FragCoord
+               OpMemberDecorate %PC 0 Offset 0
+               OpDecorate %PC Block
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %bool = OpTypeBool
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+    %v4float = OpTypeVector %float 4
+     %v4uint = OpTypeVector %uint 4
+   %ptr_fn_u = OpTypePointer Function %uint
+
+         %PC = OpTypeStruct %v4uint
+     %ptr_pc = OpTypePointer PushConstant %PC
+   %ptr_pc_v = OpTypePointer PushConstant %v4uint
+         %pc = OpVariable %ptr_pc PushConstant
+
+  %ptr_out_v = OpTypePointer Output %v4uint
+ %out_colour = OpVariable %ptr_out_v Output
+   %ptr_in_v = OpTypePointer Input %v4float
+ %frag_coord = OpVariable %ptr_in_v Input
+
+      %int_0 = OpConstant %int32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+        %pacc = OpVariable %ptr_fn_u Function
+         %pi  = OpVariable %ptr_fn_u Function
+               OpStore %pacc %uint_0
+               OpStore %pi %uint_0
+         %cp = OpAccessChain %ptr_pc_v %pc %int_0
+          %c = OpLoad %v4uint %cp
+          %n = OpCompositeExtract %uint %c 0
+       %kmod = OpCompositeExtract %uint %c 1
+
+    ; if (kill_mode != 0 && ((x ^ y) & 1) != 0) discard;
+      %k_nz = OpINotEqual %bool %kmod %uint_0
+               OpSelectionMerge %k_merge None
+               OpBranchConditional %k_nz %k_then %k_merge
+     %k_then = OpLabel
+         %fc = OpLoad %v4float %frag_coord
+        %fcx = OpCompositeExtract %float %fc 0
+        %fcy = OpCompositeExtract %float %fc 1
+         %ix = OpConvertFToU %uint %fcx
+         %iy = OpConvertFToU %uint %fcy
+        %xor = OpBitwiseXor %uint %ix %iy
+        %odd = OpBitwiseAnd %uint %xor %uint_1
+      %o_nz  = OpINotEqual %bool %odd %uint_0
+               OpSelectionMerge %o_merge None
+               OpBranchConditional %o_nz %o_kill %o_merge
+     %o_kill = OpLabel
+               OpKill
+    %o_merge = OpLabel
+               OpBranch %k_merge
+    %k_merge = OpLabel
+
+    ; acc = 0; for (i = 0; i < n; i++) acc += i + 1;
+               OpBranch %l_hdr
+      %l_hdr = OpLabel
+               OpLoopMerge %l_exit %l_cont None
+               OpBranch %l_test
+     %l_test = OpLabel
+        %iv0 = OpLoad %uint %pi
+       %l_lt = OpULessThan %bool %iv0 %n
+               OpBranchConditional %l_lt %l_body %l_exit
+     %l_body = OpLabel
+        %av0 = OpLoad %uint %pacc
+        %iv1 = OpLoad %uint %pi
+       %sum0 = OpIAdd %uint %av0 %iv1
+       %sum1 = OpIAdd %uint %sum0 %uint_1
+               OpStore %pacc %sum1
+               OpBranch %l_cont
+     %l_cont = OpLabel
+        %iv2 = OpLoad %uint %pi
+      %inext = OpIAdd %uint %iv2 %uint_1
+               OpStore %pi %inext
+               OpBranch %l_hdr
+     %l_exit = OpLabel
+
+       %afin = OpLoad %uint %pacc
+       %ifin = OpLoad %uint %pi
+        %col = OpCompositeConstruct %v4uint %afin %ifin %kmod %n
+               OpStore %out_colour %col
+               OpReturn
+               OpFunctionEnd

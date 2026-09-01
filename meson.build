@@ -394,6 +394,26 @@ nvk_tests = [
   # have been linked since Phase 4 and have never produced machine code
   # that executed.
   't_vk_compute',
+  # A loop whose trip count comes from memory, in the shape of Godot's
+  # cluster loops: with to == 0 the body must not run. Written because
+  # the Forward+ scene shader looked like it did; both pass on hardware,
+  # so the shape is not what breaks there. See
+  # docs/MEASURED-ON-HARDWARE.md.
+  't_vk_loop',
+  't_vk_loop2',
+  # Nested control flow deep enough that the convergence stack needs
+  # memory behind it. sm50's crs_size() counts one stack slot per
+  # nesting level and reserves nothing below 16; nouveau counts two
+  # for the same field. Godot's Forward+ fragment shader lives between
+  # the two rules, so this asks whether that regime works at all. It
+  # does, at twelve levels around a loop.
+  't_vk_crs',
+  # The same question in the fragment stage, where a kill exists:
+  # a loop that is never entered, one that runs, and one that runs
+  # after half the lanes have been killed. The scene shader reports
+  # uses_kill, and this was the last thing a compute test could not
+  # ask. All three cases are right on hardware.
+  't_vk_kill',
   # What a GPU timestamp tick is worth. NVK publishes timestampPeriod =
   # 1.0f for every device it drives, which is true of the GPUs nouveau
   # was written for and was never checked here — and that number is the
@@ -490,6 +510,10 @@ nvk_test_shaders = {
   # able to catch the regression patch 0048 fixed.
   't_vk_image' : [],
   't_vk_compute' : ['comp_write_id'],
+  't_vk_loop' : ['comp_loop'],
+  't_vk_loop2' : ['comp_loop2'],
+  't_vk_crs' : ['comp_crs'],
+  't_vk_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
   # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
   # should be about the cache and not about a shader nothing else runs.
   't_vk_cache' : ['comp_write_id'],

@@ -119,8 +119,12 @@ after touching either build system.
    | 21 | `t_vulkan` | the mandatory Phase 4 sequence, ending in a CPU readback that validates |
    | 22 | `t_vk_transfer` | buffer↔buffer and buffer↔image copies — every later test reads back through one |
    | 23 | `t_vk_compute` | compute dispatch: the first shader this project runs, and therefore NAK and NIL |
+   | 23a | `t_vk_loop` | a loop whose trip count comes from memory, in the shape of Godot's Forward+ cluster loops: four warps, each lane with its own bound and its own "am I in the loop at all" flag, including the case where every bound is zero and the body must not run |
+   | 23b | `t_vk_loop2` | the same loop with the exact bound idiom of those cluster loops — packed min/max word, prmt-style extraction, bcsel, and the loop counted from `item_from` |
+   | 23c | `t_vk_crs` | twelve levels of nested control flow wrapped around a loop, which is the regime where sm50's `crs_size()` reserves no shader local memory behind the convergence stack. One warp goes all the way in, the other turns back at the outermost level, so a failure says which one broke |
    | 24 | `t_vk_image` | off-screen images and clears |
    | 25 | `t_vk_triangle` | the first draw call |
+   | 25a | `t_vk_kill` | a loop in a *fragment* shader, with and without a kill in front of it: never entered, entered, and entered after half the lanes are gone. The kill is the one thing a compute test cannot ask, and Godot's scene shader reports `uses_kill` |
    | 26 | `t_vk_texture` | textures: upload, read back, and sample three ways |
    | 27 | `t_vk_depth` | depth, four draws in one render pass differing only in push constants |
    | 27c | `t_vk_draws` | 512 draws with the pipeline changing between them, the same draws split across 64 render passes, and an alpha blend chain checked against the same chain evaluated on the CPU |
