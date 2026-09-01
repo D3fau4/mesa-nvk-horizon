@@ -454,6 +454,24 @@ nvk_tests = [
   # pipeline's ROP into a scanout surface, and a report of 157 ms frames
   # from an application that does had no control to be measured against.
   't_vk_present_draw',
+  # Zcull. The pdev advertises has_zcull_info and NVK programs Zcull
+  # whenever a depth attachment is cleared, and the failure mode is a
+  # fragment wrongly rejected — no fault, no notifier, just geometry that
+  # is not there. So this renders one workload twice in one run, once
+  # with NVK_HORIZON_ZCULL=0, and compares the two images. It is what
+  # decides whether the capability keeps being advertised.
+  't_vk_zcull',
+  # Volume, not features: many distinct compute pipelines back to back,
+  # which is the only thing that makes NVK's contiguous shader heap grow
+  # past the first chunk it binds at device creation, plus the churn that
+  # exercises its free list and the per-pipeline compile times that are
+  # what an application feels as stutter.
+  't_vk_pipelines',
+  # The other half of volume: hundreds of draws with the pipeline
+  # changing between them, the same draws split across many render
+  # passes, and blending — which the fixture refused to do until now
+  # because every earlier test wanted the destination out of its answer.
+  't_vk_draws',
 ]
 
 # Shaders each NVK test needs, by test name. An entry is the stem of
@@ -513,6 +531,20 @@ nvk_test_shaders = {
   # a slow frame here would be one more thing to rule out rather than a
   # measurement. Same triangle, same sampler, a surface-sized texture.
   't_vk_present_draw' : ['tex_vert_fullscreen', 'tex_frag_sample'],
+  # The depth pair t_vk_depth already uses, on purpose: what t_vk_zcull
+  # measures is which fragments survive, so the draws should be ones
+  # whose behaviour is already established. comp_write_id is never
+  # dispatched — the pipeline is built and destroyed so that NVK uploads
+  # a shader through the upload queue, which is a different channel.
+  't_vk_zcull' : ['depth_vert_z', 'depth_frag_pc', 'comp_write_id'],
+  # One shader, specialized many times. comp_write_id would not do: it
+  # is four instructions and identical every time, so a hundred
+  # pipelines built from it are one compile and one heap allocation.
+  't_vk_pipelines' : ['comp_chain'],
+  # The same depth pair again. What this test varies is the number of
+  # draws, the pipeline between them and the blend state — none of which
+  # is a property of the shaders.
+  't_vk_draws' : ['depth_vert_z', 'depth_frag_pc'],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,

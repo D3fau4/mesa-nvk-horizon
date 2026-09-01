@@ -26,8 +26,9 @@ patch series name `docs/architecture.md`, `docs/milestones.md`,
 asked. When adding a Mesa patch, keep the four-field header format below even though
 the milestones list its first field cites is gone.
 
-`docs/` holds **exactly one file**, `MEASURED-ON-HARDWARE.md`, which is not any of
-the three above. The three cited there are still gone.
+`docs/` holds **exactly two files**, `MEASURED-ON-HARDWARE.md` and
+`PENDING-HARDWARE-RUNS.md`, neither of which is any of the three above. The three
+cited there are still gone.
 
 `docs/PENDING-VERIFICATION.md` is gone too, and two Mesa patches still cite it:
 `0054` in its commit message, and `0055` in a comment its diff adds to
@@ -54,6 +55,17 @@ So work that is still owed does **not** belong here. It goes in a commit message
 in a new ledger with the same discipline: a **Done when** line per section, and the
 file deleted rather than emptied when they are all met. Add to this file only when a
 measurement on hardware settles something that would otherwise get measured twice.
+
+### `docs/PENDING-HARDWARE-RUNS.md` — that new ledger
+
+It exists because the merge of PR #22 landed four class-X debts, each with its
+**Done when** line, and a textual merge put them in `MEASURED-ON-HARDWARE.md`, where
+the file's own header forbids them. They are here instead, under the same rules the
+dead ledger had: **delete the file when the last section closes**, never empty it.
+
+It is deliberately not called `PENDING-VERIFICATION.md`. That name is cited by `0054`
+and `0055`, and what those two point at is in `MEASURED-ON-HARDWARE.md` — reusing it
+would make two dangling references silently resolve to the wrong file.
 
 ## Commands
 

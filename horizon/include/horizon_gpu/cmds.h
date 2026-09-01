@@ -91,6 +91,7 @@ extern "C" {
 
 /* Emitted dword counts. */
 #define HORIZON_CMDS_FENCE_INCR_DWORDS   9u
+#define HORIZON_CMDS_FENCE_INCR_BARE_DWORDS 4u
 #define HORIZON_CMDS_SET_OBJECTS_DWORDS  (2u * HORIZON_CMDS_NUM_SUBCHANNELS)
 #define HORIZON_CMDS_SYNCPT_WAIT_DWORDS  4u
 #define HORIZON_CMDS_SEM_RELEASE_DWORDS  5u
@@ -129,6 +130,37 @@ static inline uint32_t horizon_cmd_hdr_incr(uint32_t subch, uint32_t method,
  * field. */
 uint32_t horizon_cmds_fence_incr(uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS],
                                  uint32_t syncpt_id);
+
+/* The same increment WITHOUT the wait-for-idle and the L2 writeback:
+ * SYNCPOINTA payload + SYNCPOINTB incr, and nothing else.
+ *
+ * WHEN THIS IS THE RIGHT BLOCK, AND IT IS A NARROW WHEN. The two methods
+ * horizon_cmds_fence_incr puts in front of the increment answer two
+ * questions, and a submit that touches no memory asks neither:
+ *
+ *   WFI SCOPE_ALL   makes the increment mean "the engines are done".
+ *                   A command list built only from HOST methods has no
+ *                   engine work to be done with: the host executes
+ *                   SYNCPOINTA/B in pushbuffer order, so an increment
+ *                   emitted after them is already after them.
+ *   L2_FLUSH_DIRTY  makes the increment mean "the writes are visible".
+ *                   A submit that wrote nothing has nothing to flush,
+ *                   and the writes it may be *waiting on* were flushed
+ *                   by the fence block of the channel that made them
+ *                   before it signalled the fence being waited for.
+ *
+ * So this is for a submit whose whole command list is host methods with
+ * no memory effect — horizon_gpu_submit_waits is the one caller, and it
+ * builds its list itself out of horizon_cmds_syncpt_wait. It is NOT for
+ * anything the caller supplied: this layer cannot know what a caller's
+ * command list touched, and a wrong answer here is a fence that reports
+ * work as complete and visible when it is neither.
+ *
+ * Returns the dword count, or 0 when syncpt_id exceeds the 12-bit index
+ * field. */
+uint32_t
+horizon_cmds_fence_incr_bare(uint32_t buf[HORIZON_CMDS_FENCE_INCR_BARE_DWORDS],
+                             uint32_t syncpt_id);
 
 /* GPU-side syncpoint wait: SYNCPOINTA payload=threshold + SYNCPOINTB
  * wait|switch (known-risks R10 — to be validated on hardware in Phase 1).

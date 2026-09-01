@@ -360,7 +360,7 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
         }
         horizon_va_set_remove(&range->live, offset_in_range);
         free(mapping);
-        return horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        return horizon_gpu_err(HORIZON_GPU_ERR_VA_EXHAUSTED);
     }
 
     mapping->range = range;

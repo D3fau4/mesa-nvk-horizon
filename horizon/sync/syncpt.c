@@ -230,6 +230,8 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
         last_rc = nvFenceWait(&nvf, chunk_us);
         if (horizon_nv_wait_timed_out(last_rc))
             continue;
+        if (R_FAILED(last_rc))
+            return horizon_gpu_err_nv(last_rc);
 
         /* How long it actually blocked, not what it returned, decides
          * whether this was a pulse. A chunk that consumed its time did

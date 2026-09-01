@@ -1,0 +1,35 @@
+From 41a4c4cab84e9ceb9aaa2ecda3ead0ff73861b21 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ra=C3=BAl=20=C3=81lvarez?= <raulwii2@gmail.com>
+Date: Tue, 1 Sep 2026 13:11:51 +0200
+Subject: [PATCH 57/58] nouveau/vk: nvkmd_horizon: define sync lock ordering
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 items 6-10 (sync lifetime)
+Why: relational comparison of pointers to distinct sync objects is undefined in C, so it cannot define a portable total order for taking their mutexes. Compare their uintptr_t representations instead.
+Evidence: env -u DEVKITPRO scripts/build-mesa-nvk.sh completed the full 877-target NVK cross build with devkitA64 GCC 15.2.0; nvkmd_horizon_sync.c compiled and libnvk.a linked.
+Upstream: no — this fixes the Horizon backend's own sync implementation.
+---
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index 6fa8c51..0a9183d 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -239,8 +239,9 @@ nvk_horizon_sync_move(struct vk_device *device,
+     * explicitly.
+     */
+    assert(dst != src);
+-   struct nvk_horizon_sync *first = dst < src ? dst : src;
+-   struct nvk_horizon_sync *second = dst < src ? src : dst;
++   const bool dst_first = (uintptr_t)dst < (uintptr_t)src;
++   struct nvk_horizon_sync *first = dst_first ? dst : src;
++   struct nvk_horizon_sync *second = dst_first ? src : dst;
+    mtx_lock(&first->mutex);
+    mtx_lock(&second->mutex);
+ 
+-- 
+2.43.0
+
