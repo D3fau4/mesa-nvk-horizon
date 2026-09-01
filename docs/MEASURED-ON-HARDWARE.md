@@ -163,6 +163,48 @@ development box**, so a `strings ... | grep -c` check reports 0 matches for
 every file whether or not the string is there. `grep -ac <string> <archive>`
 is the check that works.
 
+## Godot's Forward+ hang is not the loop, and not the kill either
+
+Three runs on 2026-09-01, all ending in `fault notification 8 (fifo idle
+timeout)` on the first 3D phase:
+
+| Build | What it removes | Result |
+|---|---|---|
+| `bench_fp_dbg` | nothing — the stock Forward+ bench | 2D phases 1-3 fine (60, 20, 58 fps); dies in phase 4, `3d_cubes_200` |
+| `probe13` | all seven `discard;` sites in the scene shader | dies, on a single cube |
+| `probe12` | the loop itself — a literal bound, so NIR unrolls it and no back edge is left | dies, on a single cube |
+
+`probe13` kills the hypothesis that a `discard` leaves the warp and a later
+loop waits forever for lanes that no longer exist. `t_vk_kill` had already
+said the same from the other side: a fragment loop entered after half the
+lanes are killed is right on 256/256 texels.
+
+**`probe12` is the one that matters, and it was written as a control.** With
+the loop unrolled and no back edge anywhere, it still hangs. So the loop is
+not the cause, and the whole probe series that reduced it — bound, body,
+induction, range read, subgroup reduce — was not measuring the loop.
+
+**What it was measuring is dead-code elimination.** Every "fast" reading in
+that series came from a build whose loop is never entered, and a loop that
+never runs makes its accumulator a constant, which lets DCE take the lighting
+that consumes it with it. The same trap is already recorded for
+instrumentation: overriding `frag_color` to paint a value DCE's the lighting
+and the cluster loops, and a build that does it runs at 60 fps for the wrong
+reason. "The loop is free when it is not entered" and "the shader is mostly
+gone when it is not entered" are the same measurement.
+
+So a Forward+ fragment shader that actually does its work hangs the channel,
+and nothing yet distinguishes which part of that work does it. What is
+excluded on hardware: the loop, the back edge, the kill, the convergence
+stack, the descriptor read (`t_vk_set1`), every optional NAK pass, the
+caches and barriers, and the attachment-less cluster-builder pass.
+
+The one measurement in that series worth keeping is the NAK dump of the
+scene fragment shader: **4244 instructions, 104 GPRs, 16 warps/SM**, compiled
+with `USE_SUBGROUPS`. 104 GPRs is what holds occupancy down to 16 of 64
+warps, and register pressure is the one property that both a loop and an
+added `frag_color` paint change.
+
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
 A Mesa patch's message records what had been measured *when it was
