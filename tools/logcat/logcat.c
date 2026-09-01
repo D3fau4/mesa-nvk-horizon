@@ -21,6 +21,7 @@
  *   nxlink -s -a <ip> logcat.nro                    # list the directory
  *   nxlink -s -a <ip> logcat.nro t_vk_immediate     # one log, by stem
  *   nxlink -s -a <ip> logcat.nro sdmc:/some/file    # any path
+ *   nxlink -s -a <ip> logcat.nro sdmc:/some/dir     # list any directory
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -93,15 +94,19 @@ static bool logcat_dump(const char *path)
     return ok;
 }
 
-static void logcat_list(void)
+/* Lists `dir`: LOGCAT_DIR when run without arguments, or any argument
+ * that names a directory rather than a file — Atmosphere's crash reports
+ * (sdmc:/atmosphere/crash_reports/) carry a timestamp in their name, so
+ * they cannot be fetched without listing the directory first. */
+static void logcat_list(const char *dir)
 {
-    DIR *d = opendir(LOGCAT_DIR);
+    DIR *d = opendir(dir);
     if (d == NULL) {
-        printf("logcat: cannot open %s\n", LOGCAT_DIR);
+        printf("logcat: cannot open %s\n", dir);
         return;
     }
 
-    printf("===== %s =====\n", LOGCAT_DIR);
+    printf("===== %s =====\n", dir);
     for (;;) {
         const struct dirent *e = readdir(d);
         if (e == NULL)
@@ -110,7 +115,7 @@ static void logcat_list(void)
             continue;
 
         char path[320];
-        snprintf(path, sizeof(path), "%s/%s", LOGCAT_DIR, e->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
 
         struct stat st;
         if (stat(path, &st) == 0)
@@ -148,11 +153,14 @@ int main(int argc, char **argv)
         for (int i = 1; i < argc; i++) {
             char path[320];
             logcat_resolve(argv[i], path, sizeof(path));
-            if (!logcat_dump(path))
+            struct stat st;
+            if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+                logcat_list(path);
+            else if (!logcat_dump(path))
                 ok = false;
         }
     } else {
-        logcat_list();
+        logcat_list(LOGCAT_DIR);
     }
 
     printf("logcat: %s\n", ok ? "done" : "done, with errors above");
