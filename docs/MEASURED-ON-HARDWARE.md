@@ -241,18 +241,37 @@ passing and with `probe12` and `probe13`, nothing about the fragment shader
 explains it: not the loop, the back edge, the kill, the convergence stack,
 the descriptors, or the instruction latencies.
 
-**nvgpu's error record was read, and it is empty.**
+**nvgpu's error record was read, and it names a timeout.**
 `nvGpuChannelGetErrorInfo()` returns `NvError` — a type and 31 words, where a
 graphics exception keeps the class, the method and the offset the engine
 stopped on. On this fault it answers `type=0x00000004` with **all 31 words
-zero**. So the engine raised no graphics exception: nothing in the command
-buffer was rejected as illegal, malformed or out of bounds. It accepted the
-work and never finished it.
+zero**.
+
+That type is not "unclassified": switchbrew documents the enumeration for
+`NVGPU_IOCTL_CHANNEL_GET_ERROR_INFO`, which is exclusive to this platform, as
+`0=no_error, 1=mmu_error, 2=gr_error, 3=pbdma_error, 4=timeout`. So the
+kernel positively classified this death as a **timeout**, and by the same
+token as *not* an MMU error, *not* a graphics exception and *not* a PBDMA
+error. The empty info block agrees: `type == 2` is the case with a documented
+payload — intr_value, addr, data_hi, data_lo, class_num — and this is not
+that case. Nothing in the command buffer was rejected as illegal, malformed
+or out of bounds. The engine accepted the work and never finished it.
 
 That is the last thing the kernel knows, and it agrees with the
-debug-synchronous picture. Anything further has to come from the GPU side —
-where in the pushbuffer the GPFIFO GET pointer stopped, which is the one
-number that would say how far into those 21406 dwords the engine got.
+debug-synchronous picture.
+
+**The obvious next number is not reachable on this console.** Where the
+GPFIFO GET pointer stopped would say how far into those 21406 dwords the
+engine got, and it lives in the channel's USERD page. The only ioctl that
+hands a process the GPU VA of its own USERD is
+`NVGPU_IOCTL_CHANNEL_SETUP_BIND` (`userd_gpu_va`, `usermode_mmio_gpu_va`),
+and switchbrew marks it `[S2]` — Switch 2 only, alongside `CHANNEL_OPEN` and
+the `nvhost-tsg-gpu` device. This console's channel path is
+`ALLOC_GPFIFO_EX2` + `SUBMIT_GPFIFO2`, and neither returns a USERD address;
+reading PBDMA or CCSR registers directly needs the `GpuDebug` permission,
+which an application does not have. Progress inside a pushbuffer therefore
+has to be measured by something the pushbuffer itself writes to memory, not
+by asking the kernel where it got to.
 
 ## The series' "NOT RUN ON A CONSOLE" lines are frozen at their writing date
 
