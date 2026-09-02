@@ -115,6 +115,28 @@ static const char *channel_error_desc(uint32_t type)
     }
 }
 
+/* The error *record*'s type is a different enumeration from the
+ * notification's, and a much shorter one. switchbrew documents it for
+ * NVGPU_IOCTL_CHANNEL_GET_ERROR_INFO, which is exclusive to this
+ * platform: "Error type (0=no_error, 1=mmu_error, 2=gr_error,
+ * 3=pbdma_error, 4=timeout)".
+ *
+ * The distinction is the whole value of reading the record: a channel
+ * that died with an empty info block and type=4 was classified by the
+ * kernel as a timeout, which is not the same fact as a graphics
+ * exception whose payload happened to be lost. */
+static const char *channel_error_info_desc(uint32_t type)
+{
+    switch (type) {
+    case 0:  return "no error";
+    case 1:  return "MMU error";
+    case 2:  return "graphics exception";
+    case 3:  return "PBDMA error";
+    case 4:  return "timeout";
+    default: return "unknown error type";
+    }
+}
+
 horizon_gpu_result
 horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
                               const char **out_desc)
@@ -189,19 +211,36 @@ static horizon_gpu_result channel_check_fault(horizon_gpu_channel *chan)
              * live. A fault that says only "8" costs a bisection; one
              * that names a method costs a lookup, so it is read here on
              * the path that has already decided the channel is lost and
-             * is never taken again for the same channel.
-             *
-             * Only the non-zero words are printed, with their index: the
-             * block is mostly zero and 31 zeroes in a log are 31 lines
-             * nobody reads. */
+             * is never taken again for the same channel. */
             NvError err;
             memset(&err, 0, sizeof(err));
             Result erc = nvGpuChannelGetErrorInfo(&chan->gc, &err);
             if (R_SUCCEEDED(erc)) {
                 horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
-                             "channel %p: error info type=0x%08x",
-                             (void *)chan, err.type);
-                for (uint32_t i = 0; i < 31; i++) {
+                             "channel %p: error info type=%u (%s)",
+                             (void *)chan, err.type,
+                             channel_error_info_desc(err.type));
+                /* Only a graphics exception has a documented layout for
+                 * the words that follow, and it is the one worth
+                 * spelling out: switchbrew gives intr_value, addr,
+                 * data_hi, data_lo and class_num, in that order, for
+                 * type == 2. Naming them is the difference between a
+                 * fault that costs a lookup and one that costs a
+                 * bisection. The first five words are then skipped by
+                 * the dump below, which would only repeat them. */
+                uint32_t first = 0;
+                if (err.type == 2) {
+                    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                                 "channel %p:   intr=0x%08x addr=0x%08x "
+                                 "data=0x%08x%08x class=0x%04x",
+                                 (void *)chan, err.info[0], err.info[1],
+                                 err.info[2], err.info[3], err.info[4]);
+                    first = 5;
+                }
+                /* Only the non-zero words are printed, with their
+                 * index: the block is mostly zero and 31 zeroes in a
+                 * log are 31 lines nobody reads. */
+                for (uint32_t i = first; i < 31; i++) {
                     if (err.info[i] != 0)
                         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                                      "channel %p:   info[%u] = 0x%08x",
