@@ -254,8 +254,14 @@ sets. Of the five pipeline-state differences the 2026-08-23 Forward+ /
 Mobile dump found, four are now excluded individually — Zcull, the depth
 prepass and its `DEPTH_FUNC EQUAL`, the register count, and
 `SET_CT_SELECT.TARGET_COUNT 3` with two `DISABLED` targets (`t_vk_mrt`,
-96/96). The RGBA16F colour target is the one that has not been asked on
-its own.
+96/96). The fifth, the RGBA16F colour target, needs no new test:
+`t_vk_format` already renders to `R16G16B16A16_SFLOAT` *and* to Mobile's
+`A2B10G10R10_UNORM_PACK32` as colour attachments and passes.
+
+So **all five are excluded**, with one residual: `t_vk_depth` covers a
+depth attachment with writes off and depth-tested draws, but not
+`DEPTH_FUNC OGL_EQUAL` specifically. Nothing else at the state level is
+left, which leaves the fragment shader itself.
 
 ## The hypotheses as they were written
 
