@@ -27,6 +27,124 @@ to a build and does not belong here.
 
 ---
 
+## Godot's Forward+ hang is one draw, and it is the scene shader's colour draw
+
+Measured on GM20B on 2026-09-02 with `bench_fp_min` — Forward+, one cube,
+one phase — in debug-synchronous mode, with the hang recorder on
+(`HORIZON_GPU_SYNC=1 HORIZON_GPU_LOG=3 HORIZON_GPU_HANG_SNAPSHOT=1`).
+
+The channel dies on the third submit of the first 3D frame, as before.
+The recorder names the span:
+
+```
+frontend: breadcrumb=15 submit=8 kind=work span=0 phase=before-span
+          push=[0x11174000,0x11183fd0)
+```
+
+16372 dwords, which is one whole command-buffer chunk. `NVK_HORIZON_PUSH_SPLIT=64`
+(patch 0062) cuts the same push into 238 spans and names one of them:
+
+```
+frontend: breadcrumb=893 submit=8 kind=work span=169 phase=before-span
+          push=[0x1118126c,0x11181378)
+```
+
+67 dwords at **offset 0x349b** of that chunk. `NVK_DEBUG=push_sync` dumps
+the chunk's methods, and 0x349b..0x34dd is `SET_RT_LAYER`, the constant
+buffer binds, `CALL_MME_MACRO(0)` (`NVK_MME_SELECT_CB0`) and
+**`CALL_MME_MACRO(12)` — `NVK_MME_DRAW_INDEXED`, 0x24 = 36 indices**,
+under `SET_WRITE_MASK 0xf`, `SET_CT_SELECT.TARGET_COUNT 3` and
+`SET_PIPELINE_REGISTER_COUNT(5) = 0x70`. That is the cube's colour draw.
+
+**The same cube's depth-prepass draw completes.** It is the other
+`DRAW_INDEXED 0x24` in the same push, at offset 0x32c7 under
+`SET_WRITE_MASK 0x0` and a 24-GPR fragment shader, and the breadcrumb
+walked past it.
+
+So the failure is one draw, and what distinguishes it from the draw that
+works, in the same pushbuffer with the same geometry, is its fragment
+shader and its colour-target state.
+
+## The colour draw is a hang, not a slow draw
+
+Same run at `rendering/scaling_3d/scale=0.25` — the 3D render target is
+320x180, so the cube covers about forty fragments instead of six hundred.
+The channel dies in **span 169 of the same submit**, at the same offset.
+
+Sixteen times less fragment work changes nothing, so the cost is not per
+fragment and the draw is not merely slow. That retires the 2026-08-23
+reading of this failure as "a fragment shader running ~8500x too slow":
+whatever happens, it happens once per draw and it does not finish.
+
+## Zcull is not the Forward+ hang
+
+`NVK_HORIZON_ZCULL=0` (patch 0059) turns the capability off at the
+physical device, and the log shows it took: `nvkmd_horizon: Zcull is not
+advertised (NVK_HORIZON_ZCULL=0)` and `zcull=off` on all three channels.
+The hang is identical — same submit, same span, same
+`fault notification 8 (fifo idle timeout)`, `error_type=4`.
+
+This is the single-variable version of a test that had been run
+conflated: switching off the depth prepass was read as switching off
+Zcull, and it is not — the colour pass clears depth either way, so
+`nvk_CmdBeginRendering` takes the same Zcull path.
+
+Patch 0060's Zcull context bind also works and is not the fix: the same
+runs log `channel ...: up, syncpt=27 initial=13775 zcull=bound`, and the
+hang is unchanged. That closes section 1 of
+`docs/PENDING-HARDWARE-RUNS.md` only for "does the bind succeed"; the
+`t_vk_zcull` A/B it asks for has still not been run.
+
+## Shader local memory works, and the Forward+ shader is the only user of it
+
+`NAK_DEBUG=crsinfo` with `MESA_SHADER_CACHE_DISABLE=true` reports every
+shader NAK compiles. Of the **forty-two** in Godot's Forward+ process,
+exactly one has a non-zero convergence-stack size:
+
+```
+NAK crs: stage=Fragment instrs=3932 gprs=112 max_crs_depth=13 crs_size=1024
+```
+
+Every other shader is `crs_size=0`. `crs_size` is the whole of the
+per-warp shader local memory the queue then programs — the driver logs
+`SLM va=0x111b5000 allocation=0x20000 bytes_per_warp=0x400
+bytes_per_tpc=0x10000 gpc_count=1 tpc_count=2 mp_per_tpc=1
+max_warps_per_mp=64`, and 0x400 is that shader's 1024 bytes. Nothing in
+the process spills registers.
+
+That correlation is not the cause. `NAK_DEBUG=crsbig` gives **every**
+shader 4096 bytes of convergence stack, so shader local memory is
+allocated and programmed at device creation (`bytes_per_warp=0x1000`,
+`allocation=0x80000`) and every draw in the frame uses it. All the 2D and
+HUD draws render, and the hang is in the same span 169 of the same draw.
+
+`t_vk_crsfrag` closes it from the other side: **PASS 105/105**, four cases
+of twelve nesting levels around a loop in a *fragment* shader, including a
+checkerboard where the two lanes of every quad take different depths, 128
+of 256 texels twelve levels deep. A fragment shader whose convergence
+stack does not fit the sixteen on-chip slots works on this chip.
+
+Also measured while chasing this: **nvgpu ignores the alignment argument
+of a non-fixed `ALLOC_SPACE`.** nouveau allocates the same buffer with
+`nouveau_bo_new(dev, domain, 1 << 17, size, ...)`
+(`nvc0_screen_resize_tls_area`), so the reference driver's local memory
+base is 128 KiB aligned; asking `nvkmd_dev_alloc_mem` for 0x20000 here
+returns the same 4 KiB-aligned `0x111b5000` it returned without the
+request. It does not matter — `t_vk_crsfrag` passes against that base —
+but a future reader should not spend a build finding out.
+
+## Three render targets with two disabled is not the Forward+ hang either
+
+`t_vk_mrt`, **PASS 96/96** on GM20B. Three cases of the same fragment
+shader and the same one image read back: one colour target; three targets
+all real; and three targets of which two have no image view, which reaches
+the hardware as `SET_CT_SELECT.TARGET_COUNT 3` with
+`SET_COLOR_TARGET_FORMAT(1)` and `(2)` = `DISABLED`. All 256/256 texels
+right in every case.
+
+That was the last of the five pipeline-state differences the 2026-08-23
+Forward+/Mobile dump found still untested on its own.
+
 ## A dock cannot make a swapchain suboptimal here
 
 The transition patch `0040` was written for cannot be delivered on this

@@ -216,6 +216,49 @@ channel-create descriptor, whose default was `bind_zcull=false`.  Patch 0060
 now binds the context only for advertised 3D contexts.  It must be tested on a
 console before treating it as the hang fix.
 
+## What the snapshot found, and what is left
+
+**It was used on 2026-09-02 and it worked.** The full record is in
+`docs/MEASURED-ON-HARDWARE.md`; in one line, the breadcrumb plus
+`NVK_HORIZON_PUSH_SPLIT=64` (patch 0062) put Godot's Forward+ hang inside
+one 67-dword span, and `NVK_DEBUG=push_sync` decoded that span as the
+scene shader's colour `DRAW_INDEXED`. The same cube's depth-prepass draw,
+earlier in the same push, completes.
+
+The hypotheses this note listed have been answered:
+
+1. **Missing Zcull context — no.** Patch 0060 binds it (`zcull=bound` in
+   the log) and the hang is unchanged; `NVK_HORIZON_ZCULL=0` turns the
+   whole capability off and the hang is unchanged. Single variable, both
+   directions.
+2. **Incomplete B197/context initialisation — still open, and now the
+   most likely place left.** The final marker is a `before-span` on a
+   work push whose only work-issuing method is the draw, which is what
+   this note said would put the failure in GR and make SPA and the two
+   privileged Maxwell-B workarounds the next controlled comparisons.
+3. **Cross-channel acquire — no.** Every marker on the failing submit is
+   `kind=work`; no `kind=acquire` span is involved.
+4. **SLM backing/programming — no.** `NAK_DEBUG=crsinfo` shows the scene
+   fragment shader is the only shader in the process with a non-zero
+   `crs_size`, and `NAK_DEBUG=crsbig` gives every shader one: the whole
+   frame then runs on shader local memory and dies in the same span.
+   `t_vk_crsfrag` passes 105/105 with twelve divergent nesting levels in
+   a fragment shader.
+5. **GPFIFO/PBDMA fetch — no.** The before-span marker executed, so the
+   frontend reached the push and consumed its entry.
+6. **Deko3d-only tiled cache — untested, and still the lowest.**
+
+What is not yet distinguished is which property of that one draw does it:
+its fragment shader (3932 instructions, 112 GPRs) or the state only it
+sets. Of the five pipeline-state differences the 2026-08-23 Forward+ /
+Mobile dump found, four are now excluded individually — Zcull, the depth
+prepass and its `DEPTH_FUNC EQUAL`, the register count, and
+`SET_CT_SELECT.TARGET_COUNT 3` with two `DISABLED` targets (`t_vk_mrt`,
+96/96). The RGBA16F colour target is the one that has not been asked on
+its own.
+
+## The hypotheses as they were written
+
 ## Current hypotheses, in test order
 
 1. **Missing ZCULL context in builds through patch 0058.**  This is the one
