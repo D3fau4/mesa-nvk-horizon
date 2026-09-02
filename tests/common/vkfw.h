@@ -432,6 +432,18 @@ typedef struct vkfw_gfx_desc {
    size_t fs_B;
 
    VkFormat colour_format;
+   /* Colour attachments 1..colour_extra_count, when the pass declares
+    * more targets than attachment 0. Zero for every test that renders to
+    * one image, which is all of them except t_vk_mrt.
+    *
+    * VK_FORMAT_UNDEFINED is a legal entry and is the point: a subpass
+    * that declares a colour attachment it does not write reaches the
+    * hardware as SET_CT_SELECT.TARGET_COUNT counting it and
+    * SET_COLOR_TARGET_FORMAT saying DISABLED, which is the shape Godot's
+    * Forward+ colour pass has and its Mobile one does not.
+    */
+   uint32_t colour_extra_count;
+   VkFormat colour_extra_formats[7];
    /* VK_FORMAT_UNDEFINED when the pass has no depth attachment. */
    VkFormat depth_format;
 

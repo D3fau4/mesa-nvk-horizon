@@ -1,0 +1,235 @@
+; crs_frag_deep -- twelve levels of nesting around a loop, in a FRAGMENT
+; shader.
+;
+; WHY THIS IS NOT comp_crs. t_vk_crs asks the same question of a compute
+; shader and passes 35/35 on GM20B, so a convergence stack twelve levels
+; deep works there. Compute and graphics do not carry that stack the same
+; way: the compute path puts the size in the QMD (nak/qmd.rs, rounded up
+; to 0x200) and programs SET_SHADER_LOCAL_MEMORY_NON_THROTTLED, while the
+; graphics path puts it in the shader program header
+; (nak/sph.rs set_shader_local_memory_crs_size, not rounded) and programs
+; SET_SHADER_LOCAL_MEMORY_C/D/E. Nothing had ever run a fragment shader
+; whose stack does not fit the sixteen on-chip slots.
+;
+; Godot 4.1 Forward+ scene fragment shader is exactly that: measured on
+; GM20B 2026-09-02, of the forty-two shaders its process compiles it is
+; the ONLY one with a non-zero crs_size (instrs=3932 gprs=112
+; max_crs_depth=13 crs_size=1024; every other shader is 0), and its
+; colour-pass draw is the one that never retires.
+;
+; Push constant: uvec4(n, mode, 0, 0)
+;
+;   sel  = (x ^ y) & 1
+;   cond = mode == 0 ? 0                   nobody enters
+;        : mode == 1 ? 0xfff               everybody goes all the way in
+;        :             sel ? 0xfff : 1     half go in, half stop at level 1
+;
+;   acc = 0; i = 0;
+;   if (cond & 1) { if (cond & 2) { ... twelve deep ...
+;       for (i = 0; i < n; i++) acc += i + 1;
+;   ... } }
+;   colour = uvec4(acc, i, cond, n)
+;
+; mode 2 is the case that matters: the lanes of one quad take different
+; depths, so the stack is pushed and popped divergently the way the scene
+; shader stack is. A UINT attachment so the numbers come back exactly.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1), same reasons as comp_write_id.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %out_colour %frag_coord
+               OpExecutionMode %main OriginUpperLeft
+
+               OpDecorate %out_colour Location 0
+               OpDecorate %frag_coord BuiltIn FragCoord
+               OpMemberDecorate %PC 0 Offset 0
+               OpDecorate %PC Block
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %bool = OpTypeBool
+      %float = OpTypeFloat 32
+      %int32 = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+    %v4float = OpTypeVector %float 4
+     %v4uint = OpTypeVector %uint 4
+   %ptr_fn_u = OpTypePointer Function %uint
+
+         %PC = OpTypeStruct %v4uint
+     %ptr_pc = OpTypePointer PushConstant %PC
+   %ptr_pc_v = OpTypePointer PushConstant %v4uint
+         %pc = OpVariable %ptr_pc PushConstant
+
+  %ptr_out_v = OpTypePointer Output %v4uint
+ %out_colour = OpVariable %ptr_out_v Output
+   %ptr_in_v = OpTypePointer Input %v4float
+ %frag_coord = OpVariable %ptr_in_v Input
+
+      %int_0 = OpConstant %int32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+   %uint_all = OpConstant %uint 4095
+    %uint_b1 = OpConstant %uint 2
+    %uint_b2 = OpConstant %uint 4
+    %uint_b3 = OpConstant %uint 8
+    %uint_b4 = OpConstant %uint 16
+    %uint_b5 = OpConstant %uint 32
+    %uint_b6 = OpConstant %uint 64
+    %uint_b7 = OpConstant %uint 128
+    %uint_b8 = OpConstant %uint 256
+    %uint_b9 = OpConstant %uint 512
+   %uint_b10 = OpConstant %uint 1024
+   %uint_b11 = OpConstant %uint 2048
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+       %pacc = OpVariable %ptr_fn_u Function
+        %pi  = OpVariable %ptr_fn_u Function
+               OpStore %pacc %uint_0
+               OpStore %pi %uint_0
+         %cp = OpAccessChain %ptr_pc_v %pc %int_0
+          %c = OpLoad %v4uint %cp
+          %n = OpCompositeExtract %uint %c 0
+       %mode = OpCompositeExtract %uint %c 1
+
+         %fc = OpLoad %v4float %frag_coord
+        %fcx = OpCompositeExtract %float %fc 0
+        %fcy = OpCompositeExtract %float %fc 1
+         %ix = OpConvertFToU %uint %fcx
+         %iy = OpConvertFToU %uint %fcy
+        %xr  = OpBitwiseXor %uint %ix %iy
+       %sel  = OpBitwiseAnd %uint %xr %uint_1
+     %sel_nz = OpINotEqual %bool %sel %uint_0
+   %cond_div = OpSelect %uint %sel_nz %uint_all %uint_1
+        %m1  = OpIEqual %bool %mode %uint_1
+     %cond_a = OpSelect %uint %m1 %uint_all %cond_div
+        %m0  = OpIEqual %bool %mode %uint_0
+       %cond = OpSelect %uint %m0 %uint_0 %cond_a
+
+      %bit0  = OpBitwiseAnd %uint %cond %uint_1
+      %cmp0  = OpINotEqual %bool %bit0 %uint_0
+               OpSelectionMerge %merge0 None
+               OpBranchConditional %cmp0 %then0 %merge0
+     %then0  = OpLabel
+
+      %bit1  = OpBitwiseAnd %uint %cond %uint_b1
+      %cmp1  = OpINotEqual %bool %bit1 %uint_0
+               OpSelectionMerge %merge1 None
+               OpBranchConditional %cmp1 %then1 %merge1
+     %then1  = OpLabel
+
+      %bit2  = OpBitwiseAnd %uint %cond %uint_b2
+      %cmp2  = OpINotEqual %bool %bit2 %uint_0
+               OpSelectionMerge %merge2 None
+               OpBranchConditional %cmp2 %then2 %merge2
+     %then2  = OpLabel
+
+      %bit3  = OpBitwiseAnd %uint %cond %uint_b3
+      %cmp3  = OpINotEqual %bool %bit3 %uint_0
+               OpSelectionMerge %merge3 None
+               OpBranchConditional %cmp3 %then3 %merge3
+     %then3  = OpLabel
+
+      %bit4  = OpBitwiseAnd %uint %cond %uint_b4
+      %cmp4  = OpINotEqual %bool %bit4 %uint_0
+               OpSelectionMerge %merge4 None
+               OpBranchConditional %cmp4 %then4 %merge4
+     %then4  = OpLabel
+
+      %bit5  = OpBitwiseAnd %uint %cond %uint_b5
+      %cmp5  = OpINotEqual %bool %bit5 %uint_0
+               OpSelectionMerge %merge5 None
+               OpBranchConditional %cmp5 %then5 %merge5
+     %then5  = OpLabel
+
+      %bit6  = OpBitwiseAnd %uint %cond %uint_b6
+      %cmp6  = OpINotEqual %bool %bit6 %uint_0
+               OpSelectionMerge %merge6 None
+               OpBranchConditional %cmp6 %then6 %merge6
+     %then6  = OpLabel
+
+      %bit7  = OpBitwiseAnd %uint %cond %uint_b7
+      %cmp7  = OpINotEqual %bool %bit7 %uint_0
+               OpSelectionMerge %merge7 None
+               OpBranchConditional %cmp7 %then7 %merge7
+     %then7  = OpLabel
+
+      %bit8  = OpBitwiseAnd %uint %cond %uint_b8
+      %cmp8  = OpINotEqual %bool %bit8 %uint_0
+               OpSelectionMerge %merge8 None
+               OpBranchConditional %cmp8 %then8 %merge8
+     %then8  = OpLabel
+
+      %bit9  = OpBitwiseAnd %uint %cond %uint_b9
+      %cmp9  = OpINotEqual %bool %bit9 %uint_0
+               OpSelectionMerge %merge9 None
+               OpBranchConditional %cmp9 %then9 %merge9
+     %then9  = OpLabel
+
+      %bit10 = OpBitwiseAnd %uint %cond %uint_b10
+      %cmp10 = OpINotEqual %bool %bit10 %uint_0
+               OpSelectionMerge %merge10 None
+               OpBranchConditional %cmp10 %then10 %merge10
+     %then10 = OpLabel
+
+      %bit11 = OpBitwiseAnd %uint %cond %uint_b11
+      %cmp11 = OpINotEqual %bool %bit11 %uint_0
+               OpSelectionMerge %merge11 None
+               OpBranchConditional %cmp11 %then11 %merge11
+     %then11 = OpLabel
+
+               OpBranch %l_hdr
+      %l_hdr = OpLabel
+               OpLoopMerge %l_exit %l_cont None
+               OpBranch %l_test
+     %l_test = OpLabel
+        %iv0 = OpLoad %uint %pi
+      %l_lt  = OpULessThan %bool %iv0 %n
+               OpBranchConditional %l_lt %l_body %l_exit
+     %l_body = OpLabel
+        %av0 = OpLoad %uint %pacc
+        %iv1 = OpLoad %uint %pi
+       %sum0 = OpIAdd %uint %av0 %iv1
+       %sum1 = OpIAdd %uint %sum0 %uint_1
+               OpStore %pacc %sum1
+               OpBranch %l_cont
+     %l_cont = OpLabel
+        %iv2 = OpLoad %uint %pi
+      %inext = OpIAdd %uint %iv2 %uint_1
+               OpStore %pi %inext
+               OpBranch %l_hdr
+     %l_exit = OpLabel
+               OpBranch %merge11
+    %merge11 = OpLabel
+               OpBranch %merge10
+    %merge10 = OpLabel
+               OpBranch %merge9
+    %merge9  = OpLabel
+               OpBranch %merge8
+    %merge8  = OpLabel
+               OpBranch %merge7
+    %merge7  = OpLabel
+               OpBranch %merge6
+    %merge6  = OpLabel
+               OpBranch %merge5
+    %merge5  = OpLabel
+               OpBranch %merge4
+    %merge4  = OpLabel
+               OpBranch %merge3
+    %merge3  = OpLabel
+               OpBranch %merge2
+    %merge2  = OpLabel
+               OpBranch %merge1
+    %merge1  = OpLabel
+               OpBranch %merge0
+    %merge0  = OpLabel
+
+       %afin = OpLoad %uint %pacc
+       %ifin = OpLoad %uint %pi
+        %col = OpCompositeConstruct %v4uint %afin %ifin %cond %n
+               OpStore %out_colour %col
+               OpReturn
+               OpFunctionEnd

@@ -1048,16 +1048,34 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
    };
    const VkPipelineColorBlendAttachmentState cba =
       desc->blend != NULL ? *desc->blend : cba_off;
+
+   /* Attachment 0 is the caller's; any extra ones are declared but never
+    * blended into, which is what a subpass that does not write them
+    * looks like. */
+   if (!t_check(t, desc->colour_extra_count <= 7,
+                "%s: %u extra colour attachments, at most 7 fit", what,
+                desc->colour_extra_count))
+      return false;
+   const uint32_t colour_count = 1 + desc->colour_extra_count;
+   VkFormat colour_formats[8];
+   VkPipelineColorBlendAttachmentState cbas[8];
+   colour_formats[0] = desc->colour_format;
+   cbas[0] = cba;
+   for (uint32_t i = 1; i < colour_count; i++) {
+      colour_formats[i] = desc->colour_extra_formats[i - 1];
+      cbas[i] = cba_off;
+   }
+
    const VkPipelineColorBlendStateCreateInfo cb = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &cba,
+      .attachmentCount = colour_count,
+      .pAttachments = cbas,
    };
 
    const VkPipelineRenderingCreateInfo prci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-      .colorAttachmentCount = 1,
-      .pColorAttachmentFormats = &desc->colour_format,
+      .colorAttachmentCount = colour_count,
+      .pColorAttachmentFormats = colour_formats,
       .depthAttachmentFormat = desc->depth_format,
       .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
    };
