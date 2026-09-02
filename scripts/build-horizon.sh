@@ -58,6 +58,14 @@ if [ "$now" != "$then" ]; then
     scripts/configure-horizon.sh
 fi
 
+# Meson reserves `test` (and `all`) as target names, so meson.build calls
+# the .nro alias `test-nros`. Translate here rather than there: this
+# script's documented arguments are the Makefile's goals, and those two
+# names are what every caller and CLAUDE.md already say.
+case "${1:-}" in
+    test|all) shift; set -- test-nros "$@" ;;
+esac
+
 horizon_meson compile -C "$HORIZON_BUILD_DIR" "$@"
 
 # No `ninja -t cleandead` here: this build has edges that come and go —

@@ -420,6 +420,19 @@ nvk_tests = [
   # vkCmdBindDescriptorSets, two calls in Godot's order, and two calls in
   # the other order.
   't_vk_set1',
+  # The same twelve levels in the FRAGMENT stage. t_vk_crs above is a
+  # compute shader, and the two pipes do not carry the convergence stack
+  # through the same state: compute puts the size in the QMD and programs
+  # SET_SHADER_LOCAL_MEMORY_NON_THROTTLED, graphics puts it in the shader
+  # program header and programs SET_SHADER_LOCAL_MEMORY_C/D/E. Godot's
+  # Forward+ scene fragment shader is the only shader in its whole process
+  # with a non-zero crs_size, and its draw is the one that never retires.
+  't_vk_crsfrag',
+  # A colour pass that declares three render targets and writes one, two
+  # of them with no image view -- the fifth and last of the pipeline-state
+  # differences between Godot's Forward+ and Mobile draws, and the only
+  # one never asked on its own.
+  't_vk_mrt',
   # The same question in the fragment stage, where a kill exists:
   # a loop that is never entered, one that runs, and one that runs
   # after half the lanes have been killed. The scene shader reports
@@ -525,6 +538,10 @@ nvk_test_shaders = {
   't_vk_loop' : ['comp_loop'],
   't_vk_loop2' : ['comp_loop2'],
   't_vk_crs' : ['comp_crs'],
+  't_vk_crsfrag' : ['fmt_vert_fullscreen', 'crs_frag_deep'],
+  # kill_frag_loop with its kill turned off: already proven right on this
+  # chip, so the only variable across t_vk_mrt's cases is the target count.
+  't_vk_mrt' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
   't_vk_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
   't_vk_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
   # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
@@ -817,10 +834,18 @@ foreach t : horizon_tests
   )
 endforeach
 
-# Same names as the Makefile's `lib`/`test` split: bare `meson compile`
-# builds only libhorizon_gpu.a (the alias_target above), and `test` adds
-# every test .nro this configuration can produce.
-alias_target('test', test_nros)
+# The Makefile's `lib`/`test` split, as far as Meson allows it: bare
+# `meson compile` builds only libhorizon_gpu.a (the alias_target above),
+# and this one adds every test .nro this configuration can produce.
+#
+# NOT called `test`. Meson reserves `all`, `clean`, `test`, `benchmark`,
+# `install`, `dist`, `uninstall` and `reconfigure` for itself and refuses
+# the whole configure with "Target name 'test' is reserved for Meson's
+# internal use" — which is what it did, so no cross build could be
+# configured at all. scripts/build-horizon.sh maps its documented `test`
+# and `all` arguments onto this name, so its interface still matches the
+# Makefile's.
+alias_target('test-nros', test_nros)
 
 # No meson `test()` entries: these binaries run on a Nintendo Switch, not
 # here. needs_exe_wrapper is true in the cross file for the same reason.
