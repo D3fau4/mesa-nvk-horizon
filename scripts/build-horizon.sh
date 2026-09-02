@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Builds libhorizon_gpu.a and the ten Phase 1 test .nros through Meson.
+# Builds libhorizon_gpu.a through Meson. With no target this builds only
+# the archive; `test` also builds every test .nro this configuration can
+# produce (mirrors the Makefile's `lib`/`test` split).
 #
-#   scripts/build-horizon.sh [extra meson compile args...]
+#   scripts/build-horizon.sh [lib|test] [extra meson compile args...]
 #
 # Idempotent: configures first if needed, then lets ninja decide what
 # actually has to be rebuilt. A second run with no source change is a

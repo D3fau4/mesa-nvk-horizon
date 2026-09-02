@@ -186,7 +186,7 @@ horizon_nvk_libs_present || {
 # own three lists are the source — the same way scripts/package-horizon.sh
 # reads nvk_tests out of it rather than guessing from a name prefix.
 step "rebuilding the .nro against them"
-scripts/build-horizon.sh
+scripts/build-horizon.sh test
 
 meson_test_count() { # list name -> how many tests it names
     sed -n "/^$1 = \[/,/]/p" meson.build | grep -o "'t_[a-z_0-9]*'" | wc -l

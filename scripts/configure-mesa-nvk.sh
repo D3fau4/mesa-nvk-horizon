@@ -84,7 +84,7 @@ HORIZON_GPU_PREFIX=build/toolchain/horizon-gpu
 
 if [ ! -f "$HORIZON_BUILD_DIR/libhorizon_gpu.a" ]; then
     echo "configure-mesa-nvk: building horizon_gpu first"
-    scripts/build-horizon.sh
+    scripts/build-horizon.sh lib
 fi
 
 rm -rf "$HORIZON_GPU_PREFIX"

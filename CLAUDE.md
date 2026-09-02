@@ -103,10 +103,11 @@ scripts/run-host-tests.sh
 `scripts/check-dispatch-complete.sh` and `scripts/check-tls-relocs.sh` need built
 artefacts; `scripts/ci-build-archives.sh` runs them at the end against what it just built.
 
-### Cross build (`libhorizon_gpu.a` + the test `.nro`s)
+### Cross build (`lib` default; `test`/`all` add the test `.nro`s)
 
 ```sh
-scripts/build-switch.sh -j4        # devkitA64 when $DEVKITPRO is set, else Docker
+scripts/build-switch.sh -j4        # libhorizon_gpu.a only (default goal)
+scripts/build-switch.sh test -j4   # + every test .nro; `all` is a synonym
 make install PREFIX=...            # into devkitPro portlibs; PREFIX as an *argument*
 ```
 

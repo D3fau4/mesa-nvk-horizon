@@ -55,8 +55,8 @@ elif [ -n "$(find build -maxdepth 1 -name '*.nro' 2>/dev/null)" ]; then
     echo "package-horizon: no .nro in $HORIZON_BUILD_DIR;" >&2
     echo "                 falling back to the Makefile output in build/" >&2
 else
-    echo "error: no .nro found; run scripts/build-horizon.sh or" >&2
-    echo "       scripts/build-switch.sh first." >&2
+    echo "error: no .nro found; run scripts/build-horizon.sh test or" >&2
+    echo "       scripts/build-switch.sh test first." >&2
     exit 1
 fi
 

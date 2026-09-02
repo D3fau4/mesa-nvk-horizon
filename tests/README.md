@@ -24,14 +24,17 @@ of this file.
 With devkitA64 installed (`$DEVKITPRO` set):
 
 ```sh
-make            # or: scripts/build-switch.sh
+make test            # or: scripts/build-switch.sh test
 ```
 
 Without a local toolchain, with Docker available:
 
 ```sh
-scripts/build-switch.sh     # uses ghcr.io/d3fau4/nx-dev:latest
+scripts/build-switch.sh test     # uses ghcr.io/d3fau4/nx-dev:latest
 ```
+
+(`make`/`scripts/build-switch.sh` with no target builds only
+`libhorizon_gpu.a`, with none of these `.nro`s.)
 
 Outputs land in `build/*.nro`.
 

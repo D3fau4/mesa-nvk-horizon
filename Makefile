@@ -121,9 +121,15 @@ endif
 
 TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
 
-.PHONY: all lib clean prune-stale install uninstall
-all: prune-stale lib $(TEST_NROS)
+# `lib` is the default goal (the first real target below) because a change
+# under horizon/ only needs $(LIB) to verify compile-clean; the ~40 test
+# .nros it does not touch are wasted rebuild time on every iteration.
+# `test` is the one that also needs them, and `all` is kept as a synonym
+# so `make all` still means what it always has.
+.PHONY: lib test all clean prune-stale install uninstall
 lib: $(LIB)
+test: prune-stale lib $(TEST_NROS)
+all: test
 
 # INSTALL AND UNINSTALL ARE ONE SCRIPT, CALLED TWICE. The set of files
 # an install places and the set an uninstall removes have to be one list

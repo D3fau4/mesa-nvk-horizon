@@ -138,6 +138,10 @@ idep_horizon_gpu = declare_dependency(
   include_directories : horizon_gpu_inc,
 )
 
+# Same name as the Makefile's `lib` target: `meson compile -C <dir> lib`
+# builds only libhorizon_gpu.a, skipping every test .nro below.
+alias_target('lib', libhorizon_gpu)
+
 # ---------------------------------------------------------------------
 # Phase 1 tests — one standalone .nro each.
 # ---------------------------------------------------------------------
@@ -251,6 +255,8 @@ testfw = static_library(
   include_directories : [horizon_gpu_inc, tests_inc,
                          include_directories('.')],
   install : false,
+  # Only tests need this; it must not be part of the `lib`-only default.
+  build_by_default : false,
 )
 
 test_nros = []
@@ -787,6 +793,7 @@ foreach t : horizon_tests
     link_depends : t_link_depends,
     name_suffix : 'elf',
     install : false,
+    build_by_default : false,
   )
 
   # Metadata matches the Makefile's nacptool invocation exactly, so the
@@ -805,9 +812,15 @@ foreach t : horizon_tests
     input : [t_elf, t_nacp],
     output : t + '.nro',
     command : [elf2nro, '@INPUT0@', '@OUTPUT@', '--nacp=@INPUT1@'],
-    build_by_default : true,
+    # Not the default build: see the `lib`/`test` alias_targets below.
+    build_by_default : false,
   )
 endforeach
+
+# Same names as the Makefile's `lib`/`test` split: bare `meson compile`
+# builds only libhorizon_gpu.a (the alias_target above), and `test` adds
+# every test .nro this configuration can produce.
+alias_target('test', test_nros)
 
 # No meson `test()` entries: these binaries run on a Nintendo Switch, not
 # here. needs_exe_wrapper is true in the cross file for the same reason.
