@@ -27,6 +27,21 @@ to a build and does not belong here.
 
 ---
 
+## Zcull bound, and Mobile and the depth path unregressed
+
+The runs above are the first on a build carrying patches 0057-0062, and
+0059/0060 change what every render pass that clears depth does. Two checks
+on 2026-09-02, both clean:
+
+- `t_vk_depth` **PASS 68/68** — four depth-tested draws through
+  `nvk_CmdBeginRendering` with `zcull=bound`, colour and depth right on
+  4096/4096 pixels each.
+- Godot 4.1 **Forward Mobile**, the same eight-phase bench that
+  `godot-nx-renderer-bench/RESULTADOS.md` recorded, runs to the end:
+  no `VK_ERROR_DEVICE_LOST`, no `fault notification`, all eight phases
+  including `3d_shadow_800` (1600 draws) and `3d_omni_16`. 60 fps in the
+  three cheap 3D phases, 30 at `3d_cubes_2000`, which is where it was.
+
 ## Godot's Forward+ hang is one draw, and it is the scene shader's colour draw
 
 Measured on GM20B on 2026-09-02 with `bench_fp_min` — Forward+, one cube,
