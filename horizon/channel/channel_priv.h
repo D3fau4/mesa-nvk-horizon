@@ -28,6 +28,37 @@
  * two would drift. */
 #define HORIZON_CHANNEL_WAIT_CMDS_OFFSET UINT64_C(0x400)
 
+/* Opt-in pre-recovery evidence for a platform whose legacy channel-create
+ * ABI exposes neither USERD nor the hardware channel id.  Each slot is a
+ * write-once, five-dword host semaphore release.  Its payload is slot+1 and
+ * lands in the uncached status word at offset zero.  The commands are never
+ * rewritten while the channel exists, so no CPU/GPU fetch race is possible.
+ *
+ * 4096 slots cost 80 KiB and cover 2048 caller spans.  Exhaustion disables
+ * further marking instead of wrapping onto metadata which may still identify
+ * an in-flight command. */
+#define HORIZON_CHANNEL_HANG_MARKER_SLOTS 4096u
+#define HORIZON_CHANNEL_HANG_STATUS_OFFSET UINT64_C(0)
+#define HORIZON_CHANNEL_HANG_CMDS_OFFSET UINT64_C(0x1000)
+#define HORIZON_CHANNEL_HANG_BUFFER_SIZE \
+    (HORIZON_CHANNEL_HANG_CMDS_OFFSET + \
+     (uint64_t)HORIZON_CHANNEL_HANG_MARKER_SLOTS * \
+     HORIZON_CMDS_SEM_RELEASE_DWORDS * 4)
+
+typedef enum horizon_hang_marker_phase {
+    HORIZON_HANG_MARKER_BEFORE_SPAN = 1,
+    HORIZON_HANG_MARKER_AFTER_SPAN = 2,
+} horizon_hang_marker_phase;
+
+typedef struct horizon_hang_marker_record {
+    uint64_t submit_id;
+    uint64_t gpu_va;
+    uint32_t num_dwords;
+    uint32_t span_index;
+    horizon_hang_marker_phase phase;
+    bool is_wait;
+} horizon_hang_marker_record;
+
 typedef struct horizon_retire_entry {
     uint64_t threshold64; /* shadow-extended completion value */
     void (*fn)(void *ctx);
@@ -99,6 +130,20 @@ struct horizon_gpu_channel {
         bool busy;
     } wait_slots[HORIZON_CHANNEL_WAIT_SLOTS];
 
+    /* Optional progress recorder, enabled by HORIZON_GPU_HANG_SNAPSHOT=1.
+     * The mapping is deliberately GPU-uncached and the CPU allocation is
+     * uncached, so a marker survives in system memory even if recovery tears
+     * down the channel before userland observes the error event. */
+    horizon_gpu_mem *hang_mem;
+    horizon_gpu_va_range *hang_range;
+    horizon_gpu_mapping *hang_map;
+    volatile uint32_t *hang_status;
+    uint64_t hang_cmds_va;
+    horizon_hang_marker_record *hang_records;
+    uint32_t hang_next_slot;
+    uint64_t hang_submit_id;
+    bool hang_exhausted_logged;
+
     /* Submit-path counters (horizon_gpu_channel_get_stats).
      *
      * Plain, not atomic, and that is the same rule as the rest of this
@@ -137,5 +182,10 @@ struct horizon_gpu_channel {
  * channel object. Defined in channel.c. */
 horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
                                                uint32_t *out_hw);
+
+/* Earliest common notifier check for submit, reap and wait paths.  When the
+ * notifier has fired this captures the in-stream breadcrumb and error record
+ * before userland marks the channel lost or tears anything down. */
+horizon_gpu_result horizon_channel_check_fault(horizon_gpu_channel *chan);
 
 #endif /* HORIZON_CHANNEL_CHANNEL_PRIV_H */

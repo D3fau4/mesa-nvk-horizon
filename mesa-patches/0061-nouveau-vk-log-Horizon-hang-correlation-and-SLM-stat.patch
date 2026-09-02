@@ -1,0 +1,144 @@
+From 994a3f2d33a34cb38efe5c7ac325e1a4687e8ab1 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Wed, 2 Sep 2026 08:50:52 +0200
+Subject: [PATCH] nouveau/vk: log Horizon hang correlation and SLM state
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: diagnostic instrumentation (GM20B hang snapshot)
+Why: Switch 1 does not expose USERD or a hardware channel id, so the last surviving GPU breadcrumb must be correlated with NVK command-buffer push ranges and the exact SLM state without changing either.
+Evidence: repository inspection shows nvk_queue_submit_exec submits each command buffer as its array of nvk_cmd_push VA ranges, while nvk_queue_state_update emits the SLM allocation address, size, bytes per warp and bytes per TPC; neither was logged.
+Upstream: no — this is opt-in instrumentation for the Horizon backend and its legacy nvgpu ABI.
+---
+ src/nouveau/vulkan/nvk_queue.c | 56 ++++++++++++++++++++++++++++++++++
+ src/nouveau/vulkan/nvk_queue.h |  4 +++
+ 2 files changed, 60 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvk_queue.c b/src/nouveau/vulkan/nvk_queue.c
+index 4061705..6288841 100644
+--- a/src/nouveau/vulkan/nvk_queue.c
++++ b/src/nouveau/vulkan/nvk_queue.c
+@@ -19,9 +19,20 @@
+ #include "nv_push_clc3c0.h"
+ #include "nv_push_clc397.h"
+ 
++#include "util/log.h"
++#include "util/u_debug.h"
++
++#include <inttypes.h>
++
+ static VkResult
+ nvk_queue_push(struct nvk_queue *queue, const struct nv_push *push);
+ 
++static bool
++nvk_horizon_hang_trace_enabled(void)
++{
++   return debug_get_bool_option("HORIZON_GPU_HANG_SNAPSHOT", false);
++}
++
+ static void
+ nvk_queue_state_init(struct nvk_queue_state *qs)
+ {
+@@ -137,6 +148,18 @@ nvk_queue_state_update(struct nvk_queue *queue,
+       const uint64_t slm_per_tpc = qs->slm.bytes_per_tpc;
+       assert(!(slm_per_tpc & 0x7fff));
+ 
++      if (nvk_horizon_hang_trace_enabled()) {
++         mesa_logi("nvk-hangtrace: SLM queue=%p va=0x%" PRIx64
++                   " allocation=0x%" PRIx64 " bytes_per_warp=0x%" PRIx64
++                   " bytes_per_tpc=0x%" PRIx64 " gpc_count=%u tpc_count=%u"
++                   " mp_per_tpc=%u max_warps_per_mp=%u",
++                   (void *)queue, slm_addr, slm_size, slm_per_warp,
++                   slm_per_tpc, (unsigned)pdev->info.gpc_count,
++                   (unsigned)pdev->info.tpc_count,
++                   (unsigned)pdev->info.mp_per_tpc,
++                   (unsigned)pdev->info.max_warps_per_mp);
++      }
++
+       if (queue->engines & NVKMD_ENGINE_COMPUTE) {
+          P_MTHD(p, NVA0C0, SET_SHADER_LOCAL_MEMORY_A);
+          P_NVA0C0_SET_SHADER_LOCAL_MEMORY_A(p, slm_addr >> 32);
+@@ -211,6 +234,16 @@ nvk_queue_submit_exec(struct nvk_queue *queue,
+ {
+    struct nvk_device *dev = nvk_queue_device(queue);
+    VkResult result;
++   const bool hang_trace = nvk_horizon_hang_trace_enabled();
++   const uint64_t hang_submit_id =
++      hang_trace ? ++queue->hang_trace_submit_id : 0;
++
++   if (hang_trace) {
++      mesa_logi("nvk-hangtrace: vk-submit=%" PRIu64 " queue=%p "
++                "command_buffers=%u waits=%u signals=%u",
++                hang_submit_id, (void *)queue, submit->command_buffer_count,
++                submit->wait_count, submit->signal_count);
++   }
+ 
+    if (submit->command_buffer_count > 0) {
+       nvk_descriptor_table_flush_map(dev, &dev->images);
+@@ -252,17 +285,30 @@ nvk_queue_submit_exec(struct nvk_queue *queue,
+          util_dynarray_num_elements(&cmd->pushes, struct nvk_cmd_push);
+       STACK_ARRAY(struct nvkmd_ctx_exec, execs, max_execs);
+       uint32_t exec_count = 0;
++      uint32_t push_index = 0;
+ 
+       util_dynarray_foreach(&cmd->pushes, struct nvk_cmd_push, push) {
+          if (push->range == 0)
+             continue;
+ 
++         if (hang_trace) {
++            mesa_logi("nvk-hangtrace: vk-submit=%" PRIu64 " cmd=%p "
++                      "cmd-index=%u push=%u va=[0x%" PRIx64
++                      ",0x%" PRIx64 ") bytes=0x%x incomplete=%u "
++                      "no_prefetch=%u",
++                      hang_submit_id, (void *)cmd, i, push_index,
++                      push->addr, push->addr + push->range, push->range,
++                      (unsigned)push->incomplete,
++                      (unsigned)push->no_prefetch);
++         }
++
+          execs[exec_count++] = (struct nvkmd_ctx_exec) {
+             .addr = push->addr,
+             .size_B = push->range,
+             .incomplete = push->incomplete,
+             .no_prefetch = push->no_prefetch,
+          };
++         push_index++;
+       }
+ 
+       result = nvkmd_ctx_exec(queue->exec_ctx, &queue->vk.base,
+@@ -337,6 +383,16 @@ nvk_queue_init_context_state(struct nvk_queue *queue)
+                 nvk_queue_subchannels_from_engines(queue->engines));
+    struct nv_push *p = &push;
+ 
++   if (nvk_horizon_hang_trace_enabled()) {
++      mesa_logi("nvk-hangtrace: queue=%p engines=0x%x cls_3d=0x%04x "
++                "cls_compute=0x%04x topology=%uGPC/%uTPC",
++                (void *)queue, (unsigned)queue->engines,
++                (unsigned)pdev->info.cls_eng3d,
++                (unsigned)pdev->info.cls_compute,
++                (unsigned)pdev->info.gpc_count,
++                (unsigned)pdev->info.tpc_count);
++   }
++
+    /* M2MF state */
+    if (pdev->info.cls_m2mf <= FERMI_MEMORY_TO_MEMORY_FORMAT_A) {
+       /* we absolutely do not support Fermi, but if somebody wants to toy
+diff --git a/src/nouveau/vulkan/nvk_queue.h b/src/nouveau/vulkan/nvk_queue.h
+index 1e72efc..bd9de04 100644
+--- a/src/nouveau/vulkan/nvk_queue.h
++++ b/src/nouveau/vulkan/nvk_queue.h
+@@ -49,6 +49,10 @@ struct nvk_queue {
+ 
+    struct nvk_queue_state state;
+ 
++   /* Diagnostic-only serial used to correlate VkQueue submits and command
++    * buffers with nvkmd_horizon's GPFIFO-span log. */
++   uint64_t hang_trace_submit_id;
++
+    /* CB0 for all draw commands on this queue */
+    struct nvkmd_mem *draw_cb0;
+ };
+-- 
+2.43.0
+

@@ -78,6 +78,14 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     dev->debug_synchronous = create_info->debug_synchronous ||
                              (sync_env && sync_env[0] == '1');
 
+    const char *hang_env = getenv("HORIZON_GPU_HANG_SNAPSHOT");
+    dev->hang_snapshot = hang_env && hang_env[0] == '1';
+    if (dev->hang_snapshot) {
+        horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                     "GM20B hang snapshots enabled: WFI-ordered GPU "
+                     "breadcrumbs will bracket every submitted span");
+    }
+
     /* Read once, at device creation, so a submit path never calls
      * getenv: it walks environ, and the submit path is the hot one. */
     const char *barrier_env = getenv("HORIZON_GPU_FULL_BARRIER_WAITS");

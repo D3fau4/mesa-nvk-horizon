@@ -25,6 +25,10 @@ struct horizon_gpu_device {
 
     horizon_log log;
     bool debug_synchronous;
+    /* Opt-in GPFIFO progress instrumentation.  See channel_priv.h: this
+     * inserts WFI-ordered semaphore breadcrumbs around caller spans and is
+     * intentionally too intrusive to enable by default. */
+    bool hang_snapshot;
 
     /* Two opt-outs that exist so a single console run can measure the
      * change against the behaviour it replaced, rather than a number

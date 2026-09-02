@@ -20,6 +20,25 @@
 /* Debug-synchronous mode bound: generous but finite. */
 #define SUBMIT_DEBUG_SYNC_TIMEOUT_NS UINT64_C(2000000000)
 
+static uint64_t
+submit_hang_marker(horizon_gpu_channel *chan, uint64_t submit_id,
+                   uint32_t span_index, horizon_hang_marker_phase phase,
+                   const horizon_gpu_cmd_span *span, bool is_wait)
+{
+    const uint32_t slot = chan->hang_next_slot++;
+    horizon_hang_marker_record *rec = &chan->hang_records[slot];
+    *rec = (horizon_hang_marker_record) {
+        .submit_id = submit_id,
+        .gpu_va = span->gpu_va,
+        .num_dwords = span->num_dwords,
+        .span_index = span_index,
+        .phase = phase,
+        .is_wait = is_wait,
+    };
+    return chan->hang_cmds_va +
+           (uint64_t)slot * HORIZON_CMDS_SEM_RELEASE_DWORDS * 4;
+}
+
 /* The whole of a submit, with the one thing that varies made explicit.
  *
  * `memory_barrier` is what separates a submit that touched the caller's
@@ -98,6 +117,24 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
 
     horizon_gpu_device *dev = chan->dev;
 
+    /* Two write-once marker entries bracket each caller span.  If the
+     * recorder has filled, preserve normal submission rather than wrapping
+     * and changing metadata which an old in-flight payload still names. */
+    bool hang_trace = chan->hang_records != NULL && num_spans > 0;
+    const uint32_t marker_entries = num_spans * 2u;
+    if (hang_trace &&
+        marker_entries > HORIZON_CHANNEL_HANG_MARKER_SLOTS -
+                         chan->hang_next_slot) {
+        hang_trace = false;
+        if (!chan->hang_exhausted_logged) {
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "channel %p: hang recorder exhausted after %u "
+                         "markers; later submits are uninstrumented",
+                         (void *)chan, chan->hang_next_slot);
+            chan->hang_exhausted_logged = true;
+        }
+    }
+
     /* Cheap reap first: one syncpoint read. */
     horizon_gpu_result res = horizon_gpu_channel_reap(chan, NULL);
     if (horizon_gpu_failed(res))
@@ -117,11 +154,13 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
      * is at most GPFIFO_QUEUE_SIZE - 2 and num_entries at most
      * GPFIFO_QUEUE_SIZE, so the sum is at most 2*0x800 + 2. Written
      * down because the same sum without that bound is what wrapped. */
-    if (chan->gc.num_entries + num_spans + own_entries > GPFIFO_QUEUE_SIZE) {
+    const uint32_t trace_entries = hang_trace ? marker_entries : 0;
+    if (chan->gc.num_entries + num_spans + own_entries + trace_entries >
+        GPFIFO_QUEUE_SIZE) {
         horizon_logf(&dev->log, HORIZON_LOG_WARN,
                      "channel %p: GPFIFO entry queue full (%u queued, %u "
                      "requested)", (void *)chan, chan->gc.num_entries,
-                     num_spans + own_entries);
+                     num_spans + own_entries + trace_entries);
         return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
     }
 
@@ -135,6 +174,9 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
 
     u32 entries_before = chan->gc.num_entries;
     Result rc;
+    const uint64_t hang_submit_id =
+        hang_trace ? ++chan->hang_submit_id : 0;
+    const uint32_t first_marker_slot = chan->hang_next_slot;
 
     /* The prologue goes first, before any of the caller's work: one
      * L2_SYSMEM_INVALIDATE, so the GPU cannot read an L2 line that the
@@ -164,6 +206,22 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
     }
 
     for (uint32_t i = 0; i < num_spans; i++) {
+        if (hang_trace) {
+            const uint64_t marker_va = submit_hang_marker(
+                chan, hang_submit_id, i, HORIZON_HANG_MARKER_BEFORE_SPAN,
+                &spans[i], is_wait);
+            rc = nvGpuChannelAppendEntry(
+                &chan->gc, marker_va, HORIZON_CMDS_SEM_RELEASE_DWORDS,
+                entry_flags, 0);
+            if (R_FAILED(rc)) {
+                chan->gc.num_entries = entries_before;
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "AppendEntry(hang marker before span %u) "
+                             "failed: 0x%08x", i, rc);
+                return horizon_gpu_err_nv(rc);
+            }
+        }
+
         rc = nvGpuChannelAppendEntry(&chan->gc, spans[i].gpu_va,
                                      spans[i].num_dwords, entry_flags, 0);
         if (R_FAILED(rc)) {
@@ -173,6 +231,22 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                          (unsigned long long)spans[i].gpu_va,
                          spans[i].num_dwords, rc);
             return horizon_gpu_err_nv(rc);
+        }
+
+        if (hang_trace) {
+            const uint64_t marker_va = submit_hang_marker(
+                chan, hang_submit_id, i, HORIZON_HANG_MARKER_AFTER_SPAN,
+                &spans[i], is_wait);
+            rc = nvGpuChannelAppendEntry(
+                &chan->gc, marker_va, HORIZON_CMDS_SEM_RELEASE_DWORDS,
+                entry_flags, 0);
+            if (R_FAILED(rc)) {
+                chan->gc.num_entries = entries_before;
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "AppendEntry(hang marker after span %u) "
+                             "failed: 0x%08x", i, rc);
+                return horizon_gpu_err_nv(rc);
+            }
         }
     }
 
@@ -202,11 +276,14 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
          * code exists is measured on hardware by t_submit. */
         chan->gc.fence_incr--;
         chan->gc.num_entries = entries_before;
+        /* A rejected kickoff can be the first userland observation of a
+         * notifier.  Take the same coherent snapshot as reap/wait before
+         * doing any other channel operation; get_error below then reads the
+         * sticky type latched by that check. */
+        (void)horizon_channel_check_fault(chan);
         uint32_t err_type = 0;
         const char *desc = "unavailable";
         (void)horizon_gpu_channel_get_error(chan, &err_type, &desc);
-        if (err_type != 0)
-            chan->lost = true;
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "Kickoff failed: 0x%08x (notifier: %u '%s')", rc,
                      err_type, desc);
@@ -255,6 +332,24 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
     horizon_logf(&dev->log, HORIZON_LOG_DEBUG,
                  "channel %p: submitted %u span(s)+incr, fence=%u:%u",
                  (void *)chan, num_spans, fence.syncpt_id, fence.threshold);
+
+    if (hang_trace) {
+        for (uint32_t i = 0; i < num_spans; i++) {
+            const uint64_t end = spans[i].gpu_va +
+                                 (uint64_t)spans[i].num_dwords * 4;
+            horizon_logf(&dev->log, HORIZON_LOG_INFO,
+                         "hangtrace: channel=%p submit=%llu kind=%s "
+                         "span=%u/%u push=[0x%llx,0x%llx) before=%u "
+                         "after=%u fence=%u:%u", (void *)chan,
+                         (unsigned long long)hang_submit_id,
+                         is_wait ? "acquire" : "work", i, num_spans,
+                         (unsigned long long)spans[i].gpu_va,
+                         (unsigned long long)end,
+                         first_marker_slot + i * 2u + 1u,
+                         first_marker_slot + i * 2u + 2u,
+                         fence.syncpt_id, fence.threshold);
+        }
+    }
 
     /* Diagnostic mode only — compiled in, never taken otherwise, and no
      * test may need it to pass. */
