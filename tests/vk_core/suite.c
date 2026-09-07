@@ -32,6 +32,7 @@
 
 TEST_CASE_DECL(vk_core, bringup);
 TEST_CASE_DECL(vk_core, transfer);
+TEST_CASE_DECL(vk_core, device_memory);
 TEST_CASE_DECL(vk_core, image_clear);
 TEST_CASE_DECL(vk_core, capabilities);
 TEST_CASE_DECL(vk_core, timestamps);
@@ -43,6 +44,7 @@ TEST_CASE_DECL(vk_core, sparse_binding);
 TEST_SUITE("vk_core", false,
            TEST_CASE(vk_core, bringup),
            TEST_CASE(vk_core, transfer),
+           TEST_CASE(vk_core, device_memory),
            TEST_CASE(vk_core, image_clear),
            TEST_CASE(vk_core, capabilities),
            TEST_CASE(vk_core, timestamps),
