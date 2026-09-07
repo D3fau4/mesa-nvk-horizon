@@ -165,11 +165,14 @@ Four things the run has to report, in this order:
 - **whether the picture is right.** This is the only change on this
   branch that can put a frame into a buffer the compositor is still
   reading, and that fault has no error, no notifier and no log line —
-  it is a torn band on screen and nothing else. `t_vk_swapchain`,
-  `t_vk_wsi_mt`, `t_vk_present_draw` and `t_nwindow` are the tests that
-  drive the path; a human looking at the screen is the instrument.
-  **If tearing appears, the action is to set `gpu_acquire_wait` false
-  unconditionally in `0066`**, not to debug it from the log.
+  it is a torn band on screen and nothing else. `t_vk_present_draw`
+  section F is the test that drives the GPU-side path (`t_vk_swapchain`,
+  `t_vk_wsi_mt` and the other sections of F's own file take the CPU one,
+  which is the other half and equally worth running); a human looking at
+  the screen is the instrument, because no Vulkan call this test can
+  make would see it. **If tearing appears, the action is to set
+  `gpu_acquire_wait` false unconditionally in `0066`**, not to debug it
+  from the log.
 - **whether `NVHOST_IOCTL_CTRL_SYNCPT_READ` answers for a syncpoint this
   process does not own.** `horizon_gpu_fence_wait` reads the counter
   before it waits, and that read has only ever been made against a
@@ -183,7 +186,9 @@ Four things the run has to report, in this order:
   `NvMultiFence` holds four and all four are carried; one is what this
   is expected to see. The acquire meter says nothing about it, so the
   way to know is a log line at the point of failure, which is why an
-  unrepresentable count is reported rather than truncated.
+  unrepresentable count is reported rather than truncated — and, since
+  `0067`, why a driver that declines the set ends the acquire instead of
+  letting `wsi_common.c` signal the semaphore anyway.
 - **the number.** `MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1` and
   `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`, twice in one session —
   once as built, once with `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1` —
@@ -192,9 +197,22 @@ Four things the run has to report, in this order:
   all off. Expected: the acquire line's "on the compositor's release
   fence" figure goes to nothing and its "handed that fence to the GPU"
   count becomes the frame count, while `nvkmd_horizon`'s "wait(s)
-  handed to the host engine" rises by one per frame. **A frame-rate
-  claim needs the application's own frame times, not these counters** —
-  what they can show is that the stall moved, not what it bought.
+  handed to the host engine" rises by one per frame **in the semaphore
+  run and stays at zero in the fence run**. Those two counters do not
+  say the same thing and neither alone is the claim: the acquire meter
+  counts the WSI deferring the fence, which happens on both paths, and
+  only the `nvkmd_horizon` one is incremented after
+  `horizon_gpu_submit_waits()` has taken the batch. **A frame-rate claim
+  needs the application's own frame times, not these counters** — what
+  they can show is that the stall moved, not what it bought.
+
+  And it may buy nothing, which is a result and not a failure. The
+  GPFIFO is in order, so a host-engine wait still stalls every submit
+  behind it on that channel: what the change frees is the CPU, and that
+  is worth something only where the CPU was the thing running out of
+  frame. Section F reports the frame interval beside the acquire mean
+  for exactly that reason — the acquire getting shorter is not the
+  measurement.
 
 One failure mode changes shape and is not a regression, but should be
 recognised if it appears: a compositor that never releases a buffer used

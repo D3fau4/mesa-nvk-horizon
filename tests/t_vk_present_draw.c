@@ -174,6 +174,41 @@ static const char *pd_kind_name(pd_frame_kind kind)
    return kind == PD_FRAME_CLEAR ? "clear" : "draw";
 }
 
+/* WHICH OF THE ACQUIRE'S TWO SIGNALS THE LOOP USES, and it is a
+ * different code path in the driver, not a preference.
+ *
+ * vkAcquireNextImageKHR takes a semaphore and a fence and the
+ * application picks either or both. Since the driver stopped waiting for
+ * the compositor's release fence inside the acquire, that fence becomes
+ * the payload of whichever of the two was passed — and the two are then
+ * consumed by completely different code:
+ *
+ *   PD_ACQ_FENCE      vkWaitForFences on it. The payload is waited out
+ *                     on the CPU, by nvk_horizon_sync_wait, through
+ *                     horizon_gpu_fence_wait. Nothing reaches the
+ *                     channel.
+ *   PD_ACQ_SEMAPHORE  the semaphore goes in the render submit's wait
+ *                     list. The payload reaches nvkmd_horizon_ctx_wait,
+ *                     which hands it to horizon_gpu_submit_waits and the
+ *                     host engine blocks on the syncpoint. THIS THREAD
+ *                     NEVER WAITS.
+ *
+ * Every presenting test in this suite used the fence, so the second path
+ * had never been executed by anything — it could have been broken and
+ * every test would still have passed. Both are run here, on the same
+ * content, for that reason.
+ */
+typedef enum pd_acquire_mode {
+   PD_ACQ_FENCE,
+   PD_ACQ_SEMAPHORE,
+} pd_acquire_mode;
+
+static const char *pd_acq_name(pd_acquire_mode m)
+{
+   return m == PD_ACQ_FENCE ? "fence + vkWaitForFences"
+                            : "semaphore waited by the submit";
+}
+
 /* ------------------------------------------------------------------ */
 /* The swapchain, and the per-image resources a frame needs.           */
 /* ------------------------------------------------------------------ */
@@ -192,6 +227,33 @@ typedef struct pd_swapchain {
    VkImageView views[PD_MAX_IMAGES];
    pd_frame_res res[PD_MAX_IMAGES];
    VkFence acquire_fence;
+
+   /* A RING OF ACQUIRE SEMAPHORES, used only by PD_ACQ_SEMAPHORE.
+    *
+    * One would not do. A binary semaphore may not be signalled again
+    * while a previous signal of it is still unconsumed, so a single one
+    * reused every frame would either be invalid usage or force the loop
+    * to wait for its own submit — which is exactly the serialisation
+    * this mode exists to avoid measuring.
+    *
+    * image_count + 1 of them, so the ring is never shallower than the
+    * number of images the swapchain can have outstanding.
+    *
+    * `busy[k]` says slot k has been signalled by an acquire and consumed
+    * by the submit for image `user[k]`; before k is used again that
+    * submit has to have finished, and res[user[k]].in_flight is its
+    * fence. That fence may by then belong to a LATER submit on the same
+    * image, because pd_record_and_submit resets it before every one —
+    * and later is what makes this safe: one queue runs submits in order,
+    * so a fence a newer submit on that image has signalled means the
+    * older one finished too. There is no window where it is unsignalled
+    * and unsubmitted, because the reset and the submit both happen on
+    * this thread inside pd_record_and_submit.
+    */
+   VkSemaphore acquire_sem[PD_MAX_IMAGES + 1];
+   uint32_t acquire_sem_user[PD_MAX_IMAGES + 1];
+   bool acquire_sem_busy[PD_MAX_IMAGES + 1];
+   uint32_t acquire_sem_count;
 
    VkExtent2D extent;
    VkFormat format;
@@ -219,6 +281,7 @@ typedef struct pd_content {
 typedef struct pd_stats {
    const char *what;
    pd_frame_kind kind;
+   pd_acquire_mode acq_mode;
    uint32_t draws;
    VkPresentModeKHR mode;
    uint32_t image_count;
@@ -252,11 +315,13 @@ typedef struct pd_stats {
 } pd_stats;
 
 static void pd_stats_init(pd_stats *s, const char *what, const pd_swapchain *sc,
-                          pd_frame_kind kind, uint32_t draws)
+                          pd_frame_kind kind, pd_acquire_mode acq_mode,
+                          uint32_t draws)
 {
    memset(s, 0, sizeof(*s));
    s->what = what;
    s->kind = kind;
+   s->acq_mode = acq_mode;
    s->draws = draws;
    s->mode = sc->mode;
    s->image_count = sc->image_count;
@@ -547,6 +612,10 @@ static void pd_destroy(vkfw *fw, pd_swapchain *sc)
       if (sc->res[i].cb != VK_NULL_HANDLE)
          fw->vk.vkFreeCommandBuffers(fw->dev, fw->pool, 1, &sc->res[i].cb);
    }
+   for (uint32_t k = 0; k < sc->acquire_sem_count; k++) {
+      if (sc->acquire_sem[k] != VK_NULL_HANDLE)
+         fw->wsi.vkDestroySemaphore(fw->dev, sc->acquire_sem[k], NULL);
+   }
    if (sc->acquire_fence != VK_NULL_HANDLE)
       fw->vk.vkDestroyFence(fw->dev, sc->acquire_fence, NULL);
    if (sc->handle != VK_NULL_HANDLE)
@@ -625,6 +694,20 @@ static bool pd_create(vkfw *fw, VkSurfaceKHR surface, VkFormat format,
                 vkfw_result_str(r)))
       goto fail;
 
+   /* The ring, always — a swapchain does not know which mode will be run
+    * on it, and image_count + 1 unsignalled semaphores cost nothing on
+    * the runs that use the fence instead. */
+   sc->acquire_sem_count = sc->image_count + 1u;
+   for (uint32_t k = 0; k < sc->acquire_sem_count; k++) {
+      const VkSemaphoreCreateInfo asci = {
+         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+      };
+      r = fw->wsi.vkCreateSemaphore(fw->dev, &asci, NULL, &sc->acquire_sem[k]);
+      if (!t_check(t, r == VK_SUCCESS, "%s: acquire semaphore %" PRIu32
+                                       " -> %s", what, k, vkfw_result_str(r)))
+         goto fail;
+   }
+
    for (uint32_t i = 0; i < sc->image_count; i++) {
       const VkImageViewCreateInfo ivci = {
          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -694,7 +777,8 @@ static void pd_clear_colour(uint32_t frame, VkClearColorValue *out)
 static VkResult pd_record_and_submit(vkfw *fw, pd_swapchain *sc,
                                      const pd_content *content,
                                      pd_frame_kind kind, uint32_t draws,
-                                     uint32_t index, uint32_t frame)
+                                     uint32_t index, uint32_t frame,
+                                     VkSemaphore wait_sem)
 {
    pd_frame_res *res = &sc->res[index];
    VkResult r;
@@ -798,8 +882,20 @@ static VkResult pd_record_and_submit(vkfw *fw, pd_swapchain *sc,
    if (r != VK_SUCCESS)
       return r;
 
+   /* ALL_COMMANDS as the destination stage, and deliberately the
+    * bluntest one available. A tighter mask would have to be TRANSFER
+    * for a clear frame and COLOR_ATTACHMENT_OUTPUT for a drawn one, and
+    * getting that wrong is a hazard that shows as a torn image rather
+    * than as an error. Nothing here is measuring how finely the wait can
+    * be placed — this backend's wait is the host engine holding the
+    * whole channel at a syncpoint, which is channel-wide whatever mask
+    * is asked for. */
+   const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
    const VkSubmitInfo si = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .waitSemaphoreCount = wait_sem != VK_NULL_HANDLE ? 1u : 0u,
+      .pWaitSemaphores = wait_sem != VK_NULL_HANDLE ? &wait_sem : NULL,
+      .pWaitDstStageMask = wait_sem != VK_NULL_HANDLE ? &wait_stage : NULL,
       .commandBufferCount = 1,
       .pCommandBuffers = &res->cb,
       .signalSemaphoreCount = 1,
@@ -820,7 +916,8 @@ static VkResult pd_record_and_submit(vkfw *fw, pd_swapchain *sc,
  * destroys the overlap the pipelined loop depends on and is exactly why
  * the two are never the same run. */
 static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
-                   pd_frame_kind kind, uint32_t draws, uint32_t frames,
+                   pd_frame_kind kind, pd_acquire_mode acq_mode,
+                   uint32_t draws, uint32_t frames,
                    uint64_t budget_ns, bool measure_gpu, pd_stats *st)
 {
    const u64 run_start = armGetSystemTick();
@@ -832,11 +929,34 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
       if (st->elapsed_ns >= budget_ns)
          break;
 
+      /* THE RING SLOT IS CLAIMED BEFORE THE ACQUIRE AND OUTSIDE ITS
+       * MEASUREMENT, because it is the loop's own throttle and not part
+       * of what the acquire costs: it waits for the submit of the frame
+       * `acquire_sem_count` back, which the fence mode pays for inside
+       * pd_record_and_submit instead. Counting it as acquire time would
+       * put the pipeline's depth into the number this section exists to
+       * report. */
+      const uint32_t slot = acq_mode == PD_ACQ_SEMAPHORE
+                               ? frame % sc->acquire_sem_count : 0u;
+      VkResult r;
+      if (acq_mode == PD_ACQ_SEMAPHORE && sc->acquire_sem_busy[slot]) {
+         VkFence used = sc->res[sc->acquire_sem_user[slot]].in_flight;
+         r = fw->vk.vkWaitForFences(fw->dev, 1, &used, VK_TRUE, PD_WAIT_NS);
+         if (r != VK_SUCCESS) {
+            pd_fail(st, frame, r, "waiting for an acquire semaphore to free");
+            return;
+         }
+         sc->acquire_sem_busy[slot] = false;
+      }
+
       const u64 acq_start = armGetSystemTick();
       uint32_t index = 0;
-      VkResult r = fw->wsi.vkAcquireNextImageKHR(fw->dev, sc->handle,
-                                                 PD_WAIT_NS, VK_NULL_HANDLE,
-                                                 sc->acquire_fence, &index);
+      const VkSemaphore acq_sem = acq_mode == PD_ACQ_SEMAPHORE
+                                     ? sc->acquire_sem[slot] : VK_NULL_HANDLE;
+      const VkFence acq_fence = acq_mode == PD_ACQ_FENCE
+                                   ? sc->acquire_fence : VK_NULL_HANDLE;
+      r = fw->wsi.vkAcquireNextImageKHR(fw->dev, sc->handle, PD_WAIT_NS,
+                                        acq_sem, acq_fence, &index);
       if (r == VK_SUBOPTIMAL_KHR) {
          st->suboptimal++;
       } else if (r != VK_SUCCESS) {
@@ -844,22 +964,30 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
          return;
       }
 
-      /* The acquire took a reference to the fence on both success codes,
-       * so every path out of this iteration has to have waited on it and
-       * reset it — including the index check, which is why that comes
-       * after. */
-      r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->acquire_fence, VK_TRUE,
-                                 PD_WAIT_NS);
-      if (r != VK_SUCCESS) {
-         pd_fail(st, frame, r, "waiting for the acquire fence");
-         return;
-      }
-      r = fw->vk.vkResetFences(fw->dev, 1, &sc->acquire_fence);
-      if (r != VK_SUCCESS) {
-         pd_fail(st, frame, r, "resetting the acquire fence");
-         return;
+      if (acq_mode == PD_ACQ_FENCE) {
+         /* The acquire took a reference to the fence on both success
+          * codes, so every path out of this iteration has to have waited
+          * on it and reset it — including the index check, which is why
+          * that comes after. */
+         r = fw->vk.vkWaitForFences(fw->dev, 1, &sc->acquire_fence, VK_TRUE,
+                                    PD_WAIT_NS);
+         if (r != VK_SUCCESS) {
+            pd_fail(st, frame, r, "waiting for the acquire fence");
+            return;
+         }
+         r = fw->vk.vkResetFences(fw->dev, 1, &sc->acquire_fence);
+         if (r != VK_SUCCESS) {
+            pd_fail(st, frame, r, "resetting the acquire fence");
+            return;
+         }
       }
 
+      /* So the two modes measure two different things on purpose, and
+       * the report says which: with the fence this is the acquire plus
+       * the whole dependency, and with the semaphore it is the acquire
+       * alone, because the dependency has not been waited for by anyone
+       * yet. Comparing the two numbers as if they were one measurement
+       * is the mistake this comment exists to prevent. */
       const uint64_t acq_ns = armTicksToNs(armGetSystemTick() - acq_start);
       st->acquire_total_ns += acq_ns;
       if (acq_ns > st->acquire_max_ns)
@@ -872,10 +1000,19 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
       st->used_mask |= 1u << index;
 
       const u64 submit_start = armGetSystemTick();
-      r = pd_record_and_submit(fw, sc, content, kind, draws, index, frame);
+      r = pd_record_and_submit(fw, sc, content, kind, draws, index, frame,
+                               acq_sem);
       if (r != VK_SUCCESS) {
          pd_fail(st, frame, r, "recording and submitting the frame");
          return;
+      }
+      if (acq_mode == PD_ACQ_SEMAPHORE) {
+         /* Claimed only now: a submit that was refused never waited on
+          * the semaphore, so the slot is still free and marking it busy
+          * would deadlock the loop against a fence nothing will
+          * signal. */
+         sc->acquire_sem_user[slot] = index;
+         sc->acquire_sem_busy[slot] = true;
       }
 
       if (measure_gpu) {
@@ -946,6 +1083,9 @@ static bool pd_report(test_ctx *t, const pd_stats *s)
              s->fail_frame, vkfw_result_str(s->fail_result));
    }
 
+   t_note(t, "%s: the acquire's dependency was carried by a %s",
+          s->what, pd_acq_name(s->acq_mode));
+
    t_note(t, "%s [%s x%" PRIu32 ", %s, %" PRIu32 " images]: interval mean %"
              PRIu64 " us over %" PRIu32 " (min %" PRIu64 ", max %" PRIu64
              "), %" PRIu32 " within 10%% of a refresh; acquire mean %" PRIu64
@@ -982,18 +1122,21 @@ static bool pd_report(test_ctx *t, const pd_stats *s)
 
 /* Runs one measured loop on a swapchain of its own, so no run inherits
  * the queue state of the one before it. */
-static bool pd_measure(vkfw *fw, VkSurfaceKHR surface, const pd_content *content,
-                       VkFormat format, VkExtent2D extent,
-                       VkPresentModeKHR mode, pd_frame_kind kind,
-                       uint32_t draws, uint32_t frames, uint64_t budget_ns,
-                       bool measure_gpu, const char *what, pd_stats *out)
+static bool pd_measure_acq(vkfw *fw, VkSurfaceKHR surface,
+                           const pd_content *content,
+                           VkFormat format, VkExtent2D extent,
+                           VkPresentModeKHR mode, pd_frame_kind kind,
+                           pd_acquire_mode acq_mode,
+                           uint32_t draws, uint32_t frames, uint64_t budget_ns,
+                           bool measure_gpu, const char *what, pd_stats *out)
 {
    pd_swapchain sc;
    if (!pd_create(fw, surface, format, extent, mode, what, &sc))
       return false;
 
-   pd_stats_init(out, what, &sc, kind, draws);
-   pd_run(fw, &sc, content, kind, draws, frames, budget_ns, measure_gpu, out);
+   pd_stats_init(out, what, &sc, kind, acq_mode, draws);
+   pd_run(fw, &sc, content, kind, acq_mode, draws, frames, budget_ns,
+          measure_gpu, out);
    const bool ok = pd_report(fw->t, out);
 
    const VkResult q = pd_quiesce(fw);
@@ -1001,6 +1144,19 @@ static bool pd_measure(vkfw *fw, VkSurfaceKHR surface, const pd_content *content
                                    "-> %s", what, vkfw_result_str(q));
    pd_destroy(fw, &sc);
    return ok;
+}
+
+/* The acquire mode every section but F uses, and the one every
+ * presenting test in this suite has always used. */
+static bool pd_measure(vkfw *fw, VkSurfaceKHR surface, const pd_content *content,
+                       VkFormat format, VkExtent2D extent,
+                       VkPresentModeKHR mode, pd_frame_kind kind,
+                       uint32_t draws, uint32_t frames, uint64_t budget_ns,
+                       bool measure_gpu, const char *what, pd_stats *out)
+{
+   return pd_measure_acq(fw, surface, content, format, extent, mode, kind,
+                         PD_ACQ_FENCE, draws, frames, budget_ns, measure_gpu,
+                         what, out);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1024,6 +1180,21 @@ int run_test(test_ctx *t)
    const char *const device_exts[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
    };
+
+   /* BEFORE vkCreateDevice, AND THEREFORE FOR THE WHOLE FILE, because
+    * nvkmd_horizon's meter is created with the context and reads the
+    * variable exactly once there. Section F is what needs it — its
+    * "wait(s) handed to the host engine" count is the only number that
+    * says the acquire's dependency reached the channel rather than
+    * merely being deferred — and the acquire meter's own counter cannot
+    * say that, by construction (it is incremented before anything is
+    * known about who will consume the dependency).
+    *
+    * The cost to the other sections is one line a second per channel on
+    * stderr, which testfw has dup2'd onto this test's log. It is not
+    * free and it is not nothing: sections B and D report GPU and pacing
+    * numbers measured with it on. */
+   setenv("MESA_VK_NVKMD_HORIZON_SUBMIT_STATS", "1", 1);
 
    if (!vkfw_init_full(&fw, t, &features13, instance_exts, 2, device_exts, 1)) {
       t_note(t, "if this failed with EXTENSION_NOT_PRESENT, the build has no "
@@ -1233,6 +1404,85 @@ int run_test(test_ctx *t)
               "D pacing, three draws, IMMEDIATE", &imm_draw);
 
    unsetenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS");
+
+   /* ---------------------------------------------------------------- */
+   /* F — the other half of the acquire, which nothing had ever run.   */
+   /* ---------------------------------------------------------------- */
+
+   /* WHAT IS DIFFERENT HERE, AND IT IS A DIFFERENT CODE PATH IN THE
+    * DRIVER AND NOT A DIFFERENT MEASUREMENT.
+    *
+    * Since the acquire stopped waiting for the compositor's release
+    * fence itself, that fence is the payload of whichever of the
+    * acquire's two signals the application passed. Sections A to E — and
+    * t_vk_swapchain, and t_vk_wsi_mt — all pass the FENCE and then call
+    * vkWaitForFences, which consumes the payload on the CPU inside
+    * nvk_horizon_sync_wait. The semaphore path, where the payload goes
+    * into a submit's wait list and reaches horizon_gpu_submit_waits and
+    * the host engine, had never been executed by anything in this
+    * project. It could have been broken in any way at all and every test
+    * would still have passed.
+    *
+    * So F runs the same paced clear as C, twice, with only the acquire's
+    * signal differing between them.
+    *
+    * WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the path runs:
+    * frames present, every image is used, and the GPU-side wait does not
+    * hang — a wait that never unblocked would exhaust PD_WAIT_NS on the
+    * render fence and fail here. It does NOT prove the ordering is
+    * right. A GPU wait that unblocked too early would render over a
+    * buffer the compositor is still reading, and there is nothing in a
+    * Vulkan API this test can call that would see it: the failure is a
+    * torn band on a screen. That is a hardware run with a human looking
+    * at it, and it is written down here rather than left to be assumed.
+    *
+    * The number that says the dependency reached the channel is
+    * nvkmd_horizon's "wait(s) handed to the host engine", on for the
+    * whole file (see the setenv above). It should be one per frame in
+    * the semaphore run and zero in the fence run — and the acquire
+    * meter's own "left that fence for the acquire semaphore or fence to
+    * carry" should be a full count in BOTH, because it counts the
+    * deferral and not the consumer. */
+   setenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS", "1", 1);
+   t_note(t, "F: both runs below defer the compositor's release fence; only "
+             "the second hands it to the GPU. Read \"wait(s) handed to the "
+             "host engine\" in the nvkmd_horizon lines, not the acquire "
+             "meter's count, which is a full count in both by design");
+
+   pd_stats acq_fence;
+   pd_measure_acq(&fw, surface, &content, format, extent,
+                  VK_PRESENT_MODE_FIFO_KHR, PD_FRAME_CLEAR, PD_ACQ_FENCE, 0,
+                  PD_FRAMES, PD_RUN_BUDGET_NS, false,
+                  "F acquire by fence, waited on the CPU", &acq_fence);
+
+   pd_stats acq_sem;
+   const bool sem_ok =
+      pd_measure_acq(&fw, surface, &content, format, extent,
+                     VK_PRESENT_MODE_FIFO_KHR, PD_FRAME_CLEAR,
+                     PD_ACQ_SEMAPHORE, 0, PD_FRAMES, PD_RUN_BUDGET_NS, false,
+                     "F acquire by semaphore, waited on the GPU", &acq_sem);
+
+   unsetenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS");
+
+   /* The verdict is the run itself: pd_report has already checked that
+    * it presented and used every image. This says the thing a reader
+    * needs on one line — that the path exists and did not hang. */
+   t_check(t, sem_ok && acq_sem.frames > 0,
+           "F: a swapchain image acquired with a binary semaphore, waited on "
+           "by the render submit and never by this thread, presents — %"
+           PRIu32 " frame(s)", acq_sem.frames);
+
+   if (acq_fence.frames > 0 && acq_sem.frames > 0) {
+      t_note(t, "F: acquire mean %" PRIu64 " us by fence against %" PRIu64
+                " us by semaphore. These are NOT the same measurement: the "
+                "first includes the whole dependency and the second none of "
+                "it, so the difference is where the wait went, not what it "
+                "cost. The frame interval is the number that would say "
+                "that — %" PRIu64 " us against %" PRIu64 " us here",
+             acq_fence.acquire_total_ns / acq_fence.frames / 1000u,
+             acq_sem.acquire_total_ns / acq_sem.frames / 1000u,
+             pd_mean_ns(&acq_fence) / 1000u, pd_mean_ns(&acq_sem) / 1000u);
+   }
 
    /* ---------------------------------------------------------------- */
    /* E — the relation the whole file exists for.                      */
