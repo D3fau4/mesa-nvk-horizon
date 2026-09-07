@@ -155,6 +155,28 @@ passes, and it costs a relaunch.
 
 ---
 
+## 6 The Forward+ hang has an in-tree reproducer that does not reproduce it
+
+**Class HW.** `vk_shaders/crs_matrix` was built to separate the last
+pair standing — a memory-backed convergence stack and a high register
+count — and it renders all eight variants, including the one whose
+compiled profile matches the shader that hangs (112 registers, 1024
+bytes of convergence stack, walked divergently). The measurement is in
+`docs/MEASURED-ON-HARDWARE.md`; what it leaves open is that the case
+differs from the failing draw in four ways, and only one of them is
+cheap to close.
+
+**Done when** the matrix has been run at an extent that puts a real
+number of warps in flight — 16x16 is a handful and the draw that hangs
+is 1280x720 — with everything else held. Per-warp convergence-stack
+memory is the one resource that scales with the warp count, so if the
+pair is going to hang anything it is there. If that renders too, the
+remaining differences are the shader's size, what it reads, and the
+frame around it, and the next step is to say which of those is worth a
+variable rather than to keep adding them at once.
+
+---
+
 ## 5 A consumer that resizes the layer has never been seen
 
 **Class X.** `0076` gives the size-latch a way to follow the consumer:
