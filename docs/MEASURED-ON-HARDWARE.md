@@ -279,6 +279,43 @@ every run ended by quitting on its own. The screen itself was not
 looked at: sys-botbase's capture returns a stale frame for an
 application that owns the display, which is why the hash exists.
 
+## Forward+ still hangs, and `0073` is not what it was
+
+2026-09-07, build `18:56:22.600Z`, one run, asked for because the
+question was open: `0073` fixes a chunk the GPU reads as whatever
+memory held instead of what the CPU wrote, and the standing diagnosis
+of Godot's Forward+ hang is that "the fragment shader reads garbage out
+of set 1". Those are the same shape of defect, and the upload path
+`0073` cleans does carry push descriptor sets
+(`nvk_cmd_buffer_flush_descriptors` -> `nvk_cmd_buffer_upload_data`)
+and the compute root table.
+
+`bench_fp` — the eight-phase benchmark with
+`renderer/rendering_method = forward_plus` — exported against this
+build's driver and run once with `GODOT_NO_PSO_CACHE=1`, so nothing
+came out of a cache a previous driver filled:
+
+    requested     : forward_plus
+    effective     : forward_plus
+    -- phase 1/8: idle              16.67 ms  gpu 0.26 ms
+    -- phase 2/8: 2d_overdraw_32    50.00 ms  gpu 41.82 ms
+    -- phase 3/8: 2d_sprites_1200   16.68 ms  gpu 2.80 ms
+    -- phase 4/8: 3d_cubes_200
+    [horizon_gpu:E] channel 0x1cc0b92010: fault notification 8
+        (fifo idle timeout) - marking lost
+
+and then `VK_ERROR_DEVICE_LOST` on every submit until Horizon ended the
+process. **Identical to what `RESULTADOS.md` recorded six runs out of
+six before any of this work**: the three 2D phases measure, the first
+3D phase takes the channel down, `error_type=4 (timeout)`,
+`info_all_zero=yes`.
+
+So the hypothesis is dead: **the Forward+ hang is not the missing cache
+clean.** It is not `0075` or `0076` either, which is unsurprising —
+they are surface capabilities — but the run says so rather than leaving
+it to be assumed. What the hang tracks is still the compiled register
+count (22 GPRs renders, 24 hangs), and that is where it is left.
+
 ## `gpu_fault` dies about a minute after it passes, with nobody touching it
 
 **Three runs, 2026-09-07, netloaded one at a time into a freshly
