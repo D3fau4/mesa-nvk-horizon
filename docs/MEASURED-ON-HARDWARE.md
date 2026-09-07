@@ -36,6 +36,214 @@ and `git log --follow` on any of these paths reaches the old file.
 
 ---
 
+## The fourteen suites again, after the WSI and allocator work
+
+2026-09-07, build `3409462` plus the commits above it, mesa `47be3e0`
+(`MESA_COMMIT` + 74 patches), handheld, 1280x720, full-memory takeover,
+netloaded one at a time. Every log carries the `horizon-build-id` line.
+
+| Suite | Result |
+|---|---|
+| `platform` | **PASS 87/87** [3/3] |
+| `gpu_memory` | **PASS 133/133** [6/6] |
+| `gpu_submit` | **PASS 324/324** [8/8] |
+| `mesa_runtime` | **PASS 166/166** [3/3] |
+| `display` | **PASS 160/160** [2/2] |
+| `vk_core` | **PASS 1340/1340** [9/9] |
+| `vk_shaders` | **PASS 518/518** [7/7] |
+| `vk_render` | **PASS 2637/2637** [7/7] |
+| `vk_pipelines` | **PASS 225/225** [1/1] — cold compile mean 111801 us, warm 5 us |
+| `vk_cache` | **PASS 43/43** cold and **45/45** warm, two launches; 5275 us cold against 448 us warm, 91% |
+| `vk_present` | **PASS 1038/1038** [2/2] |
+| `vk_wsi` | **PASS 571/571** [3/3] — `swapchain` 227/227, `suboptimal` 273/273, `concurrency` 71/71 |
+| `gpu_fault` | **PASS 44/44** [2/2], and then the process died — see below |
+| `dock` | **PASS 4/4** [1/1] in 60066 ms — nobody docked, and the case says so rather than passing quietly: "0 change(s) seen ... NOTHING moved. Either nobody touched the console, or a dock does not reach a process launched this way" |
+
+**The two failures the previous run had are gone**, and neither was
+fixed by making a test agree with a driver: `vk_wsi/suboptimal` went
+272/273 to 273/273 because `currentExtent` stopped lagging, and
+`vk_wsi/concurrency` went from ending the process to 71/71 because the
+copy fallback stopped calling a libnx function that aborts.
+
+**`gpu_fault` passes and then the process dies.** The suite reported
+`PASS (44/44) [2/2 cases]` and wrote its whole log, build-id line
+included; some time later, while idling on its "press + to exit"
+screen, the process ended with the system's own "the software was
+closed because an error occurred" dialog. That is not in the log and
+was not seen on 2026-09-07's first run. What the suite does is provoke
+an MMU fault on purpose, and `tests/README.md` has always said its
+after-effects on the console are unconfirmed. Recorded here as an
+observation; what is owed about it is in
+`docs/PENDING-HARDWARE-RUNS.md`.
+
+## `currentExtent` is the layer's size now, and stays it
+
+The defect: `wsi_horizon_get_extent` re-read `NWindow::default_*` on
+every surface query, and that field has two authors — the consumer, and
+this backend, through the registration `nwindowSetDimensions` performs
+at every swapchain creation. Since `0054` let an application choose an
+extent smaller than the layer, a swapchain smaller than the layer
+taught the SURFACE that the output had shrunk, one connect later.
+
+`0070` latches the layer once and answers every query from the latch;
+`0074` takes that latch from `nwindowGetDimensions` rather than from
+`default_*`, which works because `0070` also made
+`wsi_horizon_release_window` put `NWindow::width` back to the layer's
+size whenever this backend gives the window up. One field, written by
+us to the layer on release and read by us on latch.
+
+Measured, `vk_wsi/swapchain` section H, three cycles of
+1280x720 → 640x360 → 1280x720 in one process with the way back done by
+recreation:
+
+- 3 of 3 cycles presented every frame, 36 at half and 36 at the layer;
+- 0 creations refused, where the previous build refused two;
+- the surface reported 1280x720 at the top of every cycle;
+- 0 presents called SUBOPTIMAL at either size;
+- and the surface still reported 1280x720 afterwards.
+
+The queue's lag is still there and is now visible rather than
+believed. `vk_wsi/suboptimal` opens a second surface after
+`vk_wsi/swapchain` has finished with the window, and the driver says:
+
+    wsi_horizon: taking 1280x720 as the layer; the queue's default
+    buffer size says 640x360, which is this process's previous
+    registration arriving a connect late
+
+On the build before `0074` the same line was a warning that it had
+taken 640x360.
+
+## `vk_wsi/concurrency` was libnx aborting, not a race
+
+`framebufferBegin` calls `diagAbortWithResult` on any failed
+`nwindowDequeueBuffer`, so the copy fallback ended the process rather
+than returning an error. Two of the results it aborts on —
+`LibnxBinderError_WouldBlock` and `LibnxBinderError_NoInit` — are the
+ordinary "the compositor has not released a buffer yet" that the
+zero-copy acquire has always slept on and retried; the second is what a
+two-image swapchain gets when both its buffers are queued, which
+`wsi_horizon_dequeue_would_block`'s comment has recorded since it was
+written.
+
+It was deterministic, not a race. Section D is the only place in
+`tests/vk_wsi` that asks for **two** images — every other
+`mt_sc_create` in that file asks for three — and it alternates the
+image count 2/3 with the present path on `(gen % 4) >= 2`, so its
+generation 2 is the first swapchain in the process that is both two
+images and on the copy path. The third frame of that generation finds
+both buffers queued. That is why it reproduced identically on the
+series truncated to `0062`: the path has been there since `0037`.
+
+`0071` gives the copy fallback its own dequeue with the acquire's retry
+policy behind it. `vk_wsi/concurrency` is 71/71, including its section
+D (30 of 30 generations, 900 frames, each generation's predecessor
+destroyed on another thread while it presented) and its section F
+(3000 frames over 14 generations with a device-work thread beside it).
+
+## An upload chunk that nobody cleaned
+
+Found by taking the allocator's zero fill away from command memory and
+watching `vk_core/transfer` break.
+
+`nvk_cmd_buffer_upload_alloc` has two paths. The fast one carves a
+range out of `cmd->upload_mem` and advances `used_B`, which is what
+`flush_mem_list` cleans. The other takes a brand-new chunk, hands the
+caller offset 0 of it, and never touches `used_B` — so when that chunk
+is not adopted as `cmd->upload_mem`, nothing ever sets `used_B`, the
+clean is skipped, and the bytes the CPU memcpy'd stay in the CPU's
+cache while the GPU reads memory.
+
+    FAIL C inline update landed: 48/64 words match
+    first mismatch at word 0: got 0xff97803c, want 0xa5dac00d (16 wrong)
+
+One cache line of a 256-byte `vkCmdUpdateBuffer`, arriving as heap
+rubbish. With the allocator filling, the same gap delivered that
+chunk's zeros instead, which is why nothing had ever caught it —
+`vk_core/transfer` had passed for weeks. `0073` sets `used_B` on that
+path; the fill stays on command memory regardless, because the rule
+`NVKMD_MEM_NO_ZERO_INIT` was introduced under is that a consumer takes
+it only where every observable byte is shown to be written first, and
+this one has now been shown not to be.
+
+## What skipping the zero fill saves a real allocation
+
+`vk_core/device_memory` section D, 2026-09-07, device-local memory,
+sixty allocations per shape, three A/B pairs alternating which half
+runs first, `NVK_HORIZON_ZERO_ALL_MEM=1` restoring the fill in the same
+process at the same clock. The driver says once per device when it has
+actually skipped a fill, and the case checks for that line — without it
+a difference of zero cannot be told from a flag that never arrived.
+
+| Allocation | not filled | filled | saved | worst single, filled → not |
+|---|---|---|---|---|
+| 64 KiB | 209 us | 226 us | 17 us, 7% | 734 → 491 us |
+| 1 MiB | 365 us | 534 us | 169 us, 31% | 973 → 791 us |
+| 8 MiB | **1462 us** | **2859 us** | **1397 us, 48%** | **3442 → 1841 us** |
+
+Which agrees with what `gpu_memory/alloc` measured for the fill alone
+at the `horizon_gpu` level (21 / 182 / 1403 us) — the fill is the whole
+of the difference, and at 8 MiB it is half of what `vkAllocateMemory`
+costs.
+
+**That is a per-allocation number and not a frame time.** Whether an
+application stutters depends on whether it allocates inside a frame,
+which is the application's behaviour; the worst-single-allocation
+column is the size of the pause it would take if it does. Nothing
+measured here presents.
+
+The path is correct where it is used: sections A, B and C of the same
+case write and read back every byte of an unfilled allocation through a
+CPU mapping, through a GPU fill and copy, and across 3000 commands
+recorded over several command-buffer chunks.
+
+## Deferring the acquire buys CPU, and not frames, even with work to overlap
+
+`vk_present/drawn_frame` section G measured this with a fence acquire
+and could not have shown a saving: on that path the compositor's
+release fence is the payload of the fence the application passed, so
+the thread waits for it two calls later whether the driver deferred it
+or not.
+
+Section H asks the same question so the answer can be a frame time.
+Both halves acquire with a **semaphore**, which is the path the
+deferral exists for; the only difference is
+`MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT`; the frame contains 8.3 ms of
+real CPU work — a hash over a buffer it also writes back, its result
+carried out and printed — placed between the acquire and the submit,
+which is the one window where the two shapes differ; and the same pair
+runs again with no work at all as a control. FIFO, 1280x720, three
+draws, three images, three pairs of 60 frames each way, A/B and B/A
+alternated, one warm-up discarded. All times are `armGetSystemTick`,
+the CPU's own clock, so `timestampPeriod` does not enter and the
+1.627604 ns per tick recorded further down this file is neither applied
+nor applied twice.
+
+| | frame mean | p50 | p95 | p99 | CPU working | CPU blocked | of which acquire |
+|---|---|---|---|---|---|---|---|
+| work, deferred | 16083 us | 16658 | 16776 | 31755 | 8353 us | 7371 us | **113 us** |
+| work, CPU wait | 16377 us | 16663 | 16717 | 30108 | 8353 us | 7571 us | **5393 us** |
+| control, deferred | 16049 us | 16658 | 16830 | 30937 | 0 | 15640 us | 285 us |
+| control, CPU wait | 16289 us | 16638 | 17386 | 31242 | 0 | 15639 us | 12970 us |
+
+**The acquire is 48 times cheaper and the frame is not.** 294 us
+between the two halves with work, beside 240 us between the two halves
+without any — the difference is the size of the control's own spread.
+Reproduced on two builds an hour apart, with the same conclusion.
+
+The data says why, and it is structural rather than a property of this
+console. Under FIFO the display paces the loop, and what the thread
+does not spend working it spends blocked: 7371 us against 7571 us, the
+same total to 2%. The wait is also self-limiting — the CPU-wait half's
+acquire cost 5393 us with work in the frame and 12970 us without,
+because the work happens before the next acquire and the compositor
+releases the buffer meanwhile. Both shapes fit inside a refresh, so
+both take a refresh.
+
+So `0063`-`0068` buy **CPU time on the semaphore path and not frames
+per second**, and the acquire falling from 15483 us to 252 us (section
+F) must not be reported as the second thing. Where they could still
+produce a frame time is `docs/PENDING-HARDWARE-RUNS.md` section 3.
+
 ## The fourteen suites, run on a console
 
 2026-09-07, build `06d33ec` plus the test commits above it, mesa
@@ -59,7 +267,7 @@ on hardware, and of everything `0063`-`0069` changed.
 | `vk_cache` | **PASS 43/43** cold and **45/45** warm, two launches |
 | `vk_present` | **PASS 772/772** [2/2] |
 | `gpu_fault` | **PASS 44/44** [2/2] — the MMU fault is recorded, the fence does not report success for work that faulted, the faulted channel tears down cleanly and the GPU still works in the process afterwards |
-| `vk_wsi` | `swapchain` **PASS 158/158**; `suboptimal` **272/273**; `concurrency` ends the process. Both failures are open, in the ledger |
+| `vk_wsi` | `swapchain` **PASS 158/158**; `suboptimal` **272/273**; `concurrency` ends the process. Both failures were fixed later the same day — see the run at the top of this file |
 
 **Grouping fifty-three `.nro` into fourteen did not cost a case.** Every
 case with a recorded standalone result reproduced it, and no case was
