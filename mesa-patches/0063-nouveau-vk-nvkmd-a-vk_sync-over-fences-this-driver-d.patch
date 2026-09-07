@@ -49,16 +49,22 @@ Why: 0034 exports the syncpoint fence behind a vk_sync, so Horizon's
  Nothing calls the new op yet. The WSI change that does is the patch
  after next; this one is the mechanism on its own so it can be reviewed
  on its own.
-Evidence: HOST SYNTAX AND TYPE CHECK ONLY, gcc 13.3.0 (Ubuntu 24.04),
- `gcc -fsyntax-only -std=c11 -DNDEBUG -DHAVE_PTHREAD
- -DHAVE_STRUCT_TIMESPEC -D_GNU_SOURCE -Wall` over
- nvkmd_horizon_{sync,ctx,pdev}.c against this tree plus horizon/include
- and the Vulkan headers generated from src/vulkan/registry/vk.xml at
- MESA_COMMIT (vk_dispatch_table_gen.py, vk_entrypoints_gen.py,
- vk_physical_device_{features,properties}_gen.py, gen_enum_to_str.py,
- vk_extensions_gen.py, vk_cmd_queue_gen.py). All three compile clean.
- That is a compile, and CLAUDE.md says a compile is never described as
- working: NO CROSS BUILD AND NO CONSOLE HAS RUN THIS.
+Evidence: CROSS BUILD, scripts/ci-build-archives.sh in container mode over
+ ghcr.io/d3fau4/nx-dev:latest: aarch64-none-elf-gcc (devkitA64) 15.2.0,
+ ld.bfd 2.45.1, meson 1.11.2, -Wall -Wextra -Werror. The 877-target NVK
+ build compiles nvkmd_horizon_{sync,ctx,pdev}.c and nvkmd.h's users
+ with no warning
+ and links libnvk.a; the pipeline ends with every archive built, 53
+ .nro linking them, check-dispatch-complete OK (825 entry points) and
+ check-tls-relocs OK.
+ aarch64-none-elf-nm on that archive shows nvk_horizon_sync_import_fences
+ and nvk_horizon_sync_get_foreign_fences defined, and referenced from
+ the objects that use them.
+ Also checked before that, and kept because it is a cheaper loop than a
+ 25-minute pipeline: `gcc 13.3.0 -fsyntax-only -std=c11 -Wall` on the
+ host against Mesa's generated Vulkan headers plus horizon/include.
+ A cross build is class X and CLAUDE.md is explicit that it never means
+ working: NO CONSOLE HAS RUN THIS.
  .
  Two things a console has to answer, neither of which the GPU path
  depends on:

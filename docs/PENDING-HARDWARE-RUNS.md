@@ -143,13 +143,14 @@ narrowed to what was actually observed or the derivation corrected.
 
 ## 5 The acquire no longer waits for the compositor, and nothing has run it
 
-**Class X, and weaker than that** — `mesa-patches/0063`-`0066` have never
-been cross-compiled either. What was done instead is a HOST syntax and
-type check: `gcc -fsyntax-only -std=c11 -Wall` over
-`nvkmd_horizon_{sync,ctx,pdev}.c`, `wsi_common.c` and `wsi_horizon.c`,
-against Mesa's own generated Vulkan headers and, for the last one,
-libnx's real headers from switchbrew/libnx master. It compiles. Nothing
-else is known.
+**Class X.** `mesa-patches/0063`-`0066` cross-build:
+`scripts/ci-build-archives.sh` over `ghcr.io/d3fau4/nx-dev:latest`
+(aarch64-none-elf-gcc 15.2.0, meson 1.11.2, `-Wall -Wextra -Werror`)
+compiles all five files they touch with no warning, links `libnvk.a` and
+`libvulkan_wsi.a`, and ends with 53 `.nro` linking them and both
+artefact gates clean. `t_vk_swapchain`, `t_vk_wsi_mt`,
+`t_vk_present_draw` and `t_nwindow` are among those 53. Nothing else is
+known: a `.nro` exists, and that is all class X ever means.
 
 `wsi_horizon_acquire_zero_copy` used to `nvMultiFenceWait` on the fence
 the compositor released the slot with — 13.8 ms of a 16.7 ms frame, the

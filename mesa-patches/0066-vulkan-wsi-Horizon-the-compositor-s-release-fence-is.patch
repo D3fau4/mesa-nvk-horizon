@@ -57,18 +57,23 @@ Why: a zero-copy vkAcquireNextImageKHR waited for the compositor to
     and it was previously covered by accident.
   - the caller's timeout no longer bounds the release fence, only the
     dequeue. That is what the timeout is specified to bound.
-Evidence: HOST SYNTAX AND TYPE CHECK ONLY, gcc 13.3.0 (Ubuntu 24.04),
- `gcc -fsyntax-only -std=c11 -DNDEBUG -DVK_USE_PLATFORM_VI_NN -Wall`
- over wsi_horizon.c against this tree, the Vulkan headers generated from
- its own vk.xml, and libnx's real headers at switchbrew/libnx dbcc1be
- (two host stand-ins, <sys/lock.h> and <arm_acle.h>, for the two
- devkitA64 headers that are not in that repository). Clean, and the
- check was confirmed to be a real one by making mf->fences[i].id a typo
- and watching it be rejected. That is a compile: NO CROSS BUILD AND NO
- CONSOLE HAS RUN THIS, and CLAUDE.md's rule is that a successful compile
- is never described as working. The libnx headers used are master, not
- the toolchain image's pin, so they check this file's use of NvMultiFence
- and nothing about the build it will really see.
+Evidence: CROSS BUILD, scripts/ci-build-archives.sh in container mode over
+ ghcr.io/d3fau4/nx-dev:latest: aarch64-none-elf-gcc (devkitA64) 15.2.0,
+ ld.bfd 2.45.1, meson 1.11.2, -Wall -Wextra -Werror. The 877-target NVK
+ build compiles wsi_horizon.c with no warning
+ and links libvulkan_wsi.a; the pipeline ends with every archive built, 53
+ .nro linking them, check-dispatch-complete OK (825 entry points) and
+ check-tls-relocs OK.
+ wsi_horizon_create_acquire_sync is in the archive, and t_vk_swapchain,
+ t_vk_wsi_mt, t_vk_present_draw and t_nwindow are among the 53 .nro
+ that link it.
+ Also checked before that, and kept because it is a cheaper loop than a
+ 25-minute pipeline: `gcc 13.3.0 -fsyntax-only -std=c11 -Wall` on the
+ host against Mesa's generated Vulkan headers and libnx's real headers from switchbrew/libnx dbcc1be; that check was
+ confirmed to be a real one by making mf->fences[i].id a typo and
+ watching it be rejected.
+ A cross build is class X and CLAUDE.md is explicit that it never means
+ working: NO CONSOLE HAS RUN THIS.
  .
  What a console run has to answer, in order:
   - correctness first. Whether a frame is ever rendered over a buffer

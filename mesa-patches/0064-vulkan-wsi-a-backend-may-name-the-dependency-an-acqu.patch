@@ -50,14 +50,19 @@ Why: an acquire has two ways to deal with a buffer whose previous
  never waited for.
  .
  No backend implements either hook in this patch.
-Evidence: HOST SYNTAX AND TYPE CHECK ONLY, gcc 13.3.0 (Ubuntu 24.04),
- `gcc -fsyntax-only -std=c11 -DNDEBUG -DHAVE_PTHREAD
- -DHAVE_STRUCT_TIMESPEC -D_GNU_SOURCE -Wall` over wsi_common.c with and
- without -DVK_USE_PLATFORM_VI_NN, against the Vulkan and util headers
- generated from this tree's own vk.xml, spirv.core.grammar.json and
- u_format.yaml. Clean both ways; the two warnings it reports
- (cpu_trace.h `len`, wsi_common.c `format_found`) are on lines this
- patch does not touch. NO CROSS BUILD AND NO CONSOLE HAS RUN THIS.
+Evidence: CROSS BUILD, scripts/ci-build-archives.sh in container mode over
+ ghcr.io/d3fau4/nx-dev:latest: aarch64-none-elf-gcc (devkitA64) 15.2.0,
+ ld.bfd 2.45.1, meson 1.11.2, -Wall -Wextra -Werror. The 877-target NVK
+ build compiles wsi_common.c with no warning
+ and links libvulkan_wsi.a; the pipeline ends with every archive built, 53
+ .nro linking them, check-dispatch-complete OK (825 entry points) and
+ check-tls-relocs OK.
+ Also checked before that, and kept because it is a cheaper loop than a
+ 25-minute pipeline: `gcc 13.3.0 -fsyntax-only -std=c11 -Wall` on the
+ host against Mesa's generated Vulkan headers, with and without -DVK_USE_PLATFORM_VI_NN, so the platforms this
+ hook is NULL on are covered too.
+ A cross build is class X and CLAUDE.md is explicit that it never means
+ working: NO CONSOLE HAS RUN THIS.
 Upstream: not as it stands — the hook itself is general and the two
  DRM shapes above it would be expressible through it, but nothing
  upstream needs it until a backend without dma-buf exists there.
