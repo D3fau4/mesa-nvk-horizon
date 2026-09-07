@@ -146,6 +146,27 @@
  * FIFO reference it measures everything else against. */
 #define PD_PACED_PCT       90u
 
+/* Section H: how many A/B pairs, how many frames in each half of one,
+ * and how much real CPU work a frame does.
+ *
+ * THREE PAIRS AND SIXTY FRAMES so the two aggregates hold exactly
+ * PD_FRAMES intervals each and the percentile is over all of them.
+ * Alternating A/B then B/A then A/B puts any drift the console makes
+ * on both variants rather than on the second one.
+ *
+ * HALF A REFRESH OF WORK, which is what makes this experiment
+ * different from section G's. The compositor's release fence was
+ * measured at 15.5 ms under FIFO; a frame that also has 8.3 ms of its
+ * own work to do costs 15.5 + 8.3 if the thread has to wait for the
+ * fence before it can start, and max(15.5, 8.3) if it does not. Only
+ * the second fits in a refresh. With no work at all — which is section
+ * F and section G — both shapes fit, and the display decides the
+ * interval either way.
+ */
+#define PD_H_REPS      3u
+#define PD_H_FRAMES    60u
+#define PD_H_WORK_NS   (PD_REFRESH_NS / 2u)
+
 /* Slack in the section E relation, in refreshes. One: the queue holds a
  * frame for up to a refresh beyond whichever of the display and the GPU
  * set the rate, and anything past that is not queueing. */
@@ -308,6 +329,18 @@ typedef struct pd_stats {
    uint64_t gpu_total_ns;
    uint64_t gpu_min_ns;
    uint64_t gpu_max_ns;
+
+   /* Section H: where the CPU's time went, which is the whole question
+    * there. `work_ns` is this test's own useful work; `blocked_ns` is
+    * every driver call the loop can be held inside — the acquire, the
+    * ring-slot fence, the present. Their sum is not the frame time:
+    * what is left over is recording and submitting. */
+   uint64_t work_ns;
+   uint64_t blocked_ns;
+   /* The work's result, carried out of the loop and printed, so that
+    * nothing in the chain from the compiler to the linker is entitled
+    * to decide the work was unobservable and delete it. */
+   uint64_t work_check;
 
    uint32_t suboptimal;
    uint32_t used_mask;
@@ -953,10 +986,53 @@ static VkResult pd_record_and_submit(vkfw *fw, pd_swapchain *sc,
  * on the render's own fence between the submit and the present, which
  * destroys the overlap the pipelined loop depends on and is exactly why
  * the two are never the same run. */
+/* Work the CPU actually has to do, and a result nothing may discard.
+ *
+ * A SLEEP WOULD MEASURE NOTHING. The question section H asks is whether
+ * this thread is free to run application code while the compositor's
+ * release fence is still outstanding, and a sleeping thread is free
+ * either way — it would show the same number under both shapes. So this
+ * is a hash over a buffer it also writes back, which is the shape of
+ * what a frame's own bookkeeping does: walk a scene, cull it, pack
+ * constants. It reads and writes memory and its result leaves the
+ * function, so there is no version of "unobservable" that lets an
+ * optimiser remove it.
+ *
+ * Bounded by the clock rather than by an iteration count, because the
+ * point is a duration and a count that gave one on this console would
+ * give a different one on the next. One pass over the buffer is the
+ * granularity, tens of microseconds against a target of thousands.
+ */
+#define PD_WORK_WORDS 4096u
+
+/* File scope because it is 16 KiB of scratch that would otherwise be a
+ * stack frame in a driver call chain that is already deep, and because
+ * this loop is the only thing that touches it: one case, one thread. */
+static uint32_t pd_work_buf[PD_WORK_WORDS];
+
+static uint64_t pd_cpu_work(uint64_t target_ns)
+{
+   uint64_t h = UINT64_C(1469598103934665603);   /* FNV-1a offset basis */
+   const u64 start = armGetSystemTick();
+   uint32_t round = 0;
+
+   do {
+      for (uint32_t i = 0; i < PD_WORK_WORDS; i++) {
+         h ^= (uint64_t)pd_work_buf[i] + round;
+         h *= UINT64_C(1099511628211);           /* FNV-1a prime */
+         pd_work_buf[i] = (uint32_t)(h >> 13);
+      }
+      round++;
+   } while (armTicksToNs(armGetSystemTick() - start) < target_ns);
+
+   return h;
+}
+
 static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
                    pd_frame_kind kind, pd_acquire_mode acq_mode,
                    uint32_t draws, uint32_t frames,
-                   uint64_t budget_ns, bool measure_gpu, pd_stats *st)
+                   uint64_t budget_ns, bool measure_gpu,
+                   uint64_t work_ns, pd_stats *st)
 {
    const u64 run_start = armGetSystemTick();
    u64 prev_tick = 0;
@@ -979,7 +1055,11 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
       VkResult r;
       if (acq_mode == PD_ACQ_SEMAPHORE && sc->acquire_sem_busy[slot]) {
          VkFence used = sc->res[sc->acquire_sem_user[slot]].in_flight;
+         const u64 slot_start = armGetSystemTick();
          r = fw->vk.vkWaitForFences(fw->dev, 1, &used, VK_TRUE, PD_WAIT_NS);
+         /* Counted as blocked but NOT as acquire time, for the reason
+          * the comment above gives: it is the loop's own throttle. */
+         st->blocked_ns += armTicksToNs(armGetSystemTick() - slot_start);
          if (r != VK_SUCCESS) {
             pd_fail(st, frame, r, "waiting for an acquire semaphore to free");
             return;
@@ -1028,6 +1108,7 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
        * is the mistake this comment exists to prevent. */
       const uint64_t acq_ns = armTicksToNs(armGetSystemTick() - acq_start);
       st->acquire_total_ns += acq_ns;
+      st->blocked_ns += acq_ns;
       if (acq_ns > st->acquire_max_ns)
          st->acquire_max_ns = acq_ns;
 
@@ -1036,6 +1117,25 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
          return;
       }
       st->used_mask |= 1u << index;
+
+      /* THE WORK GOES HERE AND NOWHERE ELSE: after the acquire has
+       * returned, before the submit that carries its dependency. That
+       * is the only window in the frame where the two shapes differ.
+       *
+       * With the dependency deferred, vkAcquireNextImageKHR returns
+       * without waiting and this runs while the compositor still has
+       * the buffer; the submit below then hands the fence to the host
+       * engine, which by that time is likely to find it signalled.
+       * With MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1 the acquire has
+       * already blocked this thread for the whole fence, and this work
+       * is added to it rather than hidden inside it.
+       *
+       * Zero for every section but H, so nothing else changes. */
+      if (work_ns != 0) {
+         const u64 work_start = armGetSystemTick();
+         st->work_check = pd_cpu_work(work_ns);
+         st->work_ns += armTicksToNs(armGetSystemTick() - work_start);
+      }
 
       const u64 submit_start = armGetSystemTick();
       r = pd_record_and_submit(fw, sc, content, kind, draws, index, frame,
@@ -1080,7 +1180,9 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
       };
       const u64 pres_start = armGetSystemTick();
       r = fw->wsi.vkQueuePresentKHR(fw->queue, &pi);
-      st->present_total_ns += armTicksToNs(armGetSystemTick() - pres_start);
+      const uint64_t pres_ns = armTicksToNs(armGetSystemTick() - pres_start);
+      st->present_total_ns += pres_ns;
+      st->blocked_ns += pres_ns;
       if (r == VK_SUBOPTIMAL_KHR) {
          st->suboptimal++;
       } else if (r != VK_SUCCESS) {
@@ -1194,7 +1296,7 @@ static bool pd_measure_acq(vkfw *fw, VkSurfaceKHR surface,
 
    pd_stats_init(out, what, &sc, kind, acq_mode, draws);
    pd_run(fw, &sc, content, kind, acq_mode, draws, frames, budget_ns,
-          measure_gpu, out);
+          measure_gpu, 0, out);
    const bool ok = pd_report(fw->t, out);
 
    const VkResult q = pd_quiesce(fw);
@@ -1202,6 +1304,62 @@ static bool pd_measure_acq(vkfw *fw, VkSurfaceKHR surface,
                                    "-> %s", what, vkfw_result_str(q));
    pd_destroy(fw, &sc);
    return ok;
+}
+
+/* One half of one section-H repetition: a swapchain of its own — which
+ * is what makes wsi_horizon re-read MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT
+ * — run, quiesced and thrown away, ACCUMULATING into `st` rather than
+ * replacing it. Three of these make one aggregate.
+ *
+ * The environment variable is set to "0" and not unset for the deferred
+ * half: debug_get_bool_option reads either, and setenv is the call this
+ * tree knows works on this C library. */
+static void pd_ab_append(vkfw *fw, VkSurfaceKHR surface,
+                         const pd_content *content, VkFormat format,
+                         VkExtent2D extent, uint32_t draws,
+                         uint64_t work_ns, bool cpu_wait,
+                         const char *what, pd_stats *st)
+{
+   setenv("MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT", cpu_wait ? "1" : "0", 1);
+
+   pd_swapchain sc;
+   if (!pd_create(fw, surface, format, extent, VK_PRESENT_MODE_FIFO_KHR,
+                  what, &sc)) {
+      pd_fail(st, st->frames, VK_ERROR_INITIALIZATION_FAILED,
+              "creating the swapchain for a repetition");
+      return;
+   }
+
+   /* Initialised from the first swapchain and never again: everything
+    * after this adds to the same aggregate. */
+   if (st->what == NULL)
+      pd_stats_init(st, what, &sc, PD_FRAME_DRAW, PD_ACQ_SEMAPHORE, draws);
+
+   pd_run(fw, &sc, content, PD_FRAME_DRAW, PD_ACQ_SEMAPHORE, draws,
+          PD_H_FRAMES, PD_RUN_BUDGET_NS, false, work_ns, st);
+
+   const VkResult q = pd_quiesce(fw);
+   if (q != VK_SUCCESS)
+      pd_fail(st, st->frames, q, "quiescing between repetitions");
+   pd_destroy(fw, &sc);
+}
+
+/* One aggregate's line: the frame time and its tail, then where the
+ * CPU's own time went. */
+static void pd_note_h(test_ctx *t, const pd_stats *s, const char *what)
+{
+   const uint32_t f = s->frames ? s->frames : 1u;
+   t_note(t, "%s: frame mean %" PRIu64 " us, p50 %" PRIu64 ", p95 %" PRIu64
+             ", p99 %" PRIu64 ", max %" PRIu64 "; per frame the CPU spent %"
+             PRIu64 " us working and %" PRIu64 " us blocked, of which %"
+             PRIu64 " us in the acquire and %" PRIu64 " us in the present; "
+             "%" PRIu32 " frames, %" PRIu32 " intervals (work checksum "
+             "0x%016" PRIx64 ")",
+          what, pd_mean_ns(s) / 1000u, pd_pctile_ns(s, 50) / 1000u,
+          pd_pctile_ns(s, 95) / 1000u, pd_pctile_ns(s, 99) / 1000u,
+          s->max_ns / 1000u, s->work_ns / f / 1000u, s->blocked_ns / f / 1000u,
+          s->acquire_total_ns / f / 1000u, s->present_total_ns / f / 1000u,
+          s->frames, s->intervals, s->work_check);
 }
 
 /* The acquire mode every section but F uses, and the one every
@@ -1642,6 +1800,235 @@ TEST_CASE_DECL(vk_present, drawn_frame)
                 (pd_pctile_ns(&ab_gpu_a, 99) + pd_pctile_ns(&ab_gpu_b, 99))
                    / 2u / 1000u,
                 pd_pctile_ns(&ab_cpu, 99) / 1000u);
+      }
+   }
+
+   /* ---------------------------------------------------------------- */
+   /* H — the same question, asked so the answer can be a frame time.  */
+   /* ---------------------------------------------------------------- */
+
+   /* SECTION G CANNOT SHOW WHAT THE DEFERRAL BUYS, and this section is
+    * why that is not a complaint about section G.
+    *
+    * G compares two runs that both acquire with a FENCE and then call
+    * vkWaitForFences on it. On that path the compositor's release fence
+    * is the payload of the fence the application passed, so the thread
+    * waits for it two calls later whether the driver deferred it or
+    * not: the wait moves, and nothing is saved. That is exactly what
+    * the console said on 2026-09-07 — the acquire mean fell from
+    * 15483 us to 252 us and the frame interval went from 16515 us to
+    * 16453 us, which is 0% and is the display's period in both cases.
+    * G stays as it is, because "the two paths are different code and
+    * both work" is worth checking and is what it checks.
+    *
+    * SO THIS ONE CHANGES FOUR THINGS AND ONE VARIABLE:
+    *
+    *   - BOTH halves acquire with a SEMAPHORE, which is the path the
+    *     deferral exists for: the fence becomes the payload of the
+    *     semaphore, the semaphore goes into the render submit's wait
+    *     list, and nvkmd_horizon hands it to the host engine. Nothing
+    *     on this thread waits for it.
+    *   - the only difference between the halves is
+    *     MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT, which puts the wait back
+    *     on this thread inside vkAcquireNextImageKHR.
+    *   - the frame has REAL CPU WORK in it, placed between the acquire
+    *     and the submit — the one window where the two shapes differ.
+    *     Freeing a thread is worth nothing if the thread had nothing to
+    *     do, which is the whole of what sections F and G measured.
+    *   - FIFO, because that is where the release fence costs 15.5 ms.
+    *     Under IMMEDIATE the compositor is not holding a buffer for a
+    *     refresh and there is much less to overlap.
+    *
+    * AND THE CONTROL IS RUN BESIDE IT: the same pair with no work at
+    * all. If the pair with work differs and the pair without does not,
+    * the difference is the overlap and not the console. If both differ,
+    * something drifted and neither number means anything.
+    *
+    * Scene, resolution, format, image count, draw count, present mode,
+    * shader cache and power state are identical across all four
+    * aggregates: they are the same content object, the same extent and
+    * the same PD_DRAWS_APP, inside one process. The repetitions
+    * alternate A/B, B/A, A/B so a drift lands on both halves.
+    *
+    * WHAT THE FRAME BUDGET DOES TO THE ANSWER, stated in advance so the
+    * result cannot be read as more than it is. Under FIFO the display
+    * pins the interval at 16.7 ms for anything that fits. A frame that
+    * waits 15.5 ms for the fence and then works for 8.3 ms does not
+    * fit; one that overlaps them does. So the prediction is that the
+    * pair WITH work separates and the pair WITHOUT does not, and if the
+    * pair with work does not separate either then the deferral has not
+    * been shown to buy a frame time and this section says so. The
+    * GPFIFO is still in order: handing the dependency to the host
+    * engine frees the thread and does not remove the dependency.
+    *
+    * TIMES HERE ARE THE CPU's OWN CLOCK. armGetSystemTick through
+    * armTicksToNs, the 19.2 MHz system counter — not a GPU timestamp,
+    * so timestampPeriod does not enter and the 1.627604 ns per tick in
+    * docs/MEASURED-ON-HARDWARE.md is neither applied nor applied twice.
+    * The GPU cost of this scene is section B's number, measured
+    * submit-to-fence on the same clock, and it does not change between
+    * the halves because only the CPU path does.
+    */
+   {
+      pd_stats h_work_def, h_work_cpu, h_idle_def, h_idle_cpu, h_warm;
+      memset(&h_work_def, 0, sizeof(h_work_def));
+      memset(&h_work_cpu, 0, sizeof(h_work_cpu));
+      memset(&h_idle_def, 0, sizeof(h_idle_def));
+      memset(&h_idle_cpu, 0, sizeof(h_idle_cpu));
+      memset(&h_warm, 0, sizeof(h_warm));
+
+      t_note(t, "H: %" PRIu32 " pairs of %" PRIu32 " FIFO frames each way, "
+                "semaphore acquire in both halves, %" PRIu32 " us of the "
+                "test's own CPU work per frame, and the same pair again "
+                "with none; A/B and B/A alternated",
+             (uint32_t)PD_H_REPS, (uint32_t)PD_H_FRAMES,
+             (uint32_t)(PD_H_WORK_NS / 1000u));
+
+      /* nvkmd_horizon's own counter, which is the only thing that says
+       * the dependency reached the channel rather than the thread. Its
+       * lines go to the log; the scan below asks whether any appeared. */
+      setenv("MESA_VK_NVKMD_HORIZON_SUBMIT_STATS", "1", 1);
+      setenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS", "1", 1);
+
+      /* Warm-up, discarded: the first swapchain of a configuration pays
+       * for pipeline compilation, first-touch faults and a cold cache,
+       * and none of that is what is being compared. */
+      pd_ab_append(&fw, surface, &content, format, extent, PD_DRAWS_APP,
+                   PD_H_WORK_NS, false, "H: warm-up (discarded)", &h_warm);
+
+      for (uint32_t rep = 0; rep < PD_H_REPS; rep++) {
+         const bool cpu_first = (rep & 1u) != 0;
+
+         for (uint32_t half = 0; half < 2u; half++) {
+            const bool cpu_wait = (half == 0) == cpu_first;
+
+            pd_ab_append(&fw, surface, &content, format, extent,
+                         PD_DRAWS_APP, PD_H_WORK_NS, cpu_wait,
+                         cpu_wait ? "H: work, CPU waits for the fence"
+                                  : "H: work, fence deferred to the GPU",
+                         cpu_wait ? &h_work_cpu : &h_work_def);
+
+            pd_ab_append(&fw, surface, &content, format, extent,
+                         PD_DRAWS_APP, 0, cpu_wait,
+                         cpu_wait ? "H: control, CPU waits for the fence"
+                                  : "H: control, fence deferred to the GPU",
+                         cpu_wait ? &h_idle_cpu : &h_idle_def);
+         }
+      }
+
+      unsetenv("MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT");
+      unsetenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS");
+      unsetenv("MESA_VK_NVKMD_HORIZON_SUBMIT_STATS");
+
+      pd_note_h(t, &h_work_def, "H work / deferred");
+      pd_note_h(t, &h_work_cpu, "H work / CPU wait");
+      pd_note_h(t, &h_idle_def, "H control / deferred");
+      pd_note_h(t, &h_idle_cpu, "H control / CPU wait");
+
+      const uint32_t need = PD_H_REPS * PD_H_FRAMES / 2u;
+      const bool enough =
+         h_work_def.intervals >= need && h_work_cpu.intervals >= need &&
+         h_idle_def.intervals >= need && h_idle_cpu.intervals >= need;
+
+      t_check(t, enough,
+              "H: all four aggregates measured enough frames to compare "
+              "(%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32 ", %" PRIu32
+              " needed)", h_work_def.intervals, h_work_cpu.intervals,
+              h_idle_def.intervals, h_idle_cpu.intervals, need);
+
+      /* THE WORK HAPPENED, and it happened in both halves. A run where
+       * the loop skipped it, or where an optimiser removed it, would
+       * make everything below a comparison of two identical things. */
+      const uint64_t wf_def = h_work_def.frames ?
+         h_work_def.work_ns / h_work_def.frames : 0;
+      const uint64_t wf_cpu = h_work_cpu.frames ?
+         h_work_cpu.work_ns / h_work_cpu.frames : 0;
+      t_check(t, wf_def >= PD_H_WORK_NS && wf_cpu >= PD_H_WORK_NS &&
+              h_idle_def.work_ns == 0 && h_idle_cpu.work_ns == 0,
+              "H: the work ran, in both halves and in neither control "
+              "(%" PRIu64 " us and %" PRIu64 " us per frame against a "
+              "target of %" PRIu32 " us; controls %" PRIu64 " and %" PRIu64
+              " ns in total)", wf_def / 1000u, wf_cpu / 1000u,
+              (uint32_t)(PD_H_WORK_NS / 1000u), h_idle_def.work_ns,
+              h_idle_cpu.work_ns);
+
+      /* THE TWO HALVES TOOK DIFFERENT PATHS, which is what makes this
+       * an A/B at all rather than the same run twice. The acquire is
+       * where they differ by construction: one returns without waiting,
+       * the other waits out the whole release fence inside the call. */
+      const uint64_t af_def = h_work_def.frames ?
+         h_work_def.acquire_total_ns / h_work_def.frames : 0;
+      const uint64_t af_cpu = h_work_cpu.frames ?
+         h_work_cpu.acquire_total_ns / h_work_cpu.frames : 0;
+      t_check(t, af_cpu > af_def * 2u,
+              "H: MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT changed the path "
+              "the acquire takes (%" PRIu64 " us per frame against %"
+              PRIu64 " us)", af_cpu / 1000u, af_def / 1000u);
+
+      bool handed = false;
+      if (t_log_scan(t, "handed to the host engine", &handed)) {
+         t_check(t, handed,
+                 "H: nvkmd_horizon reported waits reaching the host engine, "
+                 "so the deferred halves really did hand the dependency to "
+                 "the channel rather than to this thread");
+      } else {
+         t_check(t, false,
+                 "H: the log could not be read back, so whether the "
+                 "dependency reached the host engine was NOT checked");
+      }
+
+      if (enough) {
+         const uint64_t wd = pd_mean_ns(&h_work_def);
+         const uint64_t wc = pd_mean_ns(&h_work_cpu);
+         const uint64_t id = pd_mean_ns(&h_idle_def);
+         const uint64_t ic = pd_mean_ns(&h_idle_cpu);
+
+         const uint64_t ctrl_gap = id > ic ? id - ic : ic - id;
+         const uint64_t ctrl_ref = (id + ic) / 2u;
+         /* The control is allowed to differ by the same 10% every other
+          * A/B in this file allows a reference to drift by. Anything
+          * more and the console moved under the experiment. */
+         const bool ctrl_flat = ctrl_ref != 0 && ctrl_gap * 10u <= ctrl_ref;
+
+         t_check(t, ctrl_flat,
+                 "H: the control pair agrees, so a difference in the pair "
+                 "with work is the overlap and not the console (%" PRIu64
+                 " us against %" PRIu64 " us, %" PRIu64 " us apart)",
+                 id / 1000u, ic / 1000u, ctrl_gap / 1000u);
+
+         /* THE REGRESSION GUARD, which is a check because it is a
+          * statement about this build and not about the experiment:
+          * deferring the dependency must never cost frame time. */
+         t_check(t, wd <= wc + wc / 10u,
+                 "H: deferring the dependency is not slower than waiting "
+                 "for it (%" PRIu64 " us against %" PRIu64 " us per frame)",
+                 wd / 1000u, wc / 1000u);
+
+         if (ctrl_flat) {
+            const bool better = wc > wd && (wc - wd) * 10u > wc;
+            t_note(t, "H VERDICT: with %" PRIu64 " us of CPU work in the "
+                      "frame, deferring costs %" PRIu64 " us a frame and "
+                      "waiting costs %" PRIu64 " us — %s%" PRIu64 " us, %"
+                      PRIu64 "%%. p95 %" PRIu64 " against %" PRIu64 ", p99 %"
+                      PRIu64 " against %" PRIu64 ". The control pair, same "
+                      "everything with no work, is %" PRIu64 " against %"
+                      PRIu64 " us. %s",
+                   wf_def / 1000u, wd / 1000u, wc / 1000u,
+                   wc >= wd ? "-" : "+",
+                   (wc >= wd ? wc - wd : wd - wc) / 1000u,
+                   wc != 0 ? ((wc >= wd ? wc - wd : wd - wc) * 100u) / wc : 0,
+                   pd_pctile_ns(&h_work_def, 95) / 1000u,
+                   pd_pctile_ns(&h_work_cpu, 95) / 1000u,
+                   pd_pctile_ns(&h_work_def, 99) / 1000u,
+                   pd_pctile_ns(&h_work_cpu, 99) / 1000u,
+                   id / 1000u, ic / 1000u,
+                   better ? "A frame time improvement, on this workload, "
+                            "at this clock."
+                          : "NOT an improvement in frame time on this "
+                            "workload: the acquire is cheaper and the "
+                            "frame is not, and the acquire being cheaper "
+                            "must not be reported as frames per second.");
+         }
       }
    }
 
