@@ -235,3 +235,111 @@ checked by eye and by the four tests, the two unknowns above settled,
 and one A/B pair recorded. If the picture is wrong the patches come out;
 if the picture is right and the frame time does not move, the patches
 still come out, because then it is complexity for nothing.
+
+---
+
+## 6 Submissions are batched across `exec()`, and nothing has run it
+
+**Class X.** `mesa-patches/0069` and `tests/vk_core/submit_batching.c`
+build and link; no console has executed either.
+
+`nvkmd_horizon_ctx_exec` used to hand its spans straight to
+`horizon_gpu_submit`, and `nvk_queue_submit_locked` calls it once per
+command buffer (`nvk_queue.c:280-325`). So a `vkQueueSubmit` of N
+command buffers made N kickoffs: N ioctls through the nv service, and on
+the GPU N-1 extra `WFI_SCOPE_ALL` drains and L2 round trips that nothing
+had asked for. The context now accumulates and sends the batch at
+`signal()`, `flush()`, `sync()`, `wait()`, `bind()` and a 64-push
+backstop.
+
+**No barrier was removed or moved by hand.** `horizon_gpu_submit` still
+emits exactly one L2 prologue and one WFI/writeback/increment block per
+call; there are simply fewer calls, so those boundaries fall at the end
+of the submission instead of between its command buffers. That is the
+boundary Vulkan defines — command buffers in one `VkSubmitInfo` execute
+in order with no implicit memory dependency between them — and it is the
+one thing here that could be wrong in a way that does not look like an
+error. A latent gap in NVK's own barrier emission on this chip would
+have been hidden by the drains and would now show as a wrong pixel.
+
+**THE LIMIT OF THE BENEFIT IS KNOWN AND IS NOT SMALL.** The saving is
+N-1 kickoffs per submission, so a workload that submits **one** command
+buffer per `vkQueueSubmit` gets nothing at all — same ioctls, same
+barriers, same everything. Godot 4's `RenderingDevice` submits a handful
+per frame, so the expected saving is a handful of ioctls and drains per
+frame and not a multiple of anything. The meter is what says which case
+a given application is: with `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1` the
+line reads
+
+    N exec call(s) carrying M push(es) went out as K kickoff(s),
+    mean M/K push(es) per kickoff
+
+and `N == K` means this bought that workload nothing.
+
+**What a console run has to report.**
+
+- `vk_core/submit_batching` passes. Its sections are the shapes that can
+  break: one, two, four and eight command buffers in one submission with
+  the ordering asked for by real barriers; eighty of them, which crosses
+  the 64-push backstop so a kickoff is taken *mid-submission*; a
+  submission with a wait, a signal and no command buffers at all; and a
+  submission behind the upload queue's cross-channel wait.
+- The rest of the suites still pass, `vk_render` and `vk_present` above
+  all: they are where a barrier the drains used to cover would show as a
+  wrong image rather than as an error.
+- The `exec call(s) … kickoff(s)` line for a real workload, so the
+  paragraph above stops being an estimate.
+- One A/B pair. Section E of the case runs the same eight-command-buffer
+  submission twice in one launch, the second half with
+  `NVK_HORIZON_BATCH_EXEC=0`, and prints both wall times. That is one
+  sample of one submission and **not a frame rate**; a frame-rate claim
+  needs `vk_present` with the switch set both ways.
+
+**Done when** `vk_core/submit_batching` has passed on a console, the
+image-producing suites have passed beside it, the meter's
+pushes-per-kickoff line has been recorded for a real application, and
+the A/B pair exists. If the ordering is wrong the patch comes out; if it
+is right and nothing moves on a workload that submits one command buffer
+at a time, that is the expected result and the patch stays for the
+workloads that do not.
+
+---
+
+## 7 An allocation path that does not zero, used by nobody
+
+**Class X.** `horizon_gpu_mem_create_uninit` exists, is built, and is
+called by exactly one thing: `gpu_memory/alloc`, which times it against
+`horizon_gpu_mem_create`.
+
+`horizon_gpu_mem_create` fills every byte with zero and then flushes the
+range out of the CPU cache. The new entry point skips the fill and keeps
+the flush — the flush is there for the dirty lines the *previous* tenant
+of that heap left behind, which is the hazard measured on a console on
+2026-08-24, and that reason does not depend on the fill at all. Skipping
+the fill also makes the flush cheaper, because a line nothing dirtied has
+nothing to write back.
+
+**Nothing in this tree uses it, on purpose.** The audit is in
+`horizon/memory/mem.c` beside the code. Of the four consumers: the hang
+recorder needs the zeros (they are how "the GPU never reached this slot"
+is recognised); the channel's command buffer qualifies but is one 4 KiB
+object per channel, so the saving is unmeasurable; the Zcull context is
+written by the hardware on a context switch and nothing establishes that
+the first access is a save rather than a restore; and
+`nvkmd_horizon_mem.c` is one entry point for `VkDeviceMemory` the
+application maps, for NVK's descriptor tables, query pools and shader
+heap, and for command-buffer and mem-stream chunks. Only that last group
+qualifies — `nv_push` writes the dwords and the submit names exactly
+`[addr, addr+range)` — and nvkmd has no flag that separates it from the
+rest.
+
+**What a console run has to report.** The three `note` lines
+`gpu_memory/alloc` prints: the mean allocation time, zero-filled and
+uninitialised, at 64 KiB, 1 MiB and 8 MiB. Those numbers decide whether
+adding an `NVKMD_MEM_*` bit through `nvkmd.h` and both backends — to
+route the command-buffer and mem-stream chunks — is worth writing at
+all. If the difference is microseconds, it is not.
+
+**Done when** those three lines exist from a console and the routing
+question has been answered either way. If the answer is "not worth it",
+this entry point is deleted rather than left as an unused promise.
