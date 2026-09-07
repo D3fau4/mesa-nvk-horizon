@@ -1,4 +1,10 @@
-# mesa-nvk-horizon — Phase 1 build: libhorizon_gpu.a + standalone test .nros.
+# mesa-nvk-horizon — Phase 1 build: libhorizon_gpu.a + the test suites.
+#
+# ONE .nro PER SUITE, several cases per suite. A suite is tests/<suite>/:
+# suite.c names its cases and <case>.c is one of them. SUITES and the
+# CASES_<suite> lists below are this path's half of that; meson.build
+# states the same thing for the other path and
+# scripts/check-mesa-test-parity.sh fails if they disagree.
 #
 # Requires devkitA64 + libnx, resolved through $(DEVKITPRO) only (no
 # machine-specific absolute paths; Phase 2 gate).
@@ -51,27 +57,40 @@ LIB_SRCS := \
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD)/%.o)
 LIB      := $(BUILD)/libhorizon_gpu.a
 
-# Object directories as order-only prerequisites, not `mkdir -p` inside each
-# recipe: under `make -j`, two recipes racing to create the same new
-# directory can lose an object file silently (observed with -j4 on this
-# toolchain image's overlay filesystem — the compile for that object never
-# ran and `ar` failed with "No such file or directory").
 COMPAT_SRCS := $(wildcard compat/*.c)
 COMPAT_OBJS := $(COMPAT_SRCS:compat/%.c=$(COMPAT_LIBDIR)/%.o)
 COMPAT_LIB  := $(COMPAT_LIBDIR)/libhorizon_compat.a
 
-OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/)
 
-TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
-         t_syncpt t_syncpt_incr t_fence_wait t_fence_wait_many t_gpuwrite \
-         t_teardown t_uncached t_sysinfo t_va_window t_fault t_pbsize \
-         t_display t_nwindow t_sparse t_dock
+# The suites that need nothing but the toolchain, and the cases in each.
+# The order inside a suite is the order they run in: a case reads its
+# result back through machinery the case before it established.
+SUITES := platform gpu_memory gpu_submit gpu_fault display dock
 
-# Tests 12 and 13 measure Mesa's own code on hardware (Phase 3 items 4
-# and 5): the C11 threads shim Mesa selects here, and os_time.c. They
-# link the archives Mesa's build produced rather than recompiling those
-# sources with flags of our own — the object under test has to be the
-# object Mesa builds, or the measurement is about a different build.
+CASES_platform     := nv_bringup teardown sysconf
+CASES_gpu_memory   := alloc nvmap va_reserve va_map uncached shader_window
+CASES_gpu_submit   := channel submit syncpt_per_submit syncpt_cpu_incr \
+                      fence_wait fence_wait_many gpu_write pushbuf_size
+# Both fault the GPU on purpose and lose a channel doing it, so they are
+# one .nro that is run last. tests/gpu_fault/suite.c says it in full.
+CASES_gpu_fault    := sparse mmu_fault
+# Owns the display: no console.
+CASES_display      := console_handoff nwindow
+# Needs a console *and* an operator, which is why it is neither in
+# `display` nor in `platform`.
+CASES_dock         := mode_change
+
+# The objects one suite links: its table, then its cases. Used for the
+# link line, for the target-specific flags below and for the depfiles.
+suite_objs = $(BUILD)/$(1)/suite.t.o \
+             $(foreach c,$(CASES_$(1)),$(BUILD)/$(1)/$(c).t.o)
+
+# mesa_runtime measures Mesa's own code on hardware (Phase 3 items 4 and
+# 5, plus the shader disk cache): the C11 threads shim Mesa selects
+# here, os_time.c, and disk_cache. They link the archives Mesa's build
+# produced rather than recompiling those sources with flags of our own —
+# the object under test has to be the object Mesa builds, or the
+# measurement is about a different build.
 #
 # -DHAVE_PTHREAD, -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are
 # not choices: they are what Mesa's own configure decided here, copied so
@@ -79,8 +98,8 @@ TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
 # three are visible in build/mesa-probe/build.ninja. The last one in
 # particular is load-bearing rather than cosmetic — without it
 # disk_cache.h offers static-inline stubs instead of prototypes, so
-# t_shader_cache would compile against a cache that does nothing and
-# then fail to link against one that does.
+# mesa_runtime/disk_cache would compile against a cache that does
+# nothing and then fail to link against one that does.
 #
 # meson.build states these same four things for the other build path,
 # and scripts/check-mesa-test-parity.sh fails if the two ever disagree.
@@ -89,7 +108,7 @@ TESTS := t_init t_alloc t_nvmap t_va_reserve t_map t_channel t_submit \
 #
 # Conditional because they need `scripts/configure-mesa.sh &&
 # scripts/build-mesa.sh` first, and a bare clone must still build the
-# eleven tests that need nothing but the toolchain.
+# six suites that need nothing but the toolchain.
 # $(MESA_BUILD_DIR) is what scripts/{configure,build}-mesa.sh honour and
 # what scripts/toolchain-env.sh defaults; looking anywhere else would
 # report "Mesa is not built" about a directory the caller never used.
@@ -99,13 +118,17 @@ MESA_LIBS   := $(MESA_BUILD)/src/c11/impl/libmesa_util_c11.a \
                $(MESA_BUILD)/src/util/libmesa_util.a \
                $(MESA_BUILD)/src/util/blake3/libblake3.a
 MESA_CFLAGS := -Imesa/src -Imesa/include -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC -DENABLE_SHADER_CACHE
-MESA_TESTS  := t_threads t_ostime t_shader_cache
+MESA_SUITES := mesa_runtime
+
+# disk_cache first: it times fsync() and file creation on the SD card,
+# and those are the only numbers in the suite a busier process changes.
+CASES_mesa_runtime := disk_cache c11_threads os_time
 
 ifeq ($(words $(wildcard $(MESA_LIBS))),$(words $(MESA_LIBS)))
-TESTS += $(MESA_TESTS)
+SUITES += $(MESA_SUITES)
 STALE_MESA :=
 else
-$(info Makefile: skipping $(MESA_TESTS) — no Mesa archives in $(MESA_BUILD);)
+$(info Makefile: skipping $(MESA_SUITES) — no Mesa archives in $(MESA_BUILD);)
 $(info Makefile: run scripts/configure-mesa.sh && scripts/build-mesa.sh first.)
 # Anything an earlier build left behind when Mesa *was* present. It has
 # to go: scripts/package-horizon.sh copies every $(BUILD)/*.nro it finds
@@ -113,16 +136,38 @@ $(info Makefile: run scripts/configure-mesa.sh && scripts/build-mesa.sh first.)
 # artefact to one build. Leaving these would ship the previous build's
 # binaries under this build's manifest, right after this build said it
 # was skipping them.
-STALE_MESA := $(wildcard $(MESA_TESTS:%=$(BUILD)/%.nro) \
-                         $(MESA_TESTS:%=$(BUILD)/%.elf) \
-                         $(MESA_TESTS:%=$(BUILD)/%.nacp) \
-                         $(MESA_TESTS:%=$(BUILD)/%.t.o))
+STALE_MESA := $(wildcard $(MESA_SUITES:%=$(BUILD)/%.nro) \
+                         $(MESA_SUITES:%=$(BUILD)/%.elf) \
+                         $(MESA_SUITES:%=$(BUILD)/%.nacp) \
+                         $(foreach s,$(MESA_SUITES),$(call suite_objs,$(s))))
 endif
 
-TEST_NROS := $(TESTS:%=$(BUILD)/%.nro)
+TEST_NROS   := $(SUITES:%=$(BUILD)/%.nro)
+SUITE_OBJS  := $(foreach s,$(SUITES),$(call suite_objs,$(s)))
+
+# KEPT, NOT DELETED AS INTERMEDIATE. A case object is reached only
+# through a chain of pattern rules — tests/<suite>/<case>.c to
+# $(BUILD)/<suite>/<case>.t.o to $(BUILD)/<suite>.elf — which is exactly
+# make's definition of an intermediate file, so it removes each one after
+# the link. That was tolerable while a .nro was one object; with a suite
+# holding up to eight of them it means every `make test` recompiles all
+# fifty-three cases, and the depfiles below then describe objects that
+# are not there. .SECONDARY names them so they survive, and the
+# incremental build works again.
+.SECONDARY: $(SUITE_OBJS)
+
+# Object directories as order-only prerequisites, not `mkdir -p` inside
+# each recipe: under `make -j`, two recipes racing to create the same new
+# directory can lose an object file silently (observed with -j4 on this
+# toolchain image's overlay filesystem — the compile for that object
+# never ran and `ar` failed with "No such file or directory"). One
+# directory per suite now, since a suite's objects live under
+# $(BUILD)/<suite>/.
+OBJ_DIRS := $(sort $(dir $(LIB_OBJS)) $(BUILD)/ $(COMPAT_LIBDIR)/ \
+                   $(SUITES:%=$(BUILD)/%/))
 
 # `lib` is the default goal (the first real target below) because a change
-# under horizon/ only needs $(LIB) to verify compile-clean; the ~40 test
+# under horizon/ only needs $(LIB) to verify compile-clean; the test
 # .nros it does not touch are wasted rebuild time on every iteration.
 # `test` is the one that also needs them, and `all` is kept as a synonym
 # so `make all` still means what it always has.
@@ -230,13 +275,21 @@ $(BUILD)/%.t.o: tests/%.c | $(BUILD)/
 # mechanism. The Meson path arrives at the same result differently and
 # says how, in meson.build beside idep_mesa_core; the two are not
 # expected to emit the same link line.
-$(BUILD)/%.elf: $(BUILD)/%.t.o $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
-	$(CC) $(LDFLAGS) $(BUILD)/$*.t.o $(BUILD)/testfw.o $(LIB) \
+#
+# .SECONDEXPANSION is what lets one pattern rule name a *set* of
+# prerequisites that depends on the stem: $$* is the suite name on the
+# second pass, so $$(call suite_objs,$$*) is that suite's table plus its
+# cases. Without it the rule would have to be written out once per suite.
+# The recipe needs no such trick — a recipe is expanded when it runs,
+# with $* already known.
+.SECONDEXPANSION:
+$(BUILD)/%.elf: $$(call suite_objs,$$*) $(BUILD)/testfw.o $(LIB) $(COMPAT_LIB)
+	$(CC) $(LDFLAGS) $(call suite_objs,$*) $(BUILD)/testfw.o $(LIB) \
 	    $(EXTRA_LIBS) $(LIBS) -o $@
 
-# Target-specific, so only tests 12 and 13 see the Mesa include path and
-# archives; the other eleven keep building with no Mesa in sight.
-$(MESA_TESTS:%=$(BUILD)/%.t.o): EXTRA_CFLAGS := $(MESA_CFLAGS)
+# Target-specific, so only mesa_runtime sees the Mesa include path and
+# archives; the other six suites keep building with no Mesa in sight.
+$(foreach s,$(MESA_SUITES),$(call suite_objs,$(s))): EXTRA_CFLAGS := $(MESA_CFLAGS)
 # $(LIB) appears a second time AFTER the Mesa archives, and -lzstd -lz
 # after those, because this is a plain left-to-right link and the shader
 # cache made libmesa_util.a depend on both directions:
@@ -250,10 +303,10 @@ $(MESA_TESTS:%=$(BUILD)/%.t.o): EXTRA_CFLAGS := $(MESA_CFLAGS)
 # own configure result (-DHAVE_ZSTD -DHAVE_ZLIB, from portlibs' pkg-config).
 # An archive already passed is not searched again, so libhorizon_gpu.a
 # has to be named on both sides of libmesa_util.a.
-$(MESA_TESTS:%=$(BUILD)/%.elf): \
+$(MESA_SUITES:%=$(BUILD)/%.elf): \
     EXTRA_LIBS := $(MESA_LIBS) $(LIB) \
                   -L$(DEVKITPRO)/portlibs/switch/lib -lzstd -lz
-$(MESA_TESTS:%=$(BUILD)/%.elf): $(MESA_LIBS)
+$(MESA_SUITES:%=$(BUILD)/%.elf): $(MESA_LIBS)
 
 $(BUILD)/%.nacp: | $(BUILD)/
 	$(NACPTOOL) --create "$*" "mesa-nvk-horizon" "phase1" $@
@@ -329,5 +382,5 @@ clean:
 
 # The compat depfiles were generated but never included, so a change to a
 # newlib or libnx header did not rebuild compat/ on this path either.
--include $(LIB_OBJS:.o=.d) $(TESTS:%=$(BUILD)/%.t.d) $(BUILD)/testfw.d \
+-include $(LIB_OBJS:.o=.d) $(SUITE_OBJS:.t.o=.t.d) $(BUILD)/testfw.d \
          $(COMPAT_OBJS:.o=.d)

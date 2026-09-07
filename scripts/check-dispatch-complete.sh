@@ -2,7 +2,7 @@
 # Fails when a linked test executable would jump through a NULL Vulkan
 # dispatch-table entry.
 #
-#   scripts/check-dispatch-complete.sh [elf]   # default: the NVK test
+#   scripts/check-dispatch-complete.sh [elf]   # default: the NVK suites
 #
 # WHY THIS EXISTS. Mesa generates its Vulkan dispatch tables with
 # --weak, so a driver may leave an entry point unimplemented and the
@@ -53,20 +53,37 @@ cd "$(dirname "$0")/.."
 . scripts/toolchain-env.sh
 
 # With no argument: every ELF in the build directory that links the
-# driver, not just t_vulkan.
+# driver.
 #
 # The hole this gate exists to catch is per-binary — it depends on which
 # archives that link line pulled — so checking one binary says nothing
 # about the others. While t_vulkan was the only such test that
-# distinction did not exist; Phase 5 adds six more, and a default that
+# distinction did not exist; Phase 5 added more, and a default that
 # still named one of them would report OK for a set it never looked at.
+#
+# THE SET IS READ FROM meson.build, not matched by a name prefix: it is
+# the keys of nvk_suites, which is the same list that decides which .nro
+# link the driver at all. scripts/package-horizon.sh reads it the same
+# way and for the same reason. A key is at a two-space indent in that
+# dictionary and a case name never is.
 #
 # `set --` rather than a loop here: the body below checks exactly one
 # ELF, so the whole script re-executes itself once per file. That keeps
 # the single-file path — which is what a caller passing an argument
 # gets, and what the loop needs — as the only code path there is.
 if [ "$#" -eq 0 ]; then
-    set -- "$HORIZON_BUILD_DIR"/t_vulkan.elf "$HORIZON_BUILD_DIR"/t_vk_*.elf
+    _suites=$(sed -n '/^nvk_suites = {/,/^}/p' meson.build | sed 's/#.*//' |
+              grep -o "^  '[a-z_0-9]*' *:" | tr -d " ':")
+    if [ -z "$_suites" ]; then
+        echo "check-dispatch-complete: no nvk_suites dictionary in" \
+             "meson.build; a gate that cannot tell which binaries link" \
+             "the driver must not report success" >&2
+        exit 1
+    fi
+    set --
+    for _s in $_suites; do
+        set -- "$@" "$HORIZON_BUILD_DIR/$_s.elf"
+    done
     found=0
     for e in "$@"; do
         [ -f "$e" ] || continue

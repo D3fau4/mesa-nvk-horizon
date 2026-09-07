@@ -72,19 +72,22 @@ fi
 # build behind and the manifest said nothing about it.
 #
 # Compared by modification time against the NVK archives, and only for
-# the tests that link them — meson.build's own nvk_tests list, read
-# here rather than guessed from a name prefix, so a test added there is
-# covered without anyone remembering this file. The horizon_gpu tests
-# link none of it and are legitimately older.
+# the suites that link them — meson.build's own nvk_suites dictionary,
+# read here rather than guessed from a name prefix, so a suite added
+# there is covered without anyone remembering this file. The
+# horizon_gpu suites link none of it and are legitimately older.
+#
+# The keys only: a suite is one .nro, and its cases are inside it. A key
+# is at a two-space indent in that dictionary and a case name never is.
 #
 # A tree with no NVK build has nothing to compare against and this says
 # so rather than passing quietly.
-_nvk_tests=$(sed -n '/^nvk_tests = \[/,/^]/p' meson.build |
-             grep -o "'t_[a-z_0-9]*'" | tr -d "'")
+_nvk_tests=$(sed -n '/^nvk_suites = {/,/^}/p' meson.build | sed 's/#.*//' |
+             grep -o "^  '[a-z_0-9]*' *:" | tr -d " ':")
 if [ -z "$_nvk_tests" ]; then
-    echo "error: no nvk_tests list found in meson.build; the staleness" \
-         "gate cannot tell which artefacts link the driver, and a gate" \
-         "that checks nothing must not report success" >&2
+    echo "error: no nvk_suites dictionary found in meson.build; the" \
+         "staleness gate cannot tell which artefacts link the driver," \
+         "and a gate that checks nothing must not report success" >&2
     exit 1
 fi
 # AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN: the build's own
@@ -152,7 +155,7 @@ else
         fi
     done
     # ITS OWN RULE, APPLIED TO ITS OWN COUNTER. This refuses outright
-    # when the nvk_tests list is empty, on the stated principle that a
+    # when the nvk_suites dictionary is empty, on the stated principle that a
     # gate which checks nothing must not report success — and then
     # printed "0 driver-linked artefact(s) checked" and exited 0, which
     # is what happens whenever it falls back to the Makefile output in
@@ -275,11 +278,11 @@ dropped=0
 # previous packaging run would be listed under this run's toolchain and
 # image digest.
 #
-# It is not hypothetical: tests 12 and 13 exist only while Mesa's
-# archives do. Package 13, remove the archives, build again (the
-# Makefile now prunes the two stale .nro from build/), package again —
-# without this, $OUT keeps the previous run's t_threads.nro and
-# t_ostime.nro and the new manifest claims them.
+# It is not hypothetical: the mesa_runtime suite exists only while
+# Mesa's archives do. Package it, remove the archives, build again (the
+# Makefile now prunes the stale .nro from build/), package again —
+# without this, $OUT keeps the previous run's mesa_runtime.nro and the
+# new manifest claims it.
 for old in "$OUT"/*.nro; do
     [ -e "$old" ] || continue
     name=$(basename "$old")
@@ -401,7 +404,7 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # $HORIZON_NVK_TEST_LIBS is the same list scripts/ci-build-archives.sh
 # and scripts/check-mesa-test-parity.sh already read out of
 # scripts/toolchain-env.sh — the seventeen archives meson.build's own
-# nvk_whole_libs/nvk_test_libs link the t_vk_* tests against. Copied
+# nvk_whole_libs/nvk_test_libs link the vk_* suites against. Copied
 # under their own relative path, not flattened to a bare basename:
 # src/util/libmesa_util.a exists in BOTH $MESA_BUILD_DIR (the minimal
 # probe build tests 12/13 link) and here — a different file built by a
@@ -599,7 +602,7 @@ _pkg_img=$(horizon_image_digest)
     if [ -d "$OUT/lib/nvk" ]; then
         echo "# NVK driver archives (sha256) — Mesa's own build products, linked"
         echo "# exactly as meson.build's nvk_whole_libs/nvk_test_libs and the"
-        echo "# t_vk_* tests already do; see those for the link order and group"
+        echo "# vk_* suites already do; see those for the link order and group"
         echo "# semantics (--start-group/--end-group is load-bearing here)."
         (cd "$OUT" && find lib/nvk -name '*.a' -exec sha256sum {} + | sort -k2)
         echo

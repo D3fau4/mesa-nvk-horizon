@@ -261,9 +261,13 @@ bool vkfw_init_full(vkfw *fw, test_ctx *t, const void *features2,
                 "GetInstanceProcAddr(vkCreateInstance)"))
       return false;
 
+   /* "<suite>/<case>", so a driver message or a capture names the case
+    * that produced it and not just the .nro it came from. t_case_id()
+    * is stable for the case's lifetime, which is longer than the
+    * instance's. */
    const VkApplicationInfo app = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = test_name,
+      .pApplicationName = t_case_id(t),
       .apiVersion = VK_API_VERSION_1_3,
    };
 

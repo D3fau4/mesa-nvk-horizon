@@ -1,5 +1,5 @@
 /*
- * Phase 1 test framework — console + sdmc logging main() for the .nro tests.
+ * Test framework — console + sdmc logging main() for the .nro suites.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -10,6 +10,7 @@
 #include "horizon_build_id.h"
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -37,7 +38,7 @@ static void t_unlock(test_ctx *t)
 }
 
 /* One place that knows where a line goes: the console (or nowhere, on a
- * test that owns the display) and the log file. Call with the lock. */
+ * suite that owns the display) and the log file. Call with the lock. */
 static void t_sink(test_ctx *t, const char *line, size_t len)
 {
     fwrite(line, 1, len, stdout);
@@ -47,6 +48,8 @@ static void t_sink(test_ctx *t, const char *line, size_t len)
     }
 }
 
+/* Formats and emits one line. Call with the lock. */
+__attribute__((format(printf, 3, 0)))
 static void t_vemit(test_ctx *t, const char *prefix, const char *fmt,
                     va_list ap)
 {
@@ -61,6 +64,17 @@ static void t_vemit(test_ctx *t, const char *prefix, const char *fmt,
     t_sink(t, line, len);
 }
 
+__attribute__((format(printf, 2, 3)))
+static void t_emit(test_ctx *t, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    t_lock(t);
+    t_vemit(t, "", fmt, ap);
+    t_unlock(t);
+    va_end(ap);
+}
+
 bool t_check(test_ctx *t, bool cond, const char *fmt, ...)
 {
     va_list ap;
@@ -72,10 +86,13 @@ bool t_check(test_ctx *t, bool cond, const char *fmt, ...)
      * way to report a verdict in order — but "the counter is safe" is
      * now a property of this function rather than of every caller. */
     t_lock(t);
-    if (cond)
+    if (cond) {
         t->pass++;
-    else
+        t->case_pass++;
+    } else {
         t->fail++;
+        t->case_fail++;
+    }
     t_vemit(t, cond ? "  ok   " : "  FAIL ", fmt, ap);
     t_unlock(t);
 
@@ -93,6 +110,276 @@ void t_note(test_ctx *t, const char *fmt, ...)
     va_end(ap);
 }
 
+const char *t_case_id(const test_ctx *t)
+{
+    return t->case_id;
+}
+
+/* --- the environment, saved and put back around every case -----------
+ *
+ * THIS IS THE ISOLATION THAT GROUPING ACTUALLY NEEDED. Options in this
+ * project are environment variables — HORIZON_GPU_LOG,
+ * HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE, NVK_HORIZON_ZCULL,
+ * MESA_VK_WSI_HORIZON_FORCE_COPY, MESA_SHADER_CACHE_DIR and the two
+ * stats switches among them — and a test sets them with setenv() on
+ * itself. As one .nro per test that was airtight: the process ended and
+ * took the variable with it.
+ *
+ * Inside a suite it is not. vk_core/bringup raises horizon_gpu's log
+ * level to INFO and never lowers it, so every later case in that .nro
+ * would run verbose; worse, the same case turns on untrusted syncpoint
+ * baselines when the platform cannot read a syncpoint, and a case that
+ * inherited *that* would report fences it had not waited for. Neither
+ * shows up as a failure. Both change what the suite measures.
+ *
+ * So the framework snapshots the environment before each case and puts
+ * it back afterwards, and says which variables it had to undo — a case
+ * that leaks one is worth knowing about even though the leak no longer
+ * escapes it.
+ *
+ * WHAT IT DOES NOT UNDO, and the reason it is stated rather than
+ * implied: an option a library reads once and caches in a static is not
+ * restored by restoring the variable. Mesa's os_get_option_cached and
+ * NVK's NVK_DEBUG parse are both of that shape. Every case here builds
+ * its own VkInstance and VkDevice, so options read per-create do come
+ * back; options latched on first use in the process do not, and a case
+ * that needs one of those needs its own .nro. That is one of the
+ * reasons vk_cache is not a case in vk_core.
+ */
+typedef struct env_snapshot {
+    char **entries; /* "NAME=VALUE" copies */
+    size_t count;
+    bool valid;     /* false: the snapshot could not be taken */
+} env_snapshot;
+
+extern char **environ;
+
+static void env_snapshot_free(env_snapshot *s)
+{
+    for (size_t i = 0; i < s->count; i++)
+        free(s->entries[i]);
+    free(s->entries);
+    s->entries = NULL;
+    s->count = 0;
+    s->valid = false;
+}
+
+/* A snapshot that could not be taken is marked invalid rather than
+ * silently treated as "the environment was empty" — restoring from that
+ * would unset every variable the case inherited. Same rule as
+ * t_log_scan: something that cannot look must not answer. */
+static void env_snapshot_take(env_snapshot *s)
+{
+    s->entries = NULL;
+    s->count = 0;
+    s->valid = false;
+
+    size_t n = 0;
+    for (char **e = environ; e != NULL && *e != NULL; e++)
+        n++;
+
+    s->entries = calloc(n + 1, sizeof(*s->entries));
+    if (s->entries == NULL)
+        return;
+
+    for (size_t i = 0; i < n; i++) {
+        s->entries[i] = strdup(environ[i]);
+        if (s->entries[i] == NULL) {
+            s->count = i;
+            env_snapshot_free(s);
+            return;
+        }
+    }
+    s->count = n;
+    s->valid = true;
+}
+
+/* Copies the NAME half of "NAME=VALUE" into `out`. Returns false when
+ * there is no '=' (which environ entries always have) or the name does
+ * not fit, in which case the entry is left alone. */
+static bool env_name_of(const char *entry, char *out, size_t out_size)
+{
+    const char *eq = strchr(entry, '=');
+    if (eq == NULL)
+        return false;
+    const size_t len = (size_t)(eq - entry);
+    if (len == 0 || len >= out_size)
+        return false;
+    memcpy(out, entry, len);
+    out[len] = '\0';
+    return true;
+}
+
+static bool env_snapshot_has(const env_snapshot *s, const char *name)
+{
+    const size_t len = strlen(name);
+    for (size_t i = 0; i < s->count; i++) {
+        if (strncmp(s->entries[i], name, len) == 0 &&
+            s->entries[i][len] == '=')
+            return true;
+    }
+    return false;
+}
+
+/* Appends to the report while it fits, and counts every entry either
+ * way. THE REPORT IS ALLOWED TO TRUNCATE; THE WORK IS NOT — the first
+ * version of this let the buffer's length decide the loop, so a case
+ * that leaked enough variables to fill 256 bytes had the rest of them
+ * left set, with a note that named only the ones that fitted. */
+static void env_report(char *buf, size_t size, size_t *len,
+                       unsigned *count, const char *mark, const char *name)
+{
+    (*count)++;
+    if (*len >= size)
+        return;
+    const int n = snprintf(buf + *len, size - *len, "%s%s%s",
+                           *len ? " " : "", mark, name);
+    if (n > 0)
+        *len += (size_t)n;
+}
+
+/* One pass collects at most this many names before unsetting them:
+ * unsetenv() rewrites environ under the loop that is walking it, so the
+ * collection and the removal cannot be interleaved. More than a pass's
+ * worth is handled by running another pass, not by giving up. */
+#define ENV_BATCH 16
+
+/* Enough passes for any plausible leak, and a bound rather than `for
+ * (;;)`: if unsetenv ever failed to remove a name, an unbounded loop
+ * would hang the suite instead of reporting it. */
+#define ENV_MAX_PASSES 64
+
+/* Puts the environment back and reports what had to be undone. */
+static void env_snapshot_restore(test_ctx *t, env_snapshot *s)
+{
+    if (!s->valid) {
+        t_note(t, "the environment could not be snapshotted for this case, "
+                  "so a variable it leaked is still set");
+        env_snapshot_free(s);
+        return;
+    }
+
+    char undone[256];
+    size_t undone_len = 0;
+    unsigned undone_count = 0;
+    unsigned unnamed = 0;
+    undone[0] = '\0';
+
+    /* Names the case added. */
+    unsigned pass = 0;
+    for (; pass < ENV_MAX_PASSES; pass++) {
+        char added[ENV_BATCH][64];
+        size_t n = 0;
+        unnamed = 0;
+        for (char **e = environ; e != NULL && *e != NULL && n < ENV_BATCH;
+             e++) {
+            char name[64];
+            if (!env_name_of(*e, name, sizeof(name))) {
+                unnamed++;
+                continue;
+            }
+            if (env_snapshot_has(s, name)) {
+                /* Present before; a changed value is put back below. */
+                continue;
+            }
+            snprintf(added[n++], sizeof(added[0]), "%s", name);
+        }
+        if (n == 0)
+            break;
+        for (size_t i = 0; i < n; i++) {
+            unsetenv(added[i]);
+            env_report(undone, sizeof(undone), &undone_len, &undone_count,
+                       "-", added[i]);
+        }
+    }
+    if (pass == ENV_MAX_PASSES)
+        t_note(t, "the environment still has variables this case added "
+                  "after %d removal passes; unsetenv is not removing them",
+               ENV_MAX_PASSES);
+    if (unnamed > 0)
+        t_note(t, "%u environment entr%s could not be parsed as NAME=VALUE "
+                  "and %s left alone", unnamed, unnamed == 1 ? "y" : "ies",
+               unnamed == 1 ? "was" : "were");
+
+    /* And the ones that were there before: put the old value back
+     * wherever it moved, and restore one the case unset. */
+    for (size_t i = 0; i < s->count; i++) {
+        char name[64];
+        if (!env_name_of(s->entries[i], name, sizeof(name)))
+            continue;
+        const char *want = s->entries[i] + strlen(name) + 1;
+        const char *have = getenv(name);
+        if (have != NULL && strcmp(have, want) == 0)
+            continue;
+        setenv(name, want, 1);
+        env_report(undone, sizeof(undone), &undone_len, &undone_count,
+                   have ? "=" : "+", name);
+    }
+
+    if (undone_count > 0)
+        t_note(t, "the environment was put back after this case: %s%s "
+                  "(%u in all; -added +restored =changed)",
+               undone, undone_len >= sizeof(undone) ? " ..." : "",
+               undone_count);
+
+    env_snapshot_free(s);
+}
+
+/* --- the run ---------------------------------------------------------
+ *
+ * One case: banner, snapshot, run, verdict, restore. Everything a case
+ * shares with the next one that this framework can see is reset here,
+ * and what it cannot see is the case's own to tear down — a case owns
+ * every device, channel, thread and file it creates, and leaves the
+ * process as it found it. That is the contract grouping rests on, and
+ * it is the same one every one of these tests already kept when it was
+ * a .nro of its own: each of them creates its device at the top and
+ * destroys it at the bottom.
+ */
+static bool run_one_case(test_ctx *t, const test_case *tc)
+{
+    snprintf(t->case_id, sizeof(t->case_id), "%s/%s", suite_name, tc->name);
+    t->case_pass = 0;
+    t->case_fail = 0;
+
+    /* Where this case's own output starts, so t_log_scan does not find
+     * an earlier case's driver message and call it evidence. */
+    t_lock(t);
+    if (t->log != NULL) {
+        fflush(t->log);
+        fflush(stderr);
+        const long here = ftell(t->log);
+        t->case_log_start = here < 0 ? 0 : here;
+    }
+    t_unlock(t);
+
+    t_emit(t, "-- %s --", t->case_id);
+
+    env_snapshot env;
+    env_snapshot_take(&env);
+
+    const uint64_t start_tick = armGetSystemTick();
+    const int aborted = tc->run(t);
+    const uint64_t elapsed_tick = armGetSystemTick() - start_tick;
+    const uint64_t freq = armGetSystemTickFreq();
+    const uint64_t elapsed_ms = freq ? (elapsed_tick * UINT64_C(1000)) / freq
+                                     : 0;
+
+    env_snapshot_restore(t, &env);
+
+    const int total = t->case_pass + t->case_fail;
+    const bool ok = (t->case_fail == 0 && aborted == 0);
+    t_emit(t, "CASE: %s %s (%d/%d) in %llu ms%s", ok ? "PASS" : "FAIL",
+           t->case_id, t->case_pass, total, (unsigned long long)elapsed_ms,
+           aborted ? " [abandoned early]" : "");
+
+    /* Back to naming the suite: anything emitted between cases belongs
+     * to no case, and a scan started there searches the whole file. */
+    snprintf(t->case_id, sizeof(t->case_id), "%s", suite_name);
+    t->case_log_start = 0;
+    return ok;
+}
+
 int main(void)
 {
     if (!test_uses_display)
@@ -103,6 +390,7 @@ int main(void)
     padInitializeDefault(&pad);
 
     test_ctx t = { .pass = 0, .fail = 0, .log = NULL };
+    snprintf(t.case_id, sizeof(t.case_id), "%s", suite_name);
 
     /* Before the log is opened and long before any test starts a thread,
      * so every line this file can emit is already covered. A failure
@@ -114,7 +402,7 @@ int main(void)
 
     mkdir("sdmc:/horizon_gpu_tests", 0777);
     char path[128];
-    snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", test_name);
+    snprintf(path, sizeof(path), "sdmc:/horizon_gpu_tests/%s.log", suite_name);
     snprintf(t.log_path, sizeof(t.log_path), "%s", path);
     /* "w+", not "w": t_log_scan reads the log back through this same
      * handle. A second fopen() of a file already open for writing is
@@ -152,14 +440,8 @@ int main(void)
             setvbuf(stderr, NULL, _IONBF, 0);
     }
 
-    char head[160];
-    int head_len = snprintf(head, sizeof(head), "== %s ==\n", test_name);
-    if (head_len > 0) {
-        t_lock(&t);
-        t_sink(&t, head, (size_t)head_len < sizeof(head) ? (size_t)head_len
-                                                         : sizeof(head) - 1);
-        t_unlock(&t);
-    }
+    t_emit(&t, "== %s (%u case%s) ==", suite_name, suite_case_count,
+           suite_case_count == 1 ? "" : "s");
     if (!t.log)
         printf("  note (sdmc log unavailable: %s)\n", path);
 
@@ -187,25 +469,35 @@ int main(void)
      * it and a log from a run whose console never started look the
      * same otherwise. */
     if (test_uses_display && t.log) {
-        fprintf(t.log, "  note this test owns the display: no console was "
+        fprintf(t.log, "  note this suite owns the display: no console was "
                        "started, and this file is the whole record\n");
         fflush(t.log);
     }
 
-    int aborted = run_test(&t);
+    unsigned cases_failed = 0;
+    char failed_names[256];
+    size_t failed_len = 0;
+    failed_names[0] = '\0';
 
-    int total = t.pass + t.fail;
-    const char *verdict = (t.fail == 0 && !aborted) ? "PASS" : "FAIL";
-    char tail[160];
-    int tail_len = snprintf(tail, sizeof(tail), "RESULT: %s (%d/%d)%s\n",
-                            verdict, t.pass, total,
-                            aborted ? " [aborted early]" : "");
-    if (tail_len > 0) {
-        t_lock(&t);
-        t_sink(&t, tail, (size_t)tail_len < sizeof(tail) ? (size_t)tail_len
-                                                         : sizeof(tail) - 1);
-        t_unlock(&t);
+    for (unsigned i = 0; i < suite_case_count; i++) {
+        if (run_one_case(&t, &suite_cases[i]))
+            continue;
+        cases_failed++;
+        if (failed_len < sizeof(failed_names))
+            failed_len += (size_t)snprintf(failed_names + failed_len,
+                                           sizeof(failed_names) - failed_len,
+                                           "%s%s", failed_len ? " " : "",
+                                           suite_cases[i].name);
     }
+
+    const int total = t.pass + t.fail;
+    const char *verdict = cases_failed == 0 ? "PASS" : "FAIL";
+    if (cases_failed == 0)
+        t_emit(&t, "RESULT: %s (%d/%d) [%u/%u cases]", verdict, t.pass, total,
+               suite_case_count, suite_case_count);
+    else
+        t_emit(&t, "RESULT: %s (%d/%d) [%u of %u cases failed: %s]", verdict,
+               t.pass, total, cases_failed, suite_case_count, failed_names);
 
     printf("\nLog: %s\nPress + to exit.\n", path);
     /* With no console there is no screen to read that on, so the log —
@@ -247,9 +539,9 @@ int main(void)
         if (test_uses_display) {
             /* consoleUpdate is what blocked on vsync. Without it this
              * loop was an unthrottled spin on a core until a human
-             * pressed +, on the one path t_display exists to validate.
-             * A frame's worth of sleep costs nothing and is not hiding
-             * a failure — there is nothing here to fail. */
+             * pressed +, on the one path display/console_handoff exists
+             * to validate. A frame's worth of sleep costs nothing and is
+             * not hiding a failure — there is nothing here to fail. */
             svcSleepThread(UINT64_C(16000000));
         } else {
             consoleUpdate(NULL);
@@ -258,7 +550,7 @@ int main(void)
 
     if (!test_uses_display)
         consoleExit(NULL);
-    return (t.fail == 0 && !aborted) ? 0 : 1;
+    return cases_failed == 0 ? 0 : 1;
 }
 
 /* Overlap between chunks: the longest needle this can find spans two
@@ -297,7 +589,9 @@ bool t_log_scan(test_ctx *t, const char *needle, bool *found_out)
         t_unlock(t);
         return false;
     }
-    if (fseek(t->log, 0, SEEK_SET) != 0) {
+    /* From where this case's output began, not from the start of the
+     * file: see test_ctx::case_log_start. */
+    if (fseek(t->log, t->case_log_start, SEEK_SET) != 0) {
         t_unlock(t);
         return false;
     }
