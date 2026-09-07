@@ -46,6 +46,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "common/vkfw.h"
@@ -287,6 +288,44 @@ out:
 
 TEST_CASE_DECL(vk_shaders, nested_control_flow_frag)
 {
+   /* WHAT THIS SHADER COMPILES TO, SAID BY THE COMPILER.
+    *
+    * Three numbers get confused with each other whenever this shader is
+    * discussed, and only one of them is a property of the source:
+    *
+    *   the COMPILED DEPTH   from_nir's convergence stack, one push per
+    *                        divergent construct — not the number of
+    *                        `if`s in the assembly, which is what a
+    *                        reader counts;
+    *   the RESERVATION      what sm50's crs_size() makes of that depth,
+    *                        which is what the shader program header
+    *                        carries and the queue programs per warp,
+    *                        and which is zero at or below sixteen;
+    *   the DEPTH WALKED     a property of the data, which is what
+    *                        `mode` varies below and what no static
+    *                        reading can produce.
+    *
+    * NAK_CRS_INFO=1 makes the compiler print the first two for every
+    * shader it builds, so the log carries them beside the pixels rather
+    * than beside a guess. It is read per compilation for exactly this:
+    * NAK_DEBUG is latched in a static on the first shader of the
+    * process, so by the time a case in the middle of a suite runs, that
+    * word is already zero.
+    *
+    * THIS IS ALSO A TRAP THAT HAS ALREADY COST A WRONG CONCLUSION.
+    * Numbers printed by a working tree that doubles the depth before
+    * reserving — nouveau counts two slots per level where sm50 counts
+    * one — were read against the pinned tree's crs_size(), and twelve
+    * levels came out as "reserves nothing" in one and "reserves 1024"
+    * in the other. Whatever this log says is what THIS driver did.
+    * testfw restores the environment around every case. */
+   setenv("NAK_CRS_INFO", "1", 1);
+   /* AND THE SHADER CACHE HAS TO BE OUT OF THE WAY. A shader that comes
+    * back from disk_cache is never handed to NAK, so it prints nothing:
+    * this case reported on its first launch of a build and failed its
+    * own scan on the second, which is how that was found. */
+   setenv("MESA_SHADER_CACHE_DISABLE", "true", 1);
+
    VkPhysicalDeviceVulkan13Features features13 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
       .dynamicRendering = VK_TRUE,
@@ -311,6 +350,23 @@ TEST_CASE_DECL(vk_shaders, nested_control_flow_frag)
          break;
       }
       run_case(&fw, &CASES[i], &dst);
+   }
+
+   /* The compiler answered, or this case measured pixels and nothing
+    * else. Not a check on the values: they are the measurement, they
+    * are in the log on the `NAK crs:` lines, and a case that asserted a
+    * number it had not yet seen would be stating the guess it exists to
+    * replace. */
+   bool reported = false;
+   if (t_log_scan(t, "NAK crs: stage=fragment", &reported)) {
+      t_check(t, reported,
+              "the compiler reported what it compiled — the `NAK crs:` "
+              "lines above carry this shader's depth, reservation, "
+              "registers, spills and local memory");
+   } else {
+      t_check(t, false,
+              "the log could not be read back, so what this shader "
+              "compiled to was NOT recorded");
    }
 
 out:

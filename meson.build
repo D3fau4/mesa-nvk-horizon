@@ -347,6 +347,7 @@ nvk_suites = {
                'submit_batching', 'sparse_binding'],
   'vk_shaders' : ['compute_dispatch', 'dynamic_loop', 'packed_bound_loop',
                   'nested_control_flow', 'nested_control_flow_frag',
+                  'crs_matrix',
                   'fragment_kill', 'descriptor_set1'],
   'vk_render' : ['triangle', 'texture', 'depth', 'formats', 'multi_target',
                  'zcull', 'draw_volume'],
@@ -406,6 +407,12 @@ nvk_case_shaders = {
   'vk_shaders/nested_control_flow' : ['comp_crs'],
   'vk_shaders/nested_control_flow_frag' : ['fmt_vert_fullscreen',
                                            'crs_frag_deep'],
+  # Four fragment shaders from one template, differing in the nesting
+  # depth and in how many values stay live across it — see
+  # scripts/gen-crs-matrix.py, which generates them.
+  'vk_shaders/crs_matrix' : ['fmt_vert_fullscreen', 'crs_mx_a', 'crs_mx_b',
+                             'crs_mx_c', 'crs_mx_d', 'crs_mx_e',
+                             'crs_mx_f', 'crs_mx_g', 'crs_mx_h'],
   'vk_shaders/fragment_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
   'vk_shaders/descriptor_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
 

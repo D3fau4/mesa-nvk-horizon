@@ -34,6 +34,7 @@ TEST_CASE_DECL(vk_shaders, dynamic_loop);
 TEST_CASE_DECL(vk_shaders, packed_bound_loop);
 TEST_CASE_DECL(vk_shaders, nested_control_flow);
 TEST_CASE_DECL(vk_shaders, nested_control_flow_frag);
+TEST_CASE_DECL(vk_shaders, crs_matrix);
 TEST_CASE_DECL(vk_shaders, fragment_kill);
 TEST_CASE_DECL(vk_shaders, descriptor_set1);
 
@@ -44,5 +45,6 @@ TEST_SUITE("vk_shaders", false,
            TEST_CASE(vk_shaders, packed_bound_loop),
            TEST_CASE(vk_shaders, nested_control_flow),
            TEST_CASE(vk_shaders, nested_control_flow_frag),
+           TEST_CASE(vk_shaders, crs_matrix),
            TEST_CASE(vk_shaders, fragment_kill),
            TEST_CASE(vk_shaders, descriptor_set1));
