@@ -104,10 +104,15 @@
  * pacing. */
 #define SC_SHORT_FRAMES  20u
 
-/* Enough frames to put the window's queue geometry back after section
- * G's half-size swapchain, and no more: this presents nothing anybody
- * reads, it exists so the registration happens. */
-#define SC_RESTORE_FRAMES 4u
+/* Section H: how many times it goes down to half the layer and back,
+ * and how many frames each generation presents. Three cycles because
+ * one can pass on a driver that answers with the previous swapchain's
+ * size — the first way back up is exactly the creation that lag
+ * allowed — and by the second cycle there is nothing left to hide
+ * behind. Twelve frames is enough to present, be paced and be asked
+ * whether it is suboptimal; nothing here measures pacing. */
+#define SC_CYCLES        3u
+#define SC_CYCLE_FRAMES  12u
 
 /* How long section G waits for somebody to dock or undock the console,
  * and how many frames it presents between checks. A bound, not a
@@ -1856,109 +1861,178 @@ TEST_CASE_DECL(vk_wsi, swapchain)
          fw.vk.vkDeviceWaitIdle(fw.dev);
          sc_destroy(&fw, &sc_h);
 
-         /* AND PUT THE WINDOW BACK, because this section is the one
-          * thing in the tree that moves it and a case leaves the
-          * process as it found it.
-          *
-          * WHAT MOVES, AND WHY THE CHECK ABOVE DOES NOT SEE IT.
-          * Measured on a console 2026-09-07, build 06d33ec. The size
-          * the backend sets at registration is the BufferQueue's, and
-          * NWindow::default_* — what wsi_horizon_get_extent reads and
-          * what currentExtent is — lags it by one connect. So this
-          * section reads 1280x720 for all 5410 of its frames while the
-          * queue has already been left at 640x360, and the damage lands
-          * on the next thing to connect. vk_wsi/suboptimal opened with
-          * currentExtent 1280x720, created a 1280x720 swapchain on the
-          * strength of it, and then read 640x360 for every one of its
-          * 120 frames — 240 rule disagreements — after which
-          * vkCreateSwapchainKHR at 1280x720 returned
-          * VK_ERROR_INITIALIZATION_FAILED twice, the extent asked for
-          * now being larger than the surface says it is. As one .nro
-          * per test this could not happen: the process ended and the
-          * queue went with it.
-          *
-          * nwindowSetDimensions ALONE DOES NOT DO IT, and it was
-          * tried first: with no producer connected it writes
-          * NWindow::width and nothing reaches the queue, and the next
-          * run measured exactly the same five failures. What puts the
-          * geometry back is a registration at the full size, so this
-          * presents a few frames on a full-size swapchain and throws it
-          * away. It can still be created at this point precisely
-          * because of the lag that causes the problem, and it can only
-          * be done once — see the block below.
-          *
-          * THE DRIVER-LEVEL FINDING IS NOT FIXED BY THIS and does not
-          * belong to the test: currentExtent reports a size this
-          * process asked for one swapchain ago rather than the layer's,
-          * so an application that renders smaller than its layer is
-          * told its surface shrank and cannot go back up until it
-          * happens to present at the larger size inside the lag. See
-          * docs/PENDING-HARDWARE-RUNS.md. */
-         {
-            /* ONCE, AND ONCE IS ALL THIS PROCESS CAN DO. Measured
-             * 2026-09-07, both ways round:
-             *
-             *  - with no restore at all, the next case read 640x360 for
-             *    every frame of a 1280x720 swapchain and then had two
-             *    vkCreateSwapchainKHR(1280x720) refused:
-             *    vk_wsi/suboptimal 170/175.
-             *  - with this one generation, the queue is back at the
-             *    layer's size and the next case reads 1280x720
-             *    throughout: 272/273, the one remaining failure being
-             *    that its section A sizes its swapchain from a query
-             *    taken before its own first connect.
-             *  - with a SECOND generation, which is what a loop here
-             *    tried, vkCreateSwapchainKHR returns
-             *    INITIALIZATION_FAILED: this generation's own connect
-             *    refreshed NWindow::default_* to the queue's *previous*
-             *    value, 640x360, and creation is gated on that. The two
-             *    values are never both the layer's size at once, so
-             *    there is no sequence of swapchains that leaves this
-             *    process fully back where it started, and a loop only
-             *    adds a failure for something that cannot succeed.
-             *
-             * So: one generation, and the reading afterwards is a note
-             * rather than a check, because what it says is the driver's
-             * to fix and not this case's. */
-            sc_stats st_back;
-            sc_swapchain sc_back;
+      }
+   }
 
-            if (sc_create(&fw, surface, 3, VK_PRESENT_MODE_FIFO_KHR,
-                          VK_FORMAT_R8G8B8A8_UNORM, extent, VK_NULL_HANDLE,
-                          "G: putting the window back", &sc_back)) {
-               sc_stats_init(&st_back, "G: putting the window back");
-               sc_run(&fw, &sc_back, SC_RESTORE_FRAMES, 0, &st_back);
-               fw.vk.vkDeviceWaitIdle(fw.dev);
-               sc_destroy(&fw, &sc_back);
+   /* --- H: down to half and back to the layer, three times ---------
+    *
+    * Section G leaves the window smaller than the layer, and until
+    * 2026-09-07 that was a fact about the process rather than about
+    * the swapchain: currentExtent came from NWindow::default_*, a
+    * field this backend writes at every registration, so a swapchain
+    * smaller than the layer taught the SURFACE that the output had
+    * shrunk. The whole of what that cost is worth keeping, because it
+    * is what this section now proves is gone:
+    *
+    *   - G presented 5410 frames at 640x360 and read currentExtent
+    *     1280x720 for every one of them, because nothing had
+    *     reconnected. Its own regression guard passed.
+    *   - the next case connected, default_* was refilled with 640x360,
+    *     and vk_wsi/suboptimal — which had queried the surface before
+    *     that connect and been told 1280x720 — spent 120 frames with
+    *     240 rule disagreements and then had vkCreateSwapchainKHR at
+    *     1280x720 refused twice with VK_ERROR_INITIALIZATION_FAILED.
+    *     170 of 175 checks.
+    *   - a workaround lived here: one full-size generation presented
+    *     and thrown away, which put the QUEUE back and took suboptimal
+    *     to 272 of 273. nwindowSetDimensions alone did nothing, and a
+    *     SECOND restoring generation could not even be created — the
+    *     first one's connect had refreshed default_* to the queue's
+    *     previous value and creation was gated on it.
+    *
+    * That workaround is gone with the defect. Patch 0070 latches the
+    * layer's size once, before this backend has registered anything,
+    * and every surface query answers from the latch; releasing the
+    * window puts NWindow::width back to it; and the resize check
+    * ignores the extent the surface had registered one swapchain ago,
+    * which is the same echo seen from the other side.
+    *
+    * SO THIS IS THE COVERAGE THAT WAS MISSING, and it is deliberately
+    * a loop rather than a single trip. One down-and-up could pass on
+    * the lag alone — the full-size creation that used to work is
+    * exactly the one the lag allowed. Three cycles cannot: by the
+    * second, an unfixed driver has the queue at 640x360 with nothing
+    * left to hide behind.
+    *
+    * Each cycle checks, in order: the surface reports the layer before
+    * anything is created; a half-size swapchain creates and presents;
+    * a full-size one is created BY RECREATION, with the half-size one
+    * passed as oldSwapchain, which is the sequence an application uses
+    * and the one that has two swapchains over the window at once; it
+    * presents; and neither generation is called SUBOPTIMAL, because
+    * nothing about the output changed. Afterwards the surface must
+    * still report the layer, which is the restoration.
+    */
+   {
+      uint32_t cycles_ok = 0;
+      uint32_t half_frames = 0, full_frames = 0;
+      uint32_t half_subopt = 0, full_subopt = 0;
+      uint32_t caps_wrong = 0;
+      uint32_t create_failed = 0;
 
-               t_check(t, st_back.frames_presented == SC_RESTORE_FRAMES,
-                       "G: a full-size generation presented, so the queue's "
-                       "geometry is back at %" PRIu32 "x%" PRIu32 " for "
-                       "whatever runs next (%" PRIu32 " of %" PRIu32
-                       " frames)", extent.width, extent.height,
-                       st_back.frames_presented, (uint32_t)SC_RESTORE_FRAMES);
+      t_note(t, "H: %" PRIu32 " cycles of %" PRIu32 "x%" PRIu32 " -> "
+                "%" PRIu32 "x%" PRIu32 " -> %" PRIu32 "x%" PRIu32
+                " in one process, the way back by recreation",
+             (uint32_t)SC_CYCLES, extent.width, extent.height,
+             half.width, half.height, extent.width, extent.height);
 
-               VkSurfaceCapabilitiesKHR caps;
-               memset(&caps, 0, sizeof(caps));
-               if (fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-                      fw.pdev, surface, &caps) == VK_SUCCESS) {
-                  t_note(t, "G: the surface reads %" PRIu32 "x%" PRIu32
-                            " from here; the layer is %" PRIu32 "x%" PRIu32
-                            ". If those differ it is the one-connect lag in "
-                            "wsi_horizon_get_extent, not this case — "
-                            "docs/PENDING-HARDWARE-RUNS.md",
-                         caps.currentExtent.width, caps.currentExtent.height,
-                         extent.width, extent.height);
-               }
-            } else {
-               t_check(t, false,
-                       "G: the window's queue geometry could not be put back "
-                       "at %" PRIu32 "x%" PRIu32 " — whatever runs next in "
-                       "this process sees a %" PRIu32 "x%" PRIu32 " surface",
-                       extent.width, extent.height, half.width, half.height);
+      for (uint32_t cycle = 0; cycle < SC_CYCLES; cycle++) {
+         VkSurfaceCapabilitiesKHR caps;
+         memset(&caps, 0, sizeof(caps));
+         const VkResult cr = fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            fw.pdev, surface, &caps);
+         if (cr != VK_SUCCESS ||
+             caps.currentExtent.width != extent.width ||
+             caps.currentExtent.height != extent.height ||
+             caps.maxImageExtent.width != extent.width ||
+             caps.maxImageExtent.height != extent.height) {
+            /* Noted once and counted always: a per-cycle check line
+             * would say the same thing three times. */
+            if (caps_wrong++ == 0) {
+               t_note(t, "H: at the top of cycle %" PRIu32 " the surface "
+                         "said %" PRIu32 "x%" PRIu32 " (max %" PRIu32
+                         "x%" PRIu32 ") -> %s; the layer is %" PRIu32
+                         "x%" PRIu32, cycle,
+                      caps.currentExtent.width, caps.currentExtent.height,
+                      caps.maxImageExtent.width, caps.maxImageExtent.height,
+                      vkfw_result_str(cr), extent.width, extent.height);
             }
          }
+
+         sc_swapchain sc_small, sc_full;
+         sc_stats st_small, st_full;
+
+         if (!sc_create(&fw, surface, 3, VK_PRESENT_MODE_FIFO_KHR,
+                        VK_FORMAT_R8G8B8A8_UNORM, half, VK_NULL_HANDLE,
+                        "H: down to half the layer", &sc_small)) {
+            create_failed++;
+            break;
+         }
+         sc_stats_init(&st_small, "H: half the layer");
+         sc_run(&fw, &sc_small, SC_CYCLE_FRAMES, 0, &st_small);
+         half_frames += st_small.frames_presented;
+         half_subopt += st_small.suboptimal;
+
+         /* The new one first and the old one after, which is what
+          * oldSwapchain means and what makes this a recreation rather
+          * than a second first swapchain. */
+         if (!sc_create(&fw, surface, 3, VK_PRESENT_MODE_FIFO_KHR,
+                        VK_FORMAT_R8G8B8A8_UNORM, extent, sc_small.handle,
+                        "H: back up to the layer", &sc_full)) {
+            create_failed++;
+            fw.vk.vkDeviceWaitIdle(fw.dev);
+            sc_destroy(&fw, &sc_small);
+            break;
+         }
+
+         fw.vk.vkDeviceWaitIdle(fw.dev);
+         sc_destroy(&fw, &sc_small);
+
+         sc_stats_init(&st_full, "H: back at the layer");
+         sc_run(&fw, &sc_full, SC_CYCLE_FRAMES, 0, &st_full);
+         full_frames += st_full.frames_presented;
+         full_subopt += st_full.suboptimal;
+
+         fw.vk.vkDeviceWaitIdle(fw.dev);
+         sc_destroy(&fw, &sc_full);
+
+         if (st_small.frames_presented == SC_CYCLE_FRAMES &&
+             st_full.frames_presented == SC_CYCLE_FRAMES)
+            cycles_ok++;
       }
+
+      t_check(t, create_failed == 0,
+              "H: every swapchain in the cycle was created (%" PRIu32
+              " creation(s) refused — a refusal here is the surface "
+              "saying it is smaller than the layer)", create_failed);
+
+      t_check(t, cycles_ok == SC_CYCLES,
+              "MEASURED H: %" PRIu32 " of %" PRIu32 " down-and-back cycles "
+              "presented every frame (%" PRIu32 " at half, %" PRIu32
+              " at the layer, of %" PRIu32 " each)",
+              cycles_ok, (uint32_t)SC_CYCLES, half_frames, full_frames,
+              (uint32_t)(SC_CYCLES * SC_CYCLE_FRAMES));
+
+      t_check(t, caps_wrong == 0,
+              "MEASURED H: the surface reported the layer at the top of "
+              "every cycle (%" PRIu32 " of %" PRIu32 " did not) — a "
+              "swapchain's own extent must never become the surface's",
+              caps_wrong, (uint32_t)SC_CYCLES);
+
+      t_check(t, half_subopt == 0 && full_subopt == 0,
+              "MEASURED H: nothing was called SUBOPTIMAL while the output "
+              "did not move (%" PRIu32 " at half, %" PRIu32 " at the "
+              "layer) — the second number is the queue's one-connect "
+              "echo, which used to make a correct full-size swapchain "
+              "report SUBOPTIMAL on every present",
+              half_subopt, full_subopt);
+
+      /* THE RESTORATION, and it is a check now rather than a note. A
+       * process that has finished with the window must leave the
+       * surface saying what it said before it started. */
+      VkSurfaceCapabilitiesKHR last;
+      memset(&last, 0, sizeof(last));
+      const VkResult lr = fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+         fw.pdev, surface, &last);
+      t_check(t, lr == VK_SUCCESS &&
+              last.currentExtent.width == extent.width &&
+              last.currentExtent.height == extent.height,
+              "MEASURED H: after every cycle the surface still reports "
+              "%" PRIu32 "x%" PRIu32 " (%" PRIu32 "x%" PRIu32 " -> %s), so "
+              "whatever runs next in this process is not handed a shrunk "
+              "window", extent.width, extent.height,
+              last.currentExtent.width, last.currentExtent.height,
+              vkfw_result_str(lr));
    }
 
    goto out_surface;
