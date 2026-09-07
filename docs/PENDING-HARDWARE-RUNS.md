@@ -36,310 +36,206 @@ mapping for every one of them is `tests/<suite>/suite.c`.
 
 ---
 
-## 1 Zcull is now bound, and nothing has run it
+## 1 `vk_wsi/concurrency` aborts the process, and it is not this branch
 
-**Class X.** `mesa-patches/0059` and `0060` and `tests/vk_render/zcull.c`
-cross-build; no console has executed any of them.
+**Class HW.** Reproduced three times on 2026-09-07, at the same point
+every time, on two different driver builds.
 
-Until 0060, the physical device advertised `has_zcull_info` and every
-channel was created with `bind_zcull` false, so NVK programmed the
-on-chip Zcull state on channels that had no context-switch save area.
-0060 asks for the bind on contexts created with `NVKMD_ENGINE_3D`; 0059
-stops advertising Zcull where `nvGpuGetZcullCtxSize()` is 0, and adds
-`NVK_HORIZON_ZCULL=0`.
+`vk_wsi/concurrency` section D — recreation churn, generation n
+destroyed by a reaper thread while generation n+1 presents, image count
+and present path alternating — kills the process:
 
-Zcull only ever *rejects*, so a fault here is silent: a fragment wrongly
-culled is geometry that is not drawn, with no notifier and nothing in a
-log. `vk_render/zcull` is built around that. It renders one depth workload
-twice in one process — section A with `NVK_HORIZON_ZCULL=0`, section B
-with it on — and compares the colour and depth images pixel for pixel,
-plus an analytic check on each half so a fault affecting both equally
-does not compare equal.
+    Result: 0x2B59 (2345-0021)   LibnxError_BadGfxDequeueBuffer
+    Type:   User Break
+    PC:     svcBreak  <- diagAbortWithResult <- framebufferBegin
+                      <- wsi_horizon_present_fallback (wsi_horizon.c:2311)
+                      <- wsi_common_queue_present
+                      <- mt_present (tests/vk_wsi/concurrency.c:673)
 
-Three things the run has to report:
+libnx's `framebufferBegin` aborts rather than returning when
+`nwindowDequeueBuffer` fails, so a producer error on the copy path ends
+the process and takes the suite's remaining cases with it. The log stops
+after `D: the first generation -> VK_SUCCESS`, 52 checks in, every time.
 
-- whether A and B are identical. **If they are not, the action is to
-  stop advertising Zcull** — set `has_zcull_info` false in 0059
-  unconditionally, and drop 0060 — not to debug it from here.
-- whether `nvGpuChannelZcullBind` succeeds at all. It is on the channel
-  creation path, so a refusal fails `vkCreateDevice` rather than
-  degrading. `NVK_HORIZON_ZCULL=0` is the way back without a rebuild,
-  and a refusal means 0060 has to make the bind non-fatal or go.
-- the two wall times the test notes. Whether Zcull is faster on this
-  workload is unknown; the workload was built to be checkable, not to be
-  culled well.
+**IT IS NOT `0063`-`0069`.** The same `.nro` built against mesa at
+`266290e` — the series truncated to `0062`, `libnvk.a` rebuilt,
+`vk_wsi.nro` relinked, 14786616 bytes against 14790712 — aborts at the
+identical point with the identical 52 checks. The acquire patches cannot
+reach it either by construction: `gpu_acquire_wait` requires
+`chain->zero_copy` and this is the copy fallback.
 
-**Done when** `vk_render/zcull` has run on a console and the answer has been
-acted on: kept and recorded if A and B match, withdrawn if they do not.
-The seventeen existing Vulkan tests have to be re-run alongside it —
-every one of them that clears a depth attachment now takes a different
-path through `nvk_CmdBeginRendering`.
+The shape of it is a race the file already half-anticipates: the reaper
+destroying generation n calls `nwindowReleaseBuffers` on the window
+generation n+1 is presenting through, and both live on the process's one
+default `NWindow`. `wsi_horizon_release_window` tests
+`surface->owner == chain` under the surface lock, so the *bookkeeping*
+is ordered; what is not is libnx's Framebuffer, which the successor is
+inside `framebufferBegin` on while the loser's disconnect runs.
 
-## 2 A wait submit no longer drains the pipeline
-
-**Class H + X.** `horizon_cmds_fence_incr_bare` is covered by
-`tests/host/h_cmds.c` (46/46 under ASan and UBSan) and the whole thing
-cross-builds; no console has executed it.
-
-`horizon_gpu_submit_waits` now emits an increment-only fence block and
-skips the L2-invalidate prologue, on the argument that its command list
-is host methods with no memory effect: nothing to invalidate, no engine
-work for a wait-for-idle to wait for, and nothing dirty to write back —
-the writes being waited on were flushed by the fence block of the
-channel that made them. Two GPFIFO entries instead of three, and no
-pipeline drain per cross-channel wait.
-
-**This changes the submit path every test goes through**, so the whole
-suite is what has to be re-run, not only the WSI tests. Patch 0035 means
-only cross-channel waits reach it, so the paths that exercise it are the
-upload queue and presentation: `vk_wsi/concurrency`, `vk_present/drawn_frame`,
-`vk_core/concurrent_submits`, `gpu_submit/submit`.
-
-`HORIZON_GPU_FULL_BARRIER_WAITS=1` restores the old shape, so both can
-be measured in one run rather than across two builds.
-`horizon_gpu_channel_get_stats()` reports `wait_submits` and
-`bare_fence_submits`, so "it took the cheap path" is a number.
-
-**Done when** the suite has passed on a console with the new shape, and
-one run has compared it against `HORIZON_GPU_FULL_BARRIER_WAITS=1` on a
-workload with cross-channel waits in it. If the two differ in
-correctness, this comes out; if they do not differ in time either, it
-still comes out, because then it is complexity for nothing.
-
-## 3 The per-submit syncpoint read is now conditional
-
-**Class X.** Reading the syncpoint is libnx, so no host suite reaches
-this line; it cross-builds and no console has run it.
-
-`horizon_gpu_channel_reap` skipped the `SyncptRead` ioctl when no
-retirement is registered — which, on the path NVK takes, is always:
-`horizon_gpu_channel_add_retirement` has exactly one caller in the tree
-and it is `tests/platform/teardown.c`. The fault check stays unconditional; it
-is the safety property and it costs an event wait, not an ioctl.
-
-**Done when** `platform/teardown` still passes (it is the test that registers
-retirements, so the read still happens there and the callbacks must
-still fire), and `gpu_submit/submit` has reported the per-submit cost with and
-without `HORIZON_GPU_EAGER_REAP=1`. If the difference is inside the
-noise, say so and consider taking the branch back out.
-
-## 4 Three new test binaries, none of which has ever run
-
-**Class X.** `vk_render/zcull`, `vk_pipelines/pipeline_volume` and `vk_render/draw_volume` build as
-`.nro` under `-Wall -Wextra -Werror` and link every archive
-`meson.build` names. Nothing more than that is known about them.
-
-`vk_pipelines/pipeline_volume` is the first thing in this project that makes the
-shader heap grow past the chunk `nvk_heap_ensure_first_chunk` binds at
-device creation: 96 distinct specializations of a 448-instruction
-shader, which is at least 4.7 KiB of machine code each. Its sections C
-and D are measurements rather than assertions — the cold compile
-distribution, and what a second build of the same specializations costs
-in the same process.
-
-`vk_render/draw_volume` is the first to issue hundreds of draws with the pipeline
-changing between them, and the first to blend. Its section C tolerance
-of 3/255 is derived from the round-off of twelve blend steps; the worst
-error actually seen is reported, so the first run says how much of that
-bound this hardware uses.
-
-**Done when** all three have passed on a console, their measurements are
-recorded, and — for `vk_render/draw_volume` section C — the tolerance has been
-narrowed to what was actually observed or the derivation corrected.
-
-## 5 The acquire no longer waits for the compositor, and nothing has run it
-
-**Class X.** `mesa-patches/0063`-`0066` cross-build:
-`scripts/ci-build-archives.sh` over `ghcr.io/d3fau4/nx-dev:latest`
-(aarch64-none-elf-gcc 15.2.0, meson 1.11.2, `-Wall -Wextra -Werror`)
-compiles all five files they touch with no warning, links `libnvk.a` and
-`libvulkan_wsi.a`, and ends with 53 `.nro` linking them and both
-artefact gates clean. `vk_wsi/swapchain`, `vk_wsi/concurrency`,
-`vk_present/drawn_frame` and `display/nwindow` are among those 14. Nothing else is
-known: a `.nro` exists, and that is all class X ever means.
-
-`wsi_horizon_acquire_zero_copy` used to `nvMultiFenceWait` on the fence
-the compositor released the slot with — 13.8 ms of a 16.7 ms frame, the
-figure `0049`'s comment carries. The fence is now handed to the driver
-instead, as the payload of the semaphore and the fence the application
-passed to `vkAcquireNextImageKHR`, and the wait happens on the host
-engine through the path `0049` built. `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_
-WAIT=1` restores the old shape in the same build.
-
-Four things the run has to report, in this order:
-
-- **whether the picture is right.** This is the only change on this
-  branch that can put a frame into a buffer the compositor is still
-  reading, and that fault has no error, no notifier and no log line —
-  it is a torn band on screen and nothing else. `vk_present/drawn_frame`
-  section F is the case that drives the GPU-side path (`vk_wsi/swapchain`,
-  `vk_wsi/concurrency` and the other sections of F's own file take the CPU one,
-  which is the other half and equally worth running); a human looking at
-  the screen is the instrument, because no Vulkan call this test can
-  make would see it. **If tearing appears, the action is to set
-  `gpu_acquire_wait` false unconditionally in `0066`**, not to debug it
-  from the log.
-- **whether `NVHOST_IOCTL_CTRL_SYNCPT_READ` answers for a syncpoint this
-  process does not own.** `horizon_gpu_fence_wait` reads the counter
-  before it waits, and that read has only ever been made against a
-  channel's own syncpoint. It matters only for
-  `vkWaitForFences` on the acquire fence — the GPU path reads nothing
-  from the CPU — and a refusal would show as
-  `horizon_gpu_fence_wait(...) failed` from `nvk_horizon_sync_wait`.
-  `nvFenceWait` on these same fences has worked since `0037`, so if the
-  read is refused the fix is a wait that does not read first.
-- **whether the compositor ever returns more than one fence.**
-  `NvMultiFence` holds four and all four are carried; one is what this
-  is expected to see. The acquire meter says nothing about it, so the
-  way to know is a log line at the point of failure, which is why an
-  unrepresentable count is reported rather than truncated — and, since
-  `0067`, why a driver that declines the set ends the acquire instead of
-  letting `wsi_common.c` signal the semaphore anyway.
-- **the number.** `MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1` and
-  `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`, twice in one session —
-  once as built, once with `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1` —
-  same resolution, same dock state, same shader-cache state, with
-  `HORIZON_GPU_SYNC`, the hang recorder and `NVK_HORIZON_PUSH_SPLIT`
-  all off. Expected: the acquire line's "on the compositor's release
-  fence" figure goes to nothing and its "handed that fence to the GPU"
-  count becomes the frame count, while `nvkmd_horizon`'s "wait(s)
-  handed to the host engine" rises by one per frame **in the semaphore
-  run and stays at zero in the fence run**. Those two counters do not
-  say the same thing and neither alone is the claim: the acquire meter
-  counts the WSI deferring the fence, which happens on both paths, and
-  only the `nvkmd_horizon` one is incremented after
-  `horizon_gpu_submit_waits()` has taken the batch. **A frame-rate claim
-  needs the application's own frame times, not these counters** — what
-  they can show is that the stall moved, not what it bought.
-
-  And it may buy nothing, which is a result and not a failure. The
-  GPFIFO is in order, so a host-engine wait still stalls every submit
-  behind it on that channel: what the change frees is the CPU, and that
-  is worth something only where the CPU was the thing running out of
-  frame. Section F reports the frame interval beside the acquire mean
-  for exactly that reason — the acquire getting shorter is not the
-  measurement.
-
-One failure mode changes shape and is not a regression, but should be
-recognised if it appears: a compositor that never releases a buffer used
-to wedge the acquiring thread and now wedges the graphics channel, since
-the host engine is what is holding at the syncpoint. Both were already
-unbounded — an acquire at `timeout = UINT64_MAX` had no deadline to
-expire — and the new shape is the more visible one: nvgpu times the
-channel out and the error notifier says `4`, which `horizon/channel`
-already names "timeout", so it arrives as `VK_ERROR_DEVICE_LOST` rather
-than as silence.
-
-**Done when** all four have been answered on a console: the picture
-checked by eye and by the four tests, the two unknowns above settled,
-and one A/B pair recorded. If the picture is wrong the patches come out;
-if the picture is right and the frame time does not move, the patches
-still come out, because then it is complexity for nothing.
+**Done when** section D runs to its end on a console, or the ownership
+hand-off between a retiring copy-path swapchain and its successor is
+shown to be correct and something else is found. Until then `vk_wsi` is
+a suite that loses its third case; `swapchain` and `suboptimal` run
+ahead of it and report.
 
 ---
 
-## 6 Submissions are batched across `exec()`, and nothing has run it
+## 2 `currentExtent` reports the swapchain this process registered one connect ago
 
-**Class X.** `mesa-patches/0069` and `tests/vk_core/submit_batching.c`
-build and link; no console has executed either.
+**Class HW.** Measured 2026-09-07 while chasing the failure above.
 
-`nvkmd_horizon_ctx_exec` used to hand its spans straight to
-`horizon_gpu_submit`, and `nvk_queue_submit_locked` calls it once per
-command buffer (`nvk_queue.c:280-325`). So a `vkQueueSubmit` of N
-command buffers made N kickoffs: N ioctls through the nv service, and on
-the GPU N-1 extra `WFI_SCOPE_ALL` drains and L2 round trips that nothing
-had asked for. The context now accumulates and sends the batch at
-`signal()`, `flush()`, `sync()`, `wait()`, `bind()` and a 64-push
-backstop.
+`wsi_horizon_get_extent` reads `NWindow::default_width/height` and its
+comment calls that "the consumer's answer: libnx fills it from the
+BufferQueue's output at connect and at every queue". On this hardware it
+is filled **at connect only**, and the value it gets is what this
+process's *previous* registration set — `nwindowSetDimensions` at
+registration, to the swapchain's own extent.
 
-**No barrier was removed or moved by hand.** `horizon_gpu_submit` still
-emits exactly one L2 prologue and one WFI/writeback/increment block per
-call; there are simply fewer calls, so those boundaries fall at the end
-of the submission instead of between its command buffers. That is the
-boundary Vulkan defines — command buffers in one `VkSubmitInfo` execute
-in order with no implicit memory dependency between them — and it is the
-one thing here that could be wrong in a way that does not look like an
-error. A latent gap in NVK's own barrier emission on this chip would
-have been hidden by the drains and would now show as a wrong pixel.
+So it lags by exactly one connect, and the consequences are not
+cosmetic. Measured, in one process:
 
-**THE LIMIT OF THE BENEFIT IS KNOWN AND IS NOT SMALL.** The saving is
-N-1 kickoffs per submission, so a workload that submits **one** command
-buffer per `vkQueueSubmit` gets nothing at all — same ioctls, same
-barriers, same everything. Godot 4's `RenderingDevice` submits a handful
-per frame, so the expected saving is a handful of ioctls and drains per
-frame and not a multiple of anything. The meter is what says which case
-a given application is: with `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1` the
-line reads
+- `vk_wsi/swapchain` section G presents 5410 frames on a 640x360
+  swapchain over a 1280x720 layer and reads `currentExtent` 1280x720
+  throughout — its own regression guard passes while the queue has
+  already been left at 640x360.
+- the next case connects, `default_*` is refilled to 640x360, and
+  `vk_wsi/suboptimal` — whose capabilities query, taken before that
+  connect, said 1280x720 — spends 120 frames with a 1280x720 swapchain
+  on a surface claiming 640x360. 240 rule disagreements, and then
+  `vkCreateSwapchainKHR(1280x720)` twice returns
+  `VK_ERROR_INITIALIZATION_FAILED`, because `imageExtent > extent` is
+  the check `wsi_horizon_surface_create_swapchain` makes against the
+  same lagging value.
 
-    N exec call(s) carrying M push(es) went out as K kickoff(s),
-    mean M/K push(es) per kickoff
+**An application meets this, not just a test.** One that renders at half
+resolution and later wants full is told its surface shrank, and can only
+get back up inside the lag. Nothing in the Vulkan API it can call
+distinguishes that from a display that really did change.
 
-and `N == K` means this bought that workload nothing.
+**And a process cannot fully undo it.** `tests/vk_wsi/swapchain.c` now
+presents one full-size generation after section G, which puts the
+*queue* back; the next thing to connect then reads the layer's size
+again, and `vk_wsi/suboptimal` goes from 170/175 to 272/273 on that
+alone. A *second* restoring generation cannot even be created —
+`INITIALIZATION_FAILED`, because the first one's own connect refreshed
+`default_*` to the queue's previous value and creation is gated on it.
+The two values are never both the layer's size at the same time, so
+there is no sequence of swapchains that puts a process all the way back.
+The one failure left in `suboptimal` is its section A sizing its
+swapchain from a query taken before its own first connect, which is what
+an application would do too.
 
-**What a console run has to report.**
-
-- `vk_core/submit_batching` passes. Its sections are the shapes that can
-  break: one, two, four and eight command buffers in one submission with
-  the ordering asked for by real barriers; eighty of them, which crosses
-  the 64-push backstop so a kickoff is taken *mid-submission*; a
-  submission with a wait, a signal and no command buffers at all; and a
-  submission behind the upload queue's cross-channel wait.
-- The rest of the suites still pass, `vk_render` and `vk_present` above
-  all: they are where a barrier the drains used to cover would show as a
-  wrong image rather than as an error.
-- The `exec call(s) … kickoff(s)` line for a real workload, so the
-  paragraph above stops being an estimate.
-- One A/B pair. Section E of the case runs the same eight-command-buffer
-  submission twice in one launch, the second half with
-  `NVK_HORIZON_BATCH_EXEC=0`, and prints both wall times. That is one
-  sample of one submission and **not a frame rate**; a frame-rate claim
-  needs `vk_present` with the switch set both ways.
-
-**Done when** `vk_core/submit_batching` has passed on a console, the
-image-producing suites have passed beside it, the meter's
-pushes-per-kickoff line has been recorded for a real application, and
-the A/B pair exists. If the ordering is wrong the patch comes out; if it
-is right and nothing moves on a workload that submits one command buffer
-at a time, that is the expected result and the patch stays for the
-workloads that do not.
+**Done when** `wsi_horizon_get_extent` answers with the layer's size
+rather than the producer's last request, or it is established that
+`default_*` is the only source available and the limitation is written
+into `0040`'s comment as a known one. `display/nwindow` measured
+1280x720 for the layer on 2026-08-24 and `nwindowGetDimensions` is what
+returned it, so there is a candidate.
 
 ---
 
-## 7 An allocation path that does not zero, used by nobody
+## 3 A wait submit no longer drains the pipeline, and only half of that has run
 
-**Class X.** `horizon_gpu_mem_create_uninit` exists, is built, and is
-called by exactly one thing: `gpu_memory/alloc`, which times it against
-`horizon_gpu_mem_create`.
+**Class HW + X.** The suite passes with the new shape: fourteen suites
+on 2026-09-07, `gpu_submit` 324/324, `vk_core/concurrent_submits` and
+`vk_present/drawn_frame` among the passes, and `nvkmd_horizon`'s meter
+reporting cross-channel waits taken (`61 wait(s) handed to the host
+engine` in `vk_present/drawn_frame` section F). What has **not** run is
+the comparison.
 
-`horizon_gpu_mem_create` fills every byte with zero and then flushes the
-range out of the CPU cache. The new entry point skips the fill and keeps
-the flush — the flush is there for the dirty lines the *previous* tenant
-of that heap left behind, which is the hazard measured on a console on
-2026-08-24, and that reason does not depend on the fill at all. Skipping
-the fill also makes the flush cheaper, because a line nothing dirtied has
-nothing to write back.
+`horizon_gpu_submit_waits` emits an increment-only fence block and skips
+the L2-invalidate prologue. `HORIZON_GPU_FULL_BARRIER_WAITS=1` restores
+the old shape and **nothing in the tree sets it** — homebrew is launched
+with no environment, so an A/B needs a case that sets it on itself, the
+way `vk_present/drawn_frame` section G does for the acquire and
+`vk_core/submit_batching` section E does for the batching.
 
-**Nothing in this tree uses it, on purpose.** The audit is in
-`horizon/memory/mem.c` beside the code. Of the four consumers: the hang
-recorder needs the zeros (they are how "the GPU never reached this slot"
-is recognised); the channel's command buffer qualifies but is one 4 KiB
-object per channel, so the saving is unmeasurable; the Zcull context is
-written by the hardware on a context switch and nothing establishes that
-the first access is a save rather than a restore; and
-`nvkmd_horizon_mem.c` is one entry point for `VkDeviceMemory` the
-application maps, for NVK's descriptor tables, query pools and shader
-heap, and for command-buffer and mem-stream chunks. Only that last group
-qualifies — `nv_push` writes the dwords and the submit names exactly
-`[addr, addr+range)` — and nvkmd has no flag that separates it from the
-rest.
+**Done when** one run has compared the two shapes on a workload with
+cross-channel waits in it, with `horizon_gpu_channel_get_stats()`'s
+`wait_submits` and `bare_fence_submits` beside the times. If they do not
+differ in time, this comes out, because then it is complexity for
+nothing.
 
-**What a console run has to report.** The three `note` lines
-`gpu_memory/alloc` prints: the mean allocation time, zero-filled and
-uninitialised, at 64 KiB, 1 MiB and 8 MiB. Those numbers decide whether
-adding an `NVKMD_MEM_*` bit through `nvkmd.h` and both backends — to
-route the command-buffer and mem-stream chunks — is worth writing at
-all. If the difference is microseconds, it is not.
+---
 
-**Done when** those three lines exist from a console and the routing
-question has been answered either way. If the answer is "not worth it",
-this entry point is deleted rather than left as an unused promise.
+## 4 The per-submit syncpoint read is conditional, and the cost was never taken
+
+**Class HW + X.** `platform/teardown` passes on a console (87/87 for the
+suite, 2026-09-07), which is the half that matters for correctness: it
+is the only caller of `horizon_gpu_channel_add_retirement`, so the read
+still happens there and the callbacks still fire.
+
+The other half is a number nobody has taken. `gpu_submit/submit`'s log
+carries no per-submit cost with and without `HORIZON_GPU_EAGER_REAP=1`,
+for the same reason as section 3: nothing sets the variable.
+
+**Done when** `gpu_submit/submit` has reported the per-submit cost both
+ways. If the difference is inside the noise, say so and consider taking
+the branch back out.
+
+---
+
+## 5 The uninitialised allocation path is worth routing something through
+
+**Class HW.** `gpu_memory/alloc` measured it on 2026-09-07 and the
+numbers are in `docs/MEASURED-ON-HARDWARE.md`: the zero fill is 21 us of
+a 64 KiB allocation, 182 us of a 1 MiB one and **1403 us of an 8 MiB
+one**. That answers the routing question this file used to ask with a
+yes for anything of a megabyte or more, and with a no for the 4 KiB
+channel command buffer.
+
+`horizon_gpu_mem_create_uninit` therefore stays. **Nothing routes
+through it yet**, which is the work:
+
+- `nvkmd_horizon_mem.c` is one entry point for `VkDeviceMemory` the
+  application maps, NVK's descriptor tables, query pools, the shader
+  heap, and command-buffer and mem-stream chunks. Vulkan promises the
+  application nothing about the contents of `vkAllocateMemory`, and
+  `nv_push` writes every dword of a command-buffer chunk before the
+  submit names `[addr, addr+range)` — so both of those qualify on their
+  own terms.
+- What has to be audited one by one is the rest of that list: anything
+  NVK itself reads before writing would get garbage, and the failure
+  would be a wrong descriptor rather than an error.
+- The hang recorder keeps the fill unconditionally: the zeros are how
+  "the GPU never reached this slot" is recognised.
+
+**Done when** an `NVKMD_MEM_*` bit exists through `nvkmd.h` and both
+backends, the consumers that take it are named with the reason each one
+is safe, and a console run shows the allocation time moving on a
+workload that creates real resources. If the audit finds no consumer
+that can be shown safe, delete the entry point rather than leave it as
+an unused promise.
+
+---
+
+## Closed on 2026-09-07
+
+Kept as a list rather than as text, because what they settled is in
+`docs/MEASURED-ON-HARDWARE.md` and the point of this file is what is
+still owed.
+
+- **Zcull is now bound, and nothing has run it.** `vk_render/zcull`:
+  0 of 65536 pixels differ with and without, 570 ms against 586 ms.
+  `0059` and `0060` stay.
+- **Three new test binaries, none of which has ever run.**
+  `vk_render/zcull` 276/276, `vk_pipelines/pipeline_volume` 225/225,
+  `vk_render/draw_volume` 130/130, measurements recorded.
+- **The acquire no longer waits for the compositor, and nothing has run
+  it.** All four questions answered: the picture is right by eye and by
+  four presenting suites; the foreign-syncpoint read works; the
+  compositor returns one fence; and the A/B pair exists. It closes
+  against a criterion its own text set — "if the frame time does not
+  move, the patches still come out" — that the measurement then split:
+  the frame time does not move and 15.2 ms of CPU per frame does. The
+  patches stay on the second half of that, and the first half is written
+  down beside it so the decision can be revisited on the evidence rather
+  than on the memory of it.
+- **Submissions are batched across `exec()`, and nothing has run it.**
+  `vk_core/submit_batching` 471/471, the image-producing suites pass
+  beside it, the pushes-per-kickoff line is recorded for a real
+  application (`mean 1`, so nothing to save there), and the A/B pair
+  exists (6598 us batched against 6179 us unbatched, one sample each).
+  Which is the outcome section 6 predicted for a workload submitting one
+  command buffer at a time, and the patch stays for the ones that do
+  not.

@@ -26,9 +26,11 @@ patch series name `docs/architecture.md`, `docs/milestones.md`,
 asked. When adding a Mesa patch, keep the four-field header format below even though
 the milestones list its first field cites is gone.
 
-`docs/` holds **exactly two files**, `MEASURED-ON-HARDWARE.md` and
-`PENDING-HARDWARE-RUNS.md`, neither of which is any of the three above. The three
-cited there are still gone.
+`docs/` holds **three files**: `MEASURED-ON-HARDWARE.md`,
+`PENDING-HARDWARE-RUNS.md` and `GM20B-HANG-SNAPSHOT.md`, none of which is any of
+the three above. The three cited there are still gone. (This paragraph said "two"
+until 2026-09-07; `GM20B-HANG-SNAPSHOT.md` has been tracked since `70adcd4` and
+describes the `HORIZON_GPU_HANG_SNAPSHOT=1` instrumentation, not a hardware run.)
 
 `docs/PENDING-VERIFICATION.md` is gone too, and two Mesa patches still cite it:
 `0054` in its commit message, and `0055` in a comment its diff adds to
@@ -62,6 +64,11 @@ It exists because the merge of PR #22 landed four class-X debts, each with its
 **Done when** line, and a textual merge put them in `MEASURED-ON-HARDWARE.md`, where
 the file's own header forbids them. They are here instead, under the same rules the
 dead ledger had: **delete the file when the last section closes**, never empty it.
+
+Four of its sections closed on the console run of 2026-09-07 and what they settled
+moved to `MEASURED-ON-HARDWARE.md`; the same run opened two more, which are the two
+failures the fourteen-suite run has. The file is not a record of that run — the
+run's results are in the counterpart file — it is only what is still owed.
 
 It is deliberately not called `PENDING-VERIFICATION.md`. That name is cited by `0054`
 and `0055`, and what those two point at is in `MEASURED-ON-HARDWARE.md` — reusing it

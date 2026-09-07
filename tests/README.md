@@ -138,7 +138,7 @@ name has a file. Run it after touching either build system.
    | 10 | `vk_render` | `triangle`, `texture`, `depth`, `formats`, `multi_target`, `zcull`, `draw_volume` | the first draw call; textures — upload, read back, sample three ways; depth, four draws in one render pass differing only in push constants; twelve colour formats against the bytes their encodings demand; a pass that declares three render targets and writes one; whether Zcull is correct, by rendering one workload twice (once with `NVK_HORIZON_ZCULL=0`) and comparing pixel for pixel; 512 draws with the pipeline changing between them, the same draws across 64 render passes, and an alpha blend chain checked against the CPU |
    | 11 | `vk_pipelines` | `pipeline_volume` | 96 distinct compute pipelines back to back — the only thing that makes the contiguous shader heap grow past the chunk it binds at device creation — plus create/destroy churn over reused heap addresses, and the per-pipeline compile times an application feels as stutter |
    | 12 | `vk_cache` | `shader_reuse` | the only case that asks what the shader cache is *for*: is a shader compiled on one launch still compiled on the next. **Run it twice** — see below |
-   | 13 | `vk_wsi` | `swapchain`, `suboptimal`, `concurrency` | a `VK_KHR_swapchain` on the compositor — pacing, buffering, recreation, errors; `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR` and the line between them; the same swapchain under concurrency and over length. **Owns the display: no console.** `suboptimal`'s section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed |
+   | 13 | `vk_wsi` | `swapchain`, `suboptimal`, `concurrency` | a `VK_KHR_swapchain` on the compositor — pacing, buffering, recreation, errors; `VK_SUBOPTIMAL_KHR` against `VK_ERROR_OUT_OF_DATE_KHR` and the line between them; the same swapchain under concurrency and over length. **Owns the display: no console.** `suboptimal`'s section D needs somebody to **dock or undock the console while it runs** — nothing in the process can resize a VI layer, so that is the one part no run has executed. **`concurrency` currently ends the process** in its section D — see the note under the table |
    | 14 | `vk_present` | `drawn_frame`, `present_modes` | a frame a graphics pipeline drew, rather than the `vkCmdClearColorImage` every other presenting case uses — and its section F, the only place in the tree that acquires with a binary semaphore and waits for it on the GPU; FIFO against IMMEDIATE against FIFO, 240 frames each, so the reference is shown to be stable rather than assumed. **Owns the display: no console** |
 
 3. Each run ends with "Press + to exit". The verdict is on screen and in
@@ -150,6 +150,21 @@ name has a file. Run it after touching either build system.
    `gpu_memory/va_reserve`. For `mesa_runtime` the `note` lines *are* the measurement:
    the elapsed time each timed call actually took, the raw `InfoType_CoreMask`, and the
    clock resolution.
+
+### The one that ends the process
+
+`vk_wsi/concurrency` section D aborts inside libnx — `framebufferBegin`
+calls `diagAbortWithResult` when `nwindowDequeueBuffer` fails, so there
+is no return path for the framework to record a failed case through.
+Reproduced three times on 2026-09-07, at the same point every time, and
+**not caused by anything on this branch**: the same `.nro` built against
+mesa at `0062` aborts identically. `docs/PENDING-HARDWARE-RUNS.md`
+section 1 has the crash report and what is owed.
+
+What it means for a run: `vk_wsi` reports `swapchain` and `suboptimal`
+and then the process dies on the HOME menu with the crash dialog. Both
+earlier cases' output is already on the card — fetch it with `logcat`
+afterwards, the same way `gpu_fault` is handled.
 
 ### The two that need two launches
 

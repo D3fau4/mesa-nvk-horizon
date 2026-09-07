@@ -36,6 +36,173 @@ and `git log --follow` on any of these paths reaches the old file.
 
 ---
 
+## The fourteen suites, run on a console
+
+2026-09-07, build `06d33ec` plus the test commits above it, mesa
+`2e85cc8` (`MESA_COMMIT` + 69 patches), handheld, 1280x720, full-memory
+takeover, netloaded one at a time. Every log carries the
+`horizon-build-id` line. This is the first run of the suite architecture
+on hardware, and of everything `0063`-`0069` changed.
+
+| Suite | Result |
+|---|---|
+| `platform` | **PASS 87/87** [3/3] |
+| `gpu_memory` | **PASS 133/133** [6/6] |
+| `gpu_submit` | **PASS 324/324** [8/8] |
+| `mesa_runtime` | **PASS 166/166** [3/3], twice — cold then warm |
+| `display` | **PASS**, log only: it owns the display |
+| `dock` | **PASS 4/4** [1/1] |
+| `vk_core` | **PASS 1282/1282** [8/8] |
+| `vk_shaders` | **PASS 518/518** [7/7] |
+| `vk_render` | **PASS 2637/2637** [7/7] |
+| `vk_pipelines` | **PASS 225/225** [1/1] |
+| `vk_cache` | **PASS 43/43** cold and **45/45** warm, two launches |
+| `vk_present` | **PASS 772/772** [2/2] |
+| `gpu_fault` | **PASS 44/44** [2/2] — the MMU fault is recorded, the fence does not report success for work that faulted, the faulted channel tears down cleanly and the GPU still works in the process afterwards |
+| `vk_wsi` | `swapchain` **PASS 158/158**; `suboptimal` **272/273**; `concurrency` ends the process. Both failures are open, in the ledger |
+
+**Grouping fifty-three `.nro` into fourteen did not cost a case.** Every
+case with a recorded standalone result reproduced it, and no case was
+hidden by one ahead of it. What it did cost is written in
+`docs/PENDING-HARDWARE-RUNS.md`, not here.
+
+## A dock does reach the process, and still cannot resize the layer
+
+`dock/mode_change`, 2026-09-07, with somebody docking and undocking
+inside the sixty-second window: **four mode changes**, at 54104, 55734,
+57486 and 57560 ms; `AppletHookType_OnOperationMode` fired six times;
+the mode went 0 to 1 to 0 to 1 to 0.
+
+`nwindowGetDimensions`, `NWindow::default_*` and
+`appletGetDefaultDisplayResolution` were **1280x720 throughout, with a
+buffer queued on every poll**, so the consumer's answer was being
+refreshed the whole time. That is the same answer 2026-08-24 recorded
+for `t_dock`, now with the mode changes happening inside a process that
+was watching all three sources rather than inferred from two endpoints.
+
+## Deferring the compositor's release fence buys CPU, not frames
+
+`vk_present/drawn_frame`, 2026-09-07, both shapes measured in one
+process at one clock — `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1` is the
+opt-out `0066` added for exactly this.
+
+Section F, FIFO, clear frames, 180 frames each:
+
+| | acquire mean | frame interval |
+|---|---|---|
+| acquired by fence, waited on the CPU | **15483 us** (max 21453) | 16515 us |
+| acquired by semaphore, waited on the GPU | **252 us** (max 10959) | 16453 us |
+
+with `nvkmd_horizon` reporting **61 wait(s) handed to the host engine**
+in the semaphore run against **0** in the fence one. That counter, not
+the acquire meter's, is what says the dependency reached the channel
+instead of the thread.
+
+Section G, IMMEDIATE, three draws, 180 frames, run three times so the
+reference is shown to be stable rather than assumed:
+
+| | interval mean | p50 | p95 | p99 |
+|---|---|---|---|---|
+| as built | 8390 us | 7073 | 16554 | 17924 |
+| `CPU_ACQUIRE_WAIT=1` | 8371 us | 912 | 16656 | 16898 |
+| as built again | 8326 us | 3467 | 16554 | 28371 |
+
+**+13 us: 0% of the reference.** The driver's acquire meter over those
+same runs says **7577 us mean, 7488 of it on the release fence** with
+the CPU wait, against **108 us mean and 0 us on the release fence** as
+built. The wait does leave the acquire, by a factor of 70, and the frame
+does not get shorter.
+
+**Those two are the same result and neither is a disappointment.** The
+GPFIFO is in order, so a host-engine wait still holds every submit
+behind it on that channel; what the change frees is the thread, and only
+on the *semaphore* path. Section G acquires with a FENCE and then waits
+for it, so the same dependency is paid two calls later — which is why G
+measures nothing and F measures 15.2 ms. An application that wants this
+has to let the GPU do the waiting.
+
+Two unknowns closed on the way: no `horizon_gpu_fence_wait(...) failed`
+anywhere in the run, so `NVHOST_IOCTL_CTRL_SYNCPT_READ` does answer for
+a syncpoint this process does not own; and no "released a slot with N
+fences, which is not a number this can carry", so one fence is what the
+compositor returns.
+
+## Batching pushes across exec() removes kickoffs, and not time
+
+`vk_core/submit_batching`, 2026-09-07, **PASS 471/471**, with
+`MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1` set inside the case.
+
+| what ran | what the meter said |
+|---|---|
+| 1, 2, 4 and 8 command buffers per submission | `18 exec call(s) carrying 18 push(es) went out as 6 kickoff(s), mean 3` |
+| 80 command buffers, crossing the 64-push backstop | `85 exec call(s) ... as 5 kickoff(s), mean 17` |
+| the same eight with `NVK_HORIZON_BATCH_EXEC=0` | `10 exec call(s) ... as 10 kickoff(s), mean 1` |
+
+The accumulation does what it says, the backstop takes a kickoff
+mid-submission as designed, and the switch restores the old shape
+exactly.
+
+**The wall time did not follow.** Section E, one sample each: eight
+command buffers in one submission took **6598 us batched and 6179 us
+unbatched** — 6% the wrong way, which is to say no saving was measured.
+
+**And a presenting workload has nothing to save.** Every
+`exec call(s) ... kickoff(s)` line `vk_present` printed reads
+`N exec call(s) carrying N push(es) went out as N kickoff(s), mean 1`.
+The saving is N-1 kickoffs per `vkQueueSubmit` and this application's N
+is 1.
+
+## What zeroing an allocation costs
+
+`gpu_memory/alloc`, 2026-09-07, mean of 8 at each size, cached policy,
+`horizon_gpu_mem_create` against `horizon_gpu_mem_create_uninit` — which
+skips the `memset` and keeps the `armDCacheFlush`, because that flush is
+for the previous tenant's dirty lines and not for the fill:
+
+| size | zero-filled | uninitialised |
+|---|---|---|
+| 64 KiB | 90 us | 69 us |
+| 1 MiB | 328 us | 146 us |
+| 8 MiB | **1992 us** | **589 us** |
+
+The fill is 55% of a 1 MiB allocation and 70% of an 8 MiB one: 1.4 ms of
+a frame, once, whenever an 8 MiB resource is created. At 64 KiB it is
+21 us and not worth routing anything for.
+
+## Zcull changes no pixel, and costs about nothing
+
+`vk_render/zcull`, 2026-09-07: the same depth workload twice in one
+process, the first time with `NVK_HORIZON_ZCULL=0`.
+
+- **0 of 65536 pixels differ** between the two, and each half is
+  analytically right on its own (0 of 65536 wrong), so a fault
+  affecting both equally would not have compared equal.
+- 586 ms with Zcull off, 570 ms with it on, over 12 passes of 48 draws.
+
+`0059` and `0060` stay.
+
+## What a cold pipeline compile costs, and what the cache saves
+
+`vk_pipelines/pipeline_volume`, 2026-09-07, 96 distinct specializations
+of a 448-instruction shader:
+
+- **cold: min 107469 us, mean 112918 us, p99 166940 us, 10840 ms in
+  total.** A hundred and thirteen milliseconds per pipeline is seven
+  frames, and it is the shape of the stutter an application feels the
+  first time it draws something new.
+- **warm, in the same process: min 5 us, mean 6 us, p99 22 us, 0 ms in
+  total.** Building the same 96 again cost 0.0% of the first build.
+- across launches, `vk_cache/shader_reuse`: `vkCreateComputePipelines`
+  took **5370 us cold and 1126 us warm**, 79% saved, with the driver
+  reporting a disk-cache hit rather than "hits = 0".
+
+`vk_render/draw_volume` section C, whose 3/255 tolerance was derived
+from the round-off of twelve blend steps, used **none of it: the worst
+channel error over 16384 pixels was 0**. The bound stays a derivation of
+what blending may round to rather than a record of what it did here.
+
+---
+
 ## Zcull bound, and Mobile and the depth path unregressed
 
 The runs above are the first on a build carrying patches 0057-0062, and
