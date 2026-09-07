@@ -600,7 +600,7 @@ static void pd_destroy(vkfw *fw, pd_swapchain *sc)
       if (sc->views[i] != VK_NULL_HANDLE)
          fw->vk.vkDestroyImageView(fw->dev, sc->views[i], NULL);
       if (sc->res[i].render_done != VK_NULL_HANDLE)
-         fw->wsi.vkDestroySemaphore(fw->dev, sc->res[i].render_done, NULL);
+         fw->vk.vkDestroySemaphore(fw->dev, sc->res[i].render_done, NULL);
       if (sc->res[i].in_flight != VK_NULL_HANDLE)
          fw->vk.vkDestroyFence(fw->dev, sc->res[i].in_flight, NULL);
       if (sc->res[i].cb != VK_NULL_HANDLE)
@@ -608,7 +608,7 @@ static void pd_destroy(vkfw *fw, pd_swapchain *sc)
    }
    for (uint32_t k = 0; k < sc->acquire_sem_count; k++) {
       if (sc->acquire_sem[k] != VK_NULL_HANDLE)
-         fw->wsi.vkDestroySemaphore(fw->dev, sc->acquire_sem[k], NULL);
+         fw->vk.vkDestroySemaphore(fw->dev, sc->acquire_sem[k], NULL);
    }
    if (sc->acquire_fence != VK_NULL_HANDLE)
       fw->vk.vkDestroyFence(fw->dev, sc->acquire_fence, NULL);
@@ -696,7 +696,7 @@ static bool pd_create(vkfw *fw, VkSurfaceKHR surface, VkFormat format,
       const VkSemaphoreCreateInfo asci = {
          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
       };
-      r = fw->wsi.vkCreateSemaphore(fw->dev, &asci, NULL, &sc->acquire_sem[k]);
+      r = fw->vk.vkCreateSemaphore(fw->dev, &asci, NULL, &sc->acquire_sem[k]);
       if (!t_check(t, r == VK_SUCCESS, "%s: acquire semaphore %" PRIu32
                                        " -> %s", what, k, vkfw_result_str(r)))
          goto fail;
@@ -733,7 +733,7 @@ static bool pd_create(vkfw *fw, VkSurfaceKHR surface, VkFormat format,
       const VkSemaphoreCreateInfo sci = {
          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
       };
-      r = fw->wsi.vkCreateSemaphore(fw->dev, &sci, NULL,
+      r = fw->vk.vkCreateSemaphore(fw->dev, &sci, NULL,
                                     &sc->res[i].render_done);
       if (!t_check(t, r == VK_SUCCESS, "%s: semaphore %" PRIu32 " -> %s", what,
                    i, vkfw_result_str(r)))

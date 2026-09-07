@@ -8,7 +8,8 @@
  * `image_clear` is an off-screen image and the render pass NVK
  * implements a clear as. Then what the driver claims about itself
  * (`capabilities`), what a GPU timestamp tick is worth (`timestamps`),
- * several submits in flight at once (`concurrent_submits`), and sparse
+ * several submits in flight at once (`concurrent_submits`), several
+ * command buffers inside ONE submit (`submit_batching`), and sparse
  * binding through vkQueueBindSparse (`sparse_binding`).
  *
  * EVERY CASE BUILDS ITS OWN VkInstance AND VkDevice AND DESTROYS THEM.
@@ -35,6 +36,7 @@ TEST_CASE_DECL(vk_core, image_clear);
 TEST_CASE_DECL(vk_core, capabilities);
 TEST_CASE_DECL(vk_core, timestamps);
 TEST_CASE_DECL(vk_core, concurrent_submits);
+TEST_CASE_DECL(vk_core, submit_batching);
 TEST_CASE_DECL(vk_core, sparse_binding);
 
 /* No display: main() starts a console and reports through it. */
@@ -45,4 +47,5 @@ TEST_SUITE("vk_core", false,
            TEST_CASE(vk_core, capabilities),
            TEST_CASE(vk_core, timestamps),
            TEST_CASE(vk_core, concurrent_submits),
+           TEST_CASE(vk_core, submit_batching),
            TEST_CASE(vk_core, sparse_binding));

@@ -322,7 +322,7 @@ static void imm_destroy(vkfw *fw, imm_swapchain *sc)
 {
    for (uint32_t i = 0; i < sc->image_count; i++) {
       if (sc->res[i].render_done != VK_NULL_HANDLE)
-         fw->wsi.vkDestroySemaphore(fw->dev, sc->res[i].render_done, NULL);
+         fw->vk.vkDestroySemaphore(fw->dev, sc->res[i].render_done, NULL);
       if (sc->res[i].in_flight != VK_NULL_HANDLE)
          fw->vk.vkDestroyFence(fw->dev, sc->res[i].in_flight, NULL);
       if (sc->res[i].cb != VK_NULL_HANDLE)
@@ -435,7 +435,7 @@ static bool imm_create(vkfw *fw, VkSurfaceKHR surface, VkPresentModeKHR mode,
       const VkSemaphoreCreateInfo sci = {
          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
       };
-      r = fw->wsi.vkCreateSemaphore(fw->dev, &sci, NULL,
+      r = fw->vk.vkCreateSemaphore(fw->dev, &sci, NULL,
                                     &sc->res[i].render_done);
       if (!t_check(t, r == VK_SUCCESS, "%s: semaphore %" PRIu32 " -> %s",
                    what, i, vkfw_result_str(r)))

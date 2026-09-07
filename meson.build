@@ -342,7 +342,8 @@ nvk_test_libs = [
 # be a run order in tests/README.md and is now a property of the build.
 nvk_suites = {
   'vk_core' : ['bringup', 'transfer', 'image_clear', 'capabilities',
-               'timestamps', 'concurrent_submits', 'sparse_binding'],
+               'timestamps', 'concurrent_submits', 'submit_batching',
+               'sparse_binding'],
   'vk_shaders' : ['compute_dispatch', 'dynamic_loop', 'packed_bound_loop',
                   'nested_control_flow', 'nested_control_flow_frag',
                   'fragment_kill', 'descriptor_set1'],
@@ -390,6 +391,10 @@ nvk_case_shaders = {
   # A compute job whose duration the case controls, so it can still be
   # running when the next submit is issued.
   'vk_core/concurrent_submits' : ['comp_spin'],
+  # Created and never dispatched: what the case needs is the shader-heap
+  # upload that vkCreateComputePipelines performs on the upload queue's
+  # channel, so that the submission after it takes a cross-channel wait.
+  'vk_core/submit_batching' : ['comp_write_id'],
   'vk_core/sparse_binding' : [],
 
   'vk_shaders/compute_dispatch' : ['comp_write_id'],

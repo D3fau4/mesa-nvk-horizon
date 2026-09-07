@@ -234,7 +234,7 @@ static void mt_sc_destroy_locked(mt_ctx *c, mt_sc *sc)
 
    for (uint32_t i = 0; i < sc->image_count; i++) {
       if (sc->render_done[i] != VK_NULL_HANDLE)
-         fw->wsi.vkDestroySemaphore(fw->dev, sc->render_done[i], NULL);
+         fw->vk.vkDestroySemaphore(fw->dev, sc->render_done[i], NULL);
       if (sc->in_flight[i] != VK_NULL_HANDLE)
          fw->vk.vkDestroyFence(fw->dev, sc->in_flight[i], NULL);
    }
@@ -490,7 +490,7 @@ static bool mt_sc_create(mt_ctx *c, uint32_t want_images, VkPresentModeKHR mode,
       const VkSemaphoreCreateInfo sci = {
          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
       };
-      r = fw->wsi.vkCreateSemaphore(fw->dev, &sci, NULL, &sc->render_done[i]);
+      r = fw->vk.vkCreateSemaphore(fw->dev, &sci, NULL, &sc->render_done[i]);
       if (r != VK_SUCCESS) {
          *err_out = r;
          goto fail;

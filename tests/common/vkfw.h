@@ -111,6 +111,12 @@
    X(vkCmdClearColorImage)                                               \
    X(vkCmdClearDepthStencilImage)                                        \
    X(vkCmdPipelineBarrier)                                               \
+   /* Core Vulkan 1.0, and here rather than in VKFW_WSI_PROCS where they
+    * used to be: a binary semaphore is not a window-system object, and
+    * putting them there meant a test that wanted one had to resolve
+    * VK_KHR_swapchain's entry points as well. */                        \
+   X(vkCreateSemaphore)                                                  \
+   X(vkDestroySemaphore)                                                 \
    /* pipelines, descriptors and the commands that use them */           \
    X(vkCreateShaderModule)                                               \
    X(vkDestroyShaderModule)                                              \
@@ -163,9 +169,7 @@
    X(vkDestroySwapchainKHR)                                              \
    X(vkGetSwapchainImagesKHR)                                            \
    X(vkAcquireNextImageKHR)                                              \
-   X(vkQueuePresentKHR)                                                  \
-   X(vkCreateSemaphore)                                                  \
-   X(vkDestroySemaphore)
+   X(vkQueuePresentKHR)
 
 struct vkfw_dispatch {
 #define VKFW_DECL(name) PFN_##name name;
