@@ -281,11 +281,9 @@ application that owns the display, which is why the hash exists.
 
 ## The Forward+ hang is not the register count, and Mobile is what says so
 
-2026-09-07, one run, `bench_mob_reg` — the Mobile build from 2026-09-02,
-which is the only binary that carries NAK's `crsinfo` reporting, because
-that work is parked in a stash and this driver does not have it. Run
-with `NAK_DEBUG=crsinfo` and `GODOT_NO_PSO_CACHE=1`, so every shader was
-compiled in this process and printed.
+2026-09-07, one run, `bench_mob_reg` — the Mobile build from 2026-09-02
+— with `NAK_DEBUG=crsinfo` and `GODOT_NO_PSO_CACHE=1`, so every shader
+was compiled in this process and printed.
 
 **Mobile renders all eight phases with a 64-register fragment shader**,
 while the Forward+ scene shader hangs at 24:
@@ -295,49 +293,67 @@ while the Forward+ scene shader hangs at 24:
 | Vertex | 255 | 56 | 2 | 0 | renders |
 | Fragment | 2 | 24 | 0 | 0 | renders |
 | Vertex | 411 | 72 | 2 | 0 | renders |
-| **Fragment** | 891 | **64** | 4 | **0** | **renders** |
+| **Fragment** | 891 | **64** | 4 | 0 | **renders** |
 | Fragment | 368 | 32 | 2 | 0 | renders |
 
 (`3d_cubes_2000` at 33.33 ms, `3d_omni_16` reached, eight of eight
 phases measured.)
 
-So **the register count is not a rule of this chip.** The ladder
-recorded on 2026-09-02 — 112, 66, 34, 26, 24 GPRs all hang and 22
-renders — was a property of one shader's compilations, not of the
-hardware, and this is the falsifier it was waiting for.
+**Both sides of that comparison were compiled by the same NAK**, which
+is what makes it worth anything: the 112/66/34/26/24-hang, 22-render
+ladder of 2026-09-02 and this Mobile run are the same working tree, the
+one now parked in the stash. So a 64-register fragment shader renders
+where a 24-register one hangs, **on one compiler**, and the register
+count is not a rule of this chip. The ladder was a property of one
+shader's compilations.
 
-**What is left is the convergence stack.** The Forward+ scene fragment
-shader is the only shader in either renderer with `crs_size != 0`, in
-every row of that ladder. And `crs_size` is not a mystery: `sm50.rs`
-computes it from the nesting depth alone —
+**THAT IS ALL THIS RUN ESTABLISHED, AND THE FIRST VERSION OF THIS
+SECTION CLAIMED MORE.** It said the discriminator left standing was
+`crs_size != 0`, that `sm50.rs` makes that mean "more than sixteen
+nested convergence points", and that nothing here had ever crossed
+sixteen. All three are wrong, and this file already contained the
+measurements that say so:
 
-    fn crs_size(&self, max_crs_depth: u32) -> u32 {
-        if max_crs_depth <= 16 { 0 }
-        else if max_crs_depth <= 32 { 1024 }
-        else { ((max_crs_depth + 32) * 16).next_multiple_of(512) }
-    }
+- **The `crsinfo` numbers are not this compiler's.** The tree that
+  prints them also carries a `crs_size()` that **doubles the depth**
+  before reserving, because nouveau counts two slots per nesting level
+  where `sm50.rs` counts one — see "The convergence-stack fix is
+  already in the Godot build that fails" further down. The recorded
+  `max_crs_depth=13 crs_size=1024` is 13 doubled to 26, and 26 is what
+  falls in the `<= 32` arm. Reading the pinned tree's
+  `if max_crs_depth <= 16 { 0 }` against a number printed by the other
+  compiler is comparing two different functions, and it is what the
+  first version of this section did.
+- **Twelve levels DID reach the memory-backed stack, and passed.**
+  `t_vk_crsfrag` is 105/105 with four cases of twelve nesting levels in
+  a fragment shader, including a checkerboard where the two lanes of
+  every quad take different depths — twelve doubled is past sixteen, so
+  that stack was in memory. "A fragment shader whose convergence stack
+  does not fit the sixteen on-chip slots works on this chip" is a
+  sentence already in this file.
+- **A convergence stack on every shader does not hang anything.**
+  `NAK_DEBUG=crsbig` gives all forty-two shaders 4096 bytes, the queue
+  programs `bytes_per_warp=0x1000`, every 2D and HUD draw renders, and
+  the hang is in the same span of the same draw.
 
-— so `crs_size != 0` means **more than sixteen nested convergence
-points**. Mobile's deepest shader is 4. This project's own deepest,
-`vk_shaders/nested_control_flow_frag`, is twelve levels, which is why
-its header says sm50 "reserves nothing behind the convergence stack".
-**Nothing that has ever run here except Godot's Forward+ scene shader
-has crossed sixteen.**
+So the honest state after this run is **one more exclusion and no new
+hypothesis**. What is excluded is now: the executed code, instruction
+count, program size, shader local memory size, a wrong descriptor read,
+the size of the convergence stack, and the register count. What has
+never been separated is whether the *reservation*, the *compiled
+depth*, and the *depth a warp actually walks* behave differently — they
+have only ever been read off one compiler that changes all three at
+once.
 
-Neither property alone is sufficient, and that is the shape of the
-answer: 64 registers with no convergence stack renders, 22 registers
-with one renders, and 24 registers with one hangs. It is the
-combination — a warp footprint that is both a real convergence stack in
-local memory and enough registers — and the one piece of state this
-driver writes about exactly that is
-`SET_SUBTILING_PERF_KNOB_A.fraction_of_spm_register_file_per_subtile`,
-which `nvk_shader.c` sets on every fragment-shader bind.
-
-**The repro this project does not have** is therefore specific rather
-than vague: a fragment shader with `max_crs_depth > 16` and enough live
-values to compile above 24 registers. That is a case in `vk_shaders`,
-not a Godot export, and it would move the whole question inside this
-tree.
+**Which is the next measurement, and it is instrumentation before
+theory:** put `crsinfo` reporting — and nothing else from that stash,
+in particular neither the doubling nor its Maxwell stall-count table —
+on the pinned compiler, and read what this driver actually compiles.
+Then a parameterised fragment shader with the reservation and the
+register count varied independently, and with the input varied so that
+"nobody enters the nest", "everybody enters" and "the lanes diverge"
+are separate runs of the same binary. Anything short of that measures
+two variables with one knob again.
 
 ## Forward+ still hangs, and `0073` is not what it was
 
