@@ -127,13 +127,18 @@ name has a file. Run it after touching either build system.
    console.
 
    `gpu_fault` is last on purpose: both of its cases lose a channel by design, and
-   whether the console is entirely well afterwards has never been confirmed.
+   the console is **not** entirely well afterwards. Measured three times on
+   2026-09-07: the suite passes 44/44 and writes its whole log, and then the process
+   is killed 45 to 60 seconds later with nobody touching it — no `+` pressed, no
+   crash report written, its own `atexit` marker never reached. Expect to relaunch
+   hbmenu after running it, and do not read the death as a failure of the cases.
+   `docs/MEASURED-ON-HARDWARE.md` has the three runs and what they exclude.
 
    ### The seven that exist only if you built NVK
 
    | # | Suite | Cases, in run order | Verifies |
    |---|-------|---------------------|----------|
-   | 8 | `vk_core` | `bringup`, `transfer`, `image_clear`, `capabilities`, `timestamps`, `concurrent_submits`, `sparse_binding` | the mandatory Phase 4 sequence ending in a validated CPU readback; buffer↔buffer and buffer↔image copies, which every later case reads its result back through; off-screen images and clears; what the driver claims measured against what the backend can do; what a GPU timestamp tick is worth; two or more submits in flight with no CPU wait between them; sparse binding through `vkQueueBindSparse` |
+   | 8 | `vk_core` | `bringup`, `transfer`, `upload_chunks`, `device_memory`, `image_clear`, `capabilities`, `timestamps`, `concurrent_submits`, `submit_batching`, `sparse_binding` | the mandatory Phase 4 sequence ending in a validated CPU readback; buffer↔buffer and buffer↔image copies, which every later case reads its result back through; the command-buffer upload chunk patch `0073` cleans, forced and read back; what `vkAllocateMemory` costs and whether memory nobody zeroed is usable; several command buffers inside one submit; off-screen images and clears; what the driver claims measured against what the backend can do; what a GPU timestamp tick is worth; two or more submits in flight with no CPU wait between them; sparse binding through `vkQueueBindSparse` |
    | 9 | `vk_shaders` | `compute_dispatch`, `dynamic_loop`, `packed_bound_loop`, `nested_control_flow`, `nested_control_flow_frag`, `fragment_kill`, `descriptor_set1` | the first shader this project runs, and therefore NAK and NIL; a loop whose trip count comes from memory, in the shape of Godot's Forward+ cluster loops; the same loop with those loops' exact packed min/max bound idiom; twelve levels of nested control flow in compute and again in fragment, where sm50's `crs_size()` reserves nothing behind the convergence stack; a loop behind a `kill`; whether a fragment shader reads descriptor set 1 correctly, including after the GPU writes that set in the same command buffer |
    | 10 | `vk_render` | `triangle`, `texture`, `depth`, `formats`, `multi_target`, `zcull`, `draw_volume` | the first draw call; textures — upload, read back, sample three ways; depth, four draws in one render pass differing only in push constants; twelve colour formats against the bytes their encodings demand; a pass that declares three render targets and writes one; whether Zcull is correct, by rendering one workload twice (once with `NVK_HORIZON_ZCULL=0`) and comparing pixel for pixel; 512 draws with the pipeline changing between them, the same draws across 64 render passes, and an alpha blend chain checked against the CPU |
    | 11 | `vk_pipelines` | `pipeline_volume` | 96 distinct compute pipelines back to back — the only thing that makes the contiguous shader heap grow past the chunk it binds at device creation — plus create/destroy churn over reused heap addresses, and the per-pipeline compile times an application feels as stutter |

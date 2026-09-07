@@ -197,7 +197,7 @@ thread doing path work corrupts the first one's path.
 | `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/`, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
-### `tests/` — fourteen suites, fifty-five cases
+### `tests/` — fourteen suites, fifty-six cases
 
 **One `.nro` per suite, several cases per suite.** A suite is a directory:
 `tests/<suite>/suite.c` is the table of cases and `tests/<suite>/<case>.c` is one case.
@@ -256,7 +256,7 @@ never attributes the previous build's binaries to this one.
 
 ### `mesa-patches/`
 
-74 numbered `git format-patch` files applied on `MESA_COMMIT` from `toolchain/versions.env`.
+76 numbered `git format-patch` files applied on `MESA_COMMIT` from `toolchain/versions.env`.
 A patch is identified by **its commit subject and its diff** — the applier matches both, so
 changing either after it has been applied is reported as divergence. Every patch message
 carries, in this order:

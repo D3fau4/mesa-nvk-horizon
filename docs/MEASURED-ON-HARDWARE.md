@@ -36,6 +36,299 @@ and `git log --follow` on any of these paths reaches the old file.
 
 ---
 
+## The suites re-run after the capabilities audit
+
+2026-09-07, handheld, 1280x720, full-memory takeover over Animal
+Crossing, netloaded one at a time.
+
+**Which build, exactly.** Every log carries a `horizon-build-id` line,
+and it says `9cd9b80-dirty mesa:47be3e0-dirty` because the work had not
+been committed when the binaries were built. The tree it was built
+from is what is now:
+
+| | repo | mesa |
+|---|---|---|
+| patches | `8e272ce`, `1c14118` | `992e62d` (`0075`), `d40ed2c` (`0076`) |
+| tests | `830928c`, `33b519c` | — |
+
+Three builds of it, all from the same source but one:
+
+| build stamp | what it is |
+|---|---|
+| `2026-09-07T18:50:38.306Z` | the tree as committed; `vk_core` ran from this one |
+| `2026-09-07T18:54:50.756Z` | the same with `mem->used_B = MAX2(...)` taken out of `nvk_cmd_buffer_upload_alloc`, and nothing else — the without-`0073` half of the experiment below |
+| `2026-09-07T18:56:22.600Z` | the line put back; everything else here ran from this one |
+
+| Suite | Result |
+|---|---|
+| `vk_core` | **PASS 1895/1895** [10/10] — `upload_chunks` is new, 555/555 |
+| `vk_wsi` | **PASS 622/622** [3/3] — `swapchain` 278/278 with section I, `suboptimal` 273/273, `concurrency` 71/71 |
+| `vk_present` | **PASS 1038/1038** [2/2] — unchanged, which is the point: `0075` and `0076` touch the same file the present path lives in |
+| `vk_render` | **PASS 2637/2637** [7/7] — the largest suite, re-run so "nothing else moved" is a measurement and not only an argument |
+| `gpu_fault` | **PASS 44/44** [2/2] three times over, and the process died about a minute after each — see below |
+
+**The other nine suites were not re-run on this build**, and what that
+does and does not leave open is worth being exact about. The driver
+changed in `0075` and `0076`, which are `wsi_horizon.c` and nothing
+else; the tests changed in `vk_core` and `vk_wsi`. So the suites that
+neither present nor link NVK — `platform`, `gpu_memory`, `gpu_submit`,
+`display`, `dock`, `mesa_runtime` — cannot be reached by either, and
+the NVK ones that do not present — `vk_shaders`, `vk_pipelines`,
+`vk_cache` — link a driver archive that was rebuilt but whose only
+changed translation unit they do not call. Their last results are the
+table below.
+
+`dock` was not re-run for a second reason: its case needs somebody to
+dock and undock the console, and this session had nobody at it.
+
+## What the surface publishes, read against the specification
+
+2026-09-07, build `9cd9b80` plus this session's work, mesa `47be3e0`
+plus `0075`-`0076`, handheld, 1280x720, full-memory takeover.
+`vk_wsi/swapchain` section I asks the surface what it offers and checks
+the answers against the Vulkan WSI chapter rather than against this
+driver's own habits. `vk_wsi` is **PASS 622/622** [3/3] —
+`swapchain` 278/278, `suboptimal` 273/273, `concurrency` 71/71.
+
+**The range is the shape the specification describes**, and this was
+the question: `currentExtent` is the layer while an application may
+create a swapchain smaller than it. Quoting Vulkan-Docs
+(`chapters/VK_KHR_surface/wsi.adoc`, read 2026-09-07), `minImageExtent`
+"will each be less than or equal to the corresponding width and height
+of currentExtent" and `maxImageExtent` "will each be greater than or
+equal" — so `min <= current <= max` is what the fields mean, and what
+binds an application is VUID-VkSwapchainCreateInfoKHR-pNext-07781:
+`imageExtent` "must be between minImageExtent and maxImageExtent,
+inclusive". **No valid usage anywhere ties imageExtent to
+currentExtent.** Android — whose BufferQueue this compositor's is —
+publishes the same shape and says what happens: "when a swapchain's
+imageExtent does not match the surface's currentExtent, the presentable
+images will be scaled to the surface's dimensions during presentation.
+minImageExtent is (1,1)". The platforms that report
+`min == current == max` are the ones whose presentation engine cannot
+scale.
+
+Measured, in one run:
+
+    I: currentExtent is a size (1280x720) and not the (0xFFFFFFFF,
+       0xFFFFFFFF) that means the swapchain decides
+    I: minImageExtent 16x16 is at or below currentExtent 1280x720
+    I: maxImageExtent 1280x720 is at or above currentExtent 1280x720
+    I: with nothing chained the 2KHR query answers exactly what the
+       1.0 query does
+    I: FIFO wants 2 to 4 images; scaling 0x00000000, gravity
+       0x00000000/0x00000000, scaled 16x16 to 1280x720
+    I: IMMEDIATE wants 3 to 4 images; scaling 0x00000000, gravity
+       0x00000000/0x00000000, scaled 16x16 to 1280x720
+    I: FIFO asked for the 2 images its mode advertises and got 2
+    I: IMMEDIATE asked for the 3 images its mode advertises and got 3
+    MEASURED I: the smallest extent the surface offers (16x16)
+       presented 4 of 4 frames
+    I: 1296x736, which is past maxImageExtent, is refused ->
+       INITIALIZATION_FAILED
+    MEASURED I: the surface still reports the layer (1280x720) after a
+       swapchain at every edge of its range
+
+**The audit found one thing wrong and it was the image count, not the
+extents.** `VK_KHR_surface_maintenance1` lets an application ask about
+one present mode, and of that query the specification says
+`minImageCount` and `maxImageCount` "are valid only for the specified
+presentMode". This backend answered the BufferQueue's mode-agnostic
+floor to every such question while creation raised the count to three
+for IMMEDIATE — so an application that asked what IMMEDIATE costs was
+told two and given three. `0075` publishes what creation applies; the
+two now come from one function.
+
+`supportedPresentScaling` stays **0**, and that is not a contradiction
+with a backend that does scale: the field is documented as "0 if
+application-defined scaling is not supported", which is the case here —
+the mode is `NWindow::scaling_mode`, a property of the window rather
+than of any swapchain. What the extension does require of the fields
+beside it is that the scaled extents bracket the unscaled ones, and
+they do (16x16 to 1280x720, both modes).
+
+**And the latch cannot hide a resize any more.** `0070` latches the
+layer's size because the field it reads has two authors; `0076` lets
+the one place that can tell the consumer's voice from this backend's
+own — `wsi_horizon_extent_changed`, past all three of its exclusions —
+update the latch. Nothing on this console reaches that branch: the dock
+measurement below found the layer unmoved across four mode changes, so
+it is a path for an event nobody has observed, and it is owed to
+`docs/PENDING-HARDWARE-RUNS.md` rather than claimed as tested.
+
+## The unflushed upload chunk, shown failing and shown fixed
+
+`0073` was found by taking the allocator's zero fill away from command
+memory and watching `vk_core/transfer` break. What it did not have was
+a test aimed at it. `vk_core/upload_chunks` is that test, and a console
+ran it against two builds that differ in the one line `0073` adds.
+
+2026-09-07, handheld, full-memory takeover, `vk_core` netloaded twice
+with nothing in between: build `18:50:38.306Z` and build
+`18:54:50.756Z` from the table at the top of this file, which differ in
+that one line and in nothing else.
+
+| build | `vk_core` | `upload_chunks` |
+|---|---|---|
+| with `0073` | **PASS 1895/1895** [10/10] | **PASS 555/555** in 4242 ms |
+| without it | **FAIL 1890/1895** [1 of 10 failed] | **FAIL 550/555** in 4235 ms |
+
+Five of the eight readback checks failed without the fix:
+
+| check | words wrong of | first mismatch |
+|---|---|---|
+| A, the small update | 96 of 1024 | rep 1, word 32: got `0x00000000` |
+| A, the full-size update | 384 of 262144 | rep 0, word 96: got `0x00000000` |
+| B, the full-size update | 352 of 262144 | rep 0, word 0: got `0x00000000` |
+| C, the first of two chunks | 128 of 262144 | rep 4, word 128: got `0x00000000` |
+| C, the second of two chunks | 304 of 262144 | rep 1, word 128: got `0x00000000` |
+
+**Every stale word read zero, which is why the patterns must not.** The
+command pool still zero fills — `nvk_cmd_pool.c` deliberately does not
+take `NVKMD_MEM_NO_ZERO_INIT` — so an uncleaned chunk delivers the
+allocator's zeros to the GPU, and a test whose expected data contained
+a zero word would score those as passes. Every word this case expects
+has its low bit set, and every repetition uses a different pattern so a
+recycled chunk cannot match either.
+
+**The counts say which chunk was skipped, not merely that one was.** In
+A the small update is unflushed too: it lands in a chunk that is
+adopted as `cmd->upload_mem` and never allocated from again, because
+the 64 KiB update after it cannot fit beside it and is not adopted in
+its place — so both chunks end with `used_B == 0`. In B a third, small
+update follows the big one and lands back in the first chunk through
+the fast path, which sets *that* chunk's `used_B`: B's two small
+updates pass and only its big one fails. Both halves of the defect in
+one log.
+
+The wrong words are always the head of a region — 96 of 1024, 384 of
+262144 — because what reaches the GPU as stale is whatever the CPU
+still holds dirty, and most of a 64 KiB memcpy has been evicted by the
+time the submit reaches the channel. That is why the case repeats
+sixteen times per section rather than trusting one.
+
+## What the zero fill costs an application, and where
+
+`vk_core/device_memory` measured 1397 us of an 8 MiB `vkAllocateMemory`
+(below). This is the same question asked of a real engine: Godot 4.1 on
+the Mobile renderer, exported against this build's driver, 1280x720
+handheld,
+full-memory takeover, vsync disabled, shader cache warm, the same
+binary run twice per pair with `--nx-setenv=NVK_HORIZON_ZERO_ALL_MEM=1`
+as the only difference. Three phases of 240 frames after 60 of warm-up:
+`steady` allocates nothing, `stream` creates an 8 MiB texture every
+fourth frame and keeps it (600 MiB over the phase), `grow` does the
+same into memory the previous phase released (320 MiB).
+
+The workload is `bench_alloc/` in the `godot-nx-renderer-bench` tree
+and it is **not in this repository**; neither is the
+`--nx-setenv=NAME=VALUE` argument the godot-nx port already carries,
+which is how a variable reaches a homebrew that inherits no
+environment. What is in this repository is the switch they drive:
+`NVK_HORIZON_ZERO_ALL_MEM`, read per allocation in
+`nvkmd_horizon_mem.c`, which is the same one `vk_core/device_memory`
+uses for its own A/B.
+
+Five A/B pairs, order alternated, two binaries an hour apart:
+
+| | A: not filled | B: filled |
+|---|---|---|
+| `steady` frame mean | 16666-16667 us | 16665-16666 us |
+| `stream` frame mean | 16805-16807 us | 17084-17155 us |
+| `stream` frame p95 | 18832-18904 us | 18792-18972 us |
+| `stream` **worst frame** | **57397-58711 us** | **101604-103273 us** |
+| `stream` **worst allocation** | **53420-54714 us** | **97475-98777 us** |
+| `stream` allocation mean | 11867-12140 us | 13318-13663 us |
+| `stream` allocation p50 | 10400-10723 us | 10394-10817 us |
+| `grow` allocation mean | 10390-10692 us | 10440-10847 us |
+| `grow` worst frame | 18987-19143 us | 18928-19116 us |
+
+**The saving is one frame, and it is a big one.** The worst frame of a
+growing phase is 45 ms shorter without the fill, every run, and it is
+the same 45 ms as the worst allocation. 45 ms at the fill rate
+`gpu_memory/alloc` measured (1403 us per 8 MiB, 175 us per MiB) is
+256 MiB — which is VMA's default `preferredLargeHeapBlockSize`, and
+Godot's `RenderingDevice` sets none. So what the flag removes is the
+zero fill of a whole VMA block, at the moment the engine's footprint
+outgrows the blocks it has.
+
+**And it changes nothing else.** The median allocation is 10.4 ms
+either way, because most texture creations are suballocations that
+never reach `vkAllocateMemory` at all; the `grow` phase, whose
+allocations all land in blocks the previous phase freed, is identical
+between the halves; and `steady`, which allocates nothing, agrees to
+one microsecond. p50 and p95 frame times do not move. **This is a
+stutter removed, not a frame rate raised** — the loop is paced at
+16.67 ms in every phase of both halves.
+
+**The picture is the same picture.** Each phase ends by reading the
+viewport back and hashing the scene region below the HUD; the scene is
+a function of the frame counter, so the two halves must agree. They do,
+all three phases, in the pair that carries the check:
+
+| phase | A hash | B hash |
+|---|---|---|
+| `steady` | `4bd3bdd8ae6b2761` | `4bd3bdd8ae6b2761` |
+| `stream` | `4b108862343fd9a4` | `4b108862343fd9a4` |
+| `grow` | `7ed2edddd00cb072` | `7ed2edddd00cb072` |
+
+Ten runs of the engine in all, 7200 measured frames, 4.5 GiB of
+textures allocated through the unfilled path, no `VK_ERROR`, no device
+loss, no driver message but NVK's standard non-conformance warning, and
+every run ended by quitting on its own. The screen itself was not
+looked at: sys-botbase's capture returns a stale frame for an
+application that owns the display, which is why the hash exists.
+
+## `gpu_fault` dies about a minute after it passes, with nobody touching it
+
+**Three runs, 2026-09-07, netloaded one at a time into a freshly
+launched full-memory hbmenu, with no controller input and no screenshot
+between the launch and the death.**
+
+Every run reported `RESULT: PASS (44/44) [2/2 cases]` and wrote its
+whole log, ending with the line the case prints before it idles:
+"everything this test can measure is done. If the console goes down
+when you press +, it goes down after this line and after the log was
+closed". Then, 45 to 60 seconds after launch — which is 35 to 50
+seconds after the log was closed — the process ended with the system's
+"Se ha cerrado el programa a causa de un error" dialog.
+
+| run | launched | last seen alive | seen gone |
+|---|---|---|---|
+| 1 | 21:13:11 | — | 21:14:30 (dialog on screen) |
+| 2 | 21:19:15 | 21:19:30 | 21:20:20 |
+| 3 | 21:21:47 | 21:22:20 | 21:22:45 |
+
+Runs 2 and 3 were watched with sys-botbase's `isProgramRunning` for the
+takeover title rather than with a screenshot, so nothing touched the
+display or the capture service — **the death is not something the
+observer caused**, which was worth excluding because a capture asks the
+same GPU the test just faulted.
+
+**What it is not:**
+
+- **not the documented exit crash.** `tests/gpu_fault/mmu_fault.c` has
+  warned since 2026-08-04 that "pressing + to return to the menu takes
+  the system down". No `+` was pressed in any of these three runs.
+- **not the exit path at all.** The `atexit` marker that case writes,
+  `sdmc:/horizon_gpu_tests/t_fault-exit.log`, does not exist on the
+  card. `main` never returned.
+- **not a CPU exception in this process.** Atmosphère wrote **no crash
+  report**: `sdmc:/atmosphere/crash_reports` held 82 files before the
+  three runs and the same 82 after, and `sdmc:/atmosphere/fatal_errors`
+  is empty. A Data Abort in the process would have left one.
+- **not the applet loop giving up.** `testfw`'s idle loop is
+  `while (appletMainLoop())`, and a false from it would return out of
+  `main` and write the marker.
+- **not idling as such.** `vk_core` sat at the same "press + to exit"
+  prompt for about three minutes in the same session, on the same
+  hbmenu launch, and exited cleanly when `+` was finally pressed.
+
+So what is left is that the process is terminated from outside, tens of
+seconds after a channel that took an MMU fault was closed, whatever the
+process does in the meantime. Who terminates it is not established
+here; that is `docs/PENDING-HARDWARE-RUNS.md`'s.
+
 ## The fourteen suites again, after the WSI and allocator work
 
 2026-09-07, build `3409462` plus the commits above it, mesa `47be3e0`
@@ -56,7 +349,7 @@ netloaded one at a time. Every log carries the `horizon-build-id` line.
 | `vk_cache` | **PASS 43/43** cold and **45/45** warm, two launches; 5275 us cold against 448 us warm, 91% |
 | `vk_present` | **PASS 1038/1038** [2/2] |
 | `vk_wsi` | **PASS 571/571** [3/3] — `swapchain` 227/227, `suboptimal` 273/273, `concurrency` 71/71 |
-| `gpu_fault` | **PASS 44/44** [2/2], and then the process died — see below |
+| `gpu_fault` | **PASS 44/44** [2/2], and then the process died — the three runs above are what that turned out to be |
 | `dock` | **PASS 4/4** [1/1] in 60066 ms — nobody docked, and the case says so rather than passing quietly: "0 change(s) seen ... NOTHING moved. Either nobody touched the console, or a dock does not reach a process launched this way" |
 
 **The two failures the previous run had are gone**, and neither was
@@ -65,7 +358,9 @@ fixed by making a test agree with a driver: `vk_wsi/suboptimal` went
 `vk_wsi/concurrency` went from ending the process to 71/71 because the
 copy fallback stopped calling a libnx function that aborts.
 
-**`gpu_fault` passes and then the process dies.** The suite reported
+**`gpu_fault` passes and then the process dies.** (Kept as first
+written; three runs on 2026-09-07 pinned it down and they are further
+up this file.) The suite reported
 `PASS (44/44) [2/2 cases]` and wrote its whole log, build-id line
 included; some time later, while idling on its "press + to exit"
 screen, the process ended with the system's own "the software was
@@ -196,7 +491,7 @@ case write and read back every byte of an unfilled allocation through a
 CPU mapping, through a GPU fill and copy, and across 3000 commands
 recorded over several command-buffer chunks.
 
-## Deferring the acquire buys CPU, and not frames, even with work to overlap
+## Deferring the acquire moves the wait rather than removing it
 
 `vk_present/drawn_frame` section G measured this with a fence acquire
 and could not have shown a saving: on that path the compositor's
@@ -239,10 +534,32 @@ because the work happens before the next acquire and the compositor
 releases the buffer meanwhile. Both shapes fit inside a refresh, so
 both take a refresh.
 
-So `0063`-`0068` buy **CPU time on the semaphore path and not frames
-per second**, and the acquire falling from 15483 us to 252 us (section
-F) must not be reported as the second thing. Where they could still
-produce a frame time is `docs/PENDING-HARDWARE-RUNS.md` section 3.
+**SO WHAT `0063`-`0068` DEMONSTRABLY BUY IS NARROWER THAN EITHER
+HEADLINE.** What was measured is a smaller block *inside*
+`vkAcquireNextImageKHR` — 5393 us to 113 us with work in the frame,
+12970 us to 285 us without — and it is neither an increase in frames
+per second nor a saving of CPU time for the process:
+
+  - not frames: 294 us between the two halves, beside a 240 us spread
+    between the two halves of the control that differ in nothing;
+  - not CPU either, at least not here: the thread's total blocked time
+    is **7371 us against 7571 us** with work and **15640 us against
+    15639 us** without. The wait left the acquire and arrived somewhere
+    else in the same loop.
+
+The 15.2 ms section F takes off the acquire is therefore 15.2 ms off
+*that call*, and this file said "off this thread" until 2026-09-07,
+which the numbers above do not support. What the deferral does change
+is WHERE the loop blocks: the acquire returns without waiting and the
+dependency goes to the host engine, so the time between it and the
+submit belongs to the application. Whether that is worth anything
+depends on the application having something to put there AND on the
+loop not already having slack — section H put 8.3 ms of real work in
+that window and still measured nothing, because under FIFO the display
+paces the loop and both shapes fit inside a refresh.
+
+The two configurations where it could still show up in a frame time are
+`docs/PENDING-HARDWARE-RUNS.md` section 3.
 
 ## The fourteen suites, run on a console
 
@@ -288,7 +605,7 @@ refreshed the whole time. That is the same answer 2026-08-24 recorded
 for `t_dock`, now with the mode changes happening inside a process that
 was watching all three sources rather than inferred from two endpoints.
 
-## Deferring the compositor's release fence buys CPU, not frames
+## Deferring the compositor's release fence takes the wait out of the acquire
 
 `vk_present/drawn_frame`, 2026-09-07, both shapes measured in one
 process at one clock — `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1` is the
@@ -323,11 +640,17 @@ does not get shorter.
 
 **Those two are the same result and neither is a disappointment.** The
 GPFIFO is in order, so a host-engine wait still holds every submit
-behind it on that channel; what the change frees is the thread, and only
-on the *semaphore* path. Section G acquires with a FENCE and then waits
-for it, so the same dependency is paid two calls later — which is why G
-measures nothing and F measures 15.2 ms. An application that wants this
-has to let the GPU do the waiting.
+behind it on that channel; what the change moves is where the thread
+blocks, and only on the *semaphore* path. Section G acquires with a
+FENCE and then waits for it, so the same dependency is paid two calls
+later — which is why G measures nothing and F measures 15.2 ms. An
+application that wants this has to let the GPU do the waiting.
+
+**AND 15.2 ms OFF THE ACQUIRE IS NOT 15.2 ms OFF THE THREAD.** Section
+H, further up this file, put real work in the window the deferral opens
+and measured the thread's total blocked time both ways: it did not
+move. The number in this section is what leaves `vkAcquireNextImageKHR`
+and nothing more.
 
 Two unknowns closed on the way: no `horizon_gpu_fence_wait(...) failed`
 anywhere in the run, so `NVHOST_IOCTL_CTRL_SYNCPT_READ` does answer for

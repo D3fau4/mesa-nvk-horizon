@@ -104,39 +104,83 @@ been run:
   measures nothing. Neither has run IMMEDIATE with a semaphore and work.
 
 **Done when** one of those two has been measured, both ways round, with
-a control. If neither separates, `0063`-`0068` keep only the CPU
-saving they have already shown — 15.2 ms a frame off this thread on the
-semaphore path — and that is what they must be described as buying.
+a control. If neither separates, what `0063`-`0068` have shown is the
+narrower thing: 15.2 ms a frame out of `vkAcquireNextImageKHR` on the
+semaphore path, with the loop's total blocked time unchanged. That is
+where the wait falls and not how long the thread waits, and it is what
+they must be described as buying — this section said "the CPU saving
+they have already shown — 15.2 ms a frame off this thread" until
+2026-09-07, which section H's own blocked-time columns contradict.
+
+**AND NOT BY REPEATING SECTION H.** A second FIFO run with the same
+shape cannot answer anything this one did not; only one of the two
+configurations above can. Anything else is a re-measurement.
 
 ---
 
-## 4 `gpu_fault` passes and then the process dies
+## 4 Something kills the process a minute after the MMU fault
 
-**Class HW.** Seen once, on 2026-09-07, build `3409462` / mesa
-`47be3e0`.
+**Class HW.** Section 4 used to be "`gpu_fault` passes and then the
+process dies", seen once and asked for three runs. It got them on
+2026-09-07 — build `9cd9b80` plus this session's commits, mesa
+`47be3e0` plus `0075`-`0076` — and what they settled is in
+`docs/MEASURED-ON-HARDWARE.md`: three runs, three deaths, 45 to 60
+seconds after launch, with no controller input, no `+` pressed and (in
+two of the three) nothing so much as taking a screenshot. The suite
+reports `PASS (44/44)` and writes its whole log first, every time.
 
-The suite reported `PASS (44/44) [2/2 cases]` and wrote its whole log,
-`horizon-build-id` line included. Some time afterwards, idling on
-testfw's "press + to exit" screen with nothing pressed, the process
-ended with the system's own "the software was closed because an error
-occurred" dialog. Nothing about it is in the log — the log ends at the
-RESULT line, which is where testfw stops writing.
+What those runs also settled is what it is **not**: not the exit crash
+`mmu_fault.c` has warned about since 2026-08-04, because nothing was
+pressed; not the exit path at all, because the `atexit` marker was
+never written; not a CPU exception in this process, because Atmosphère
+wrote no crash report and `fatal_errors` is empty; not the applet loop
+giving up, because that would return out of `main`; and not idling as
+such, because `vk_core` idled three minutes at the same prompt in the
+same session and exited cleanly.
 
-So the two cases are not in doubt and the teardown may be: this is the
-one suite that provokes an MMU fault on purpose, `tests/README.md` has
-said since it was written that its after-effects on the console are
-unconfirmed, and this is the first run to see one. It was not seen on
-the earlier run of the same day, on a build without `0070`-`0074` —
-which is a difference, and not yet evidence, because a fault's
-after-effects are exactly the kind of thing that varies run to run.
+**What is left is that the process is terminated from outside**, tens
+of seconds after a channel that took an MMU fault was closed. Who does
+it, and whether anything this project owns can avoid it, is not
+established.
 
-**Done when** `gpu_fault` has been run three times on one build with
-somebody watching what happens after the RESULT line, and either it
-returns to hbmenu every time or the crash report is fetched from
-`sdmc:/atmosphere/crash_reports` and says what died. If it turns out
-to be the fault's after-effects rather than anything this branch
-changed, that belongs in `docs/MEASURED-ON-HARDWARE.md` and this
-section leaves.
+**Done when** one of these is known: which process or service ends it
+(nvservices' own log, `pm:dmnt`, or an Atmosphère log level that
+records a termination); or whether a build of `gpu_fault` that runs
+only `sparse` survives, which would confirm the fault is the trigger
+rather than something else in the suite; or whether a process that
+closes the faulted channel and then does *nothing else* — no second
+device, no settle — dies the same way. Any of the three narrows it from
+"something" to a suspect. Until then the suite stays as it is: it
+passes, and it costs a relaunch.
+
+---
+
+## 5 A consumer that resizes the layer has never been seen
+
+**Class X.** `0076` gives the size-latch a way to follow the consumer:
+when `wsi_horizon_extent_changed` gets past all three of its exclusions
+— our own registration, the connect-late echo of the previous one, and
+the output the swapchain was created for — what is left is a size the
+consumer reported and this process never asked for, and the latch takes
+it. Without that, a real resize would leave `currentExtent` and
+`maxImageExtent` reporting a size that is gone, so the recreation the
+SUBOPTIMAL result asks for could not ask for the new size.
+
+**Nothing on this console reaches the branch.** `dock/mode_change`
+watched `nwindowGetDimensions`, `NWindow::default_*` and
+`appletGetDefaultDisplayResolution` across four dock and undock
+transitions on 2026-09-07, with a buffer queued on every poll, and all
+three said 1280x720 throughout. The same is true of the SUBOPTIMAL
+result itself: its only live condition is a consumer-side resize, and
+this platform has not been observed to have one.
+
+**Done when** a run has produced a consumer-reported output size that
+is not this process's own — dock/undock while presenting is the only
+candidate anybody has proposed, and it has now been measured not to do
+it — or when the conclusion is drawn the other way: that on this
+platform the layer cannot move, in which case both this branch and the
+SUBOPTIMAL machinery it hangs off are dead code and should be argued
+about on those terms rather than kept for a case nobody can produce.
 
 ---
 
@@ -165,6 +209,11 @@ still owed.
   Which is the outcome the section predicted for a workload submitting
   one command buffer at a time, and the patch stays for the ones that
   do not.
+- **`gpu_fault` passes and then the process dies.** Three runs on one
+  build said what happens after the RESULT line: it dies 45 to 60
+  seconds later with nothing touching it, writes no crash report, and
+  never reaches its own `atexit` marker. Section 4 above is what is
+  left of the question.
 - **`vk_wsi/concurrency` aborts the process, and it is not this
   branch.** It was not a race and not the ownership hand-off: libnx's
   `framebufferBegin` ends the process on any failed
