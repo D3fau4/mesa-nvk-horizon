@@ -1,0 +1,528 @@
+From fa6b8e763bf848742187d04d0df69ae0f680e9a9 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 19:00:00 +0000
+Subject: [PATCH 70/74] vulkan/wsi: Horizon, the layer's size is latched, not
+ re-read
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: NWindow::default_* has two authors and one of them is this
+ backend. libnx assigns it in _nwindowUpdate, from exactly two callers —
+ the bqConnect inside _nwindowConnect, and the bqQueueBuffer inside
+ nwindowQueueBuffer — and both carry the BufferQueue's default buffer
+ size. Since patch 0054 let an application pick its own extent, what
+ this backend puts into the queue is the SWAPCHAIN's size. So
+ wsi_horizon_get_extent, which re-read that field on every call, was
+ answering vkGetPhysicalDeviceSurfaceCapabilitiesKHR with the size this
+ process last registered rather than with the layer's, one connect
+ behind.
+Evidence: measured on a console 2026-09-07, one process, in the log
+ sdmc:/horizon_gpu_tests/vk_wsi.log. vk_wsi/swapchain section G
+ presented 5410 frames of a 640x360 swapchain over a 1280x720 layer and
+ read currentExtent 1280x720 throughout — nothing had reconnected. The
+ next case connected; default_* was refilled with 640x360; and
+ vk_wsi/suboptimal, whose capabilities query had said 1280x720, spent
+ 120 frames with "240 rule disagreements" and then had
+ vkCreateSwapchainKHR(1280x720) refused twice with
+ VK_ERROR_INITIALIZATION_FAILED — maxImageExtent is the same value, and
+ wsi_horizon_surface_create_swapchain checks imageExtent against it.
+ 170 of 175 checks.
+Upstream: no — libnx and NWindow exist nowhere else.
+
+WHAT EACH SIZE IS, because the bug was two of them sharing a field:
+
+  layer      what the compositor scales onto the display. It does not
+             move: dock/mode_change watched nwindowGetDimensions,
+             NWindow::default_* and appletGetDefaultDisplayResolution
+             across four mode changes on 2026-09-07, with a buffer
+             queued on every poll so every source was being refreshed,
+             and all three said 1280x720 from beginning to end.
+  queue      the BufferQueue's default buffer size, which is this
+             process's own last registration arriving one connect late.
+  buffers    what every registered NvGraphicBuffer is, which is the
+             swapchain's extent, because that is what
+             nwindowSetDimensions is told at registration.
+  swapchain  VkSwapchainCreateInfoKHR::imageExtent, the application's
+             choice, bounded above by the layer.
+
+currentExtent and maxImageExtent are the layer's. The latch is taken on
+the first query, which is always before this backend has registered
+anything — vkGetPhysicalDeviceSurfaceCapabilitiesKHR is how an
+application learns what it may create, and create_swapchain asks again
+before register_images, which is the only caller of
+nwindowSetDimensions.
+
+IT IS ON THE PLATFORM OBJECT, NOT THE SURFACE. vk_wsi destroys a
+surface between cases and creates the next over the same NWindow; a
+latch per surface would be re-taken after the first swapchain had
+already moved the queue. struct wsi_horizon hangs off wsi_device, so
+this is state on an explicit context in the same way
+wsi_horizon_surface::owner is, and not a file-scope singleton.
+
+THREE THINGS FOLLOW, AND EACH ONE WAS A DEFECT ON ITS OWN:
+
+  - The write into chain->window->default_* on the zero-copy present
+    path is gone. It existed to feed the re-read; with the re-read
+    gone it feeds nothing, and one unsynchronised write into a libnx
+    structure goes with it.
+  - wsi_horizon_extent_changed now also ignores the extent this
+    surface had registered when the swapchain took the window. That
+    is the same one-connect echo seen from the other side: a
+    swapchain created at 1280x720 after a 640x360 one is told 640x360
+    by every queue until the value catches up, which is neither its
+    own extent nor its output_at_create, so every present of a
+    correct swapchain came back VK_SUBOPTIMAL_KHR and an application
+    recreating on SUBOPTIMAL would never stop.
+  - Releasing the window puts NWindow::width back to the layer's size.
+    nwindowSetDimensions at registration set it to the swapchain's,
+    libnx keeps it until somebody sets it again, and
+    nwindowGetDimensions prefers it over the consumer's value — so a
+    shrunk window reached into whatever used the window next,
+    including a libnx Framebuffer or a console the application opens
+    after Vulkan is done. libnx refuses the call while a slot is
+    configured, and the release immediately above is what unconfigures
+    them.
+
+What this does NOT do is make a dock visible. Nothing available to this
+process reports a stable docked output size; that is measured twice
+over in docs/MEASURED-ON-HARDWARE.md and is not what this changes.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YajZtX9CeYzC35x2t1QJJh
+---
+ src/vulkan/wsi/wsi_horizon.c | 319 +++++++++++++++++++++++++++--------
+ 1 file changed, 252 insertions(+), 67 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index c49b351..e8a3c73 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -220,8 +220,71 @@ static const VkPresentModeKHR wsi_horizon_present_modes[] = {
+ /* Surface                                                             */
+ /* ------------------------------------------------------------------ */
+ 
++/* THE LAYER'S SIZE, OBSERVED ONCE AND THEN KEPT.
++ *
++ * `NWindow::default_*` has two authors, and one of them is this
++ * backend. libnx fills it in `_nwindowUpdate`, from exactly two places:
++ * the `bqConnect` in `_nwindowConnect`, and the `bqQueueBuffer` in
++ * `nwindowQueueBuffer`. Both carry the BufferQueue's default buffer
++ * size — and since patch 0054 let an application choose its own extent,
++ * what this backend registers on the queue is the SWAPCHAIN's size, not
++ * the layer's.
++ *
++ * MEASURED ON A CONSOLE 2026-09-07. `vk_wsi/swapchain` section G
++ * presented 5410 frames of a 640x360 swapchain over a 1280x720 layer;
++ * the surface read 1280x720 throughout, because nothing reconnected.
++ * The next case connected, `default_*` was refilled with 640x360, and
++ * `vk_wsi/suboptimal` — whose capabilities query had said 1280x720 —
++ * spent 120 frames disagreeing with its own surface and then had
++ * `vkCreateSwapchainKHR(1280x720)` refused twice with
++ * `VK_ERROR_INITIALIZATION_FAILED`, because `maxImageExtent` is this
++ * same value. An application that renders at half resolution and later
++ * wants full meets that, not just a test.
++ *
++ * So the query must not re-read the field. It reads it ONCE, before
++ * this backend has registered anything on the window, and keeps the
++ * answer:
++ *
++ *   layer      what the compositor scales to; this, and it does not
++ *              move — `dock/mode_change` watched `nwindowGetDimensions`,
++ *              `NWindow::default_*` and
++ *              `appletGetDefaultDisplayResolution` across four mode
++ *              changes on 2026-09-07 with a buffer queued on every
++ *              poll, and all three said 1280x720 throughout
++ *   queue      the BufferQueue's default buffer size: our own last
++ *              registration, one connect behind. Not the layer
++ *   buffers    what every registered NvGraphicBuffer is: the
++ *              swapchain's extent, because that is what
++ *              nwindowSetDimensions was told at registration
++ *   swapchain  VkSwapchainCreateInfoKHR::imageExtent, the
++ *              application's choice, bounded by the layer
++ *
++ * `currentExtent` and `maxImageExtent` are the layer's, which is what
++ * Vulkan says they are. `minImageExtent` is the floor patch 0054
++ * measured. Nothing published to the application comes from the queue
++ * any more.
++ *
++ * IT IS ON THE PLATFORM OBJECT AND NOT ON THE SURFACE, because the
++ * window outlives any one surface: `vk_wsi` destroys a surface between
++ * cases and creates the next one over the same `NWindow`, and a latch
++ * per surface would be re-taken after the first swapchain had already
++ * moved the queue. This is state on an explicit context — the same
++ * shape as `wsi_horizon_surface::owner` — and not a file-scope
++ * singleton.
++ */
+ struct wsi_horizon {
+    struct wsi_interface base;
++
++   /* Guards the two fields below: every surface query on this physical
++    * device reads them and the first one writes them. */
++   simple_mtx_t lock;
++
++   /* The window the latch is about. A second window on the same
++    * physical device re-takes it rather than inheriting the first
++    * one's, which is the only thing a one-entry cache has to get
++    * right. */
++   NWindow *layer_window;
++   VkExtent2D layer;
+ };
+ 
+ struct wsi_horizon_swapchain;
+@@ -245,6 +308,20 @@ struct wsi_horizon_surface {
+     */
+    simple_mtx_t lock;
+    struct wsi_horizon_swapchain *owner;
++
++   /* THE LAST EXTENT REGISTERED ON THE WINDOW THROUGH THIS SURFACE.
++    *
++    * Written under the lock when a swapchain takes the window, read
++    * there too, and handed to the taker as its `registered_before`. It
++    * exists for one reason: the queue's default buffer size answers
++    * with the previous registration for one connect after it, so a
++    * swapchain created at the layer's size after a smaller one is told
++    * by the queue that the output is the smaller size. That is this
++    * process's own voice arriving late, and a resize check that
++    * believed it would report SUBOPTIMAL on a swapchain that is
++    * exactly right. See wsi_horizon_extent_changed.
++    */
++   VkExtent2D last_registered;
+ };
+ 
+ static struct wsi_horizon_surface *
+@@ -260,6 +337,89 @@ wsi_horizon_window(VkIcdSurfaceBase *base)
+    return (NWindow *)wsi_horizon_surface(base)->icd.window;
+ }
+ 
++static struct wsi_horizon *
++wsi_horizon_platform(const struct wsi_device *wsi_device)
++{
++   return (struct wsi_horizon *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI];
++}
++
++/* The layer's size: latched on the first ask, returned unchanged
++ * afterwards. See struct wsi_horizon for why it is not re-read.
++ *
++ * The first ask is always before this backend has touched the window.
++ * `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` is how an application
++ * finds out what it may create, and `wsi_horizon_surface_create_
++ * swapchain` asks again before `wsi_horizon_register_images` — which
++ * is the one call that makes `nwindowSetDimensions` and the
++ * registration behind it happen — so the value latched here is the
++ * consumer's own.
++ *
++ * `NWindow::width` is the tell. libnx leaves it zero until somebody
++ * calls `nwindowSetDimensions`, so a non-zero width at latch time means
++ * the window was already configured by something outside this backend,
++ * and `default_*` may be that party's echo rather than the layer's.
++ * That is worth one line in the log and is not worth failing over:
++ * there is no other source. `nwindowGetDimensions` is not one —
++ * it returns `nw->width` when it is set and `nw->default_width`
++ * otherwise, so it is this field with a preference for the producer's
++ * request in front of it.
++ */
++static VkResult
++wsi_horizon_layer_extent(const struct wsi_device *wsi_device,
++                         VkIcdSurfaceBase *base, VkExtent2D *extent)
++{
++   struct wsi_horizon *wsi = wsi_horizon_platform(wsi_device);
++   NWindow *win = wsi_horizon_window(base);
++
++   simple_mtx_lock(&wsi->lock);
++
++   if (wsi->layer_window == win && wsi->layer.width != 0 &&
++       wsi->layer.height != 0) {
++      *extent = wsi->layer;
++      simple_mtx_unlock(&wsi->lock);
++      return VK_SUCCESS;
++   }
++
++   u32 width = win->default_width;
++   u32 height = win->default_height;
++
++   if (width == 0 || height == 0) {
++      /* Nothing has connected yet, so the consumer has said nothing.
++       * libnx's own accessor is the fallback, and on a window this
++       * backend has not touched it reads the same two fields. */
++      Result rc = nwindowGetDimensions(win, &width, &height);
++      if (R_FAILED(rc)) {
++         simple_mtx_unlock(&wsi->lock);
++         mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
++         return VK_ERROR_SURFACE_LOST_KHR;
++      }
++   }
++
++   if (width == 0 || height == 0) {
++      simple_mtx_unlock(&wsi->lock);
++      return VK_ERROR_SURFACE_LOST_KHR;
++   }
++
++   if (win->width != 0 || win->height != 0) {
++      mesa_logw("wsi_horizon: the window already had dimensions %ux%u set on "
++                "it when the layer's size was first asked for; taking %ux%u "
++                "as the layer, which is the consumer's last word and may be "
++                "a previous producer's request",
++                win->width, win->height, width, height);
++   }
++
++   wsi->layer_window = win;
++   wsi->layer = (VkExtent2D) { width, height };
++   *extent = wsi->layer;
++
++   simple_mtx_unlock(&wsi->lock);
++
++   mesa_logi("wsi_horizon: the layer is %ux%u, and that is what this "
++             "surface will report for as long as it exists",
++             extent->width, extent->height);
++   return VK_SUCCESS;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ wsi_CreateViSurfaceNN(VkInstance _instance,
+                       const VkViSurfaceCreateInfoNN *pCreateInfo,
+@@ -330,43 +490,21 @@ wsi_horizon_surface_get_support(VkIcdSurfaceBase *surface,
+    return VK_SUCCESS;
+ }
+ 
+-/* The size the COMPOSITOR says this window is, which is also the only
+- * size a swapchain over it may have: nwindowSetDimensions refuses to
+- * change the window while buffers are registered, and every registered
+- * buffer must match.
++/* The size of the OUTPUT every surface query answers with, which is
++ * also the largest a swapchain over this window may be.
+  *
+- * NOT nwindowGetDimensions, and the difference matters. That returns
+- * NWindow::width when it is set, which is whatever the last
+- * nwindowSetDimensions asked for — and this backend is what calls it,
+- * so asking would be reading back our own request. NWindow::default_*
+- * is the consumer's answer: libnx fills it from the BufferQueue's
+- * output at connect and at every queue. It is what changes when the
+- * console is docked and the display becomes 1920x1080.
++ * One line, because the question is settled in one place now:
++ * wsi_horizon_layer_extent latches the layer before this backend has
++ * moved anything, and every query reads the latch. The version this
++ * replaced re-read NWindow::default_* on every call, which is the
++ * field this backend's own registrations end up in — see the comment
++ * on struct wsi_horizon for the measurement that ended that.
+  */
+ static VkResult
+-wsi_horizon_get_extent(VkIcdSurfaceBase *surface, VkExtent2D *extent)
++wsi_horizon_get_extent(const struct wsi_device *wsi_device,
++                       VkIcdSurfaceBase *surface, VkExtent2D *extent)
+ {
+-   NWindow *win = wsi_horizon_window(surface);
+-   u32 width = win->default_width;
+-   u32 height = win->default_height;
+-
+-   if (width == 0 || height == 0) {
+-      /* Nothing has been queued yet and the connect told us nothing.
+-       * Fall back on the window's own answer, which is what t_display
+-       * measured as 1280x720 on this hardware. */
+-      Result rc = nwindowGetDimensions(win, &width, &height);
+-      if (R_FAILED(rc)) {
+-         mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
+-         return VK_ERROR_SURFACE_LOST_KHR;
+-      }
+-   }
+-
+-   if (width == 0 || height == 0)
+-      return VK_ERROR_SURFACE_LOST_KHR;
+-
+-   extent->width = width;
+-   extent->height = height;
+-   return VK_SUCCESS;
++   return wsi_horizon_layer_extent(wsi_device, surface, extent);
+ }
+ 
+ /* How many images the application must leave the queue, plus one.
+@@ -412,7 +550,7 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+                                      VkSurfaceCapabilitiesKHR *caps)
+ {
+    VkExtent2D extent;
+-   VkResult result = wsi_horizon_get_extent(surface, &extent);
++   VkResult result = wsi_horizon_get_extent(wsi_device, surface, &extent);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -648,7 +786,7 @@ wsi_horizon_surface_get_present_rectangles(VkIcdSurfaceBase *surface,
+    VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
+ 
+    VkExtent2D extent;
+-   VkResult result = wsi_horizon_get_extent(surface, &extent);
++   VkResult result = wsi_horizon_get_extent(wsi_device, surface, &extent);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -802,6 +940,11 @@ struct wsi_horizon_swapchain {
+     * `extent`, which is the application's own choice and is allowed to
+     * differ from the output for as long as the application likes. */
+    VkExtent2D output_at_create;
++   /* What this surface had registered on the window when this swapchain
++    * took it, so the resize check can tell the queue's one-connect lag
++    * from the consumer speaking. Zero for the first swapchain over a
++    * window, which matches nothing. */
++   VkExtent2D registered_before;
+    const struct wsi_horizon_format *format;
+    uint32_t swap_interval;
+    bool said_short_copy;      /* the fallback's narrowed-row warning, once */
+@@ -1181,6 +1324,11 @@ wsi_horizon_claim_window(struct wsi_horizon_swapchain *chain,
+    surface->owner = chain;
+    chain->presentable = true;
+ 
++   /* Handed over under the same lock that publishes the ownership, so
++    * the pair cannot be read half-updated by the next claim. */
++   chain->registered_before = surface->last_registered;
++   surface->last_registered = chain->extent;
++
+    simple_mtx_unlock(&surface->lock);
+    return VK_SUCCESS;
+ }
+@@ -1228,6 +1376,33 @@ wsi_horizon_release_window(struct wsi_horizon_swapchain *chain)
+             mesa_logw("wsi_horizon: nwindowReleaseBuffers failed: 0x%08x", rc);
+          }
+       }
++
++      /* AND THE WINDOW IS LEFT THE SIZE THE LAYER IS.
++       *
++       * nwindowSetDimensions at registration set NWindow::width to this
++       * swapchain's extent, and libnx keeps that until somebody sets it
++       * again: nwindowGetDimensions prefers it over the consumer's
++       * value, and nwindowDequeueBuffer asks the queue for buffers of
++       * that size. Leaving a shrunk window behind is how one swapchain
++       * reached into the next thing to use the window — including a
++       * libnx Framebuffer or a console the application opens after
++       * Vulkan is done with it.
++       *
++       * It is only allowed now: libnx refuses this call while any slot
++       * is configured, and the release above is what unconfigures them.
++       * A failure is logged and not propagated — the swapchain is gone
++       * either way, and there is no caller left to tell. */
++      VkExtent2D layer;
++      if (wsi_horizon_layer_extent(chain->base.wsi, &surface->icd.base,
++                                   &layer) == VK_SUCCESS) {
++         Result rc = nwindowSetDimensions(chain->window, layer.width,
++                                          layer.height);
++         if (R_FAILED(rc)) {
++            mesa_logw("wsi_horizon: the window would not go back to the "
++                      "layer's %ux%u: 0x%08x", layer.width, layer.height, rc);
++         }
++      }
++
+       surface->owner = NULL;
+    }
+    chain->presentable = false;
+@@ -1495,6 +1670,29 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+    if (width == chain->extent.width && height == chain->extent.height)
+       return false;   /* our own request, echoed back */
+ 
++   /* AND NOT THE ONE BEFORE IT EITHER, which is the same voice arriving
++    * one connect late.
++    *
++    * MEASURED 2026-09-07: a 640x360 swapchain leaves the queue's
++    * default buffer size at 640x360, and the next swapchain — created
++    * at the layer's 1280x720, registered at 1280x720, presenting
++    * 1280x720 — is told 640x360 by every queue until the value catches
++    * up. Neither `extent` nor `output_at_create`, so the test above
++    * passes it through and every present of a correct swapchain comes
++    * back VK_SUBOPTIMAL_KHR. An application that recreates on
++    * SUBOPTIMAL would do it forever.
++    *
++    * `registered_before` is what the surface had registered when this
++    * swapchain took the window, so this excludes exactly the lag and
++    * nothing else. A consumer that really did change the output to the
++    * previous swapchain's size in the meantime would be missed, which
++    * needs the display to have been resized to a value this process
++    * chose earlier, on a platform where four measured mode changes
++    * resized it by nothing at all. */
++   if (width == chain->registered_before.width &&
++       height == chain->registered_before.height)
++      return false;
++
+    return width != chain->output_at_create.width ||
+           height != chain->output_at_create.height;
+ }
+@@ -2234,39 +2432,21 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+        * a concurrent present on the fallback path,
+        * so this adds no hazard that was not already there and is not
+        * this backend's to fix: the structure belongs to libnx. */
+-      /* BUT NOT WHEN THAT IS OUR OWN VOICE COMING BACK.
++      /* AND NOTHING IS WRITTEN BACK INTO THE WINDOW, which is the
++       * whole of what this used to do.
+        *
+-       * The queue's default buffer size has two authors: the consumer,
+-       * on a display mode change, and this backend, through
+-       * nwindowSetDimensions at registration — which sets it to the
+-       * SWAPCHAIN's extent. While every swapchain matched the layer
+-       * those were the same number and writing it back was harmless.
++       * It wrote the queue's answer into NWindow::default_* whenever it
++       * differed from this swapchain's extent, so that
++       * wsi_horizon_get_extent — which read that field on every call —
++       * would see a display mode change. The field was the wrong place
++       * to keep the answer and re-reading it was the wrong way to ask:
++       * see struct wsi_horizon. The surface queries now read a latch
++       * taken before this backend touched anything, so there is nothing
++       * for this to feed and one unsynchronised write into a libnx
++       * structure goes away with it.
+        *
+-       * Since patch 0054 they need not be. MEASURED ON A CONSOLE
+-       * 2026-08-24, with a 640x360 swapchain on a 1280x720 layer:
+-       *
+-       *   note G: ... the surface now reports 640x360;
+-       *        appletGetOperationMode() went 0 -> 0
+-       *
+-       * Nothing had docked. The swapchain's own extent had been written
+-       * into NWindow::default_*, which wsi_horizon_get_extent reads, so
+-       * VkSurfaceCapabilitiesKHR::currentExtent — and with it
+-       * maxImageExtent — shrank to the size of the last swapchain and
+-       * stayed there. An application that rendered small once could
+-       * never ask for native again, and one that queried the surface
+-       * after being told it was suboptimal would be handed the wrong
+-       * answer twice over.
+-       *
+-       * A value equal to what this backend asked for teaches nothing:
+-       * either nothing has changed, or the consumer happens to agree.
+-       * A value that DIFFERS is the consumer's, which is the only case
+-       * patch 0040 added this write for — a mode change is exactly when
+-       * the two stop matching. */
+-      if (out.width != chain->extent.width ||
+-          out.height != chain->extent.height) {
+-         chain->window->default_width = out.width;
+-         chain->window->default_height = out.height;
+-      }
++       * `chain->reported` above is where the queue's answer lives now,
++       * and wsi_horizon_extent_changed is its only reader. */
+    }
+ 
+    return VK_SUCCESS;
+@@ -2633,7 +2813,7 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       return VK_ERROR_INITIALIZATION_FAILED;
+ 
+    VkExtent2D extent;
+-   result = wsi_horizon_get_extent(icd_surface, &extent);
++   result = wsi_horizon_get_extent(wsi_device, icd_surface, &extent);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -3060,6 +3240,10 @@ wsi_horizon_init_wsi(struct wsi_device *wsi_device,
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+ 
++   simple_mtx_init(&wsi->lock, mtx_plain);
++   wsi->layer_window = NULL;
++   wsi->layer = (VkExtent2D) { 0, 0 };
++
+    wsi->base.get_support = wsi_horizon_surface_get_support;
+    wsi->base.get_capabilities2 = wsi_horizon_surface_get_capabilities2;
+    wsi->base.get_formats = wsi_horizon_surface_get_formats;
+@@ -3084,5 +3268,6 @@ wsi_horizon_finish_wsi(struct wsi_device *wsi_device,
+       return;
+ 
+    wsi_device->wsi[VK_ICD_WSI_PLATFORM_VI] = NULL;
++   simple_mtx_destroy(&wsi->lock);
+    vk_free(alloc, wsi);
+ }
+-- 
+2.53.0.windows.2
+
