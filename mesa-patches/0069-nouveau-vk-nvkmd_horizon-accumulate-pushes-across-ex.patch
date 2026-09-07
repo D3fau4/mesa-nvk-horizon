@@ -1,0 +1,772 @@
+From 5b15346f23d0f3283d3b99c9761795811af7308d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 12:57:14 +0000
+Subject: [PATCH 69/69] nouveau/vk: nvkmd_horizon, accumulate pushes across exec()
+ calls
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (CPU cost of submission)
+Why: nvkmd_horizon_ctx_exec handed its spans straight to
+ horizon_gpu_submit, so a vkQueueSubmit carrying three command buffers
+ became three kickoffs. nvk_queue_submit_locked calls exec() once per
+ command buffer and then signal() once for the whole submission
+ (nvk_queue.c:280-325), so the number of submissions this backend makes
+ is the number of command buffers the application passed — a fact about
+ the loop above it, not about the work.
+ .
+ Each kickoff is an ioctl through the nv service, which on Horizon is an
+ IPC round trip to the nvservices sysmodule. Each one also appends two
+ GPFIFO entries of horizon_gpu's own: an L2_SYSMEM_INVALIDATE before the
+ work, and after it a block that does WFI_SCOPE_ALL, writes L2 back and
+ increments the syncpoint (horizon/submit/submit.c). Three command
+ buffers therefore cost three round trips and, on the GPU, two full
+ pipeline drains nothing had asked for.
+ .
+ The context now holds what exec() has accepted and sends it at the
+ boundaries that need it: signal() — which nvkmd documents as implying
+ flush() and which NVK calls at the end of every submission — plus
+ flush(), sync(), wait() and bind(), and a 64-push backstop so a very
+ long submission cannot leave the channel idle while the CPU walks it.
+ .
+ NO BARRIER WAS REMOVED OR MOVED BY HAND. horizon_gpu_submit still emits
+ exactly one prologue and one fence block per call, unchanged; there are
+ simply fewer calls. What changes is where those boundaries fall: at the
+ end of the submission instead of between its command buffers. That is
+ the boundary Vulkan defines — command buffers in one VkSubmitInfo
+ execute in order with no implicit memory dependency between them, and
+ every dependency the application asks for is already in the pushbuffer
+ NVK recorded. The prologue moves the same way and is strictly safer
+ for it: one L2 invalidate emitted after all of the CPU's writes covers
+ more than three emitted between them.
+ .
+ What the boundaries protect. wait() sends the batch first because
+ horizon_gpu_submit_waits appends to the same in-order GPFIFO, so a wait
+ pushed while the batch was still on the CPU would execute ahead of work
+ exec() had already accepted. bind() sends it because a bind takes
+ effect when its ioctl returns, so an unbind would otherwise apply
+ underneath work that had not been submitted yet. signal() sends it
+ because the fence it hands out is ctx->last_fence, which names the last
+ kickoff and not the batch. An `incomplete` push and its continuation
+ are never split: the backstop is skipped at such a boundary, and NVK
+ only ever produces the pair inside one exec() call anyway
+ (nvk_cmd_buffer_push_indirect).
+ .
+ A failed kickoff drops the batch: the work never reached the GPU and no
+ fence was ever handed out for it, so carrying it to the next boundary
+ would submit, under a later fence, work the caller was already told
+ failed. A batch still present at destroy() is dropped too, and said so
+ loudly — submitting into a channel about to go away, whose pushbuffers
+ the caller may already have freed, is the worse of the two failures.
+ .
+ NVK_HORIZON_BATCH_EXEC=0 restores one kickoff per exec() call, so the
+ two can be compared on one console in one session. The meter counts
+ exec calls, the pushes they carried and the kickoffs that went out, and
+ prints the pushes-per-kickoff mean; equal exec calls and kickoffs mean
+ the workload submits one command buffer at a time and this bought it
+ nothing, which is a real answer about that workload.
+Evidence: nvk_queue.c:280-325 is the loop that calls exec() once per
+ command buffer and signal() once after them.
+ horizon/submit/submit.c:180-270 is the prologue, the fence block and the
+ single nvGpuChannelKickoff each submit performs. Cross-compiled clean
+ for aarch64-none-elf with the project's -Wall -Wextra -Werror through
+ ghcr.io/d3fau4/nx-dev; the driver-linked ELFs pass
+ scripts/check-dispatch-complete.sh. NO CONSOLE HAS RUN IT, and the
+ pushes-per-kickoff line is the measurement that decides whether it is
+ worth anything on a given workload.
+Upstream: no — nvkmd_horizon is this project's backend, and the nouveau
+ backend already batches this way through its own kernel interface.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  70 ++-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 402 +++++++++++++++---
+ 2 files changed, 406 insertions(+), 66 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index cf4236b..a1b104c 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -17,6 +17,7 @@
+ 
+ #include "c11/threads.h"
+ #include "util/simple_mtx.h"
++#include "util/u_dynarray.h"
+ #include "vk_sync.h"
+ #include "vk_sync_timeline.h"
+ 
+@@ -212,6 +213,25 @@ struct nvkmd_horizon_meter {
+ 
+    uint32_t submits;
+ 
++   /* nvkmd_horizon_ctx_exec: how many times NVK asked for work to run,
++    * and how many pushes those calls carried between them. `submits`
++    * above is how many kickoffs actually went out.
++    *
++    * THE THREE TOGETHER ARE THE MEASUREMENT, and none of them is it
++    * alone. exec_calls/submits is how many of NVK's calls one kickoff
++    * carried; exec_spans/submits is how many GPFIFO entries that
++    * kickoff held. A workload that submits one command buffer per
++    * vkQueueSubmit has exec_calls == submits and accumulating across
++    * exec() has bought it nothing — which is a real answer about that
++    * workload and the reason these are counted separately rather than
++    * folded into one ratio. */
++   uint32_t exec_calls;
++   uint32_t exec_spans;
++   /* Of `submits`, the ones that carried at least one push. A GPU-wait
++    * batch and a fence-only signal are submissions too and would spoil
++    * the pushes-per-kickoff mean. */
++   uint32_t exec_kickoffs;
++
+    /* nvkmd_horizon_ctx_wait: the waits it performed on the CPU, and the
+     * ones it skipped because this channel had already ordered them. */
+    uint32_t ctx_waits;
+@@ -240,6 +260,20 @@ struct nvkmd_horizon_meter {
+    uint64_t fence_age_ns;
+ };
+ 
++/* How many pushes accumulate before a kickoff goes out on its own.
++ *
++ * NOT A HARDWARE LIMIT. horizon_gpu_submit takes up to
++ * GPFIFO_QUEUE_SIZE - 2 spans and reports BUSY rather than truncating,
++ * which is far more than this. What this bounds is the window in which
++ * the GPU has nothing to do because the CPU is still collecting: a
++ * submission of very many command buffers would otherwise leave the
++ * channel idle until the last one had been walked. Sixty-four is well
++ * past any submission this driver has been seen to make, so in practice
++ * the flush points below are what send a batch and this is the backstop
++ * that keeps the pathological case bounded.
++ */
++#define NVKMD_HORIZON_BATCH_SPANS 64u
++
+ struct nvkmd_horizon_ctx {
+    struct nvkmd_ctx base;
+ 
+@@ -249,10 +283,36 @@ struct nvkmd_horizon_ctx {
+     * carries one syncpoint increment, so this is "when everything
+     * submitted so far has completed" — which is exactly what a signal
+     * means.
++    *
++    * IT MOVES ON A KICKOFF AND NOT ON AN exec(). With work accumulating
++    * across exec() calls, a fence taken between the exec and the
++    * kickoff would name a submit that has not happened. Every reader of
++    * it — ctx_signal above all — goes through a kickoff first.
+     */
+    horizon_gpu_fence last_fence;
+    bool has_fence;
+ 
++   /* The pushes exec() has accepted and not yet sent, as the spans
++    * horizon_gpu_submit takes. Cleared on kickoff, which keeps the
++    * allocation, so a steady state does no allocation at all.
++    *
++    * ADDRESSES AND SIZES, NEVER THE CALLER'S POINTERS. nvkmd hands
++    * exec() a `struct nvkmd_ctx_exec` array that nvk_queue.c builds in
++    * a STACK_ARRAY and frees the moment exec() returns; what survives
++    * here is the two numbers copied out of it.
++    */
++   struct util_dynarray batch;
++
++   /* True when the last push in the batch ends mid-method, so the next
++    * push has to be in the same submit as it (nvkmd.h:436). A kickoff
++    * is never taken at such a boundary. */
++   bool batch_incomplete;
++
++   /* NVK_HORIZON_BATCH_EXEC=0 turns the accumulation off and makes
++    * every exec() its own kickoff, which is what this backend did
++    * before. It is the A/B control, read once per context. */
++   bool batch_enabled;
++
+    struct nvkmd_horizon_meter meter;
+ };
+ 
+@@ -376,7 +436,15 @@ void nvk_horizon_sync_set_fence(struct vk_sync *sync,
+ void nvkmd_horizon_meter_init(struct nvkmd_horizon_meter *m,
+                               horizon_gpu_channel *chan);
+ void nvkmd_horizon_meter_finish(struct nvkmd_horizon_meter *m);
+-void nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m);
++/* One kickoff. `spans` is how many pushes it carried — zero for a
++ * GPU-wait batch or a fence-only signal, which are submissions but not
++ * work. */
++void nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m,
++                                uint32_t spans);
++/* One exec() call, and the pushes it carried. Counted where NVK asks,
++ * not where the kickoff happens, so the two can be compared. */
++void nvkmd_horizon_meter_exec(struct nvkmd_horizon_meter *m,
++                              uint32_t spans);
+ /* One wait resolved by the host engine rather than by this thread. */
+ void nvkmd_horizon_meter_ctx_wait_gpu(struct nvkmd_horizon_meter *m,
+                                       uint32_t count);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index b87fb2a..ca0bcba 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -5,8 +5,6 @@
+ 
+ #include "nvkmd_horizon.h"
+ 
+-#include "util/stack_array.h"
+-
+ #include "vk_log.h"
+ #include "vk_sync.h"
+ 
+@@ -86,11 +84,30 @@ nvkmd_horizon_meter_report_locked(struct nvkmd_horizon_meter *m,
+                 "wait blocked", (void *)m->chan, window_ms);
+    }
+ 
++   /* THE BATCHING LINE, and it is three numbers because no one of them
++    * answers the question. `exec call(s)` is how many times NVK asked
++    * for work; `push(es)` is how many GPFIFO entries those calls
++    * carried; `kickoff(s)` is how many submissions actually went out
++    * with work in them. Equal exec calls and kickoffs means this
++    * workload submits one command buffer at a time and accumulating
++    * across exec() has bought it nothing at all. */
++   if (m->exec_calls > 0) {
++      mesa_logi("nvkmd_horizon: channel %p over %" PRIu64 " ms: %" PRIu32
++                " exec call(s) carrying %" PRIu32 " push(es) went out as %"
++                PRIu32 " kickoff(s), mean %" PRIu32 " push(es) per kickoff",
++                (void *)m->chan, window_ms, m->exec_calls, m->exec_spans,
++                m->exec_kickoffs,
++                m->exec_kickoffs > 0 ? m->exec_spans / m->exec_kickoffs : 0);
++   }
++
+    /* `enabled` and `chan` survive; everything the window accumulated
+     * does not, so the next line is about the next second rather than
+     * about the whole session. */
+    m->window_start_ns = 0;
+    m->submits = 0;
++   m->exec_calls = 0;
++   m->exec_spans = 0;
++   m->exec_kickoffs = 0;
+    m->ctx_waits = 0;
+    m->ctx_waits_skipped = 0;
+    m->ctx_wait_ns = 0;
+@@ -129,7 +146,7 @@ nvkmd_horizon_meter_finish(struct nvkmd_horizon_meter *m)
+ }
+ 
+ void
+-nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m)
++nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m, uint32_t spans)
+ {
+    if (m == NULL || !m->enabled)
+       return;
+@@ -140,6 +157,29 @@ nvkmd_horizon_meter_submit(struct nvkmd_horizon_meter *m)
+    if (m->window_start_ns == 0)
+       m->window_start_ns = now_ns;
+    m->submits++;
++   /* Only a submission that carried work counts towards the pushes-per-
++    * kickoff mean. A GPU-wait batch and a fence-only signal are
++    * submissions too, and folding them in would make the mean look
++    * worse the more of them a frame needed. */
++   if (spans > 0)
++      m->exec_kickoffs++;
++   nvkmd_horizon_meter_report_locked(m, now_ns, false);
++   simple_mtx_unlock(&m->mutex);
++}
++
++void
++nvkmd_horizon_meter_exec(struct nvkmd_horizon_meter *m, uint32_t spans)
++{
++   if (m == NULL || !m->enabled)
++      return;
++
++   const uint64_t now_ns = os_time_get_nano();
++
++   simple_mtx_lock(&m->mutex);
++   if (m->window_start_ns == 0)
++      m->window_start_ns = now_ns;
++   m->exec_calls++;
++   m->exec_spans += spans;
+    nvkmd_horizon_meter_report_locked(m, now_ns, false);
+    simple_mtx_unlock(&m->mutex);
+ }
+@@ -220,6 +260,32 @@ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
+ 
++   /* A BATCH LEFT HERE IS DROPPED, LOUDLY, AND NOT SENT.
++    *
++    * It should be impossible: signal(), flush() and sync() all send the
++    * batch, and NVK ends every submission with a signal. If one is here
++    * anyway, submitting it would push work into a channel that is about
++    * to be destroyed and whose pushbuffers the caller may already have
++    * freed — the worse of the two failures. Dropping it cannot make a
++    * fence lie either, because a fence is only handed out by a kickoff
++    * and this work never had one.
++    *
++    * So it is reported, in the same spirit as the busy channel below: a
++    * non-empty batch at destroy time is a driver bug and should be
++    * visible rather than absorbed.
++    */
++   const uint32_t stranded =
++      util_dynarray_num_elements(&ctx->batch, horizon_gpu_cmd_span);
++   if (stranded > 0) {
++      mesa_loge("nvkmd_horizon: channel %p destroyed with %" PRIu32
++                " push(es) never submitted; they are dropped. Something "
++                "called exec() without a signal(), flush() or sync() "
++                "after it.", (void *)ctx->chan, stranded);
++   }
++   /* Freed on both paths, including the one below that deliberately
++    * leaks the context: nothing reads the batch after this point. */
++   util_dynarray_fini(&ctx->batch);
++
+    /* First, and before the channel goes away: the last window is
+     * reported here, and the error path below returns without freeing
+     * the context, so anything left until after it would be lost in
+@@ -243,6 +309,12 @@ nvkmd_horizon_ctx_destroy(struct nvkmd_ctx *_ctx)
+    FREE(ctx);
+ }
+ 
++/* Sends whatever exec() has accumulated. Defined below, beside exec();
++ * declared here because every boundary that has to send a batch comes
++ * first in this file. */
++static VkResult nvkmd_horizon_ctx_kickoff(struct nvkmd_horizon_ctx *ctx,
++                                          struct vk_object_base *log_obj);
++
+ /* CPU-waits the syncs a GPU-side wait could not carry, and meters them.
+  * Used both for the kinds that never qualify and as the fallback when
+  * the ring is full or the submit is refused.
+@@ -333,8 +405,10 @@ nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
+       /* horizon_gpu_submit_waits() is a real horizon_gpu_submit() under
+        * the hood, so it counts as one for the same reason the exec and
+        * fence-only signal paths call this: leaving it out would make the
+-       * meter's submit(s) total silently omit every GPU-wait batch. */
+-      nvkmd_horizon_meter_submit(&ctx->meter);
++       * meter's submit(s) total silently omit every GPU-wait batch. It
++       * carries no pushes, so it is not one of the kickoffs the
++       * pushes-per-kickoff mean is over. */
++      nvkmd_horizon_meter_submit(&ctx->meter, 0);
+       return VK_SUCCESS;
+    }
+ 
+@@ -361,6 +435,21 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
+ 
++   /* ANYTHING exec() IS STILL HOLDING GOES FIRST.
++    *
++    * horizon_gpu_submit_waits appends the host engine's acquire to this
++    * same GPFIFO, and a GPFIFO runs in order — so a wait pushed while
++    * the batch is still on the CPU would execute *before* work that was
++    * handed to exec() earlier. That reorders nothing today, because NVK
++    * waits at the start of a submission and execs after it, so the batch
++    * is empty here every time. It is done anyway: "the batch happens to
++    * be empty" is a property of the caller, and the ordering this
++    * preserves is a property of the interface.
++    */
++   VkResult flushed = nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++   if (flushed != VK_SUCCESS)
++      return flushed;
++
+    /* THE WAIT HAPPENS ON THE HOST ENGINE, NOT ON THIS THREAD.
+     *
+     * A wait on another channel's fence used to block the calling thread
+@@ -448,6 +537,120 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+    return nvkmd_horizon_ctx_flush_gpu_waits(ctx, &batch);
+ }
+ 
++/* Sends whatever exec() has accumulated, or does nothing when there is
++ * nothing to send.
++ *
++ * WHY THIS EXISTS AT ALL. exec() used to hand its spans straight to
++ * horizon_gpu_submit, so a vkQueueSubmit carrying three command buffers
++ * became three kickoffs. Each kickoff is an ioctl through the nv
++ * service — an IPC round trip — and each one also appends two GPFIFO
++ * entries of its own: an L2_SYSMEM_INVALIDATE before the work and, after
++ * it, a block that does WFI_SCOPE_ALL, writes L2 back and increments the
++ * syncpoint (horizon/submit/submit.c). So three command buffers cost
++ * three round trips and, on the GPU, two full pipeline drains that
++ * nothing had asked for.
++ *
++ * WHAT MOVED, AND WHAT DID NOT. No barrier was removed or relocated.
++ * horizon_gpu_submit still emits exactly one prologue and one fence
++ * block per call, unchanged; there are simply fewer calls. The
++ * boundaries that used to fall between two command buffers of one
++ * submission now fall at the end of the submission, which is the
++ * boundary Vulkan actually defines: command buffers in one
++ * VkSubmitInfo execute in order with no implicit memory dependency
++ * between them, and every dependency the application does ask for is
++ * already in the pushbuffer NVK recorded. The prologue moves the same
++ * way and is strictly safer for it — one L2 invalidate emitted after
++ * all of the CPU's writes covers more than three emitted between them.
++ *
++ * A FAILED KICKOFF DROPS THE BATCH. The work never reached the GPU and
++ * no fence was ever handed out for it, so nothing can be waiting on it;
++ * carrying it forward to the next boundary would submit, under a later
++ * fence, work the caller has already been told failed.
++ */
++static VkResult
++nvkmd_horizon_ctx_kickoff(struct nvkmd_horizon_ctx *ctx,
++                          struct vk_object_base *log_obj)
++{
++   const uint32_t n =
++      util_dynarray_num_elements(&ctx->batch, horizon_gpu_cmd_span);
++   if (n == 0)
++      return VK_SUCCESS;
++
++   const horizon_gpu_cmd_span *spans =
++      util_dynarray_begin(&ctx->batch);
++
++   horizon_gpu_fence fence;
++   horizon_gpu_result res =
++      horizon_gpu_submit(ctx->chan, spans, n,
++                         HORIZON_GPU_SUBMIT_DEFAULT, &fence);
++
++   if (res.status != HORIZON_GPU_OK) {
++      /* Name every address this submit handed the GPU, and say where it
++       * sits in our own map.
++       *
++       * The reason this is here and not left to be deduced: an MMU fault
++       * is reported by nvgpu's error notifier as a *type* and nothing
++       * else, and libnx exposes no ioctl for the faulting address, so
++       * the kernel will never tell us which address was bad. What we can
++       * say is which addresses we submitted and whether each one was
++       * mapped — and "0x… is inside VA 0x… but NOTHING IS BOUND there"
++       * is the whole diagnosis, on the spot, instead of a console round
++       * trip per hypothesis.
++       *
++       * The batch is what is named, not one exec() call's execs: with
++       * accumulation the failing submission may hold several calls'
++       * pushes, and the caller cannot tell which push was whose from a
++       * subset.
++       */
++      for (uint32_t i = 0; i < n; i++) {
++         char where[160];
++         nvkmd_horizon_describe_addr(nvkmd_horizon_dev(ctx->base.dev),
++                                     spans[i].gpu_va, where, sizeof(where));
++         mesa_loge("nvkmd_horizon: channel %p push %" PRIu32 "/%" PRIu32
++                   ": 0x%" PRIx64 " + 0x%" PRIx32 " bytes — %s",
++                   (void *)ctx->chan, i, n, spans[i].gpu_va,
++                   spans[i].num_dwords * 4u, where);
++      }
++
++      nvkmd_horizon_dump_va_map(nvkmd_horizon_dev(ctx->base.dev), 64);
++
++      util_dynarray_clear(&ctx->batch);
++      ctx->batch_incomplete = false;
++
++      return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                       "horizon_gpu_submit(%" PRIu32 " spans) on channel %p "
++                       "failed: status %d, nv 0x%08" PRIx32,
++                       n, (void *)ctx->chan, (int)res.status, res.nv);
++   }
++
++   /* ONE THREAD PER CONTEXT, which the batch now depends on rather than
++    * merely benefits from. It was already true and already relied on —
++    * ctx->last_fence and ctx->has_fence are plain fields with no lock
++    * around them — but a fence that two threads race to overwrite is
++    * one wrong fence, while a dynarray two threads grow at once is a
++    * corrupt array. NVK gives each context one user: queue->exec_ctx is
++    * touched only from vk_queue's submit path, and the upload queue
++    * holds its own mutex across every call into its context
++    * (nvk_upload_queue.c). Written down because the cost of that
++    * stopping being true went up here.
++    */
++
++   /* Cleared, not freed: util_dynarray_clear keeps the allocation, so a
++    * steady state allocates nothing. */
++   util_dynarray_clear(&ctx->batch);
++   ctx->batch_incomplete = false;
++
++   ctx->last_fence = fence;
++   ctx->has_fence = true;
++   nvkmd_horizon_meter_submit(&ctx->meter, n);
++
++   /* No wait here. The submit is asynchronous and stays that way:
++    * rejected design 6 is a property held from the first line, not
++    * retrofitted.
++    */
++   return VK_SUCCESS;
++}
++
+ static VkResult
+ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+                        struct vk_object_base *log_obj,
+@@ -459,6 +662,8 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+    if (exec_count == 0)
+       return VK_SUCCESS;
+ 
++   nvkmd_horizon_meter_exec(&ctx->meter, exec_count);
++
+    /* ONE SUBMIT, NOT A RUN OF THEM.
+     *
+     * An earlier version of this split the execs into runs whenever
+@@ -482,14 +687,11 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+     * test again, so it kept going. Found by reading, not by running:
+     * NVK is unlikely to emit that many, which is what would have made
+     * it a bad bug rather than an obvious one.
+-    *
+-    * horizon_gpu_submit takes any number of spans and reports BUSY on a
+-    * full ring rather than truncating, so there is nothing to cap.
+     */
+-   STACK_ARRAY(horizon_gpu_cmd_span, spans, exec_count);
+-   if (spans == NULL)
+-      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   /* VALIDATED BEFORE ANYTHING IS ACCUMULATED, so a refused call leaves
++    * the batch exactly as it was and the pushes already in it are still
++    * sent by the next boundary. */
+    for (uint32_t i = 0; i < exec_count; i++) {
+       /* A GPFIFO entry counts dwords, and nvkmd counts bytes. A size
+        * that is not a multiple of four would silently lose the last
+@@ -499,7 +701,6 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+        * here instead, where the cause is still in view.
+        */
+       if (execs[i].size_B % 4 != 0) {
+-         STACK_ARRAY_FINISH(spans);
+          return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                           "nvkmd_horizon: push %" PRIu32 " is %" PRIu32
+                           " bytes, not a whole number of dwords",
+@@ -523,70 +724,74 @@ nvkmd_horizon_ctx_exec(struct nvkmd_ctx *_ctx,
+        * exists to prevent, so it should cover all three doors, not one.
+        */
+       if (execs[i].addr % 4 != 0) {
+-         STACK_ARRAY_FINISH(spans);
+          return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                           "nvkmd_horizon: push %" PRIu32 " is at 0x%" PRIx64
+                           ", which is not dword-aligned", i, execs[i].addr);
+       }
+ 
+       if (execs[i].size_B >= (UINT32_C(1) << 23)) {
+-         STACK_ARRAY_FINISH(spans);
+          return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
+                           "nvkmd_horizon: push %" PRIu32 " is %" PRIu32
+                           " bytes, over the 8 MiB a GPFIFO entry's 21-bit "
+                           "dword count can express", i, execs[i].size_B);
+       }
+ 
+-      spans[i].gpu_va = execs[i].addr;
+-      spans[i].num_dwords = execs[i].size_B / 4;
+-   }
+-
+-   horizon_gpu_fence fence;
+-   horizon_gpu_result res =
+-      horizon_gpu_submit(ctx->chan, spans, exec_count,
+-                         HORIZON_GPU_SUBMIT_DEFAULT, &fence);
+-   STACK_ARRAY_FINISH(spans);
+-
+-   if (res.status != HORIZON_GPU_OK) {
+-      /* Name every address this submit handed the GPU, and say where it
+-       * sits in our own map.
+-       *
+-       * The reason this is here and not left to be deduced: an MMU fault
+-       * is reported by nvgpu's error notifier as a *type* and nothing
+-       * else, and libnx exposes no ioctl for the faulting address, so
+-       * the kernel will never tell us which address was bad. What we can
+-       * say is which addresses we submitted and whether each one was
+-       * mapped — and "0x… is inside VA 0x… but NOTHING IS BOUND there"
+-       * is the whole diagnosis, on the spot, instead of a console round
+-       * trip per hypothesis.
+-       */
+-      for (uint32_t i = 0; i < exec_count; i++) {
+-         char where[160];
+-         nvkmd_horizon_describe_addr(nvkmd_horizon_dev(_ctx->dev),
+-                                     execs[i].addr, where, sizeof(where));
+-         mesa_loge("nvkmd_horizon: channel %p push %" PRIu32 "/%" PRIu32
+-                   ": 0x%" PRIx64 " + 0x%" PRIx32 " bytes — %s",
+-                   (void *)ctx->chan, i, exec_count, execs[i].addr,
+-                   execs[i].size_B, where);
++      /* And an empty one. horizon_gpu_submit refuses a span of zero
++       * dwords, which used to cost only the call that contained it;
++       * with accumulation, one empty push would take a whole batch of
++       * unrelated work down with it. nvk_queue.c already skips a push
++       * whose range is 0, so this is a guard and not a workaround —
++       * but the guard is what keeps one caller's mistake from
++       * spreading. */
++      if (execs[i].size_B == 0) {
++         return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                          "nvkmd_horizon: push %" PRIu32 " is empty", i);
+       }
++   }
+ 
+-      nvkmd_horizon_dump_va_map(nvkmd_horizon_dev(_ctx->dev), 64);
++   /* GROWN ONCE FOR THE WHOLE CALL. Appending one at a time could fail
++    * halfway and leave a partial call in the batch, which the
++    * `incomplete` contract forbids: a push that ends mid-method and its
++    * continuation have to reach the same submit. */
++   horizon_gpu_cmd_span *out =
++      util_dynarray_grow(&ctx->batch, horizon_gpu_cmd_span, exec_count);
++   if (out == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-      return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-                       "horizon_gpu_submit(%" PRIu32 " spans) on channel %p "
+-                       "failed: status %d, nv 0x%08" PRIx32,
+-                       exec_count, (void *)ctx->chan,
+-                       (int)res.status, res.nv);
++   for (uint32_t i = 0; i < exec_count; i++) {
++      out[i].gpu_va = execs[i].addr;
++      out[i].num_dwords = execs[i].size_B / 4;
+    }
+ 
+-   ctx->last_fence = fence;
+-   ctx->has_fence = true;
+-   nvkmd_horizon_meter_submit(&ctx->meter);
+-
+-   /* No wait here. The submit is asynchronous and stays that way:
+-    * rejected design 6 is a property held from the first line, not
+-    * retrofitted.
++   /* Whether the *batch* now ends mid-method. NVK only ever sets
++    * `incomplete` on the push before an indirect one and appends that
++    * one immediately (nvk_cmd_buffer_push_indirect), so the pair is
++    * always inside a single call and this is false at every call
++    * boundary — but the contract is per push, not per call, so the
++    * boundary is read from the last push rather than assumed. */
++   ctx->batch_incomplete = execs[exec_count - 1].incomplete;
++
++   /* THE A/B CONTROL. With accumulation off, every exec() call is its
++    * own kickoff, which is what this backend did before — the same
++    * spans, the same flags, the same one submit per call. */
++   if (!ctx->batch_enabled)
++      return nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++
++   /* Otherwise the batch waits for a boundary. signal(), flush(),
++    * sync(), wait() and bind() are those boundaries; this is the
++    * backstop that stops a very long submission leaving the channel
++    * idle while the CPU is still walking it.
++    *
++    * NEVER AT AN INCOMPLETE BOUNDARY. A push that ends mid-method and
++    * the push that carries the rest of that method have to be in one
++    * submit; the batch simply grows past the cap until the next push
++    * that can be cut after.
+     */
++   if (!ctx->batch_incomplete &&
++       util_dynarray_num_elements(&ctx->batch, horizon_gpu_cmd_span) >=
++          NVKMD_HORIZON_BATCH_SPANS)
++      return nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -596,6 +801,25 @@ nvkmd_horizon_ctx_bind(struct nvkmd_ctx *_ctx,
+                        uint32_t bind_count,
+                        const struct nvkmd_ctx_bind *binds)
+ {
++   /* ANYTHING exec() IS STILL HOLDING GOES FIRST, and here it is about
++    * what the mapping means rather than about ordering in the ring. A
++    * bind takes effect the moment the ioctl returns, so work still
++    * sitting in the batch would run against an address space that has
++    * already changed under it — an unbind in particular would turn a
++    * push recorded against a live mapping into a fault. Sending the
++    * batch first restores what the caller could assume before
++    * accumulation existed: work handed to exec() has been submitted by
++    * the time the next bind is performed.
++    *
++    * Nothing in NVK reaches this: binds go to queue->bind_ctx, a
++    * different context with a different channel from the exec one. That
++    * makes it free, not unnecessary.
++    */
++   struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
++   VkResult flushed = nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++   if (flushed != VK_SUCCESS)
++      return flushed;
++
+    /* On a DRM backend a bind goes through the kernel's VM_BIND queue and
+     * is ordered against the channel's work. Horizon has no such queue:
+     * NVGPU_AS_IOCTL_MAP_BUFFER_EX is synchronous and takes effect when
+@@ -633,6 +857,23 @@ nvkmd_horizon_ctx_signal(struct nvkmd_ctx *_ctx,
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
+ 
++   /* SIGNAL IMPLIES FLUSH (nvkmd.h:475), and with accumulation that
++    * stopped being a formality. The fence these signals carry is
++    * ctx->last_fence, which names the last *kickoff*; work still sitting
++    * in the batch is not under it. Signalling before sending the batch
++    * would hand out a fence that is reached while the work the caller
++    * asked to be signalled after has not started.
++    *
++    * UNCONDITIONALLY, INCLUDING signal_count == 0. NVK calls this at the
++    * end of every submission with whatever the application asked for,
++    * and a submission that signals nothing still ends there — it is the
++    * flush half of the contract that makes the batch go out, not the
++    * signals.
++    */
++   VkResult flushed = nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++   if (flushed != VK_SUCCESS)
++      return flushed;
++
+    /* Every submit already carries one syncpoint increment, so the fence
+     * of the last one is exactly "when everything submitted so far has
+     * completed" — which is what these signals mean.
+@@ -655,7 +896,8 @@ nvkmd_horizon_ctx_signal(struct nvkmd_ctx *_ctx,
+       }
+       ctx->last_fence = fence;
+       ctx->has_fence = true;
+-      nvkmd_horizon_meter_submit(&ctx->meter);
++      /* No pushes: a fence-only submit is a submission and not work. */
++      nvkmd_horizon_meter_submit(&ctx->meter, 0);
+    }
+ 
+    for (uint32_t i = 0; i < signal_count; i++) {
+@@ -674,11 +916,12 @@ static VkResult
+ nvkmd_horizon_ctx_flush(struct nvkmd_ctx *_ctx,
+                         struct vk_object_base *log_obj)
+ {
+-   /* Nothing to flush. horizon_gpu_submit appends the GPFIFO entries and
+-    * kicks off in the same call, so work is running by the time exec()
+-    * returns; there is no batching layer here to drain.
++   /* There is a batching layer to drain now, and this is what drains
++    * it. It used to be a no-op with a comment saying why — exec()
++    * kicked off in the same call, so work was already running by the
++    * time it returned. That is exactly what changed.
+     */
+-   return VK_SUCCESS;
++   return nvkmd_horizon_ctx_kickoff(nvkmd_horizon_ctx(_ctx), log_obj);
+ }
+ 
+ static VkResult
+@@ -687,6 +930,15 @@ nvkmd_horizon_ctx_sync(struct nvkmd_ctx *_ctx,
+ {
+    struct nvkmd_horizon_ctx *ctx = nvkmd_horizon_ctx(_ctx);
+ 
++   /* Before the has_fence test, not after it: a context whose only work
++    * is still in the batch has no fence yet, and returning success here
++    * would report an idle channel while holding work that had never
++    * been submitted. sync() implies flush() (nvkmd.h:484).
++    */
++   VkResult flushed = nvkmd_horizon_ctx_kickoff(ctx, log_obj);
++   if (flushed != VK_SUCCESS)
++      return flushed;
++
+    if (!ctx->has_fence)
+       return VK_SUCCESS;
+ 
+@@ -791,6 +1043,24 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+     */
+    nvkmd_horizon_meter_init(&ctx->meter, ctx->chan);
+ 
++   /* The batch, and the switch that turns it off.
++    *
++    * NULL allocator: this is plain malloc/free, and it lives exactly as
++    * long as the context. util_dynarray_init on a CALLOC_STRUCTed field
++    * is redundant — a zeroed dynarray is already an empty one — but it
++    * is the documented way to start one and says so at the point where
++    * the lifetime begins.
++    *
++    * NVK_HORIZON_BATCH_EXEC=0 restores one kickoff per exec() call.
++    * Read once, here, rather than per submit: an option that changed
++    * under a running channel would make a measurement mean two
++    * different things.
++    */
++   util_dynarray_init(&ctx->batch, NULL);
++   ctx->batch_incomplete = false;
++   ctx->batch_enabled = debug_get_bool_option("NVK_HORIZON_BATCH_EXEC",
++                                              true);
++
+    /* Asynchronous: bind_engines submits and returns a fence rather than
+     * waiting for it. The next submit on this channel is ordered after
+     * it by the channel itself, so there is nothing to wait for here.
+@@ -798,8 +1068,10 @@ nvkmd_horizon_create_ctx(struct nvkmd_dev *_dev,
+    horizon_gpu_fence bind_fence;
+    res = horizon_gpu_channel_bind_engines(ctx->chan, &bind_fence);
+    if (res.status != HORIZON_GPU_OK) {
+-      /* Torn down in the reverse of the order it was built: the meter
+-       * was the last thing initialised, so it is the first to go. */
++      /* Torn down in the reverse of the order it was built: the batch
++       * and the meter were the last things initialised, so they are the
++       * first to go. */
++      util_dynarray_fini(&ctx->batch);
+       nvkmd_horizon_meter_finish(&ctx->meter);
+       horizon_gpu_channel_destroy(ctx->chan);
+       FREE(ctx);
+-- 
+2.43.0
+
