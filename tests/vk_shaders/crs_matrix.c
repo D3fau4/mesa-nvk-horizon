@@ -90,6 +90,28 @@
  * allocator that lost one of them shows up as a wrong sum rather than as
  * a number nobody reads.
  *
+ * WHAT THIS CASE DOES NOT REPRODUCE, which is the list the next single
+ * variable comes off. Measured 2026-09-07, every variant renders,
+ * including H at 112 registers with a 1024-byte reservation walked
+ * divergently — the compiled profile of the shader that hangs. So the
+ * differences that remain are:
+ *
+ *   occupancy      16x16 is 256 pixels, which is a handful of warps.
+ *                  The draw that hangs is 1280x720, three thousand
+ *                  times more of them, and per-warp convergence-stack
+ *                  memory is a resource that scales with exactly that.
+ *                  This is the cheapest next variable and it is one
+ *                  number in this file.
+ *   size           1006 instructions here against 3932 there.
+ *   what it reads  a push constant, and nothing else. The shader that
+ *                  hangs reads uniform buffers, storage buffers and
+ *                  textures, and discards.
+ *   the frame      one draw in one render pass, against a depth
+ *                  prepass, a shadow atlas and a dozen pipelines.
+ *
+ * None of those is varied here on purpose: this case exists because the
+ * last four attempts moved two things at once.
+ *
  * ORDER MATTERS HERE. The variants run A to F — least to most suspected
  * — and the log is flushed per line, so if one of them takes the channel
  * down the file already holds everything the run established. A device

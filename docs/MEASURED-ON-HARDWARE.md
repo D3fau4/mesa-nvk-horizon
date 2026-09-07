@@ -279,6 +279,60 @@ every run ended by quitting on its own. The screen itself was not
 looked at: sys-botbase's capture returns a stale frame for an
 application that owns the display, which is why the hash exists.
 
+## A convergence stack and 112 registers, together, do not hang this chip
+
+2026-09-07, `vk_shaders/crs_matrix`, **PASS 514/514**, suite **PASS
+1033/1033** [8/8]. Eight fragment shaders generated from one template by
+`scripts/gen-crs-matrix.py` — differing in the nesting depth and in how
+many values stay live across it, and in nothing else — each drawn four
+ways at 16x16 into a UINT attachment, every texel compared against the
+same arithmetic in C. `NAK_CRS_INFO=1` (patch `0077`) is what the first
+three columns are, on this compiler, in this run:
+
+| variant | levels | live | crs | depth | gprs | instrs | verdict |
+|---|---|---|---|---|---|---|---|
+| A | 4 | 2 | 0 | 7 | 24 | 100 | renders |
+| B | 4 | 24 | 0 | 7 | 32 | 254 | renders |
+| C | 20 | 2 | **1024** | 23 | 24 | 292 | renders |
+| D | 20 | 24 | **1024** | 23 | 32 | 446 | renders |
+| E | 4 | 56 | 0 | 7 | 64 | 478 | renders |
+| F | 20 | 56 | **1024** | 23 | 64 | 670 | renders |
+| G | 4 | 104 | 0 | 7 | **112** | 814 | renders |
+| **H** | **20** | **104** | **1024** | **23** | **112** | 1006 | **renders** |
+
+Nothing spilled, and `slm` is zero in all eight — the 1024 bytes are the
+convergence stack and nothing else.
+
+**H is the compiled profile of the shader that hangs**: 112 registers
+and a memory-backed convergence stack, which is what Godot's Forward+
+scene fragment shader reports. It renders every one of its four inputs —
+nobody entering the nest, every lane walking to the bottom, the lanes of
+each quad diverging with the loop under them not running, and the same
+with it running — 256 of 256 texels right each time. **The pair is not
+sufficient**, and the hypothesis that was written up on the strength of
+one Mobile run is dead on its own terms.
+
+Two things this settles besides that:
+
+- **the depth is not the nest.** Twelve nested `if`s around a loop
+  compile to depth 15; four levels to 7; twenty to 23. Counting `if`s in
+  a shader and calling it depth is what produced the wrong reading this
+  file carried for an afternoon.
+- **the reservation is this compiler's.** Twenty levels reserve 1024
+  here. The same source under the working tree parked in the stash would
+  reserve for a doubled depth, and twelve levels — which reserve nothing
+  here — reserve 1024 there. Numbers from the two are not comparable and
+  were compared once.
+
+**WHAT THE CASE DOES NOT REPRODUCE, which is where the next single
+variable comes from.** 16x16 is a few warps; the draw that hangs is
+1280x720, and per-warp convergence-stack memory is a resource that
+scales with the number of warps in flight. 1006 instructions against
+3932. A push constant against uniform buffers, storage buffers,
+textures and a discard. One draw against a frame with a depth prepass
+and a dozen pipelines. The occupancy one is a single number in
+`tests/vk_shaders/crs_matrix.c` and is the cheapest thing to try next.
+
 ## The Forward+ hang is not the register count, and Mobile is what says so
 
 2026-09-07, one run, `bench_mob_reg` — the Mobile build from 2026-09-02
