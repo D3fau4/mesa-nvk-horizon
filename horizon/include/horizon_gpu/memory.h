@@ -79,6 +79,40 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
                                           horizon_gpu_cache_policy policy,
                                           horizon_gpu_mem **out_mem);
 
+/* The same, WITHOUT the zero fill. Everything else — the rounding, the
+ * nvmap registration, the cache maintenance, the error paths and who
+ * owns what — is identical.
+ *
+ * WHAT THE CALLER IS ASSERTING, and it is not "I do not mind what is in
+ * there". It is: every byte anything will ever read from this object is
+ * written first, by this process or by the GPU, before it is read. A
+ * consumer that reads a byte it never wrote gets whatever the heap held
+ * before — this process's own earlier allocations, since aligned_alloc
+ * hands back memory the process has used. Nothing crosses a process
+ * boundary, but "our own stale data" and "zero" are different answers
+ * and only one of them is deterministic.
+ *
+ * WHAT IS *NOT* SKIPPED, and this is the part that makes the path safe
+ * rather than merely fast. The armDCacheFlush that follows the fill in
+ * horizon_gpu_mem_create is not the fill's cleanup: it is there because
+ * the heap this allocation came from may hold DIRTY CACHE LINES from
+ * its previous tenant, and a dirty line is a write that has not
+ * happened yet. Left alone it lands later, at an eviction nobody chose,
+ * on top of whatever the GPU has since written there — which is the
+ * silent wrong answer measured on a console on 2026-08-24. That flush
+ * happens on this path too, and unconditionally. Skipping the fill
+ * makes it cheaper as a side effect: a line nothing wrote is not dirty,
+ * so there is nothing to write back.
+ *
+ * NOT THE DEFAULT, AND NOT A TUNABLE. There is no environment variable
+ * that turns this on for allocations that did not ask for it; a caller
+ * either promises the above at the call site or does not use it. See
+ * horizon/memory/mem.c for the audit of who in this tree does. */
+horizon_gpu_result
+horizon_gpu_mem_create_uninit(horizon_gpu_device *dev, uint64_t size,
+                              uint64_t align, horizon_gpu_cache_policy policy,
+                              horizon_gpu_mem **out_mem);
+
 /* Fails with HORIZON_GPU_ERR_BUSY while GPU mappings of this object are
  * alive. Closing invalidates the CPU pointer (memory-model § 7).
  *

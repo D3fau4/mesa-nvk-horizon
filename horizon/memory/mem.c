@@ -15,10 +15,56 @@
 #include "align.h"
 #include "../device/device_priv.h"
 
-horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
-                                          uint64_t size, uint64_t align,
-                                          horizon_gpu_cache_policy policy,
-                                          horizon_gpu_mem **out_mem)
+/* WHO MAY ASK FOR UNINITIALISED STORAGE, AND WHO IN THIS TREE DOES.
+ *
+ * The rule is one sentence: every byte anything will ever read must be
+ * written before it is read. Four callers reach this file, and the
+ * audit of them is here rather than in a document because it is the
+ * thing a fifth caller has to redo.
+ *
+ *   channel.c, the hang recorder's buffer (hang_mem)
+ *     NO. The CPU reads slots the GPU may never have reached, and zero
+ *     is exactly how "never reached" is recognised. Uninitialised, a
+ *     slot the GPU never wrote would decode as a marker it did.
+ *
+ *   channel.c, the internal command buffer (cmdbuf_mem)
+ *     QUALIFIES, and is not worth it. Every list the GPU fetches from
+ *     it — the L2 prologue, the two fence blocks, a wait-ring slot — is
+ *     written before the GPFIFO entry naming it is appended. But it is
+ *     one 4 KiB object per channel, created a handful of times in a
+ *     process, so the saving is unmeasurable and the risk of the
+ *     promise going stale is not.
+ *
+ *   channel.c, the Zcull context (zcull_mem)
+ *     NO. The hardware saves and restores Zcull state into it across a
+ *     context switch, and nothing here establishes that the first
+ *     access is a save rather than a restore. "The GPU probably writes
+ *     it first" is not the promise this path takes.
+ *
+ *   nvkmd_horizon_mem.c, every Vulkan allocation
+ *     NOT PROVABLE AS A WHOLE, and it is the only one where the saving
+ *     would show. It is one entry point for VkDeviceMemory the
+ *     application maps, for NVK's descriptor tables, query pools and
+ *     shader heap, and for the command-buffer and mem-stream chunks.
+ *     The last of those DOES qualify — nv_push writes the dwords and
+ *     the submit names exactly [addr, addr+range), so nothing unwritten
+ *     is ever fetched — but nvkmd has no flag that distinguishes it
+ *     from the rest, so routing it needs an NVKMD_MEM_* bit through
+ *     nvkmd.h and both backends. Vulkan does not promise zeroed device
+ *     memory, but NVK is entitled to rely on its own allocations, and
+ *     auditing that is a separate piece of work with a failure mode
+ *     that is a wrong pixel rather than an error.
+ *
+ * So nothing in this tree uses this path today. It is here because the
+ * measurement that decides whether routing the command-buffer case is
+ * worth doing needs both halves to exist — gpu_memory/alloc times them
+ * against each other on a console.
+ */
+static horizon_gpu_result mem_create(horizon_gpu_device *dev,
+                                     uint64_t size, uint64_t align,
+                                     horizon_gpu_cache_policy policy,
+                                     bool zero_fill,
+                                     horizon_gpu_mem **out_mem)
 {
     if (!dev || !out_mem || size == 0)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
@@ -57,16 +103,21 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
         return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
     }
     /* Zero-fill: deterministic content for tests and no stale data handed
-     * to the GPU. */
-    memset(mem->cpu, 0, rounded);
+     * to the GPU. Skipped only by horizon_gpu_mem_create_uninit, whose
+     * caller has promised that everything read here is written first;
+     * the flush below is NOT skipped with it. */
+    if (zero_fill)
+        memset(mem->cpu, 0, rounded);
 
-    /* AND THE ZEROING HAS TO REACH MEMORY, FOR EVERY POLICY.
+    /* AND THE CACHE HAS TO BE CLEARED OF THIS RANGE, FOR EVERY POLICY
+     * AND WHETHER OR NOT IT WAS FILLED.
      *
-     * The memset above went through the CPU cache and left every line
-     * of this object dirty. aligned_alloc hands back heap the process
-     * has used before, so some of those lines were dirty already. A
-     * dirty line is a write that has not happened yet, and it will
-     * happen later, at an eviction nobody chose.
+     * A zero fill goes through the CPU cache and leaves every line of
+     * this object dirty. aligned_alloc hands back heap the process has
+     * used before, so some of those lines were dirty ALREADY — and that
+     * half is true with no fill at all, which is why this runs on both
+     * paths. A dirty line is a write that has not happened yet, and it
+     * will happen later, at an eviction nobody chose.
      *
      * For an object the GPU writes and the CPU then reads — a Vulkan
      * query pool is exactly that, and it is the first thing in this
@@ -77,11 +128,17 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
      * holding the memset's zeros writes those zeros over what the GPU
      * just wrote, and the read that follows returns them.
      *
-     * MEASURED ON A CONSOLE 2026-08-24: t_vk_timestamp's
+     * MEASURED ON A CONSOLE 2026-08-24: vk_core/timestamps'
      * vkGetQueryPoolResults answered VK_NOT_READY for two full seconds
      * of polling, on some runs and not others — the run-to-run
      * difference being whether those lines happened to have been
      * evicted in the meantime. With this flush it stops happening.
+     *
+     * IT IS CHEAPER WITHOUT THE FILL, which is most of what skipping the
+     * fill saves. armDCacheFlush is `dc civac` per line either way, but a
+     * line the fill never dirtied has nothing to write back — so the
+     * uninitialised path skips both the stores and the writeback they
+     * would have caused, not just the stores.
      *
      * This used to run only for UNCACHED, where the same hazard is
      * sharper still: after svcSetMemoryAttribute remaps the range, a
@@ -180,6 +237,26 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
 
     *out_mem = mem;
     return horizon_gpu_ok();
+}
+
+/* The two public entry points. They differ in one bool and share every
+ * check, every rounding and every error path, so a fix to one is a fix
+ * to both by construction — which is the reason this is a parameter and
+ * not a second copy of the function. */
+horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
+                                          uint64_t size, uint64_t align,
+                                          horizon_gpu_cache_policy policy,
+                                          horizon_gpu_mem **out_mem)
+{
+    return mem_create(dev, size, align, policy, true, out_mem);
+}
+
+horizon_gpu_result
+horizon_gpu_mem_create_uninit(horizon_gpu_device *dev, uint64_t size,
+                              uint64_t align, horizon_gpu_cache_policy policy,
+                              horizon_gpu_mem **out_mem)
+{
+    return mem_create(dev, size, align, policy, false, out_mem);
 }
 
 horizon_gpu_result horizon_gpu_mem_destroy(horizon_gpu_mem *mem)
