@@ -501,6 +501,22 @@ driver's:
   19.2 MHz reference `armGetSystemTick` counts. The clock
   `vkCmdWriteTimestamp` records is the same domain. `timestampPeriod`
   was `1.0f` and is now this.
+  - **Every GPU time in this repository measured before 2026-08-24 is
+    that factor low, and this is arithmetic on the line above rather
+    than a new measurement.** Godot multiplies a timestamp difference by
+    `timestampPeriod` (`RenderingDeviceDriverVulkan::timestamp_query_
+    result_to_time`), so with the old `1.0f` it reported raw ticks as
+    nanoseconds. What that touches, and it is the whole list: patch
+    `0048`'s "2000 cubes 12.99 -> 12.94 ms", which is 21.14 -> 21.06 ms
+    in the units it claimed; and `0049`'s "the GPU had 0.18 ms of work
+    to do", which is 0.29 ms. Neither conclusion changes — `0048`'s is a
+    difference and `0049`'s is an order of magnitude — but 2000 cubes
+    turns out to spend about 21 ms of its 33 ms frame on the GPU, which
+    a reader comparing it with a post-`0053` number would otherwise get
+    wrong in the other direction. **Do not apply the factor again**: any
+    number from a build carrying `0053` is already in nanoseconds, and
+    CPU render times were never affected because they come from the OS
+    clock.
 - **The BufferQueue keeps 0 buffers for its consumer**, before and after
   registration, so patch 0052's `minUndequeued + 1` is clamped up to
   `WSI_HORIZON_MIN_IMAGES` and the number it publishes is unchanged.
