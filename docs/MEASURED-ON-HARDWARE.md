@@ -279,6 +279,44 @@ every run ended by quitting on its own. The screen itself was not
 looked at: sys-botbase's capture returns a stale frame for an
 application that owns the display, which is why the hash exists.
 
+## The shader that hangs has no convergence stack on this driver
+
+2026-09-07, `bench_fp` — Godot's eight-phase benchmark with
+`rendering_method = forward_plus` — exported against a driver carrying
+patch `0077` and run once with `NAK_CRS_INFO=1`,
+`GODOT_NO_PSO_CACHE=1` and `MESA_SHADER_CACHE_DISABLE=true`, so all 185
+shaders were compiled in the process and printed. It hung where it
+always hangs: phase 4 of 8, `3d_cubes_200`, `fault notification 8 (fifo
+idle timeout)`.
+
+The scene fragment shader, the one whose colour draw never retires, as
+**this** compiler builds it:
+
+    NAK crs: stage=fragment crs=0 depth=13 gprs=112 slm=0 spills=0
+             instrs=4727
+
+**`crs=0`.** Depth 13 is at or below sixteen, so `sm50::crs_size()`
+reserves nothing: on this driver the shader that hangs has no
+convergence stack in memory at all. The 1024 bytes in every earlier
+record are the parked working tree's doubling — 13 to 26, into the
+`<= 32` arm — and nothing this build does.
+
+So the whole convergence-stack line, this session's included, was about
+a reservation this driver never makes for that shader. What the process
+does have a reservation for is two **compute** shaders at depth 30,
+`crs=1024`, 48 and 72 registers — and those run: the three 2D phases
+before the hang need them.
+
+**And it puts the in-tree reproducer back on the right row.** The
+closest variant of `vk_shaders/crs_matrix` to the failing shader is not
+one of the deep ones. It is **G**: `crs=0 depth=7 gprs=112 slm=0
+spills=0 instrs=814` — the same reservation, which is none, and the same
+register count — and G renders all four of its inputs. What still
+separates them is the size (814 instructions against 4727), what they
+read (a push constant against uniform buffers, storage buffers, textures
+and a discard), and the number of warps in flight (16x16 against
+1280x720).
+
 ## A convergence stack and 112 registers, together, do not hang this chip
 
 2026-09-07, `vk_shaders/crs_matrix`, **PASS 514/514**, suite **PASS
