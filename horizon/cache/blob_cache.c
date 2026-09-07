@@ -1039,25 +1039,68 @@ static int bc_slot_cmp_offset(const void *a, const void *b)
     return 0;
 }
 
-/* Copy `len` bytes from `src` to `dst` within the same open file, using
- * a bounded staging buffer. Only ever called with dst <= src (see
- * bc_compact), so the copy runs forwards without overwriting what it has
- * not read yet. */
-static bool bc_move_range(FILE *f, uint64_t dst, uint64_t src, uint64_t len)
+/* Staging buffer for the in-place copy below, in bytes.
+ *
+ * THE SAME SIZE AS THE STREAM BUFFER, AND NOT SMALLER. A seek empties
+ * the stdio buffer, and the read that follows refills all of it however
+ * little was asked for; so what decides the cost of the copy is how
+ * many times it seeks per byte moved. It used to seek twice per RECORD
+ * — read one, seek to its destination, write it, seek to the next —
+ * and a record is a few kilobytes: measured on the host with strace,
+ * one compaction of an 8 MiB cache that kept 4.2 MB read 188 MB in
+ * 2872 calls. Now it reads the source forward once, never seeking over
+ * a gap smaller than the buffer, stages the survivors here, and seeks
+ * to the destination once per full buffer. Heap-allocated because
+ * 64 KiB is too much for the stack of a thread this may run on. */
+#define HORIZON_BC_MOVE_CHUNK HORIZON_BC_STREAM_BUF
+
+/* The streamed in-place copy: survivors are read in ascending source
+ * order into `buf` and written out at `dst` a buffer at a time. */
+typedef struct bc_mover {
+    FILE *f;
+    uint8_t *buf;        /* HORIZON_BC_MOVE_CHUNK bytes, caller's */
+    size_t staged;       /* bytes waiting in buf */
+    uint64_t dst;        /* where buf[0] goes */
+    uint64_t read_pos;   /* where the stream is, while reading */
+} bc_mover;
+
+/* Write out what is staged, and put the stream back on the source. The
+ * seek back is also what the C library requires between a write and
+ * the read that follows it. */
+static bool bc_mover_flush(bc_mover *m)
 {
-    uint8_t buf[4096];
+    if (m->staged == 0)
+        return true;
+    if (!bc_seek(m->f, m->dst) ||
+        fwrite(m->buf, 1, m->staged, m->f) != m->staged)
+        return false;
+    m->dst += m->staged;
+    m->staged = 0;
+    return bc_seek(m->f, m->read_pos);
+}
 
+/* Stage the `len` bytes at `src`. Sources ascend, so `src` is at or
+ * past the read position; the gap is stepped over the cheap way. */
+static bool bc_mover_take(bc_mover *m, uint64_t src, uint64_t len)
+{
+    if (src < m->read_pos)
+        return false;
+    if (src > m->read_pos) {
+        if (!bc_skip_forward(m->f, m->read_pos, src - m->read_pos))
+            return false;
+        m->read_pos = src;
+    }
     while (len > 0) {
-        size_t chunk = len < sizeof(buf) ? (size_t)len : sizeof(buf);
-
-        if (!bc_read_at(f, src, buf, chunk))
+        if (m->staged == HORIZON_BC_MOVE_CHUNK && !bc_mover_flush(m))
             return false;
-        if (!bc_seek(f, dst) || fwrite(buf, 1, chunk, f) != chunk)
-            return false;
+        size_t room = HORIZON_BC_MOVE_CHUNK - m->staged;
+        size_t take = len < room ? (size_t)len : room;
 
-        src += chunk;
-        dst += chunk;
-        len -= chunk;
+        if (!bc_read_next(m->f, m->buf + m->staged, take))
+            return false;
+        m->staged += take;
+        m->read_pos += take;
+        len -= take;
     }
     return true;
 }
@@ -1093,6 +1136,12 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     if (c->read_only)
         return horizon_gpu_err(HORIZON_GPU_ERR_STATE);
 
+    /* Before anything is stamped or moved, so failing to get it leaves
+     * the file exactly as it was. */
+    uint8_t *move_buf = malloc(HORIZON_BC_MOVE_CHUNK);
+    if (move_buf == NULL)
+        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+
     /* Budget: a WATERMARK BELOW THE CEILING, less the record about to be
      * appended.
      *
@@ -1115,8 +1164,10 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
         /* Two per slot at most: a key can carry both an entry and a
          * key-only mark, and each is its own record on disk. */
         live = calloc((size_t)c->slot_used * 2u, sizeof(*live));
-        if (live == NULL)
+        if (live == NULL) {
+            free(move_buf);
             return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        }
 
         for (uint32_t i = 0; i < c->slot_cap; i++) {
             const bc_slot *sl = &c->slots[i];
@@ -1176,13 +1227,25 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
         fwrite(fhdr, 1, sizeof(fhdr), c->file) != sizeof(fhdr) ||
         !bc_sync(c->file)) {
         free(live);
+        free(move_buf);
         return horizon_gpu_err(HORIZON_GPU_ERR_IO);
     }
 
     horizon_gpu_result res = horizon_gpu_ok();
     uint64_t dst = c->header_size;
+    bc_mover mv = {
+        .f = c->file,
+        .buf = move_buf,
+        .dst = c->header_size,
+        .read_pos = c->header_size,
+    };
 
-    for (uint32_t i = 0; i < keep_n; i++) {
+    /* The one seek to the source; bc_mover_take walks forward from
+     * here and bc_mover_flush returns here after every write. */
+    if (!bc_seek(c->file, mv.read_pos))
+        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    for (uint32_t i = 0; horizon_gpu_succeeded(res) && i < keep_n; i++) {
         uint32_t size = live[i].flags == HORIZON_BC_REC_DATA ? live[i].size : 0;
         uint64_t span;
 
@@ -1196,13 +1259,19 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
             res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
             break;
         }
-        if (dst != live[i].offset &&
-            !bc_move_range(c->file, dst, live[i].offset, span)) {
+        if (dst == live[i].offset && mv.staged == 0) {
+            /* Already where it belongs: the records before the first
+             * dropped one. Nothing to read and nothing to write. */
+            mv.dst = dst + span;
+        } else if (!bc_mover_take(&mv, live[i].offset, span)) {
             res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
             break;
         }
         dst += span;
     }
+
+    if (horizon_gpu_succeeded(res) && !bc_mover_flush(&mv))
+        res = horizon_gpu_err(HORIZON_GPU_ERR_IO);
 
     if (horizon_gpu_succeeded(res)) {
         if (fflush(c->file) != 0 ||
@@ -1211,6 +1280,7 @@ static horizon_gpu_result bc_compact(horizon_gpu_blob_cache *c,
     }
 
     free(live);
+    free(move_buf);
 
     if (horizon_gpu_failed(res)) {
         /* The header still says COMPACTING and stays that way: the next
