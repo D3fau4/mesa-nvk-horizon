@@ -279,6 +279,66 @@ every run ended by quitting on its own. The screen itself was not
 looked at: sys-botbase's capture returns a stale frame for an
 application that owns the display, which is why the hash exists.
 
+## The Forward+ hang is not the register count, and Mobile is what says so
+
+2026-09-07, one run, `bench_mob_reg` — the Mobile build from 2026-09-02,
+which is the only binary that carries NAK's `crsinfo` reporting, because
+that work is parked in a stash and this driver does not have it. Run
+with `NAK_DEBUG=crsinfo` and `GODOT_NO_PSO_CACHE=1`, so every shader was
+compiled in this process and printed.
+
+**Mobile renders all eight phases with a 64-register fragment shader**,
+while the Forward+ scene shader hangs at 24:
+
+| stage | instrs | gprs | max_crs_depth | crs_size | outcome |
+|---|---|---|---|---|---|
+| Vertex | 255 | 56 | 2 | 0 | renders |
+| Fragment | 2 | 24 | 0 | 0 | renders |
+| Vertex | 411 | 72 | 2 | 0 | renders |
+| **Fragment** | 891 | **64** | 4 | **0** | **renders** |
+| Fragment | 368 | 32 | 2 | 0 | renders |
+
+(`3d_cubes_2000` at 33.33 ms, `3d_omni_16` reached, eight of eight
+phases measured.)
+
+So **the register count is not a rule of this chip.** The ladder
+recorded on 2026-09-02 — 112, 66, 34, 26, 24 GPRs all hang and 22
+renders — was a property of one shader's compilations, not of the
+hardware, and this is the falsifier it was waiting for.
+
+**What is left is the convergence stack.** The Forward+ scene fragment
+shader is the only shader in either renderer with `crs_size != 0`, in
+every row of that ladder. And `crs_size` is not a mystery: `sm50.rs`
+computes it from the nesting depth alone —
+
+    fn crs_size(&self, max_crs_depth: u32) -> u32 {
+        if max_crs_depth <= 16 { 0 }
+        else if max_crs_depth <= 32 { 1024 }
+        else { ((max_crs_depth + 32) * 16).next_multiple_of(512) }
+    }
+
+— so `crs_size != 0` means **more than sixteen nested convergence
+points**. Mobile's deepest shader is 4. This project's own deepest,
+`vk_shaders/nested_control_flow_frag`, is twelve levels, which is why
+its header says sm50 "reserves nothing behind the convergence stack".
+**Nothing that has ever run here except Godot's Forward+ scene shader
+has crossed sixteen.**
+
+Neither property alone is sufficient, and that is the shape of the
+answer: 64 registers with no convergence stack renders, 22 registers
+with one renders, and 24 registers with one hangs. It is the
+combination — a warp footprint that is both a real convergence stack in
+local memory and enough registers — and the one piece of state this
+driver writes about exactly that is
+`SET_SUBTILING_PERF_KNOB_A.fraction_of_spm_register_file_per_subtile`,
+which `nvk_shader.c` sets on every fragment-shader bind.
+
+**The repro this project does not have** is therefore specific rather
+than vague: a fragment shader with `max_crs_depth > 16` and enough live
+values to compile above 24 registers. That is a case in `vk_shaders`,
+not a Godot export, and it would move the whole question inside this
+tree.
+
 ## Forward+ still hangs, and `0073` is not what it was
 
 2026-09-07, build `18:56:22.600Z`, one run, asked for because the
