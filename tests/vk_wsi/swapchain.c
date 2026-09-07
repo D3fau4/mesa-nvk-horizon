@@ -70,6 +70,14 @@
  *      FORCE_COPY takes the other one — because a decision that can
  *      only come out one way is a constant, not a decision.
  *
+ *   I. The capabilities are the contract Vulkan describes, not
+ *      merely one this driver agrees with itself about. The trio
+ *      minImageExtent / currentExtent / maxImageExtent is checked
+ *      against the specification's own words, the per-present-mode
+ *      query is checked against the count creation will actually use,
+ *      and both edges of the published range are created. Sections A
+ *      to H exercise the behaviour; this one reads the contract back.
+ *
  * HOW A PRESENT IS PROVED, given that nothing can be read back. A
  * presented frame is gone: there is no buffer to compare against and
  * "no errors were reported" is not evidence. Four independent things
@@ -96,6 +104,14 @@
 
 #include "common/vkfw.h"
 
+/* The one symbol the driver exports for a loader to find. Declared
+ * rather than included, the way vkfw.c declares it: vk_icd.h is the
+ * loader's header and this is the application standing in for one.
+ * Section I needs vkGetPhysicalDeviceSurfaceCapabilities2KHR, which is
+ * not in VKFW_WSI_PROCS because only this case asks for it. */
+extern PFN_vkVoidFunction
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
+
 /* Frames per measured run. 90 at 60 Hz is a second and a half — long
  * enough for a mean to mean something, short enough that six runs and
  * teardown stay inside a quarter-minute of the operator's time. */
@@ -113,6 +129,12 @@
  * whether it is suboptimal; nothing here measures pacing. */
 #define SC_CYCLES        3u
 #define SC_CYCLE_FRAMES  12u
+
+/* Section I: frames presented at the smallest extent the surface
+ * publishes. Enough to prove the compositor accepts and consumes it —
+ * nothing here measures pacing, and 16x16 is not a size anybody looks
+ * at. */
+#define SC_EDGE_FRAMES   4u
 
 /* How long section G waits for somebody to dock or undock the console,
  * and how many frames it presents between checks. A bound, not a
@@ -818,6 +840,13 @@ TEST_CASE_DECL(vk_wsi, swapchain)
    const char *const instance_exts[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
       VK_NN_VI_SURFACE_EXTENSION_NAME,
+      /* Section I's, and only section I's: the per-present-mode
+       * capabilities query and the scaling capabilities it carries.
+       * Both are advertised by this driver (nvk_instance.c), and
+       * enabling them changes nothing about the sections before it —
+       * they add query structures and no behaviour. */
+      VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+      VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
    };
    const char *const device_exts[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -825,7 +854,7 @@ TEST_CASE_DECL(vk_wsi, swapchain)
 
    /* Dynamic rendering is not used here — the frame is a clear — so the
     * fixture is asked for nothing beyond the extensions. */
-   if (!vkfw_init_full(&fw, t, NULL, instance_exts, 2, device_exts, 1)) {
+   if (!vkfw_init_full(&fw, t, NULL, instance_exts, 4, device_exts, 1)) {
       t_note(t, "if this failed with EXTENSION_NOT_PRESENT, the build has "
                 "no VI surface: -Dplatforms=vi is what creates it");
       return 1;
@@ -2033,6 +2062,304 @@ TEST_CASE_DECL(vk_wsi, swapchain)
               "window", extent.width, extent.height,
               last.currentExtent.width, last.currentExtent.height,
               vkfw_result_str(lr));
+   }
+
+   /* --- I: the contract the capabilities publish --------------------
+    *
+    * Everything above exercises the behaviour. This section reads the
+    * published contract back and checks it against the specification,
+    * because a driver can be perfectly self-consistent and still be
+    * publishing something no other Vulkan means by those fields — and
+    * every check above would pass.
+    *
+    * WHAT THE SPECIFICATION SAYS, quoted from the WSI chapter of
+    * Vulkan-Docs (chapters/VK_KHR_surface/wsi.adoc, main, read
+    * 2026-09-07):
+    *
+    *   currentExtent   "the current width and height of the surface, or
+    *                   the special value (0xFFFFFFFF, 0xFFFFFFFF)"
+    *   minImageExtent  "the smallest valid swapchain extent ... will
+    *                   each be less than or equal to the corresponding
+    *                   width and height of currentExtent"
+    *   maxImageExtent  "the largest valid swapchain extent ... will
+    *                   each be greater than or equal to the
+    *                   corresponding width and height of currentExtent"
+    *
+    * So a RANGE around currentExtent is the shape the specification
+    * itself describes, and what binds an application is
+    * VUID-VkSwapchainCreateInfoKHR-pNext-07781: imageExtent "must be
+    * between minImageExtent and maxImageExtent, inclusive". No valid
+    * usage anywhere ties imageExtent to currentExtent. Android — whose
+    * BufferQueue this compositor's is — publishes exactly this shape
+    * and says what happens: "when a swapchain's imageExtent does not
+    * match the surface's currentExtent, the presentable images will be
+    * scaled to the surface's dimensions during presentation.
+    * minImageExtent is (1,1)". The platforms that report
+    * min == current == max are the ones that cannot scale.
+    *
+    * WHAT IS NOT PROMISED, and this is why supportedPresentScaling is
+    * zero: VK_KHR_surface_maintenance1 asks which scaling method and
+    * which pixel gravity the presentation engine will apply, chosen per
+    * swapchain, and zero means "application-defined scaling is not
+    * supported" — not "no scaling happens". The mode here is the
+    * window's NWindow::scaling_mode, which belongs to the window rather
+    * than to any swapchain. What the extension does require is that the
+    * scaled extents bracket the unscaled ones, and that is checked.
+    *
+    * AND THE COUNT IS PER MODE. The same extension lets an application
+    * chain VkSurfacePresentModeKHR to ask about one present mode, of
+    * which the specification says minImageCount and maxImageCount "are
+    * valid only for the specified presentMode". This backend raises the
+    * count to three for IMMEDIATE, because the compositor honours
+    * swapInterval 0 only with three buffers registered — so the number
+    * it publishes for IMMEDIATE has to be that one. Until 0075 it
+    * published the queue's mode-agnostic floor to every such question.
+    */
+   {
+      PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR get_caps2 =
+         (PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR)
+         vk_icdGetInstanceProcAddr(
+            fw.instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
+
+      VkSurfaceCapabilitiesKHR now;
+      memset(&now, 0, sizeof(now));
+      VkResult ir = fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+         fw.pdev, surface, &now);
+      t_check(t, ir == VK_SUCCESS, "I: surface capabilities -> %s",
+              vkfw_result_str(ir));
+
+      t_check(t, now.currentExtent.width != UINT32_MAX &&
+              now.currentExtent.height != UINT32_MAX,
+              "I: currentExtent is a size (%" PRIu32 "x%" PRIu32 ") and "
+              "not the (0xFFFFFFFF, 0xFFFFFFFF) that means the swapchain "
+              "decides", now.currentExtent.width, now.currentExtent.height);
+
+      t_check(t, now.minImageExtent.width <= now.currentExtent.width &&
+              now.minImageExtent.height <= now.currentExtent.height,
+              "I: minImageExtent %" PRIu32 "x%" PRIu32 " is at or below "
+              "currentExtent %" PRIu32 "x%" PRIu32 ", which is what the "
+              "specification says it will be",
+              now.minImageExtent.width, now.minImageExtent.height,
+              now.currentExtent.width, now.currentExtent.height);
+
+      t_check(t, now.maxImageExtent.width >= now.currentExtent.width &&
+              now.maxImageExtent.height >= now.currentExtent.height,
+              "I: maxImageExtent %" PRIu32 "x%" PRIu32 " is at or above "
+              "currentExtent %" PRIu32 "x%" PRIu32,
+              now.maxImageExtent.width, now.maxImageExtent.height,
+              now.currentExtent.width, now.currentExtent.height);
+
+      t_check(t, now.minImageCount >= 1 &&
+              (now.maxImageCount == 0 ||
+               now.maxImageCount >= now.minImageCount),
+              "I: the image counts are a range too (%" PRIu32 " to "
+              "%" PRIu32 ")", now.minImageCount, now.maxImageCount);
+
+      if (t_check(t, get_caps2 != NULL,
+                  "I: vkGetPhysicalDeviceSurfaceCapabilities2KHR resolved")) {
+         const VkPhysicalDeviceSurfaceInfo2KHR info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+            .surface = surface,
+         };
+         VkSurfaceCapabilities2KHR c2;
+         memset(&c2, 0, sizeof(c2));
+         c2.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR;
+
+         ir = get_caps2(fw.pdev, &info, &c2);
+         t_check(t, ir == VK_SUCCESS &&
+                 memcmp(&c2.surfaceCapabilities, &now, sizeof(now)) == 0,
+                 "I: with nothing chained the 2KHR query answers exactly "
+                 "what the 1.0 query does -> %s", vkfw_result_str(ir));
+
+         static const VkPresentModeKHR modes[2] = {
+            VK_PRESENT_MODE_FIFO_KHR,
+            VK_PRESENT_MODE_IMMEDIATE_KHR,
+         };
+         static const char *const mode_names[2] = { "FIFO", "IMMEDIATE" };
+         uint32_t per_mode_min[2] = { 0, 0 };
+         uint32_t scaling_wrong = 0;
+
+         for (uint32_t m = 0; m < 2; m++) {
+            const VkSurfacePresentModeKHR pm = {
+               .sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR,
+               .presentMode = modes[m],
+            };
+            const VkPhysicalDeviceSurfaceInfo2KHR minfo = {
+               .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+               .pNext = &pm,
+               .surface = surface,
+            };
+            VkSurfacePresentScalingCapabilitiesKHR scaling;
+            memset(&scaling, 0, sizeof(scaling));
+            scaling.sType =
+               VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR;
+
+            VkSurfaceCapabilities2KHR mc;
+            memset(&mc, 0, sizeof(mc));
+            mc.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR;
+            mc.pNext = &scaling;
+
+            ir = get_caps2(fw.pdev, &minfo, &mc);
+            if (!t_check(t, ir == VK_SUCCESS,
+                         "I: capabilities for %s -> %s", mode_names[m],
+                         vkfw_result_str(ir)))
+               continue;
+
+            per_mode_min[m] = mc.surfaceCapabilities.minImageCount;
+
+            t_note(t, "I: %s wants %" PRIu32 " to %" PRIu32 " images; "
+                      "scaling 0x%08x, gravity 0x%08x/0x%08x, scaled "
+                      "%" PRIu32 "x%" PRIu32 " to %" PRIu32 "x%" PRIu32,
+                   mode_names[m], mc.surfaceCapabilities.minImageCount,
+                   mc.surfaceCapabilities.maxImageCount,
+                   scaling.supportedPresentScaling,
+                   scaling.supportedPresentGravityX,
+                   scaling.supportedPresentGravityY,
+                   scaling.minScaledImageExtent.width,
+                   scaling.minScaledImageExtent.height,
+                   scaling.maxScaledImageExtent.width,
+                   scaling.maxScaledImageExtent.height);
+
+            /* The relationship the extension requires of whatever is
+             * reported here: the scaled range brackets the unscaled
+             * one. It holds trivially when they are equal, which is
+             * what a surface offering no application-defined scaling
+             * reports. */
+            if (scaling.minScaledImageExtent.width >
+                   mc.surfaceCapabilities.minImageExtent.width ||
+                scaling.minScaledImageExtent.height >
+                   mc.surfaceCapabilities.minImageExtent.height ||
+                scaling.maxScaledImageExtent.width <
+                   mc.surfaceCapabilities.maxImageExtent.width ||
+                scaling.maxScaledImageExtent.height <
+                   mc.surfaceCapabilities.maxImageExtent.height)
+               scaling_wrong++;
+         }
+
+         t_check(t, scaling_wrong == 0,
+                 "I: for both modes the scaled extents bracket the "
+                 "unscaled ones (%" PRIu32 " did not)", scaling_wrong);
+
+         /* THE ONE THE AUDIT FOUND. Three images is what an IMMEDIATE
+          * swapchain gets here; a surface that answers two to the
+          * question "what does IMMEDIATE need?" has told the
+          * application a number its own creation will overrule. */
+         t_check(t, per_mode_min[1] >= 3,
+                 "I: asked about IMMEDIATE the surface says at least "
+                 "%" PRIu32 " images (FIFO: %" PRIu32 ") — three is what "
+                 "the compositor needs before it honours swapInterval 0",
+                 per_mode_min[1], per_mode_min[0]);
+
+         /* And the promise is kept: a swapchain created with exactly
+          * the count its own mode published gets exactly that many. */
+         for (uint32_t m = 0; m < 2; m++) {
+            if (per_mode_min[m] == 0)
+               continue;
+
+            sc_swapchain probe;
+            if (!sc_create(&fw, surface, per_mode_min[m], modes[m],
+                           VK_FORMAT_R8G8B8A8_UNORM, now.currentExtent,
+                           VK_NULL_HANDLE, "I: at its mode's own count",
+                           &probe))
+               continue;
+
+            t_check(t, probe.image_count == per_mode_min[m],
+                    "I: %s asked for the %" PRIu32 " images its mode "
+                    "advertises and got %" PRIu32, mode_names[m],
+                    per_mode_min[m], probe.image_count);
+
+            fw.vk.vkDeviceWaitIdle(fw.dev);
+            sc_destroy(&fw, &probe);
+         }
+      }
+
+      /* BOTH EDGES OF THE RANGE, because a range whose ends are not
+       * usable is not the contract that was published. The upper edge
+       * is currentExtent and sections B to H have presented it all day;
+       * the lower one is 16x16 and nothing since t_nwindow's extent
+       * ramp on 2026-08-24 has been near it. */
+      {
+         sc_swapchain edge;
+         if (sc_create(&fw, surface, 2, VK_PRESENT_MODE_FIFO_KHR,
+                       VK_FORMAT_R8G8B8A8_UNORM, now.minImageExtent,
+                       VK_NULL_HANDLE, "I: at minImageExtent", &edge)) {
+            sc_stats st;
+            sc_stats_init(&st, "I: minImageExtent");
+            sc_run(&fw, &edge, SC_EDGE_FRAMES, 0, &st);
+
+            t_check(t, st.frames_presented == SC_EDGE_FRAMES,
+                    "MEASURED I: the smallest extent the surface offers "
+                    "(%" PRIu32 "x%" PRIu32 ") presented %" PRIu32 " of "
+                    "%" PRIu32 " frames",
+                    now.minImageExtent.width, now.minImageExtent.height,
+                    st.frames_presented, (uint32_t)SC_EDGE_FRAMES);
+
+            fw.vk.vkDeviceWaitIdle(fw.dev);
+            sc_destroy(&fw, &edge);
+         }
+      }
+
+      /* AND THE OTHER SIDE OF THE SAME RULE. This asks for an extent
+       * outside the published range, which is a valid-usage violation
+       * on the application's part and is committed here deliberately:
+       * with no validation layer on a console, the backend's own guard
+       * is the only thing between a wrong request and a window
+       * registered at a size the layer cannot hold. It is checked here
+       * rather than assumed because the common WSI clamps only when
+       * force_swapchain_to_currentExtent is set, and this backend does
+       * not set it. */
+      {
+         const VkExtent2D too_big = {
+            now.maxImageExtent.width + 16,
+            now.maxImageExtent.height + 16,
+         };
+         const VkSwapchainCreateInfoKHR bci = {
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .surface = surface,
+            .minImageCount = 2,
+            .imageFormat = VK_FORMAT_R8G8B8A8_UNORM,
+            .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+            .imageExtent = too_big,
+            .imageArrayLayers = 1,
+            .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+            .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+            .clipped = VK_TRUE,
+         };
+         VkSwapchainKHR bad = VK_NULL_HANDLE;
+         const VkResult br = fw.wsi.vkCreateSwapchainKHR(fw.dev, &bci, NULL,
+                                                         &bad);
+         t_check(t, br != VK_SUCCESS,
+                 "I: %" PRIu32 "x%" PRIu32 ", which is past maxImageExtent, "
+                 "is refused -> %s", too_big.width, too_big.height,
+                 vkfw_result_str(br));
+         if (br == VK_SUCCESS && bad != VK_NULL_HANDLE) {
+            fw.vk.vkDeviceWaitIdle(fw.dev);
+            fw.wsi.vkDestroySwapchainKHR(fw.dev, bad, NULL);
+         }
+      }
+
+      /* And after all of that the surface still says what it said at
+       * the top of section A. Section H checks the same thing after its
+       * own cycles; this one runs after a 16x16 swapchain, which is the
+       * smallest registration this process ever makes. */
+      VkSurfaceCapabilitiesKHR after;
+      memset(&after, 0, sizeof(after));
+      ir = fw.wsi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(fw.pdev, surface,
+                                                            &after);
+      t_check(t, ir == VK_SUCCESS &&
+              after.currentExtent.width == extent.width &&
+              after.currentExtent.height == extent.height &&
+              after.maxImageExtent.width == extent.width &&
+              after.maxImageExtent.height == extent.height,
+              "MEASURED I: the surface still reports the layer "
+              "(%" PRIu32 "x%" PRIu32 ") after a swapchain at every edge "
+              "of its range (%" PRIu32 "x%" PRIu32 " -> %s)",
+              extent.width, extent.height, after.currentExtent.width,
+              after.currentExtent.height, vkfw_result_str(ir));
    }
 
    goto out_surface;
