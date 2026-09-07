@@ -1,0 +1,66 @@
+From 38f06e2af922ec5b3ffa8d638c37ff6684acce5e Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 19:00:00 +0000
+Subject: [PATCH 73/74] nouveau/vk: an upload chunk records what the CPU wrote
+ into it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (CPU cost of submission)
+Why: nvk_cmd_buffer_upload_alloc has two paths. The fast one carves a
+ range out of cmd->upload_mem and advances used_B, which is what
+ flush_mem_list cleans:
+     if (mem->used_B > 0)
+        nvkmd_mem_sync_map_to_gpu(mem->mem, 0, mem->used_B);
+ The other takes a brand-new chunk, hands the caller offset 0 of it,
+ and never touches used_B at all. If that chunk is not then adopted as
+ cmd->upload_mem — which happens whenever the allocation is at least as
+ large as the current upload offset — nothing ever sets used_B, the
+ clean is skipped, and the bytes the CPU memcpy'd into it stay in the
+ CPU's cache while the GPU reads memory.
+Evidence: measured on a console 2026-09-07, vk_core/transfer section C,
+ with the Horizon backend not zero-filling command memory:
+     FAIL C inline update landed: 48/64 words match
+     first mismatch at word 0: got 0xff97803c, want 0xa5dac00d (16 wrong)
+ One cache line of a 256-byte vkCmdUpdateBuffer, arriving as heap
+ rubbish. With the allocator filling, the same gap delivered that
+ chunk's zeros instead, which is why nothing had ever caught it.
+Upstream: yes — nothing here is Horizon-specific. The gap is in NVK's
+ own bookkeeping and any backend whose mapped memory needs an explicit
+ clean can be bitten by it; it is invisible on a coherent one.
+
+One line, at the point the caller is promised [0, size) of the new
+chunk. MAX2 rather than a plain assignment because used_B is a
+high-water mark everywhere else it is touched, and this function is not
+the place to change that.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YajZtX9CeYzC35x2t1QJJh
+---
+ src/nouveau/vulkan/nvk_cmd_buffer.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.c b/src/nouveau/vulkan/nvk_cmd_buffer.c
+index 7f373dc..871033f 100644
+--- a/src/nouveau/vulkan/nvk_cmd_buffer.c
++++ b/src/nouveau/vulkan/nvk_cmd_buffer.c
+@@ -324,6 +324,15 @@ nvk_cmd_buffer_upload_alloc(struct nvk_cmd_buffer *cmd,
+    *addr = mem->mem->va->addr;
+    *ptr = mem->mem->map;
+ 
++   /* THE CALLER IS ABOUT TO WRITE [0, size) OF THIS CHUNK, and
++    * flush_mem_list only cleans what used_B says was written. Without
++    * this line a chunk taken here and not adopted as cmd->upload_mem
++    * below keeps used_B == 0 for its whole life, so the clean is
++    * skipped and the GPU reads whatever is in memory rather than what
++    * the CPU put in the cache.
++    */
++   mem->used_B = MAX2(mem->used_B, size);
++
+    /* Pick whichever of the current upload BO and the new BO will have more
+     * room left to be the BO for the next upload.  If our upload size is
+     * bigger than the old offset, we're better off burning the whole new
+-- 
+2.53.0.windows.2
+
