@@ -341,7 +341,8 @@ nvk_test_libs = [
 # back through machinery the case before it established, which used to
 # be a run order in tests/README.md and is now a property of the build.
 nvk_suites = {
-  'vk_core' : ['bringup', 'transfer', 'device_memory', 'image_clear',
+  'vk_core' : ['bringup', 'transfer', 'upload_chunks', 'device_memory',
+               'image_clear',
                'capabilities', 'timestamps', 'concurrent_submits',
                'submit_batching', 'sparse_binding'],
   'vk_shaders' : ['compute_dispatch', 'dynamic_loop', 'packed_bound_loop',
@@ -381,6 +382,7 @@ nvk_suites = {
 nvk_case_shaders = {
   'vk_core/bringup' : [],
   'vk_core/transfer' : [],
+  'vk_core/upload_chunks' : [],
   'vk_core/device_memory' : [],
   # None on purpose: see the note above.
   'vk_core/image_clear' : [],
