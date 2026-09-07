@@ -25,6 +25,15 @@ them. Everything below is class **HW**:
 A result whose log has no `horizon-build-id` line cannot be attributed
 to a build and does not belong here.
 
+**The test names below are the ones the runs used, and several no longer
+exist as files.** The suite refactor turned fifty-three `.nro` into
+fourteen, each holding several cases, and a result is now identified as
+`<suite>/<case>`: `t_vk_zcull` is `vk_render/zcull`, `t_nwindow` is
+`display/nwindow`, and so on for the rest. They are not renamed here on
+purpose — this file records what a particular run reported, and a run
+reported the name it printed. `tests/<suite>/suite.c` is the mapping,
+and `git log --follow` on any of these paths reaches the old file.
+
 ---
 
 ## Zcull bound, and Mobile and the depth path unregressed

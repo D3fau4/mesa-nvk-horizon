@@ -28,11 +28,17 @@ otherwise be measured twice; otherwise it just leaves.
 | **X** — cross | Cross-compiled for aarch64 Horizon; a `.nro` exists | That it runs, or is correct |
 | **HW** — hardware | Ran on a real console, with the log | Only what the log actually shows |
 
+**The test names below are the ones in the tree today.** The suite refactor
+turned fifty-three `.nro` into fourteen, each holding several cases, and a
+result is now identified as `<suite>/<case>` — so what an older log calls
+`t_vk_zcull` this file calls `vk_render/zcull`, and it is the same code. The
+mapping for every one of them is `tests/<suite>/suite.c`.
+
 ---
 
 ## 1 Zcull is now bound, and nothing has run it
 
-**Class X.** `mesa-patches/0059` and `0060` and `tests/t_vk_zcull.c`
+**Class X.** `mesa-patches/0059` and `0060` and `tests/vk_render/zcull.c`
 cross-build; no console has executed any of them.
 
 Until 0060, the physical device advertised `has_zcull_info` and every
@@ -44,7 +50,7 @@ stops advertising Zcull where `nvGpuGetZcullCtxSize()` is 0, and adds
 
 Zcull only ever *rejects*, so a fault here is silent: a fragment wrongly
 culled is geometry that is not drawn, with no notifier and nothing in a
-log. `t_vk_zcull` is built around that. It renders one depth workload
+log. `vk_render/zcull` is built around that. It renders one depth workload
 twice in one process — section A with `NVK_HORIZON_ZCULL=0`, section B
 with it on — and compares the colour and depth images pixel for pixel,
 plus an analytic check on each half so a fault affecting both equally
@@ -63,7 +69,7 @@ Three things the run has to report:
   workload is unknown; the workload was built to be checkable, not to be
   culled well.
 
-**Done when** `t_vk_zcull` has run on a console and the answer has been
+**Done when** `vk_render/zcull` has run on a console and the answer has been
 acted on: kept and recorded if A and B match, withdrawn if they do not.
 The seventeen existing Vulkan tests have to be re-run alongside it —
 every one of them that clears a depth attachment now takes a different
@@ -86,8 +92,8 @@ pipeline drain per cross-channel wait.
 **This changes the submit path every test goes through**, so the whole
 suite is what has to be re-run, not only the WSI tests. Patch 0035 means
 only cross-channel waits reach it, so the paths that exercise it are the
-upload queue and presentation: `t_vk_wsi_mt`, `t_vk_present_draw`,
-`t_vk_submits`, `t_submit`.
+upload queue and presentation: `vk_wsi/concurrency`, `vk_present/drawn_frame`,
+`vk_core/concurrent_submits`, `gpu_submit/submit`.
 
 `HORIZON_GPU_FULL_BARRIER_WAITS=1` restores the old shape, so both can
 be measured in one run rather than across two builds.
@@ -108,22 +114,22 @@ this line; it cross-builds and no console has run it.
 `horizon_gpu_channel_reap` skipped the `SyncptRead` ioctl when no
 retirement is registered — which, on the path NVK takes, is always:
 `horizon_gpu_channel_add_retirement` has exactly one caller in the tree
-and it is `tests/t_teardown.c`. The fault check stays unconditional; it
+and it is `tests/platform/teardown.c`. The fault check stays unconditional; it
 is the safety property and it costs an event wait, not an ioctl.
 
-**Done when** `t_teardown` still passes (it is the test that registers
+**Done when** `platform/teardown` still passes (it is the test that registers
 retirements, so the read still happens there and the callbacks must
-still fire), and `t_submit` has reported the per-submit cost with and
+still fire), and `gpu_submit/submit` has reported the per-submit cost with and
 without `HORIZON_GPU_EAGER_REAP=1`. If the difference is inside the
 noise, say so and consider taking the branch back out.
 
 ## 4 Three new test binaries, none of which has ever run
 
-**Class X.** `t_vk_zcull`, `t_vk_pipelines` and `t_vk_draws` build as
+**Class X.** `vk_render/zcull`, `vk_pipelines/pipeline_volume` and `vk_render/draw_volume` build as
 `.nro` under `-Wall -Wextra -Werror` and link every archive
 `meson.build` names. Nothing more than that is known about them.
 
-`t_vk_pipelines` is the first thing in this project that makes the
+`vk_pipelines/pipeline_volume` is the first thing in this project that makes the
 shader heap grow past the chunk `nvk_heap_ensure_first_chunk` binds at
 device creation: 96 distinct specializations of a 448-instruction
 shader, which is at least 4.7 KiB of machine code each. Its sections C
@@ -131,14 +137,14 @@ and D are measurements rather than assertions — the cold compile
 distribution, and what a second build of the same specializations costs
 in the same process.
 
-`t_vk_draws` is the first to issue hundreds of draws with the pipeline
+`vk_render/draw_volume` is the first to issue hundreds of draws with the pipeline
 changing between them, and the first to blend. Its section C tolerance
 of 3/255 is derived from the round-off of twelve blend steps; the worst
 error actually seen is reported, so the first run says how much of that
 bound this hardware uses.
 
 **Done when** all three have passed on a console, their measurements are
-recorded, and — for `t_vk_draws` section C — the tolerance has been
+recorded, and — for `vk_render/draw_volume` section C — the tolerance has been
 narrowed to what was actually observed or the derivation corrected.
 
 ## 5 The acquire no longer waits for the compositor, and nothing has run it
@@ -148,8 +154,8 @@ narrowed to what was actually observed or the derivation corrected.
 (aarch64-none-elf-gcc 15.2.0, meson 1.11.2, `-Wall -Wextra -Werror`)
 compiles all five files they touch with no warning, links `libnvk.a` and
 `libvulkan_wsi.a`, and ends with 53 `.nro` linking them and both
-artefact gates clean. `t_vk_swapchain`, `t_vk_wsi_mt`,
-`t_vk_present_draw` and `t_nwindow` are among those 53. Nothing else is
+artefact gates clean. `vk_wsi/swapchain`, `vk_wsi/concurrency`,
+`vk_present/drawn_frame` and `display/nwindow` are among those 14. Nothing else is
 known: a `.nro` exists, and that is all class X ever means.
 
 `wsi_horizon_acquire_zero_copy` used to `nvMultiFenceWait` on the fence
@@ -165,9 +171,9 @@ Four things the run has to report, in this order:
 - **whether the picture is right.** This is the only change on this
   branch that can put a frame into a buffer the compositor is still
   reading, and that fault has no error, no notifier and no log line —
-  it is a torn band on screen and nothing else. `t_vk_present_draw`
-  section F is the test that drives the GPU-side path (`t_vk_swapchain`,
-  `t_vk_wsi_mt` and the other sections of F's own file take the CPU one,
+  it is a torn band on screen and nothing else. `vk_present/drawn_frame`
+  section F is the case that drives the GPU-side path (`vk_wsi/swapchain`,
+  `vk_wsi/concurrency` and the other sections of F's own file take the CPU one,
   which is the other half and equally worth running); a human looking at
   the screen is the instrument, because no Vulkan call this test can
   make would see it. **If tearing appears, the action is to set
