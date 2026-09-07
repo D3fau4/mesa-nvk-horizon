@@ -1,0 +1,809 @@
+From 152b6572bd48de5e653dd2dc7a4c0015d443848e Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 05:05:00 +0000
+Subject: [PATCH 63/66] nouveau/vk: nvkmd, a vk_sync over fences this driver
+ did not produce
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 8 (Correct fence-based synchronisation at
+ acquire and present)
+Why: 0034 exports the syncpoint fence behind a vk_sync, so Horizon's
+ compositor can be handed a frame that is still rendering. The acquire
+ needs exactly the reverse and has nowhere to put it. bqDequeueBuffer
+ returns an NvMultiFence saying when the compositor's own read of the
+ slot finishes, and the only thing a WSI backend can currently do with
+ it is nvMultiFenceWait on the calling thread — which is the stall
+ 0049's own comment quotes, 13.8 ms of a 16.7 ms frame while the GPU had
+ 0.18 ms of work to do.
+ .
+ 0049 already moved cross-channel waits onto the host engine, and this
+ is the payload that path cannot reach: nvk_horizon_sync_get_foreign_
+ fence recognises a sync PENDING on another CHANNEL of ours, and the
+ compositor is not a channel of ours. Inventing one to name it would be
+ a lie about who increments the counter — nothing in this driver ever
+ will — so the sync gains a payload with no channel in it instead:
+ `ext_fences` plus the horizon_gpu_device a CPU wait on them goes
+ through. `ext_fence_count` above zero is the discriminator, `chan` is
+ NULL beside it, and reset() and move() carry the two together.
+ .
+ An imported dependency is a SET and not one fence: NvMultiFence holds
+ up to four (measured, docs/MEASURED-ON-HARDWARE.md), and dropping any
+ of them is rendering started over a buffer something else is still
+ reading — a fault that reports itself as nothing. So the foreign-fence
+ query returns a count rather than a bool, all-or-nothing, and the
+ batch nvkmd_horizon_ctx_wait collects gained a second count: fences are
+ what the submit takes, syncs are what the CPU fallback waits on, and
+ waiting on one object four times would be three no-ops and four meter
+ entries.
+ .
+ Three places had to be told the payload exists, and each would have
+ been a wrong answer rather than a crash: the CPU wait
+ (horizon_gpu_fence_wait per fence sharing one deadline, since
+ channel_wait_fence refuses a syncpoint that is not its channel's),
+ get_value's poll, and the export in 0034 — which now answers
+ FEATURE_NOT_PRESENT for a set of more than one rather than naming any
+ single member of it as if it covered the whole.
+ .
+ Nothing calls the new op yet. The WSI change that does is the patch
+ after next; this one is the mechanism on its own so it can be reviewed
+ on its own.
+Evidence: HOST SYNTAX AND TYPE CHECK ONLY, gcc 13.3.0 (Ubuntu 24.04),
+ `gcc -fsyntax-only -std=c11 -DNDEBUG -DHAVE_PTHREAD
+ -DHAVE_STRUCT_TIMESPEC -D_GNU_SOURCE -Wall` over
+ nvkmd_horizon_{sync,ctx,pdev}.c against this tree plus horizon/include
+ and the Vulkan headers generated from src/vulkan/registry/vk.xml at
+ MESA_COMMIT (vk_dispatch_table_gen.py, vk_entrypoints_gen.py,
+ vk_physical_device_{features,properties}_gen.py, gen_enum_to_str.py,
+ vk_extensions_gen.py, vk_cmd_queue_gen.py). All three compile clean.
+ That is a compile, and CLAUDE.md says a compile is never described as
+ working: NO CROSS BUILD AND NO CONSOLE HAS RUN THIS.
+ .
+ Two things a console has to answer, neither of which the GPU path
+ depends on:
+  - whether NVHOST_IOCTL_CTRL_SYNCPT_READ answers for a syncpoint this
+    process does not own. horizon_gpu_fence_wait reads the counter
+    before it waits, so a refusal would make the CPU path report an
+    error where nvMultiFenceWait — which the acquire has been using on
+    these very fences since 0037, on hardware — succeeds. The host
+    engine's SYNCPOINT acquire reads nothing from the CPU and is
+    unaffected.
+  - whether the compositor ever returns more than one fence. Four are
+    handled; one is what the code is expected to see.
+Upstream: no — a syncpoint fence has no meaning on a DRM kernel driver,
+ where an imported dependency is a sync file and the runtime already has
+ a type for it.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      |  68 ++++-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  |  71 ++++--
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c |  58 +++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c | 236 ++++++++++++++++--
+ src/nouveau/vulkan/nvkmd/nvkmd.h              |  69 +++++
+ 5 files changed, 450 insertions(+), 52 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index a63cc0f..cf4236b 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -297,9 +297,40 @@ struct nvk_horizon_sync {
+    /* Borrowed from the context that signalled this object; waits go
+     * through the channel so a faulted one is reported rather than
+     * waited on forever.
++    *
++    * NULL while PENDING means the payload below is the one that is
++    * live: an imported dependency has no channel of ours behind it.
+     */
+    horizon_gpu_channel *chan;
+ 
++   /* THE IMPORTED PAYLOAD: fences this driver did not produce.
++    *
++    * `ext_fence_count` is the discriminator. Above zero the sync is
++    * PENDING on `ext_fences[0..count)`, `chan` is NULL and `fence` is
++    * unused; at zero everything is exactly as it was before imports
++    * existed. The two are never both live, and reset() and move()
++    * carry them together.
++    *
++    * A separate array rather than widening `fence`, because the two
++    * differ in more than count: a channel fence is one fence produced
++    * by a channel we can interrogate for faults, and this is a set of
++    * counters belonging to somebody else. Folding them would make
++    * every use of `fence` have to ask which kind it was looking at.
++    *
++    * `ext_dev` is what a CPU wait on this payload goes through, since
++    * horizon_gpu_channel_wait_fence has no channel to take. Borrowed
++    * from the pdev, which owns the one horizon_gpu_device this process
++    * has (decision D9) and outlives every sync created from it.
++    *
++    * The cost is NVKMD_MAX_SYNCPT_FENCES fences plus two words on every
++    * VkFence and VkSemaphore, imported or not. That is the price of a
++    * fixed vk_sync_type::size; a heap array would be an allocation and
++    * a failure path on a hot object to save 40 bytes.
++    */
++   horizon_gpu_device *ext_dev;
++   uint32_t ext_fence_count;
++   horizon_gpu_fence ext_fences[NVKMD_MAX_SYNCPT_FENCES];
++
+    /* Borrowed from the same context, on the same terms as `chan`, and
+     * NULL for exactly the same reason: nothing has submitted with this
+     * object yet. A wait folds its split into whichever meter the submit
+@@ -377,17 +408,42 @@ VkResult nvk_horizon_sync_get_fence(struct vk_sync *sync,
+ bool nvk_horizon_sync_is_pending_on(struct vk_sync *sync,
+                                     horizon_gpu_channel *chan);
+ 
+-/* The fence of a sync that is PENDING on a channel OTHER than `chan`,
+- * which is exactly the set of waits a GPU-side syncpoint wait can carry.
++/* The fences of a sync that is PENDING on something other than `chan` —
++ * another channel of ours, or an imported dependency with no channel at
++ * all — which is exactly the set of waits a GPU-side syncpoint wait can
++ * carry.
+  *
+- * False — and `fence_out` untouched — for anything else: a sync with no
++ * Returns how many were written to `fences_out`, at most `max_fences`.
++ * ZERO — and `fences_out` untouched — for anything else: a sync with no
+  * fence yet, one already signalled, one pending on `chan` itself (the
+  * GPFIFO already orders that one), or a foreign sync type. Those still
+  * belong to the CPU path.
++ *
++ * Zero ALSO when the payload has more fences than `max_fences`: the
++ * caller then waits on the CPU, which is slower and complete. Returning
++ * a prefix would be a dependency silently dropped.
++ */
++uint32_t nvk_horizon_sync_get_foreign_fences(struct vk_sync *sync,
++                                             horizon_gpu_channel *chan,
++                                             horizon_gpu_fence *fences_out,
++                                             uint32_t max_fences);
++
++/* Gives `sync` an imported payload: `fence_count` syncpoint fences that
++ * something outside this driver will increment, and the device a CPU
++ * wait on them goes through.
++ *
++ * The sync must be freshly created (RESET) and of this type; the fences
++ * must be 1..NVKMD_MAX_SYNCPT_FENCES. Anything else is refused, because
++ * overwriting a live payload would drop the dependency it held and
++ * truncating the list would drop one of these.
++ *
++ * The sync becomes PENDING, never SIGNALLED: it is reached when the
++ * counters are, and nothing here can know that yet.
+  */
+-bool nvk_horizon_sync_get_foreign_fence(struct vk_sync *sync,
+-                                        horizon_gpu_channel *chan,
+-                                        horizon_gpu_fence *fence_out);
++VkResult nvk_horizon_sync_import_fences(struct vk_sync *sync,
++                                        horizon_gpu_device *dev,
++                                        const horizon_gpu_fence *fences,
++                                        uint32_t fence_count);
+ 
+ VkResult nvkmd_horizon_create_ctx(struct nvkmd_dev *dev,
+                                   struct vk_object_base *log_obj,
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index 668ac1c..b87fb2a 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -277,20 +277,39 @@ nvkmd_horizon_ctx_wait_cpu(struct nvkmd_horizon_ctx *ctx,
+    return result;
+ }
+ 
++/* One batch of waits on their way to the host engine.
++ *
++ * TWO COUNTS AND NOT ONE, because a sync is not a fence: an imported
++ * dependency carries up to NVKMD_MAX_SYNCPT_FENCES of them and all of
++ * them have to be waited on. `fences` is what the submit takes; `syncs`
++ * is what the CPU fallback waits on if the submit is refused, and it
++ * holds each contributing sync ONCE — waiting on the same object four
++ * times would be three no-ops and four meter entries.
++ *
++ * Every sync contributes at least one fence, so sync_count is never
++ * above fence_count and one bound sizes both.
++ */
++struct nvkmd_horizon_wait_batch {
++   horizon_gpu_fence fences[HORIZON_GPU_MAX_WAIT_FENCES];
++   uint32_t fence_count;
++   struct vk_sync_wait syncs[HORIZON_GPU_MAX_WAIT_FENCES];
++   uint32_t sync_count;
++};
++
+ /* Hands the collected batch to the host engine, or falls back to CPU
+  * waits for exactly the syncs in it. Empties the batch either way.
+  */
+ static VkResult
+ nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
+-                                  horizon_gpu_fence *fences,
+-                                  struct vk_sync_wait *syncs,
+-                                  uint32_t *count)
++                                  struct nvkmd_horizon_wait_batch *batch)
+ {
+-   const uint32_t n = *count;
++   const uint32_t n = batch->fence_count;
++   const uint32_t n_syncs = batch->sync_count;
+    if (n == 0)
+       return VK_SUCCESS;
+ 
+-   *count = 0;
++   batch->fence_count = 0;
++   batch->sync_count = 0;
+ 
+    /* The out_fence matters, not just the status: this call is itself a
+     * channel submission (horizon_gpu_submit_waits pushes a wait command
+@@ -306,7 +325,7 @@ nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
+     */
+    horizon_gpu_fence fence;
+    horizon_gpu_result res =
+-      horizon_gpu_submit_waits(ctx->chan, fences, n, &fence);
++      horizon_gpu_submit_waits(ctx->chan, batch->fences, n, &fence);
+    if (horizon_gpu_succeeded(res)) {
+       ctx->last_fence = fence;
+       ctx->has_fence = true;
+@@ -325,8 +344,8 @@ nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
+     * never a wrong result. A lost channel goes the same way, because the
+     * CPU path is the one that can tell the caller so.
+     */
+-   for (uint32_t i = 0; i < n; i++) {
+-      VkResult result = nvkmd_horizon_ctx_wait_cpu(ctx, &syncs[i]);
++   for (uint32_t i = 0; i < n_syncs; i++) {
++      VkResult result = nvkmd_horizon_ctx_wait_cpu(ctx, &batch->syncs[i]);
+       if (result != VK_SUCCESS)
+          return result;
+    }
+@@ -365,9 +384,7 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+     *     own wait is what observes it acquiring one;
+     *   - the fallback when the channel's wait ring is momentarily full.
+     */
+-   horizon_gpu_fence gpu_fences[HORIZON_GPU_MAX_WAIT_FENCES];
+-   struct vk_sync_wait gpu_syncs[HORIZON_GPU_MAX_WAIT_FENCES];
+-   uint32_t n_gpu = 0;
++   struct nvkmd_horizon_wait_batch batch = { 0 };
+ 
+    for (uint32_t i = 0; i < wait_count; i++) {
+       /* THE WAIT THAT IS ALREADY SATISFIED, AND THE ONE CASE WHERE
+@@ -397,20 +414,29 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+          continue;
+       }
+ 
+-      horizon_gpu_fence fence;
+-      if (nvk_horizon_sync_get_foreign_fence(waits[i].sync, ctx->chan,
+-                                             &fence)) {
+-         gpu_fences[n_gpu] = fence;
+-         gpu_syncs[n_gpu] = waits[i];
+-         n_gpu++;
+-
+-         if (n_gpu == HORIZON_GPU_MAX_WAIT_FENCES) {
++      /* One sync, up to NVKMD_MAX_SYNCPT_FENCES fences. A batch that
++       * cannot take all of them goes out first: splitting one sync's
++       * fences across two submits would still be correct — the GPFIFO
++       * runs both before anything after them — but it would put half a
++       * dependency in a batch that can still fall back to a CPU wait,
++       * and the fallback waits on syncs rather than on fences. */
++      horizon_gpu_fence fences[NVKMD_MAX_SYNCPT_FENCES];
++      const uint32_t n =
++         nvk_horizon_sync_get_foreign_fences(waits[i].sync, ctx->chan,
++                                             fences, ARRAY_SIZE(fences));
++      if (n > 0) {
++         STATIC_ASSERT(NVKMD_MAX_SYNCPT_FENCES <=
++                       HORIZON_GPU_MAX_WAIT_FENCES);
++         if (batch.fence_count + n > HORIZON_GPU_MAX_WAIT_FENCES) {
+             VkResult result =
+-               nvkmd_horizon_ctx_flush_gpu_waits(ctx, gpu_fences, gpu_syncs,
+-                                                 &n_gpu);
++               nvkmd_horizon_ctx_flush_gpu_waits(ctx, &batch);
+             if (result != VK_SUCCESS)
+                return result;
+          }
++
++         for (uint32_t j = 0; j < n; j++)
++            batch.fences[batch.fence_count++] = fences[j];
++         batch.syncs[batch.sync_count++] = waits[i];
+          continue;
+       }
+ 
+@@ -419,8 +445,7 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+          return result;
+    }
+ 
+-   return nvkmd_horizon_ctx_flush_gpu_waits(ctx, gpu_fences, gpu_syncs,
+-                                            &n_gpu);
++   return nvkmd_horizon_ctx_flush_gpu_waits(ctx, &batch);
+ }
+ 
+ static VkResult
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 13dcd92..6ac248e 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -152,12 +152,70 @@ nvkmd_horizon_pdev_get_syncpt_fence(struct nvkmd_pdev *pdev,
+    return VK_SUCCESS;
+ }
+ 
++/* The reverse of get_syncpt_fence: somebody else's counters, wrapped in
++ * a vk_sync so a submit can be ordered behind them by the host engine
++ * rather than by this thread.
++ *
++ * `pdev->gpu` and not a device's, for the reason the header comment
++ * gives: there is one horizon_gpu_device per process (decision D9), the
++ * pdev owns it, and it outlives every sync created from it. The sync
++ * needs it because a CPU wait on a counter with no channel behind it
++ * has nowhere else to go.
++ */
++static VkResult
++nvkmd_horizon_pdev_import_syncpt_fence(struct nvkmd_pdev *_pdev,
++                                       struct vk_device *vk_dev,
++                                       const struct nvkmd_syncpt_fence *fences,
++                                       uint32_t fence_count,
++                                       struct vk_sync **sync_out)
++{
++   struct nvkmd_horizon_pdev *pdev = nvkmd_horizon_pdev(_pdev);
++
++   /* Refused rather than truncated: a dropped fence is a dependency
++    * that is never waited for, and it reports itself as nothing. The
++    * caller falls back to whatever it did before imports existed. */
++   if (vk_dev == NULL || fences == NULL || fence_count == 0 ||
++       fence_count > NVKMD_MAX_SYNCPT_FENCES)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   /* Two numbers across a layer boundary, copied field by field for the
++    * reason nvkmd_horizon_pdev_get_syncpt_fence gives going the other
++    * way: a struct assignment between them would make the boundary
++    * invisible. */
++   horizon_gpu_fence gpu_fences[NVKMD_MAX_SYNCPT_FENCES];
++   for (uint32_t i = 0; i < fence_count; i++) {
++      gpu_fences[i].syncpt_id = fences[i].id;
++      gpu_fences[i].threshold = fences[i].value;
++   }
++
++   struct vk_sync *sync = NULL;
++   VkResult result = vk_sync_create(vk_dev, &nvk_horizon_sync_type,
++                                    0 /* flags */, 0 /* initial_value */,
++                                    &sync);
++   if (result != VK_SUCCESS)
++      return result;
++
++   result = nvk_horizon_sync_import_fences(sync, pdev->gpu, gpu_fences,
++                                           fence_count);
++   if (result != VK_SUCCESS) {
++      /* Torn down in the reverse of the order it was built, with
++       * nothing handed back: a sync with no payload would be an
++       * already-unsignalled object the caller would wait on forever. */
++      vk_sync_destroy(vk_dev, sync);
++      return result;
++   }
++
++   *sync_out = sync;
++   return VK_SUCCESS;
++}
++
+ const struct nvkmd_pdev_ops nvkmd_horizon_pdev_ops = {
+    .destroy = nvkmd_horizon_pdev_destroy,
+    .get_vram_used = nvkmd_horizon_pdev_get_vram_used,
+    .get_drm_primary_fd = nvkmd_horizon_pdev_get_drm_primary_fd,
+    .create_dev = nvkmd_horizon_create_dev,
+    .get_syncpt_fence = nvkmd_horizon_pdev_get_syncpt_fence,
++   .import_syncpt_fence = nvkmd_horizon_pdev_import_syncpt_fence,
+ };
+ 
+ static void
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index 0a9183d..899b4ae 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -216,6 +216,8 @@ nvk_horizon_sync_reset(struct vk_device *device, struct vk_sync *_sync)
+    sync->chan = NULL;
+    sync->meter = NULL;
+    sync->fence_set_ns = 0;
++   sync->ext_dev = NULL;
++   sync->ext_fence_count = 0;
+    /* Reset is a binary operation — the runtime never resets a timeline —
+     * so the counter goes back to where init leaves it. */
+    sync->signalled_value = 0;
+@@ -265,6 +267,11 @@ nvk_horizon_sync_move(struct vk_device *device,
+    src->chan = NULL;
+    src->meter = NULL;
+    src->fence_set_ns = 0;
++   /* The struct copy above already carried the imported payload to dst,
++    * exactly as it carried `fence` and `chan`. Only the emptying of the
++    * source is written out. */
++   src->ext_dev = NULL;
++   src->ext_fence_count = 0;
+    src->signalled_value = 0;
+    src->passed_value = 0;
+ 
+@@ -278,6 +285,68 @@ nvk_horizon_sync_move(struct vk_device *device,
+    return VK_SUCCESS;
+ }
+ 
++/* Waits out an IMPORTED payload on the CPU: every fence in it, one
++ * after another, sharing the caller's one deadline.
++ *
++ * Sequential and not "wait on the set", because a set wait is not what
++ * is being asked: the sync is reached when the LAST of them is, so the
++ * total is the maximum, and waiting for them in turn costs the maximum
++ * plus the loop. horizon_gpu has no wait-for-all and inventing one for
++ * a list that is at most four long would be machinery for nothing.
++ *
++ * horizon_gpu_fence_wait rather than horizon_gpu_channel_wait_fence,
++ * because there is no channel: these counters belong to whatever
++ * produced them, and channel_wait_fence refuses a fence whose syncpoint
++ * is not its channel's own. What is lost with the channel is the
++ * error-notifier re-check, and it was never applicable — a channel of
++ * ours faulting says nothing about a counter somebody else increments.
++ *
++ * The remaining budget is recomputed from the clock between fences.
++ * That is the same relative-duration discipline decision D8 asks for
++ * (never an absolute deadline held across a wait) and it has the same
++ * residual: os_time_get_nano is this platform's real-time clock, so a
++ * date change during the wait can perturb one step's share. Guarded
++ * against going backwards, which is the part that would turn a
++ * perturbation into an enormous timeout.
++ *
++ * `failed_out` names the fence that ended the wait, so the caller's
++ * error message says which of the four it was.
++ */
++static horizon_gpu_result
++nvk_horizon_sync_wait_imported(horizon_gpu_device *dev,
++                               const horizon_gpu_fence *fences,
++                               uint32_t fence_count,
++                               uint64_t timeout_ns,
++                               horizon_gpu_fence *failed_out)
++{
++   const uint64_t start_ns = os_time_get_nano();
++
++   for (uint32_t i = 0; i < fence_count; i++) {
++      uint64_t budget_ns = HORIZON_GPU_NO_TIMEOUT;
++
++      if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
++         const uint64_t now_ns = os_time_get_nano();
++         const uint64_t spent_ns = now_ns > start_ns ? now_ns - start_ns : 0;
++         /* An exhausted budget becomes a ZERO one and still goes through
++          * the call below, which is a poll rather than a wait. Returning
++          * TIMEOUT here instead would answer "not reached" about a fence
++          * nothing had looked at — and it would make the whole function
++          * useless as the poll get_value() needs, where the caller's
++          * budget is zero by construction. */
++         budget_ns = timeout_ns > spent_ns ? timeout_ns - spent_ns : 0;
++      }
++
++      horizon_gpu_result res =
++         horizon_gpu_fence_wait(dev, fences[i], budget_ns);
++      if (horizon_gpu_failed(res)) {
++         *failed_out = fences[i];
++         return res;
++      }
++   }
++
++   return horizon_gpu_ok();
++}
++
+ static VkResult
+ nvk_horizon_sync_wait(struct vk_device *device,
+                       struct vk_sync *_sync,
+@@ -381,6 +450,15 @@ nvk_horizon_sync_wait(struct vk_device *device,
+     */
+    chan = sync->chan;
+    fence = sync->fence;
++   /* The imported payload travels with the other two and under the same
++    * rule: immutable while PENDING, so one copy taken here is what the
++    * wait below runs on. `ext_count` is the discriminator — above zero
++    * `chan` is NULL and `fence` is unused. */
++   horizon_gpu_device *const ext_dev = sync->ext_dev;
++   const uint32_t ext_count = sync->ext_fence_count;
++   horizon_gpu_fence ext_fences[NVKMD_MAX_SYNCPT_FENCES];
++   for (uint32_t i = 0; i < ext_count; i++)
++      ext_fences[i] = sync->ext_fences[i];
+    struct nvkmd_horizon_meter *meter = sync->meter;
+    const uint64_t fence_set_ns = sync->fence_set_ns;
+    mtx_unlock(&sync->mutex);
+@@ -396,17 +474,24 @@ nvk_horizon_sync_wait(struct vk_device *device,
+ 
+    /* channel_wait_fence rather than fence_wait: it re-checks the
+     * channel's error notifier while waiting, so a faulted channel
+-    * yields CHANNEL_LOST instead of an eternal timeout.
++    * yields CHANNEL_LOST instead of an eternal timeout. An imported
++    * payload has no channel to ask and goes the other way.
+     */
++   horizon_gpu_fence blamed = fence;
+    horizon_gpu_result res =
+-      horizon_gpu_channel_wait_fence(chan, fence, remaining_ns);
++      ext_count > 0
++         ? nvk_horizon_sync_wait_imported(ext_dev, ext_fences, ext_count,
++                                          remaining_ns, &blamed)
++         : horizon_gpu_channel_wait_fence(chan, fence, remaining_ns);
+    if (res.status == HORIZON_GPU_ERR_TIMEOUT)
+       return VK_TIMEOUT;
+    if (res.status != HORIZON_GPU_OK) {
+       return vk_errorf(device, nvkmd_horizon_result(res),
+-                       "horizon_gpu_channel_wait_fence(%" PRIu32 ", %" PRIu32
++                       "%s(%" PRIu32 ", %" PRIu32
+                        ") failed: status %d, nv 0x%08" PRIx32,
+-                       fence.syncpt_id, fence.threshold,
++                       ext_count > 0 ? "horizon_gpu_fence_wait"
++                                     : "horizon_gpu_channel_wait_fence",
++                       blamed.syncpt_id, blamed.threshold,
+                        (int)res.status, res.nv);
+    }
+ 
+@@ -464,12 +549,26 @@ nvk_horizon_sync_get_value(struct vk_device *device,
+        * form also notices a faulted channel, and because it needs no
+        * device pointer — a channel does not hand one out.
+        *
++       * An imported payload has no channel, so it polls the other way,
++       * and it is reached only when EVERY fence in it is: the first one
++       * short answers TIMEOUT for the whole set, which is the same
++       * answer the blocking path arrives at by waiting on each in turn.
++       *
+        * The mutex is held across it, unlike the blocking wait above:
+-       * with a zero timeout this is one syncpoint read and returns, so
+-       * it cannot hold off a concurrent signal for any measurable time.
++       * with a zero timeout this is one syncpoint read per fence and
++       * returns, so it cannot hold off a concurrent signal for any
++       * measurable time.
+        */
+-      horizon_gpu_result res =
+-         horizon_gpu_channel_wait_fence(sync->chan, sync->fence, 0);
++      horizon_gpu_result res = horizon_gpu_ok();
++      if (sync->ext_fence_count > 0) {
++         horizon_gpu_fence blamed = sync->ext_fences[0];
++         res = nvk_horizon_sync_wait_imported(sync->ext_dev,
++                                              sync->ext_fences,
++                                              sync->ext_fence_count, 0,
++                                              &blamed);
++      } else {
++         res = horizon_gpu_channel_wait_fence(sync->chan, sync->fence, 0);
++      }
+       if (res.status == HORIZON_GPU_OK) {
+          sync->passed_value = MAX2(sync->passed_value, sync->signalled_value);
+          sync->state = NVK_HORIZON_SYNC_SIGNALLED;
+@@ -477,11 +576,17 @@ nvk_horizon_sync_get_value(struct vk_device *device,
+           * on it is entitled to hear about it. */
+          cnd_broadcast(&sync->cond);
+       } else if (res.status != HORIZON_GPU_ERR_TIMEOUT) {
++         const horizon_gpu_fence blamed = sync->ext_fence_count > 0
++                                             ? sync->ext_fences[0]
++                                             : sync->fence;
+          VkResult vkr =
+             vk_errorf(device, nvkmd_horizon_result(res),
+-                      "horizon_gpu_channel_wait_fence(%" PRIu32 ", %"
++                      "%s(%" PRIu32 ", %"
+                       PRIu32 ", poll) failed: status %d, nv 0x%08" PRIx32,
+-                      sync->fence.syncpt_id, sync->fence.threshold,
++                      sync->ext_fence_count > 0
++                         ? "horizon_gpu_fence_wait"
++                         : "horizon_gpu_channel_wait_fence",
++                      blamed.syncpt_id, blamed.threshold,
+                       (int)res.status, res.nv);
+          mtx_unlock(&sync->mutex);
+          return vkr;
+@@ -591,33 +696,118 @@ nvk_horizon_sync_get_fence(struct vk_sync *_sync, uint64_t abs_timeout_ns,
+     * wait for, which is an answer and not a failure.
+     */
+    const bool has_fence = sync->state == NVK_HORIZON_SYNC_PENDING;
+-   if (has_fence)
+-      *fence_out = sync->fence;
++
++   /* AN IMPORTED PAYLOAD IS NOT ONE CHANNEL FENCE, and the consumer on
++    * the other side of this function takes exactly one.
++    *
++    * One imported fence is expressible and is handed over. More than
++    * one is not: this returns a pair, and picking any of them would
++    * name a dependency that is satisfied before the sync is. So the
++    * answer is FEATURE_NOT_PRESENT — "ask something else" — and not a
++    * fence the caller would then hand to a compositor as if it covered
++    * the whole set.
++    *
++    * Nothing in this driver reaches it today: the fence a present
++    * exports is the one the WSI's own pre-present submit signalled, and
++    * that is a channel fence. It is written out because a wrong answer
++    * here would be a buffer scanned out while it is still being read,
++    * which reports itself as nothing at all.
++    */
++   if (has_fence && sync->ext_fence_count > 1) {
++      mtx_unlock(&sync->mutex);
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++   }
++
++   if (has_fence) {
++      *fence_out = sync->ext_fence_count == 1 ? sync->ext_fences[0]
++                                              : sync->fence;
++   }
+    mtx_unlock(&sync->mutex);
+ 
+    *has_fence_out = has_fence;
+    return VK_SUCCESS;
+ }
+ 
+-bool
+-nvk_horizon_sync_get_foreign_fence(struct vk_sync *_sync,
+-                                   horizon_gpu_channel *chan,
+-                                   horizon_gpu_fence *fence_out)
++uint32_t
++nvk_horizon_sync_get_foreign_fences(struct vk_sync *_sync,
++                                    horizon_gpu_channel *chan,
++                                    horizon_gpu_fence *fences_out,
++                                    uint32_t max_fences)
+ {
+    if (_sync->type != &nvk_horizon_sync_type || chan == NULL ||
+-       fence_out == NULL)
+-      return false;
++       fences_out == NULL || max_fences == 0)
++      return 0;
++
++   struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
++   uint32_t count = 0;
++
++   mtx_lock(&sync->mutex);
++   if (sync->state == NVK_HORIZON_SYNC_PENDING) {
++      if (sync->ext_fence_count > 0) {
++         /* An imported dependency: not ours, so never ordered by this
++          * channel's GPFIFO, whatever channel that is. All of it or
++          * none of it — a prefix would be a wait that returns before
++          * the producer is done. */
++         if (sync->ext_fence_count <= max_fences) {
++            for (; count < sync->ext_fence_count; count++)
++               fences_out[count] = sync->ext_fences[count];
++         }
++      } else if (sync->chan != NULL && sync->chan != chan) {
++         fences_out[0] = sync->fence;
++         count = 1;
++      }
++   }
++   mtx_unlock(&sync->mutex);
++
++   return count;
++}
++
++VkResult
++nvk_horizon_sync_import_fences(struct vk_sync *_sync,
++                               horizon_gpu_device *dev,
++                               const horizon_gpu_fence *fences,
++                               uint32_t fence_count)
++{
++   if (_sync->type != &nvk_horizon_sync_type || dev == NULL ||
++       fences == NULL || fence_count == 0 ||
++       fence_count > NVKMD_MAX_SYNCPT_FENCES)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
+ 
+    struct nvk_horizon_sync *sync = to_horizon_sync(_sync);
+ 
+    mtx_lock(&sync->mutex);
+-   const bool foreign = sync->state == NVK_HORIZON_SYNC_PENDING &&
+-                        sync->chan != NULL && sync->chan != chan;
+-   if (foreign)
+-      *fence_out = sync->fence;
++
++   /* ONLY INTO AN EMPTY OBJECT. A sync that already has a payload is
++    * either waiting for a channel or already imported, and overwriting
++    * it would drop a dependency somebody is relying on rather than add
++    * one. The caller creates the sync for this and nothing else, so
++    * anything else here is a driver bug and is reported as one.
++    */
++   if (sync->state != NVK_HORIZON_SYNC_RESET) {
++      mtx_unlock(&sync->mutex);
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++   }
++
++   sync->ext_dev = dev;
++   sync->ext_fence_count = fence_count;
++   for (uint32_t i = 0; i < fence_count; i++)
++      sync->ext_fences[i] = fences[i];
++
++   /* PENDING and not SIGNALLED, which is the whole contract: the
++    * dependency has been named, not met. `chan` and `fence` stay as
++    * reset() left them — there is no channel of ours behind this and
++    * inventing one to fill the field would be a lie about who
++    * increments the counter.
++    *
++    * Broadcast for the same reason set_fence() does: a thread already
++    * inside vkWaitForFences on this object has to move on from waiting
++    * for it to acquire a payload to waiting for the payload itself.
++    */
++   sync->state = NVK_HORIZON_SYNC_PENDING;
++   cnd_broadcast(&sync->cond);
+    mtx_unlock(&sync->mutex);
+ 
+-   return foreign;
++   return VK_SUCCESS;
+ }
+ 
+ bool
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index fe98580..ee4bf63 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -25,6 +25,7 @@ struct nvkmd_pdev;
+ struct nvkmd_va;
+ 
+ struct _drmDevice;
++struct vk_device;
+ struct vk_object_base;
+ struct vk_sync;
+ struct vk_sync_wait;
+@@ -169,6 +170,21 @@ struct nvkmd_syncpt_fence {
+    uint32_t value;
+ };
+ 
++/** How many syncpoint fences one imported dependency may carry.
++ *
++ * A dependency that came from outside this driver is not one fence in
++ * general. Horizon's compositor releases a buffer with an NvMultiFence,
++ * which holds at most FOUR — measured on a console and recorded in
++ * docs/MEASURED-ON-HARDWARE.md ("`NvMultiFence` holds at most 4
++ * fences") — and dropping any of them would let rendering start over a
++ * buffer something else is still reading.
++ *
++ * So the count is part of the interface rather than an assumption at
++ * either end: the importer states how many it has, and an implementation
++ * that cannot take that many refuses instead of truncating.
++ */
++#define NVKMD_MAX_SYNCPT_FENCES 4u
++
+ struct nvkmd_pdev_ops {
+    void (*destroy)(struct nvkmd_pdev *pdev);
+ 
+@@ -203,6 +219,38 @@ struct nvkmd_pdev_ops {
+                                 uint64_t abs_timeout_ns,
+                                 struct nvkmd_syncpt_fence *fence_out,
+                                 bool *has_fence_out);
++
++   /** The reverse of get_syncpt_fence: a vk_sync carrying syncpoint
++    * fences THIS DRIVER DID NOT PRODUCE.
++    *
++    * get_syncpt_fence exports a dependency so something outside can wait
++    * on it. This imports one so the GPU can, which is what a window
++    * system needs at acquire: the compositor hands a buffer back with
++    * the fence its own read of it will reach, and until that fence is a
++    * vk_sync there is nowhere to put it except a CPU wait.
++    *
++    * The sync comes back PENDING and never signalled early: it is
++    * "signalled" exactly when every fence in `fences` has been reached,
++    * and nothing here shortcuts that. It carries no channel — the
++    * producer is not one of ours and inventing one to name it would be a
++    * lie about who is going to increment the counter.
++    *
++    * `fence_count` is 1..NVKMD_MAX_SYNCPT_FENCES; more is refused rather
++    * than truncated, because a dropped fence is a dependency silently
++    * not waited for.
++    *
++    * The caller owns the returned sync and destroys it with
++    * vk_sync_destroy. `vk_dev` is needed because that is what a vk_sync
++    * is allocated from; nvkmd has no VkDevice of its own.
++    *
++    * Optional; a NULL op means this platform has no foreign syncpoint to
++    * import and the caller must synchronise some other way.
++    */
++   VkResult (*import_syncpt_fence)(struct nvkmd_pdev *pdev,
++                                   struct vk_device *vk_dev,
++                                   const struct nvkmd_syncpt_fence *fences,
++                                   uint32_t fence_count,
++                                   struct vk_sync **sync_out);
+ };
+ 
+ struct nvkmd_pdev {
+@@ -513,6 +561,27 @@ nvkmd_pdev_get_syncpt_fence(struct nvkmd_pdev *pdev,
+                                       fence_out, has_fence_out);
+ }
+ 
++/** A vk_sync over syncpoint fences produced outside this driver, or
++ * FEATURE_NOT_PRESENT.
++ *
++ * FEATURE_NOT_PRESENT means "ask something else", exactly as it does for
++ * nvkmd_pdev_get_syncpt_fence above: every backend but Horizon leaves the
++ * op NULL, and the caller falls back to whatever that platform does.
++ */
++static inline VkResult MUST_CHECK
++nvkmd_pdev_import_syncpt_fence(struct nvkmd_pdev *pdev,
++                               struct vk_device *vk_dev,
++                               const struct nvkmd_syncpt_fence *fences,
++                               uint32_t fence_count,
++                               struct vk_sync **sync_out)
++{
++   if (pdev->ops->import_syncpt_fence == NULL)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   return pdev->ops->import_syncpt_fence(pdev, vk_dev, fences, fence_count,
++                                         sync_out);
++}
++
+ static inline VkResult MUST_CHECK
+ nvkmd_pdev_create_dev(struct nvkmd_pdev *pdev,
+                       struct vk_object_base *log_obj,
+-- 
+2.43.0
+

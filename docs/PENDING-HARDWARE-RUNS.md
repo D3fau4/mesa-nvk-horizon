@@ -140,3 +140,73 @@ bound this hardware uses.
 **Done when** all three have passed on a console, their measurements are
 recorded, and — for `t_vk_draws` section C — the tolerance has been
 narrowed to what was actually observed or the derivation corrected.
+
+## 5 The acquire no longer waits for the compositor, and nothing has run it
+
+**Class X, and weaker than that** — `mesa-patches/0063`-`0066` have never
+been cross-compiled either. What was done instead is a HOST syntax and
+type check: `gcc -fsyntax-only -std=c11 -Wall` over
+`nvkmd_horizon_{sync,ctx,pdev}.c`, `wsi_common.c` and `wsi_horizon.c`,
+against Mesa's own generated Vulkan headers and, for the last one,
+libnx's real headers from switchbrew/libnx master. It compiles. Nothing
+else is known.
+
+`wsi_horizon_acquire_zero_copy` used to `nvMultiFenceWait` on the fence
+the compositor released the slot with — 13.8 ms of a 16.7 ms frame, the
+figure `0049`'s comment carries. The fence is now handed to the driver
+instead, as the payload of the semaphore and the fence the application
+passed to `vkAcquireNextImageKHR`, and the wait happens on the host
+engine through the path `0049` built. `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_
+WAIT=1` restores the old shape in the same build.
+
+Four things the run has to report, in this order:
+
+- **whether the picture is right.** This is the only change on this
+  branch that can put a frame into a buffer the compositor is still
+  reading, and that fault has no error, no notifier and no log line —
+  it is a torn band on screen and nothing else. `t_vk_swapchain`,
+  `t_vk_wsi_mt`, `t_vk_present_draw` and `t_nwindow` are the tests that
+  drive the path; a human looking at the screen is the instrument.
+  **If tearing appears, the action is to set `gpu_acquire_wait` false
+  unconditionally in `0066`**, not to debug it from the log.
+- **whether `NVHOST_IOCTL_CTRL_SYNCPT_READ` answers for a syncpoint this
+  process does not own.** `horizon_gpu_fence_wait` reads the counter
+  before it waits, and that read has only ever been made against a
+  channel's own syncpoint. It matters only for
+  `vkWaitForFences` on the acquire fence — the GPU path reads nothing
+  from the CPU — and a refusal would show as
+  `horizon_gpu_fence_wait(...) failed` from `nvk_horizon_sync_wait`.
+  `nvFenceWait` on these same fences has worked since `0037`, so if the
+  read is refused the fix is a wait that does not read first.
+- **whether the compositor ever returns more than one fence.**
+  `NvMultiFence` holds four and all four are carried; one is what this
+  is expected to see. The acquire meter says nothing about it, so the
+  way to know is a log line at the point of failure, which is why an
+  unrepresentable count is reported rather than truncated.
+- **the number.** `MESA_VK_WSI_HORIZON_ACQUIRE_STATS=1` and
+  `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1`, twice in one session —
+  once as built, once with `MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1` —
+  same resolution, same dock state, same shader-cache state, with
+  `HORIZON_GPU_SYNC`, the hang recorder and `NVK_HORIZON_PUSH_SPLIT`
+  all off. Expected: the acquire line's "on the compositor's release
+  fence" figure goes to nothing and its "handed that fence to the GPU"
+  count becomes the frame count, while `nvkmd_horizon`'s "wait(s)
+  handed to the host engine" rises by one per frame. **A frame-rate
+  claim needs the application's own frame times, not these counters** —
+  what they can show is that the stall moved, not what it bought.
+
+One failure mode changes shape and is not a regression, but should be
+recognised if it appears: a compositor that never releases a buffer used
+to wedge the acquiring thread and now wedges the graphics channel, since
+the host engine is what is holding at the syncpoint. Both were already
+unbounded — an acquire at `timeout = UINT64_MAX` had no deadline to
+expire — and the new shape is the more visible one: nvgpu times the
+channel out and the error notifier says `4`, which `horizon/channel`
+already names "timeout", so it arrives as `VK_ERROR_DEVICE_LOST` rather
+than as silence.
+
+**Done when** all four have been answered on a console: the picture
+checked by eye and by the four tests, the two unknowns above settled,
+and one A/B pair recorded. If the picture is wrong the patches come out;
+if the picture is right and the frame time does not move, the patches
+still come out, because then it is complexity for nothing.

@@ -1,0 +1,208 @@
+From 0416a3f19c5cbd029b7b4a05691c90ffea44ceaa Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 05:07:23 +0000
+Subject: [PATCH 64/66] vulkan/wsi: a backend may name the dependency an
+ acquired image carries
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 8 (Correct fence-based synchronisation at
+ acquire and present)
+Why: an acquire has two ways to deal with a buffer whose previous
+ consumer has not finished reading it, and the WSI runtime currently
+ offers only one of them to a backend with no dma-buf.
+ .
+ wsi_signal_semaphore_for_image and wsi_signal_fence_for_image turn the
+ image's outstanding dependency into the payload of the semaphore and
+ the fence the application passed to vkAcquireNextImageKHR — but only
+ through the two DRM shapes, a syncobj or a dma-buf wait. Everything
+ else falls through to vk_sync_dummy_type, which is already signalled;
+ so a backend whose window system releases buffers with something other
+ than a dma-buf has to wait the dependency out on the CPU inside its own
+ acquire and then say "ready" — which is exactly what Horizon's does,
+ nvMultiFenceWait on the compositor's release fence, and what it costs
+ there is 13.8 ms of a 16.7 ms frame (0049).
+ .
+ So: one optional swapchain vfunc, create_acquire_sync, consulted before
+ the DRM shapes and answering VK_ERROR_FEATURE_NOT_PRESENT — "carry on
+ down" — when it has nothing, which is what a NULL vfunc and every
+ existing backend also answer. Nothing changes for anyone who does not
+ set it; the cost is one NULL check per acquired image.
+ .
+ It is deliberately about the IMAGE and not about the swapchain: which
+ dependency an image carries is a fact about the slot the window system
+ just handed back, and a backend that has none for this particular image
+ says so with the same result code.
+ .
+ Generic rather than #ifdef VK_USE_PLATFORM_VI_NN, because the thing
+ being expressed is general — "the acquire returned early and here is
+ what to wait for" — and the specification already says that is the
+ normal case: vkAcquireNextImageKHR returning does not mean the image is
+ ready to use, only that its index is valid.
+ .
+ wsi_device::horizon gains the driver-side half, create_wait_sync, in
+ the same shape as get_image_info and get_fence beside it: the WSI
+ backend holds a syncpoint fence and cannot build a vk_sync out of it
+ without reaching into the driver, which the layering forbids. It takes
+ the whole set of fences and refuses rather than truncates, because
+ NvMultiFence holds up to four and a dropped one is a dependency that is
+ never waited for.
+ .
+ No backend implements either hook in this patch.
+Evidence: HOST SYNTAX AND TYPE CHECK ONLY, gcc 13.3.0 (Ubuntu 24.04),
+ `gcc -fsyntax-only -std=c11 -DNDEBUG -DHAVE_PTHREAD
+ -DHAVE_STRUCT_TIMESPEC -D_GNU_SOURCE -Wall` over wsi_common.c with and
+ without -DVK_USE_PLATFORM_VI_NN, against the Vulkan and util headers
+ generated from this tree's own vk.xml, spirv.core.grammar.json and
+ u_format.yaml. Clean both ways; the two warnings it reports
+ (cpu_trace.h `len`, wsi_common.c `format_found`) are on lines this
+ patch does not touch. NO CROSS BUILD AND NO CONSOLE HAS RUN THIS.
+Upstream: not as it stands — the hook itself is general and the two
+ DRM shapes above it would be expressible through it, but nothing
+ upstream needs it until a backend without dma-buf exists there.
+---
+ src/vulkan/wsi/wsi_common.c         | 31 +++++++++++++++++++++++++++++
+ src/vulkan/wsi/wsi_common.h         | 28 ++++++++++++++++++++++++++
+ src/vulkan/wsi/wsi_common_private.h | 23 +++++++++++++++++++++
+ 3 files changed, 82 insertions(+)
+
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+index 98bc213..a6352d5 100644
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -1892,6 +1892,27 @@ wsi_AcquireNextImageKHR(VkDevice _device,
+                                                       pImageIndex);
+ }
+ 
++/* The dependency the acquired image still carries, if the backend has
++ * one to name.
++ *
++ * VK_ERROR_FEATURE_NOT_PRESENT — from a backend with no hook, or from a
++ * hook with nothing to report for this image — means "carry on down",
++ * and every caller below treats it that way. Any other failure is a
++ * real one: the alternative would be signalling the application's
++ * semaphore for an image whose previous consumer is still reading it,
++ * which is the corruption the hook exists to prevent.
++ */
++static VkResult
++wsi_create_sync_for_acquire(const struct wsi_swapchain *chain,
++                            const struct wsi_image *image,
++                            struct vk_sync **sync_out)
++{
++   if (chain->create_acquire_sync == NULL)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   return chain->create_acquire_sync(chain, image, sync_out);
++}
++
+ static VkResult
+ wsi_signal_semaphore_for_image(struct vk_device *device,
+                                const struct wsi_swapchain *chain,
+@@ -1905,6 +1926,11 @@ wsi_signal_semaphore_for_image(struct vk_device *device,
+ 
+    vk_semaphore_reset_temporary(device, semaphore);
+ 
++   VkResult acquire_result =
++      wsi_create_sync_for_acquire(chain, image, &semaphore->temporary);
++   if (acquire_result != VK_ERROR_FEATURE_NOT_PRESENT)
++      return acquire_result;
++
+ #ifdef HAVE_LIBDRM
+    VkResult result = chain->image_info.explicit_sync ?
+       wsi_create_sync_for_image_syncobj(chain, image,
+@@ -1935,6 +1961,11 @@ wsi_signal_fence_for_image(struct vk_device *device,
+ 
+    vk_fence_reset_temporary(device, fence);
+ 
++   VkResult acquire_result =
++      wsi_create_sync_for_acquire(chain, image, &fence->temporary);
++   if (acquire_result != VK_ERROR_FEATURE_NOT_PRESENT)
++      return acquire_result;
++
+ #ifdef HAVE_LIBDRM
+    VkResult result = chain->image_info.explicit_sync ?
+       wsi_create_sync_for_image_syncobj(chain, image,
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index 60bcea1..aa32497 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -49,6 +49,7 @@ extern const struct vk_device_entrypoint_table wsi_device_entrypoints;
+ struct wsi_interface;
+ struct vk_instance;
+ struct vk_queue;
++struct vk_sync;
+ 
+ /** What Horizon's display block needs to know about an image's memory.
+  *
+@@ -240,6 +241,33 @@ struct wsi_device {
+       VkResult (*get_fence)(VkDevice device, VkFence fence,
+                             uint64_t abs_timeout_ns,
+                             struct wsi_horizon_fence *fence_out);
++
++      /** A vk_sync that is reached when `fences` are, and not before.
++       *
++       * get_fence hands a dependency OUT of Vulkan so the window system
++       * can wait on it. This brings one IN: the window system releases
++       * a buffer with the fence its own read of it will reach, and
++       * until that pair is a vk_sync the only thing a backend can do
++       * with it is block the calling thread.
++       *
++       * The sync comes back unsignalled and carries the whole set:
++       * `fence_count` is 1..4, and an implementation that cannot take
++       * that many answers VK_ERROR_FEATURE_NOT_PRESENT rather than
++       * dropping one — a dropped fence is a dependency never waited
++       * for, which shows up as a buffer written while it is still being
++       * read and as nothing else.
++       *
++       * It is used as the temporary payload of both a VkSemaphore and a
++       * VkFence, so it has to support a GPU wait and a CPU wait alike.
++       * The caller owns it and destroys it with vk_sync_destroy.
++       *
++       * VK_ERROR_FEATURE_NOT_PRESENT is an ordinary answer meaning "do
++       * it the other way", exactly as it is for get_image_info.
++       */
++      VkResult (*create_wait_sync)(VkDevice device,
++                                   const struct wsi_horizon_fence *fences,
++                                   uint32_t fence_count,
++                                   struct vk_sync **sync_out);
+    } horizon;
+ 
+ 
+diff --git a/src/vulkan/wsi/wsi_common_private.h b/src/vulkan/wsi/wsi_common_private.h
+index 107bea3..c2bab26 100644
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -310,6 +310,29 @@ struct wsi_swapchain {
+    VkResult (*acquire_next_image)(struct wsi_swapchain *swap_chain,
+                                   const VkAcquireNextImageInfoKHR *info,
+                                   uint32_t *image_index);
++   /** The dependency an image just acquired still carries, as a vk_sync.
++    *
++    * Optional, and NULL means "there is none to name": every backend
++    * whose acquire has already waited out the dependency itself, and
++    * every backend that never had one.
++    *
++    * Where it is set, the acquire is allowed to return an image whose
++    * previous consumer has not finished with it, and this is what says
++    * so — the semaphore and the fence the application passed to
++    * vkAcquireNextImageKHR are then signalled by the dependency rather
++    * than immediately. That is what those two are for: the
++    * specification is explicit that the call returning does not mean
++    * the image is ready to use, only that its index is valid.
++    *
++    * Called once per non-NULL semaphore and once per non-NULL fence, so
++    * it must return an INDEPENDENT sync each time; the runtime destroys
++    * each of them separately. VK_ERROR_FEATURE_NOT_PRESENT is an
++    * ordinary answer meaning the caller should fall back, and is what a
++    * backend returns for an image that happens to carry no dependency.
++    */
++   VkResult (*create_acquire_sync)(const struct wsi_swapchain *swap_chain,
++                                   const struct wsi_image *image,
++                                   struct vk_sync **sync_out);
+    VkResult (*queue_present)(struct wsi_swapchain *swap_chain,
+                              uint32_t image_index,
+                              uint64_t present_id,
+-- 
+2.43.0
+
