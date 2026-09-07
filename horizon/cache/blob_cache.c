@@ -334,6 +334,16 @@ static bool bc_index_set(horizon_gpu_blob_cache *c, const uint8_t *key,
     }
 
     if (!s->used) {
+        /* A free slot is not necessarily an empty one. bc_index_erase
+         * repairs the cluster after a delete by re-inserting the keys
+         * behind the hole, and the slot each of them leaves is marked
+         * free with its two halves still in it. Taking only the key
+         * bytes and the used bit handed the newcomer the previous
+         * occupant's mark, or an entry pointing at somebody else's
+         * record. Reset the whole slot; the half being set is filled in
+         * below and the other half starts out absent, as a new key's
+         * must. */
+        memset(s, 0, sizeof(*s));
         memcpy(s->key, key, HORIZON_GPU_BLOB_CACHE_KEY_SIZE);
         s->used = true;
         c->slot_used++;
