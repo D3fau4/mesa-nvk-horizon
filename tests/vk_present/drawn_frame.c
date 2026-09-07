@@ -289,6 +289,16 @@ typedef struct pd_stats {
    uint64_t max_ns;
    uint32_t within_10pct;
 
+   /* EVERY INTERVAL, NOT ONLY THEIR MEAN. A stutter is a tail: a run
+    * that drops one frame in fifty and is otherwise perfect has a mean
+    * indistinguishable from one that drops none, and it is the one a
+    * player sees. min and max name the two ends and say nothing about
+    * how often. Sized to the frame count a run is given; a run that
+    * somehow produced more stops recording rather than growing, because
+    * the percentile is over what this holds while `intervals` still
+    * counts all of them. */
+   uint64_t iv_ns[PD_FRAMES];
+
    uint64_t acquire_total_ns;
    uint64_t acquire_max_ns;
    uint64_t present_total_ns;
@@ -341,6 +351,40 @@ static uint64_t pd_mean_ns(const pd_stats *s)
 static uint64_t pd_gpu_mean_ns(const pd_stats *s)
 {
    return s->gpu_samples != 0 ? s->gpu_total_ns / s->gpu_samples : 0;
+}
+
+/* The interval at `pct` per cent of the distribution, by nearest rank.
+ *
+ * Nearest rank rather than an interpolation: these are frames that
+ * happened, and p99 of 179 samples should be one of them rather than a
+ * weighted average of two that were not. The sort is an insertion sort
+ * over at most PD_FRAMES elements and runs once per report, where the
+ * simplest obviously-correct thing is the right one; qsort would need a
+ * comparator whose only caller is this function. */
+static uint64_t pd_pctile_ns(const pd_stats *s, unsigned pct)
+{
+   const uint32_t n = s->intervals < PD_FRAMES ? s->intervals : PD_FRAMES;
+   if (n == 0)
+      return 0;
+
+   uint64_t sorted[PD_FRAMES];
+   memcpy(sorted, s->iv_ns, (size_t)n * sizeof(sorted[0]));
+   for (uint32_t i = 1; i < n; i++) {
+      const uint64_t v = sorted[i];
+      uint32_t j = i;
+      while (j > 0 && sorted[j - 1] > v) {
+         sorted[j] = sorted[j - 1];
+         j--;
+      }
+      sorted[j] = v;
+   }
+
+   uint32_t rank = (uint32_t)(((uint64_t)n * pct + 99u) / 100u);
+   if (rank == 0)
+      rank = 1;
+   if (rank > n)
+      rank = n;
+   return sorted[rank - 1];
 }
 
 /* ------------------------------------------------------------------ */
@@ -1056,6 +1100,8 @@ static void pd_run(vkfw *fw, pd_swapchain *sc, const pd_content *content,
          if (dt >= PD_REFRESH_NS - PD_REFRESH_NS / 10 &&
              dt <= PD_REFRESH_NS + PD_REFRESH_NS / 10)
             st->within_10pct++;
+         if (st->intervals < PD_FRAMES)
+            st->iv_ns[st->intervals] = dt;
          st->intervals++;
       }
       prev_tick = now;
@@ -1112,6 +1158,24 @@ static bool pd_report(test_ctx *t, const pd_stats *s)
                    "(mask 0x%x)", s->what, s->image_count, s->used_mask) && ok;
    }
    return ok;
+}
+
+/* One line of section G's table: the tail as well as the mean, because
+ * the mean is the number a stutter hides in. Separate from pd_report,
+ * which every section gets and which says what the run did; this says
+ * what the run cost, in the shape the three of them are compared in. */
+static void pd_note_ab(test_ctx *t, const pd_stats *s)
+{
+   t_note(t, "G %s: interval mean %" PRIu64 " us, p50 %" PRIu64 ", p95 %"
+             PRIu64 ", p99 %" PRIu64 " (min %" PRIu64 ", max %" PRIu64 ", %"
+             PRIu32 " intervals); acquire mean %" PRIu64 " us, present mean %"
+             PRIu64 " us",
+          s->what, pd_mean_ns(s) / 1000u, pd_pctile_ns(s, 50) / 1000u,
+          pd_pctile_ns(s, 95) / 1000u, pd_pctile_ns(s, 99) / 1000u,
+          s->min_ns == UINT64_MAX ? 0 : s->min_ns / 1000u, s->max_ns / 1000u,
+          s->intervals,
+          s->frames != 0 ? s->acquire_total_ns / s->frames / 1000u : 0,
+          s->frames != 0 ? s->present_total_ns / s->frames / 1000u : 0);
 }
 
 /* Runs one measured loop on a swapchain of its own, so no run inherits
@@ -1476,6 +1540,109 @@ TEST_CASE_DECL(vk_present, drawn_frame)
              acq_fence.acquire_total_ns / acq_fence.frames / 1000u,
              acq_sem.acquire_total_ns / acq_sem.frames / 1000u,
              pd_mean_ns(&acq_fence) / 1000u, pd_mean_ns(&acq_sem) / 1000u);
+   }
+
+   /* ---------------------------------------------------------------- */
+   /* G — the A/B the deferral was made for.                            */
+   /* ---------------------------------------------------------------- */
+
+   /* Sections A to F measure the driver as it is built. This one
+    * measures it against itself: the same run, three times, with
+    * MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT=1 for the middle one, which
+    * restores the acquire that waited for the compositor's release
+    * fence on this thread. wsi_horizon reads that variable once per
+    * swapchain and pd_measure builds a swapchain of its own, so the
+    * middle run is the old shape exactly — in this process, on this
+    * console, at this clock, against this shader cache. Comparing a
+    * number from this build against a number from another one is what
+    * this exists to avoid.
+    *
+    * THREE RUNS AND NOT TWO, and the check is over the outer pair. A
+    * pair on its own cannot separate a difference the change made from
+    * a drift the console made — thermals, the battery, whatever else
+    * woke up. If the two as-built runs do not agree, nothing here is a
+    * measurement, and this says so rather than reporting the middle one
+    * as if it meant something.
+    *
+    * IMMEDIATE AND THREE DRAWS, which is section D's configuration and
+    * not section C's, deliberately. Under FIFO every frame is a refresh
+    * long by construction and a stall inside the acquire is absorbed by
+    * the wait that follows it; IMMEDIATE is where what the CPU spends
+    * is what paces the loop, and 13.8 ms of it per frame — the figure
+    * 0049's comment carries for this wait — is not something a loop
+    * absorbs.
+    *
+    * WHAT IT CANNOT SHOW: what the change bought, only where the wait
+    * went. The GPFIFO is in order, so a host-engine wait still holds
+    * every submit behind it on that channel; the frame interval is the
+    * whole claim and the acquire mean beside it is evidence that the
+    * two runs took different paths, not a result of its own. */
+   setenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS", "1", 1);
+
+   pd_stats ab_gpu_a;
+   pd_measure(&fw, surface, &content, format, extent,
+              VK_PRESENT_MODE_IMMEDIATE_KHR, PD_FRAME_DRAW, PD_DRAWS_APP,
+              PD_FRAMES, PD_RUN_BUDGET_NS, false,
+              "1 acquire deferred to the GPU (as built)", &ab_gpu_a);
+
+   setenv("MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT", "1", 1);
+   pd_stats ab_cpu;
+   pd_measure(&fw, surface, &content, format, extent,
+              VK_PRESENT_MODE_IMMEDIATE_KHR, PD_FRAME_DRAW, PD_DRAWS_APP,
+              PD_FRAMES, PD_RUN_BUDGET_NS, false,
+              "2 acquire waited for on the CPU (the old shape)", &ab_cpu);
+   unsetenv("MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT");
+
+   pd_stats ab_gpu_b;
+   pd_measure(&fw, surface, &content, format, extent,
+              VK_PRESENT_MODE_IMMEDIATE_KHR, PD_FRAME_DRAW, PD_DRAWS_APP,
+              PD_FRAMES, PD_RUN_BUDGET_NS, false,
+              "3 acquire deferred to the GPU again", &ab_gpu_b);
+
+   unsetenv("MESA_VK_WSI_HORIZON_ACQUIRE_STATS");
+
+   pd_note_ab(t, &ab_gpu_a);
+   pd_note_ab(t, &ab_cpu);
+   pd_note_ab(t, &ab_gpu_b);
+
+   if (t_check(t, ab_gpu_a.intervals >= PD_MIN_INTERVALS &&
+                  ab_cpu.intervals >= PD_MIN_INTERVALS &&
+                  ab_gpu_b.intervals >= PD_MIN_INTERVALS,
+               "G: all three runs measured enough frames to compare "
+               "(%" PRIu32 "/%" PRIu32 "/%" PRIu32 ", %u needed)",
+               ab_gpu_a.intervals, ab_cpu.intervals, ab_gpu_b.intervals,
+               PD_MIN_INTERVALS)) {
+      const uint64_t a = pd_mean_ns(&ab_gpu_a);
+      const uint64_t b = pd_mean_ns(&ab_gpu_b);
+      const uint64_t drift = a > b ? a - b : b - a;
+      const uint64_t ref = (a + b) / 2u;
+
+      /* Ten per cent, and it is the control rather than the result:
+       * everything below is a comparison against `ref`, so a reference
+       * that moved by more than this makes the comparison meaningless
+       * whatever it says. */
+      const bool stable = ref != 0 && drift * 10u <= ref;
+      t_check(t, stable,
+              "G: the reference is stable enough to compare against "
+              "(the two as-built runs are %" PRIu64 " us and %" PRIu64
+              " us, %" PRIu64 " us apart)", a / 1000u, b / 1000u,
+              drift / 1000u);
+
+      if (stable) {
+         const uint64_t cpu = pd_mean_ns(&ab_cpu);
+         t_note(t, "G VERDICT: a frame costs %" PRIu64 " us with the "
+                   "compositor's release fence handed to the GPU and %"
+                   PRIu64 " us with this thread waiting for it — %s%"
+                   PRIu64 " us, %" PRIu64 "%% of the reference. p99 %"
+                   PRIu64 " us against %" PRIu64 " us",
+                ref / 1000u, cpu / 1000u, cpu >= ref ? "+" : "-",
+                (cpu >= ref ? cpu - ref : ref - cpu) / 1000u,
+                ref != 0 ? ((cpu >= ref ? cpu - ref : ref - cpu) * 100u) / ref
+                         : 0,
+                (pd_pctile_ns(&ab_gpu_a, 99) + pd_pctile_ns(&ab_gpu_b, 99))
+                   / 2u / 1000u,
+                pd_pctile_ns(&ab_cpu, 99) / 1000u);
+      }
    }
 
    /* ---------------------------------------------------------------- */
