@@ -1074,6 +1074,116 @@ int main(void)
     }
 
     /* ---------------------------------------------------------------
+     * A compaction that moves more than one staging buffer. The rewrite
+     * reads the source forward, stages survivors in a 64 KiB buffer and
+     * seeks to the destination once per full buffer — so the switch from
+     * reading to writing and back, with a record still half-copied
+     * across it, only happens once the survivors exceed the buffer. The
+     * ceiling cases above compact 16 and 32 KiB caches and never reach
+     * it. This one has to: more than 128 KiB of survivors, all of them
+     * displaced by a dead prefix, one record of 100 KiB that spans a
+     * buffer boundary on its own, and holes from removed entries in the
+     * middle. Every survivor is read back after the rewrite and again
+     * after a reopen, against the payload put_n wrote.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        const uint64_t cap = 768u * 1024u;
+        const size_t sizes[] = { 20u * 1024u, 100u * 1024u, 3000, 50u * 1024u,
+                                 8u * 1024u };
+        const uint32_t n_sizes = (uint32_t)(sizeof(sizes) / sizeof(sizes[0]));
+        horizon_gpu_blob_cache *c =
+            open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+        horizon_gpu_blob_cache_stats st;
+        uint32_t n = 0;
+        bool removed[512] = { false };
+        bool all = true;
+
+        H_CHECK(c != NULL, "open with a 768 KiB ceiling");
+        if (c != NULL) {
+            /* Put until the first compaction, removing every fourth
+             * earlier entry along the way so the file has holes. */
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            while (st.compactions == 0 && n < 512) {
+                all = put_n(c, n, sizes[n % n_sizes]) && all;
+                if (n >= 4 && n % 4 == 0) {
+                    uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                    key_for(n - 3, k);
+                    all = horizon_gpu_succeeded(
+                              horizon_gpu_blob_cache_remove(c, k)) && all;
+                    removed[n - 3] = true;
+                }
+                n++;
+                horizon_gpu_blob_cache_get_stats(c, &st);
+            }
+            H_CHECK(all, "every put and remove before the compaction");
+            H_CHECK(st.compactions == 1, "exactly one compaction happened");
+            H_CHECK(st.file_size <= cap, "and the file is inside the ceiling");
+
+            /* What survived is the store's choice (newest first, within
+             * the watermark); what it must be is exactly the payload
+             * that was put, for every key that is still a hit. */
+            uint64_t survivor_bytes = 0;
+            uint32_t survivors = 0;
+            bool intact = true;
+            for (uint32_t i = 0; i < n; i++) {
+                if (removed[i]) {
+                    intact = is_miss(c, i) && intact;
+                    continue;
+                }
+                uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                void *data = NULL;
+                size_t got = 0;
+                key_for(i, k);
+                if (horizon_gpu_failed(horizon_gpu_blob_cache_get(
+                        c, k, &data, &got)))
+                    continue;
+                free(data);
+                intact = get_is(c, i, sizes[i % n_sizes]) && intact;
+                survivor_bytes += got;
+                survivors++;
+            }
+            H_CHECK(intact, "every surviving entry reads back its payload"
+                            " and every removed one is a miss");
+            H_CHECK(survivor_bytes > 128u * 1024u,
+                    "more than two staging buffers of survivors");
+            H_CHECK(get_is(c, n - 1, sizes[(n - 1) % n_sizes]),
+                    "the newest entry survived");
+            H_CHECK(st.entries == survivors,
+                    "the index counts exactly the survivors");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+            H_CHECK(c != NULL, "the compacted file reopens");
+            if (c != NULL) {
+                horizon_gpu_blob_cache_stats st2;
+                horizon_gpu_blob_cache_get_stats(c, &st2);
+                H_CHECK(!st2.was_reset && !st2.was_truncated,
+                        "with no repair");
+                H_CHECK(st2.entries == survivors &&
+                            st2.file_size == st.file_size,
+                        "with the same survivors and the same size");
+                bool same = true;
+                for (uint32_t i = 0; i < n; i++) {
+                    if (removed[i])
+                        continue;
+                    uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                    void *data = NULL;
+                    size_t got = 0;
+                    key_for(i, k);
+                    if (horizon_gpu_failed(horizon_gpu_blob_cache_get(
+                            c, k, &data, &got)))
+                        continue;
+                    free(data);
+                    same = get_is(c, i, sizes[i % n_sizes]) && same;
+                }
+                H_CHECK(same, "and every survivor reads back after it");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
      * Entries larger than the scan's stream buffer. The open scan walks
      * forward and steps over payloads, choosing between consuming them
      * and seeking past them at a threshold of one buffer refill — so an
