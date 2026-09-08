@@ -1,0 +1,98 @@
+From 7b94479bc1261bea8321616a44c72b912699644a Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:20:03 +0000
+Subject: [PATCH 82/82] nouveau/vk: nvkmd_horizon's bind waits for the acquires
+ it was ordered behind
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 3 (the acquire's wait moves to the GPU)
+Why: nvk_queue_submit_bind() is ctx_wait(), ctx_bind(), ctx_signal():
+ the semaphores a vkQueueBindSparse waits on must be satisfied before
+ its binds take effect, and Vulkan lets an application render into a
+ sparse image on the graphics queue and, waiting on that render's
+ semaphore, unbind or rebind its pages. Since the acquire's wait moved
+ to the GPU, ctx_wait() on the bind context pushes host-engine acquires
+ into the bind channel's GPFIFO and returns; that orders work submitted
+ to that channel, and the MAP_BUFFER_EX/UNMAP_BUFFER ioctls ctx_bind()
+ then issues are not work in a channel — they take effect when they
+ return. So the unbind ran while the render it waited for was still
+ executing. On a DRM backend the VM_BIND queue is what waits; here the
+ calling thread now waits, on the CPU, for the bind context's last
+ fence — the fence of the submit that carried the acquires, reached
+ only once the host engine has passed them — before the first ioctl.
+ A bind with no waits, which is every bind this project's tests issue,
+ finds that fence long reached and does not block.
+Evidence: nvk_queue.c, nvk_queue_submit_bind():
+   result = nvkmd_ctx_wait(queue->bind_ctx, ...);
+   result = nvkmd_ctx_bind(queue->bind_ctx, ...);
+   result = nvkmd_ctx_signal(queue->bind_ctx, ...);
+ nvkmd_horizon_ctx.c, nvkmd_horizon_ctx_flush_gpu_waits(): returns
+ VK_SUCCESS as soon as horizon_gpu_submit_waits() has kicked off the
+ acquire list; nvkmd_horizon_ctx_bind() comment: "A bind takes effect
+ the moment the ioctl returns". nvkmd_horizon_pdev.c: has_sparse is
+ true, so nvk_physical_device advertises sparseBinding and the bind
+ context is real.
+ Class X: cross-built. vk_core/sparse_binding binds only after a CPU
+ wait for the fill that precedes it, so it never had a semaphore in
+ the way and passes either way; the ordered shape — fill a bound block
+ with a signal semaphore, vkQueueBindSparse waiting on it to unbind the
+ block, then read the memory back after the bind's fence — is what a
+ console has to run to see this: before, the pattern may be missing
+ (the write was swallowed after the unbind); after, it must be there.
+Upstream: no — the backend is Horizon's.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 36 +++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index e00d185..34ad7c3 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -896,6 +896,42 @@ nvkmd_horizon_ctx_bind(struct nvkmd_ctx *_ctx,
+    if (flushed != VK_SUCCESS)
+       return flushed;
+ 
++   /* AND THE WAITS THIS BIND WAS ORDERED BEHIND GO BEFORE IT, ON THE
++    * CPU, because there is nothing else to put them on.
++    *
++    * nvk_queue_submit_bind() calls ctx_wait(), then ctx_bind(), then
++    * ctx_signal(): the semaphores a vkQueueBindSparse waits on must be
++    * satisfied before its binds take effect. ctx_wait() above turned
++    * those into host-engine acquires in THIS channel's GPFIFO and
++    * returned — which orders work submitted to this channel, and a
++    * MAP_BUFFER_EX ioctl is not work in a channel. Without this, an
++    * unbind waiting on the semaphore a render into the sparse image
++    * signals ran while that render was still executing, and a bind
++    * over a range the exec queue still reads changed the pages under
++    * it. On a DRM backend the VM_BIND queue is what waits; here the
++    * caller's thread does, on the fence of the submit that carried
++    * the acquires — reached only once the host engine has passed them.
++    *
++    * What it costs: vkQueueBindSparse blocks until its dependencies
++    * resolve, on the bind context alone. The exec channel is not
++    * touched, and a bind with no waits — every one this project's
++    * tests issue — finds no fence newer than the one it last waited
++    * for and returns from the wait at once.
++    */
++   if (ctx->has_fence) {
++      horizon_gpu_result res =
++         horizon_gpu_channel_wait_fence(ctx->chan, ctx->last_fence,
++                                        HORIZON_GPU_NO_TIMEOUT);
++      if (res.status != HORIZON_GPU_OK) {
++         return vk_errorf(log_obj, nvkmd_horizon_result(res),
++                          "horizon_gpu_channel_wait_fence(%" PRIu32 ", %"
++                          PRIu32 ") before a bind failed: status %d, nv "
++                          "0x%08" PRIx32, ctx->last_fence.syncpt_id,
++                          ctx->last_fence.threshold, (int)res.status,
++                          res.nv);
++      }
++   }
++
+    /* On a DRM backend a bind goes through the kernel's VM_BIND queue and
+     * is ordered against the channel's work. Horizon has no such queue:
+     * NVGPU_AS_IOCTL_MAP_BUFFER_EX is synchronous and takes effect when
+-- 
+2.43.0
+

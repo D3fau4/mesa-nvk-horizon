@@ -1,0 +1,194 @@
+From 245d251900e2101eca58b3da8841078b5a81f880 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:19:22 +0000
+Subject: [PATCH 80/82] nouveau/vk: nvkmd_horizon does not queue a wait its
+ channel already carries
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 3 (the acquire's wait moves to the GPU)
+Why: nvkmd_horizon_ctx_wait turns a wait on another channel's fence
+ into a host-engine acquire pushed into this channel's GPFIFO. A GPFIFO
+ runs in order, so once that acquire is in the ring everything
+ submitted after it is behind the counter reaching that threshold —
+ and asking again for the same counter at the same or a lower threshold
+ orders nothing that is not already ordered. It was asked again on
+ every submission: nvk_queue.c waits on the upload stream's time point
+ whenever a submission carries command buffers, and
+ nvk_upload_queue_flush() reports its last time point whether or not
+ anything new was pushed, so between two uploads — most frames — the
+ same upload-channel fence arrived with every vkQueueSubmit and went
+ out as a full submit each time: a kickoff ioctl, a syncpoint
+ increment, a wait-ring slot, and a reap ahead of it. The context now
+ remembers the highest threshold it has acquired on each syncpoint,
+ from GPU-side waits that were actually kicked off, and drops a fence
+ that memory already covers. The CPU fallback is unaffected: it waits
+ on syncs, and a dropped fence is one this channel acquired.
+Evidence: nvk_upload_queue.c, nvk_upload_queue_flush_locked():
+   if (time_point_out != NULL)
+      *time_point_out = queue->last_time_point;
+   if (nv_push_dw_count(&queue->push) == 0)
+      return VK_SUCCESS;
+ nvk_queue.c, nvk_queue_submit_drain(): `if (upload_time_point > 0)`
+ then nvkmd_ctx_wait(queue->exec_ctx, ..., 1, &wait) on
+ dev->upload.stream.sync, unconditionally on command_buffer_count > 0.
+ nvkmd_horizon_sync.c, nvk_horizon_sync_get_foreign_fences(): a sync
+ PENDING on another channel returns its fence every time it is asked;
+ nothing between two asks changes it unless the upload queue flushed.
+ On a console, horizon_gpu_channel_get_stats().wait_submits and the
+ meter's "handed to the host engine" count are what this changes:
+ with MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1 (set by the case on itself),
+ a loop of vkQueueSubmit with no uploads between them should report one
+ GPU wait for the upload channel and then ctx_waits_skipped growing by
+ one per submit, where it reported one GPU wait per submit before.
+ Class X: cross-built; not run on a console.
+Upstream: no — the backend is Horizon's.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 24 ++++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c  | 78 ++++++++++++++++++-
+ 2 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index a82c830..1a20ca4 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -324,6 +324,30 @@ struct nvkmd_horizon_ctx {
+     * before. It is the A/B control, read once per context. */
+    bool batch_enabled;
+ 
++   /* The highest threshold this channel has been told to acquire on
++    * each syncpoint it has waited on, from GPU-side waits that were
++    * kicked off. A GPFIFO runs in order, so everything submitted after
++    * that acquire is already behind it; a later request for the same
++    * counter at the same or a lower threshold is satisfied and is not
++    * queued again. One slot per fence a wait can carry is plenty: a
++    * channel waits on the upload channel and on the compositor, and
++    * slots are recycled round-robin when more turn up.
++    *
++    * What this relies on: a syncpoint only ever counts up, and the
++    * counters a channel waits on outlive it — the other channels of
++    * the same device, and the display's. A channel of another device
++    * cannot reach here, because a vk_sync belongs to one device and
++    * this backend has no external semaphores. The comparison is the
++    * wrapping one every fence in this backend uses, so an entry is
++    * misread only after 2^31 increments of one counter between two
++    * waits on it. */
++   struct {
++      uint32_t syncpt_id;
++      uint32_t threshold;
++      bool valid;
++   } gpu_waited[HORIZON_GPU_MAX_WAIT_FENCES];
++   uint32_t gpu_waited_next;
++
+    struct nvkmd_horizon_meter meter;
+ };
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+index ca0bcba..e00d185 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_ctx.c
+@@ -368,6 +368,48 @@ struct nvkmd_horizon_wait_batch {
+    uint32_t sync_count;
+ };
+ 
++/* Whether an acquire already kicked off on this channel covers `fence`:
++ * same counter, and a threshold at or past the one asked for, in the
++ * wrapping order horizon_gpu_syncpt_reached defines.
++ */
++static bool
++nvkmd_horizon_ctx_already_waited(const struct nvkmd_horizon_ctx *ctx,
++                                 horizon_gpu_fence fence)
++{
++   for (uint32_t i = 0; i < ARRAY_SIZE(ctx->gpu_waited); i++) {
++      if (ctx->gpu_waited[i].valid &&
++          ctx->gpu_waited[i].syncpt_id == fence.syncpt_id) {
++         return horizon_gpu_syncpt_reached(ctx->gpu_waited[i].threshold,
++                                           fence.threshold);
++      }
++   }
++   return false;
++}
++
++/* Records that an acquire of `fence` is now in this channel's GPFIFO.
++ * Only ever called after the submit carrying it succeeded: a wait the
++ * CPU did instead orders nothing in the ring and is not recorded.
++ */
++static void
++nvkmd_horizon_ctx_note_waited(struct nvkmd_horizon_ctx *ctx,
++                              horizon_gpu_fence fence)
++{
++   for (uint32_t i = 0; i < ARRAY_SIZE(ctx->gpu_waited); i++) {
++      if (ctx->gpu_waited[i].valid &&
++          ctx->gpu_waited[i].syncpt_id == fence.syncpt_id) {
++         if (!horizon_gpu_syncpt_reached(ctx->gpu_waited[i].threshold,
++                                         fence.threshold))
++            ctx->gpu_waited[i].threshold = fence.threshold;
++         return;
++      }
++   }
++
++   const uint32_t slot = ctx->gpu_waited_next++ % ARRAY_SIZE(ctx->gpu_waited);
++   ctx->gpu_waited[slot].syncpt_id = fence.syncpt_id;
++   ctx->gpu_waited[slot].threshold = fence.threshold;
++   ctx->gpu_waited[slot].valid = true;
++}
++
+ /* Hands the collected batch to the host engine, or falls back to CPU
+  * waits for exactly the syncs in it. Empties the batch either way.
+  */
+@@ -401,6 +443,8 @@ nvkmd_horizon_ctx_flush_gpu_waits(struct nvkmd_horizon_ctx *ctx,
+    if (horizon_gpu_succeeded(res)) {
+       ctx->last_fence = fence;
+       ctx->has_fence = true;
++      for (uint32_t i = 0; i < n; i++)
++         nvkmd_horizon_ctx_note_waited(ctx, batch->fences[i]);
+       nvkmd_horizon_meter_ctx_wait_gpu(&ctx->meter, n);
+       /* horizon_gpu_submit_waits() is a real horizon_gpu_submit() under
+        * the hood, so it counts as one for the same reason the exec and
+@@ -510,9 +554,41 @@ nvkmd_horizon_ctx_wait(struct nvkmd_ctx *_ctx,
+        * dependency in a batch that can still fall back to a CPU wait,
+        * and the fallback waits on syncs rather than on fences. */
+       horizon_gpu_fence fences[NVKMD_MAX_SYNCPT_FENCES];
+-      const uint32_t n =
++      uint32_t n =
+          nvk_horizon_sync_get_foreign_fences(waits[i].sync, ctx->chan,
+                                              fences, ARRAY_SIZE(fences));
++
++      /* THE WAIT THIS CHANNEL HAS ALREADY QUEUED, which is the other
++       * case where skipping is the truth and not a shortcut. An
++       * acquire that went into this GPFIFO earlier orders everything
++       * after it behind that counter reaching that threshold; asking
++       * again for the same counter at the same or a lower threshold
++       * adds nothing the ring does not already enforce, and it used to
++       * cost a full submit — kickoff ioctl, syncpoint increment, a
++       * wait-ring slot — every time.
++       *
++       * Every time is not a figure of speech. nvk_queue.c waits on the
++       * upload stream's time point on every submission that carries
++       * command buffers, and nvk_upload_queue_flush() reports its last
++       * time point whether or not anything new was pushed. So between
++       * two uploads, which is most frames, the same fence of the upload
++       * channel arrived here with every vkQueueSubmit and went out as
++       * one more kickoff each time. Now it goes out once.
++       *
++       * A fence dropped here is still one this channel acquired, so the
++       * CPU fallback below — which waits on syncs, not fences — stays
++       * correct if the rest of the batch cannot be submitted. */
++      uint32_t kept = 0;
++      for (uint32_t j = 0; j < n; j++) {
++         if (!nvkmd_horizon_ctx_already_waited(ctx, fences[j]))
++            fences[kept++] = fences[j];
++      }
++      if (n > 0 && kept == 0) {
++         nvkmd_horizon_meter_ctx_wait(&ctx->meter, true, 0);
++         continue;
++      }
++      n = kept;
++
+       if (n > 0) {
+          STATIC_ASSERT(NVKMD_MAX_SYNCPT_FENCES <=
+                        HORIZON_GPU_MAX_WAIT_FENCES);
+-- 
+2.43.0
+
