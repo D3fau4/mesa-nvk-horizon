@@ -95,7 +95,7 @@ static bool logcat_dump(const char *path)
 }
 
 /* Lists `dir`: LOGCAT_DIR when run without arguments, or any argument
- * that names a directory rather than a file — Atmosphere's crash reports
+ * that names a directory rather than a file â€” Atmosphere's crash reports
  * (sdmc:/atmosphere/crash_reports/) carry a timestamp in their name, so
  * they cannot be fetched without listing the directory first. */
 static void logcat_list(const char *dir)

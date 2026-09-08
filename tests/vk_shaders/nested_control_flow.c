@@ -10,7 +10,7 @@
  *
  * Godot 4.1's Forward+ fragment shader is one: max_crs_depth 13, and all
  * of that depth inside its cluster loop bodies. Measured on GM20B
- * (2026-08-29), entering a body once was enough — with the loop bound
+ * (2026-08-29), entering a body once was enough â€” with the loop bound
  * forced to four and the body replaced by an increment, the draw still
  * ran until nvgpu's "fault notification 8 (fifo idle timeout)", while the
  * same shader with the bound forced to zero cost 2.77 ms. This is that
