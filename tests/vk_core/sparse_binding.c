@@ -45,6 +45,7 @@
 #define BLOCKS      4u
 #define PATTERN_A   UINT32_C(0x5A5AA5A5)
 #define PATTERN_B   UINT32_C(0xC3C33C3C)
+#define PATTERN_D   UINT32_C(0x1D1DD1D1)
 #define WAIT_NS     UINT64_C(2000000000)
 
 /* Binds `mem` (or nothing, when mem is VK_NULL_HANDLE) over
@@ -323,6 +324,172 @@ TEST_CASE_DECL(vk_core, sparse_binding)
    t_check(t, b_landed && c_survived,
            "MEASURED: sparseBinding and sparseResidencyBuffer both do what "
            "the driver says they do");
+
+   /* ---- D: an unbind ordered behind a render that is still running --
+    *
+    * Everything above binds after a CPU wait for the work before it, so
+    * it passes whether or not the bind honours the semaphores it was
+    * given. This is the shape that needs them: a fill of block 1 that
+    * signals a semaphore, and a vkQueueBindSparse that waits on that
+    * semaphore and unbinds block 1 — no CPU wait between. Vulkan says
+    * the unbind happens after the fill. Since the acquire moved to the
+    * GPU, the bind context queued the semaphore's acquire into its
+    * channel and returned, and the unbind ioctl ran at once; mesa-patch
+    * 0082 makes the bind wait for that acquire first. If it did not,
+    * the fill lands on an unbound page and is swallowed — section C
+    * measured exactly that — and the backing keeps section B's pattern.
+    *
+    * THE FILL HAS TO STILL BE RUNNING WHEN THE BIND IS ISSUED, or the
+    * two implementations cannot be told apart. So the command buffer
+    * burns time first: SCRATCH_FILLS fills of a SCRATCH_B scratch
+    * buffer ahead of the one fill that matters, and vkGetFenceStatus is
+    * read right before vkQueueBindSparse to record whether the producer
+    * was in fact pending. A run where it was not is inconclusive, and
+    * says so rather than passing. */
+   if (b_landed && c_survived) {
+      enum { SCRATCH_FILLS = 8 };
+      const VkDeviceSize SCRATCH_B = 16u * 1024u * 1024u;
+      vkfw_buffer scratch;
+      VkSemaphore sem = VK_NULL_HANDLE;
+      VkFence fill_fence = VK_NULL_HANDLE, bind_fence = VK_NULL_HANDLE;
+      memset(&scratch, 0, sizeof(scratch));
+
+      if (!bind_range(&fw, buf, block, blk, 0, blk, "D: binding block 1 again"))
+         goto out;
+      if (!vkfw_buffer_create(&fw, SCRATCH_B, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &scratch)) {
+         rv = 1;
+         goto out;
+      }
+
+      const VkSemaphoreCreateInfo sci = {
+         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+      const VkFenceCreateInfo fci = {
+         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+      bool ok = t_check(t, fw.vk.vkCreateSemaphore(fw.dev, &sci, NULL, &sem)
+                              == VK_SUCCESS, "D: vkCreateSemaphore") &&
+                t_check(t, fw.vk.vkCreateFence(fw.dev, &fci, NULL, &fill_fence)
+                              == VK_SUCCESS, "D: vkCreateFence (fill)") &&
+                t_check(t, fw.vk.vkCreateFence(fw.dev, &fci, NULL, &bind_fence)
+                              == VK_SUCCESS, "D: vkCreateFence (bind)");
+
+      VkCommandBuffer cb = VK_NULL_HANDLE;
+      if (ok && vkfw_cmd_begin(&fw, &cb)) {
+         for (uint32_t i = 0; i < SCRATCH_FILLS; i++)
+            fw.vk.vkCmdFillBuffer(cb, scratch.buf, 0, SCRATCH_B,
+                                  PATTERN_A + i);
+         fw.vk.vkCmdFillBuffer(cb, buf, blk, blk, PATTERN_D);
+         ok = t_check(t, fw.vk.vkEndCommandBuffer(cb) == VK_SUCCESS,
+                      "D: vkEndCommandBuffer");
+      } else {
+         ok = false;
+      }
+
+      if (ok) {
+         const VkSubmitInfo si = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cb,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &sem,
+         };
+         r = fw.vk.vkQueueSubmit(fw.queue, 1, &si, fill_fence);
+         ok = t_check(t, r == VK_SUCCESS,
+                      "D: the fill that signals the semaphore -> %s",
+                      vkfw_result_str(r));
+      }
+
+      bool pending = false;
+      if (ok) {
+         /* Read, not waited: this is the fact that makes the section
+          * mean anything, taken as late as possible before the bind. */
+         pending = fw.vk.vkGetFenceStatus(fw.dev, fill_fence) == VK_NOT_READY;
+
+         const VkSparseMemoryBind unbind = {
+            .resourceOffset = blk,
+            .size = blk,
+            .memory = VK_NULL_HANDLE,
+            .memoryOffset = 0,
+         };
+         const VkSparseBufferMemoryBindInfo buf_bind = {
+            .buffer = buf,
+            .bindCount = 1,
+            .pBinds = &unbind,
+         };
+         const VkBindSparseInfo bsi = {
+            .sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &sem,
+            .bufferBindCount = 1,
+            .pBufferBinds = &buf_bind,
+         };
+         r = fw.vk.vkQueueBindSparse(fw.queue, 1, &bsi, bind_fence);
+         ok = t_check(t, r == VK_SUCCESS,
+                      "D: vkQueueBindSparse waiting on the semaphore -> %s",
+                      vkfw_result_str(r));
+      }
+      if (ok) {
+         r = fw.vk.vkWaitForFences(fw.dev, 1, &bind_fence, VK_TRUE, WAIT_NS);
+         ok = t_check(t, r == VK_SUCCESS, "D: the bind completed -> %s",
+                      vkfw_result_str(r));
+      }
+      if (ok) {
+         r = fw.vk.vkWaitForFences(fw.dev, 1, &fill_fence, VK_TRUE, WAIT_NS);
+         ok = t_check(t, r == VK_SUCCESS, "D: the fill completed -> %s",
+                      vkfw_result_str(r));
+      }
+
+      t_note(t, "MEASURED D: the fill was %s when vkQueueBindSparse was "
+             "called", pending ? "still pending" : "ALREADY COMPLETE");
+
+      if (ok) {
+         /* The backing is host-visible and still allocated: the unbind
+          * took it out of the buffer, not out of existence. What the
+          * fill wrote is read from it directly. */
+         void *map = NULL;
+         r = fw.vk.vkMapMemory(fw.dev, block, 0, blk, 0, &map);
+         if (t_check(t, r == VK_SUCCESS, "D: vkMapMemory(block) -> %s",
+                     vkfw_result_str(r))) {
+            const VkMappedMemoryRange range = {
+               .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+               .memory = block,
+               .offset = 0,
+               .size = VK_WHOLE_SIZE,
+            };
+            (void)fw.vk.vkInvalidateMappedMemoryRanges(fw.dev, 1, &range);
+            const uint32_t *w = map;
+            uint32_t d_wrong = 0;
+            for (uint32_t i = 0; i < words; i++)
+               if (w[i] != PATTERN_D)
+                  d_wrong++;
+            fw.vk.vkUnmapMemory(fw.dev, block);
+
+            t_check(t, d_wrong == 0,
+                    "MEASURED D: the block holds the fill the unbind was "
+                    "ordered behind (%" PRIu32 " of %" PRIu32 " words wrong, "
+                    "first 0x%08" PRIx32 ")", d_wrong, words, w[0]);
+            if (d_wrong != 0 && w[0] == PATTERN_B)
+               t_note(t, "MEASURED D: the block still holds B's pattern — "
+                      "the unbind ran before the fill and the fill was "
+                      "swallowed, which is the failure 0082 exists for");
+            t_check(t, pending,
+                    "MEASURED D: the producer was pending when the bind "
+                    "was issued, so the section distinguished the two "
+                    "orders (if this fails, raise SCRATCH_FILLS)");
+         }
+      }
+
+      if (sem != VK_NULL_HANDLE)
+         fw.vk.vkDestroySemaphore(fw.dev, sem, NULL);
+      if (fill_fence != VK_NULL_HANDLE)
+         fw.vk.vkDestroyFence(fw.dev, fill_fence, NULL);
+      if (bind_fence != VK_NULL_HANDLE)
+         fw.vk.vkDestroyFence(fw.dev, bind_fence, NULL);
+      if (scratch.buf != VK_NULL_HANDLE)
+         vkfw_buffer_destroy(&fw, &scratch);
+      if (!ok)
+         rv = 1;
+   }
 
 out:
    if (read_back.buf != VK_NULL_HANDLE)

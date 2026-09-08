@@ -206,6 +206,60 @@ variable rather than to keep adding them at once.
 
 ---
 
+## 7 A wait the channel already carries is no longer queued again, and nothing has run it
+
+**Class X.** `0080` gives `nvkmd_horizon_ctx` a memory of the highest
+threshold it has acquired on each syncpoint, and drops a fence that
+memory covers instead of pushing one more host-engine acquire for it.
+The case it exists for is every frame's: `nvk_queue.c` waits on the
+upload stream's time point on every submission that carries command
+buffers, and `nvk_upload_queue_flush()` reports the last time point
+whether or not anything was pushed, so between two uploads the same
+upload-channel fence went out as a full submit — kickoff, increment,
+wait-ring slot, reap — with every `vkQueueSubmit`.
+
+**Done when** a run with `MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1` set by
+the case on itself (`vk_core/submit_batching` prints the meter) shows,
+over a loop of submissions with no upload between them, one wait
+"handed to the host engine" for the upload channel and then
+`ctx_waits_skipped` growing by one per submit — and
+`horizon_gpu_channel_get_stats().wait_submits` on the exec channel no
+longer growing with the submit count. The four presenting suites must
+pass beside it: the memo is only ever allowed to drop a wait the ring
+already enforces, and a picture that is wrong is the symptom if that
+claim is false.
+
+---
+
+## 8 A sparse bind waits for its acquires, and the case that shows it has not run
+
+**Class X.** `0082` makes `nvkmd_horizon_ctx_bind` wait, on the CPU,
+for the bind context's last fence before the first `MAP_BUFFER_EX` or
+`UNMAP_BUFFER` ioctl — the fence of the submit that carried the
+host-engine acquires `ctx_wait()` queued, which is reached only once
+those acquires have resolved. Before it, an unbind that
+`vkQueueBindSparse` ordered behind a render's semaphore ran while the
+render was still executing.
+
+`vk_core/sparse_binding` section D is that shape, cross-compiled and
+never run: eight fills of a 16 MiB scratch buffer and then a fill of
+block 1, submitted with a signal semaphore and no CPU wait;
+`vkQueueBindSparse` waiting on that semaphore and unbinding block 1;
+`vkGetFenceStatus` on the fill's fence read right before the bind call;
+then the block's backing memory — still allocated, host-visible —
+mapped and checked for the fill's pattern. Sections A to C still bind
+only after a CPU wait, and pass either way.
+
+**Done when** section D has reported, on one run, both `MEASURED D:
+the fill was still pending when vkQueueBindSparse was called` and the
+block holding the fill's pattern with 0 words wrong. A run where the
+fill was already complete distinguishes nothing and closes nothing:
+raise `SCRATCH_FILLS` and run again. A run where the pending fill
+landed as B's pattern is the failure `0082` exists for, on a build that
+carries it, and reopens the question.
+
+---
+
 ## Closed on 2026-09-07
 
 Kept as a list rather than as text, because what they settled is in
