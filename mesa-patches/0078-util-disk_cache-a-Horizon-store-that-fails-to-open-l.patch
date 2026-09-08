@@ -1,0 +1,66 @@
+From a97e6c772ce56aa1ee694d4a493a6fbb6db21940 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:19:21 +0000
+Subject: [PATCH 78/82] util/disk_cache: a Horizon store that fails to open
+ leaves no queue behind
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (Mesa shader disk cache on Horizon)
+Why: disk_cache_type_create() on Horizon opens the store after the
+ driver keys blob exists, i.e. after disk_cache_init_queue() has already
+ started the put queue. When the open fails it finishes and destroys
+ the queue and marks the cache path_init_failed — but util_queue_destroy
+ frees `jobs` and `threads` and leaves the pointers in place, and
+ util_queue_is_initialized() is `queue->threads != NULL`. So the cache
+ object returned to NVK still looks initialised to everything that asks:
+ disk_cache_put() allocates and copies a job for every pipeline blob and
+ hands it to a queue with no threads (util_queue_add_job_locked returns
+ without running the cleanup when num_threads is 0), leaking one copy of
+ every pipeline serialised for the life of the instance; and
+ disk_cache_destroy() finishes and destroys the queue a second time —
+ cnd_destroy and mtx_destroy on destroyed objects and free() of both
+ arrays again — on a games console with no allocator hardening.
+ A failed open is an ordinary event here: a read-only or full card, or
+ the cache path present as a directory, all make horizon_gpu_blob_cache_
+ open() return an error and the log say "cache disabled".
+Evidence: u_queue.c:
+   void util_queue_destroy(struct util_queue *queue) {
+      ... free(queue->jobs); free(queue->threads); }
+   static inline bool util_queue_is_initialized(struct util_queue *queue)
+   { return queue->threads != NULL; }
+ and util_queue_init's own failure path, which is what this now copies:
+   /* also util_queue_is_initialized can be used to check for success */
+   memset(queue, 0, sizeof(*queue));
+ disk_cache.c: disk_cache_put() and disk_cache_destroy() both gate on
+ util_queue_is_initialized() and not on path_init_failed.
+ Class X: cross-built with the series; the path needs a card that
+ refuses the open to run, and has not been run on a console.
+Upstream: no — it fixes the Horizon-only branch 0046 added.
+---
+ src/util/disk_cache.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 0e251f4..ae49279 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -216,6 +216,14 @@ disk_cache_type_create(const char *gpu_name,
+        !disk_cache_horizon_open(cache)) {
+       util_queue_finish(&cache->cache_queue);
+       util_queue_destroy(&cache->cache_queue);
++      /* util_queue_destroy frees the arrays and leaves the pointers, and
++       * util_queue_is_initialized() is `threads != NULL` — so without
++       * this the cache object walks out of here looking initialised:
++       * disk_cache_put() keeps allocating jobs for a queue that has no
++       * threads, and disk_cache_destroy() finishes and destroys it a
++       * second time. This is what util_queue_init() itself does on its
++       * own failure path (u_queue.c). */
++      memset(&cache->cache_queue, 0, sizeof(cache->cache_queue));
+       cache->path_init_failed = true;
+       cache->type = DISK_CACHE_NONE;
+    }
+-- 
+2.43.0
+

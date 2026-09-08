@@ -1,0 +1,100 @@
+From 044c5a3a13f66d64c349c703dd946591203020c3 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 8 Sep 2026 21:34:15 +0200
+Subject: [PATCH 84/87] nouveau/vk: nvkmd_horizon says it skipped a fill
+ through an exchange
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (CPU cost of submission)
+Why: 0072 added `said_no_zero_fill` to the shared nvkmd_horizon_dev and
+ read it and wrote it plainly, on the argument written into the struct
+ that "the worst a race can do is print the line twice". That is not
+ what the C memory model says. Two threads may call vkAllocateMemory on
+ one VkDevice — Vulkan imposes no external synchronisation on it, and
+ nothing between vkAllocateMemory and nvkmd_horizon_alloc_mem_kind
+ takes a lock — so a plain read concurrent with a plain write is a data
+ race and the behaviour of the program is undefined, on the ordinary
+ allocation path of any multi-threaded application rather than in a
+ test.
+Evidence: nvkmd_horizon_mem.c as 0072 left it:
+   if (skip_fill && !dev->said_no_zero_fill) {
+      dev->said_no_zero_fill = true;
+ `dev` is the device every allocation on it shares (nvkmd_horizon.h,
+ struct nvkmd_horizon_dev), and nvk_AllocateMemory -> nvkmd_dev_alloc_
+ mem -> nvkmd_horizon_alloc_mem_kind holds no lock of this device.
+ Class X: cross-built 2026-09-08 with the flags this tree configures,
+ aarch64-none-elf-gcc (devkitA64) 15.2.0, no warning; no console has
+ run it, and no run could show the difference — a race that is
+ undefined is not a race that misbehaves on demand.
+Upstream: no — the flag and the backend are Horizon's.
+
+p_atomic_xchg is Mesa's own, it is one instruction here, and it makes
+the "once" exact rather than probable: whoever moves the flag from
+false to true logs the line, and nobody else. The argument 0072 made
+against a mutex is untouched, because this is not one.
+---
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h  | 15 ++++++++++++---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c      | 12 +++++++++---
+ 2 files changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index 1a20ca4..7e62fdb 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -103,9 +103,18 @@ struct nvkmd_horizon_dev {
+     * and a test's log scan sees only what its own case produced: one
+     * .nro holds several cases, each of which builds its own device, and
+     * a process-wide flag would put the line in whichever case happened
+-    * to allocate first. Not synchronised — the worst a race can do is
+-    * print the line twice, and a mutex to make a log line rarer is a
+-    * mutex for nothing. */
++    * to allocate first.
++    *
++    * TOUCHED ONLY THROUGH p_atomic_xchg, AND NEVER READ PLAINLY. Two
++    * threads may call vkAllocateMemory on one VkDevice — Vulkan says
++    * so, and nothing on NVK's way here takes a lock — so the plain
++    * read and the plain write that stood here were a data race, which
++    * in C is undefined behaviour and not the "prints the line twice"
++    * this comment claimed it was. The exchange also makes the once
++    * exact: whoever moves it false->true logs, and nobody else. It is
++    * one instruction on a path that has just skipped a memset, so the
++    * argument against a mutex is untouched — there is no mutex here
++    * either. */
+    bool said_no_zero_fill;
+ 
+    /* Every live VA of this device, so a GPU address can be named.
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index 4aa105d..0ab973f 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -9,6 +9,7 @@
+ 
+ #include "util/log.h"
+ #include "util/macros.h"
++#include "util/u_atomic.h"
+ #include "util/u_memory.h"
+ 
+ #include <inttypes.h>
+@@ -313,9 +314,14 @@ nvkmd_horizon_alloc_mem_kind(struct nvkmd_dev *_dev,
+     * the allocator" — and on 2026-09-07 vk_core/device_memory measured
+     * a difference of zero and could not say which it had. Per device
+     * rather than per process because that is the scope a case's log
+-    * scan can see; see struct nvkmd_horizon_dev. */
+-   if (skip_fill && !dev->said_no_zero_fill) {
+-      dev->said_no_zero_fill = true;
++    * scan can see; see struct nvkmd_horizon_dev.
++    *
++    * ONE EXCHANGE, NOT A READ AND THEN A WRITE. Two threads may be in
++    * vkAllocateMemory on this device at once, so the pair of plain
++    * accesses that stood here was a data race on the ordinary
++    * allocation path; p_atomic_xchg also decides the "once" instead of
++    * leaving it to timing — exactly one caller sees false. */
++   if (skip_fill && !p_atomic_xchg(&dev->said_no_zero_fill, true)) {
+       mesa_logi("nvkmd_horizon: an allocation asked not to be zero filled "
+                 "and was not (%" PRIu64 " bytes); "
+                 "NVK_HORIZON_ZERO_ALL_MEM=1 turns this off", size_B);
+-- 
+2.53.0.windows.2
+

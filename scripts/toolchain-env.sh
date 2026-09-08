@@ -284,7 +284,7 @@ horizon_nvk_missing_libs() {
     unset _hz_nvk_lib
 }
 
-# True when the archives t_vulkan links are present. Separate from
+# True when the archives the vk_* suites link are present. Separate from
 # horizon_mesa_libs_present because they live in a different build
 # directory, produced by a different script, at a different time.
 horizon_nvk_libs_present() {

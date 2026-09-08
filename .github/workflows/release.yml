@@ -9,9 +9,9 @@
 # rather than hide it. That constraint does not exist here: this
 # workflow builds the same toolchain image and runs the full
 # scripts/ci-build-archives.sh that ci.yml does, so the package this
-# produces has every archive the tests link, including the fourteen
-# t_vk_* Vulkan/NVK tests. Publishing less than what CI already
-# validates would be the wrong kind of gap to leave unnamed.
+# produces has every archive the tests link, including the `vk_*`
+# Vulkan/NVK suites. Publishing less than what CI already validates
+# would be the wrong kind of gap to leave unnamed.
 #
 # SECOND: ONE JOB, not a `toolchain` job handing an image to a
 # container-based `release` job, AND the build steps run ON THE RUNNER,
@@ -188,7 +188,7 @@ jobs:
       # per-command `docker run` against $TOOLCHAIN_IMAGE for everything
       # that needs the cross toolchain. The full build, not `make all`:
       # every archive the tests link, including NVK, so the package below
-      # can carry the fourteen t_vk_* tests. See this file's header.
+      # can carry the `vk_*` suites. See this file's header.
       - name: every archive the tests link
         run: scripts/ci-build-archives.sh
 
@@ -239,7 +239,7 @@ jobs:
 
           build_id=$(sed -n 's/^build id  *: //p' build/pkg/MANIFEST.txt)
           count=$(find build/pkg -name '*.nro' | wc -l)
-          vk_count=$(find build/pkg -name 't_vk_*.nro' | wc -l)
+          vk_count=$(find build/pkg -name 'vk_*.nro' | wc -l)
           nvk_lib_count=$(find build/pkg/lib/nvk -name '*.a' 2>/dev/null | wc -l)
 
           # The specific items this section names are the ones this
@@ -265,10 +265,11 @@ jobs:
             echo "  \`include/horizon_gpu/\`**"
             echo "- **\`lib/nvk/\`: ${nvk_lib_count} Mesa/NVK driver archive(s)**"
             echo "  — linked exactly as \`meson.build\`'s \`nvk_whole_libs\`/"
-            echo "  \`nvk_test_libs\` and the \`t_vk_*\` tests already do; see"
+            echo "  \`nvk_test_libs\` and the \`vk_*\` suites already do; see"
             echo "  those for the link order (\`--start-group\`/\`--end-group\`"
             echo "  is load-bearing)."
-            echo "- **${count} \`.nro\`, ${vk_count} of them \`t_vk_*\` (NVK/Vulkan)**"
+            echo "- **${count} \`.nro\` test suites, ${vk_count} of them"
+            echo "  \`vk_*\` (NVK/Vulkan)**"
             echo "- **Build id:** \`${build_id}\`"
             echo
             echo "### The second asset: linking against this from your own project"
@@ -331,11 +332,11 @@ jobs:
             echo "unexplained single occurrence and is **not being"
             echo "investigated further**: the only correlated variable was"
             echo "nxlink, and nxlink has been removed at the user's"
-            echo "direction. **2.** \`t_fault\` and the console on exit: run"
-            echo "14 has it PASS 20/20 and running last, so whether the"
-            echo "console survived is unconfirmed. **3.**"
-            echo "\`t_vk_texture\`'s one unexplained occurrence stays on the"
-            echo "record, though run 14 put it at 1685/1685."
+            echo "direction. **2.** \`gpu_fault/mmu_fault\` and the console"
+            echo "on exit: run 14 has it PASS 20/20 and running last, so"
+            echo "whether the console survived is unconfirmed. **3.**"
+            echo "\`vk_render/texture\`'s one unexplained occurrence stays on"
+            echo "the record, though run 14 put it at 1685/1685."
             echo
             echo "This is pre-1.0 software driving a GPU through system"
             echo "services. It has taken a console down before. Run it when"

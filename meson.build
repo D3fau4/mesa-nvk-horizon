@@ -1,16 +1,22 @@
-# mesa-nvk-horizon — Meson build for libhorizon_gpu.a and the ten
-# Phase 1 test .nros.
+# mesa-nvk-horizon — Meson build for libhorizon_gpu.a and the test
+# suites.
 #
 # This exists to exercise toolchain/horizon-aarch64.cross (Phase 2:
 # "Phase 1 tests cross-compile with the new cross file"), and to be the
 # build system the Mesa work in Phase 3 plugs into.
 #
 # It does NOT replace the Makefile. The Makefile produced the .nro files
-# that were verified on real hardware (ten .nro, 10/10 PASS), so it
-# stays as the reference path; both are expected to emit the same flags
-# and comparable artefacts. Host-side unit tests remain separate
+# that were verified on real hardware, so it stays as the reference
+# path; both are expected to emit the same flags and comparable
+# artefacts. Host-side unit tests remain separate
 # (scripts/run-host-tests.sh) — they are built with the *host* compiler
 # and sanitizers, which is a different job from this file's.
+#
+# ONE .nro PER SUITE. A suite is tests/<suite>/: suite.c names its cases
+# and <case>.c is one of them. The three dictionaries below —
+# horizon_suites, mesa_suites, nvk_suites — are the suites each
+# dependency tier can build, and a case is added to one of them rather
+# than by adding a .nro. See tests/README.md and CLAUDE.md.
 #
 # Configure through scripts/configure-horizon.sh; it resolves the
 # toolchain and passes both cross files in the right order.
@@ -143,8 +149,14 @@ idep_horizon_gpu = declare_dependency(
 alias_target('lib', libhorizon_gpu)
 
 # ---------------------------------------------------------------------
-# Phase 1 tests — one standalone .nro each.
+# Test suites — one .nro per suite, several cases per suite.
 # ---------------------------------------------------------------------
+# A suite is a directory: tests/<suite>/suite.c is the table of cases and
+# tests/<suite>/<case>.c is one case. The case's own header comment is
+# where its rationale lives — this file states only what the *build*
+# needs to know, so that a fact about a test is not restated in two
+# places that can drift.
+#
 # Packaging tools come from the cross file's [binaries]; they run on the
 # build machine even though they are declared for the host toolchain,
 # which is what custom_target commands do.
@@ -154,85 +166,26 @@ nacptool = find_program('nacptool')
 # Test-framework header lives in tests/common/, included as "common/…".
 tests_inc = include_directories('tests')
 
-horizon_tests = [
-  't_init',
-  't_alloc',
-  't_nvmap',
-  't_va_reserve',
-  't_map',
-  't_channel',
-  't_submit',
-  't_syncpt',
-  # Whether a syncpoint can be advanced from the CPU at all, and what
-  # that does to the channel that owns it. nvk_horizon_sync_signal does
-  # not touch a syncpoint because horizon_gpu offered no way to; the
-  # ioctl was always there and nothing had called it. Disturbs a channel
-  # it creates for the purpose, on purpose, and destroys it after.
-  't_syncpt_incr',
-  't_fence_wait',
-  # How many syncpoint waits the platform will hold at once, and what
-  # horizon_gpu_fence_wait does past that number. Its loop treats a
-  # chunk that expired and a chunk that could not be armed alike — the
-  # first is the pulse it is built on, the second would turn the wait
-  # into a busy spin nothing reports. Nothing in this tree knows the
-  # ceiling, and a Vulkan application with a thread per queue reaches
-  # whatever it is as a matter of course.
-  't_fence_wait_many',
-  # Phase 4: does a GPU write to memory become visible to the CPU? Every
-  # observation below t_vulkan is made through a syncpoint, which is a
-  # host1x counter and not memory, so nothing had ever asked this.
-  't_gpuwrite',
-  't_teardown',
-  # Phase 4, decision D14: the UNCACHED cache policy. Uses no Mesa, so it
-  # lives with the horizon_gpu tests rather than the NVK ones.
-  't_uncached',
-  # Phase 3 item 6: compat/sysconf.c against the real kernel. Uses no
-  # horizon_gpu — the C library and svcGetInfo only — but it is built
-  # and packaged with the others because it is a hardware measurement,
-  # and hardware measurements travel together.
-  't_sysinfo',
-  # Phase 5: what the allocator does around the shader local/shared
-  # memory window. NVK reaches that aperture the moment a shader runs,
-  # and blocking it off broke vkCreateDevice once (patches 0039/0040)
-  # for a reason nobody measured. Uses no Mesa, on purpose: the question
-  # is about the address space, not about the driver.
-  't_va_window',
-  # A deliberate MMU fault, and the wait that must not report success
-  # for it. The fence/notifier fix was written because of a real fault
-  # and has never had one since — a check that has never fired is not a
-  # check. Destroys its own channel on purpose, which is also the only
-  # place teardown-after-a-fault is exercised.
-  't_fault',
-  # Decision D15: how large a single GPFIFO entry this hardware will
-  # actually execute. nxvk ramps the size at every channel creation to
-  # pin a ring-size fault; this measures the number once instead, so
-  # horizon_gpu_submit can bound the span rather than let a channel find
-  # the limit.
-  't_pbsize',
-  # Phase 6 groundwork: the first test that owns the display and runs
-  # with no console, so the reporting path a swapchain test will depend
-  # on is measured before anything depends on it.
-  't_display',
-  # Phase 6, and it comes before the WSI rather than after it: our own
-  # scanout buffers on the default nwindow, driven one level below
-  # NWindow, so the number of slots that can be held at once is measured
-  # instead of assumed. Uses no Mesa — the question is about the
-  # compositor, not about Vulkan.
-  't_nwindow',
-  # Decision D12, asked of the hardware instead of assumed. Sparse
-  # residency is off because the layer had no way to unbind part of a
-  # reservation and leave the rest addressable — but the reservation
-  # half was never the problem, and what the chip does at the edges was
-  # never measured. Three writes through the channel's own semaphore
-  # release, each on its own channel because a fault loses one.
-  't_sparse',
-  # Whether a display mode change reaches this process at all. The WSI's
-  # whole notion of "suboptimal" rests on it, and two runs of
-  # t_vk_swapchain's section G reported the mode never moving while the
-  # console was being docked by hand. A console, a hook and nothing else
-  # in the way, so the operator can watch it happen.
-  't_dock',
-]
+# The suites that need nothing but the toolchain. The Makefile builds
+# exactly these and scripts/check-mesa-test-parity.sh fails if the two
+# lists ever disagree.
+horizon_suites = {
+  'platform' : ['nv_bringup', 'teardown', 'sysconf'],
+  'gpu_memory' : ['alloc', 'nvmap', 'va_reserve', 'va_map', 'uncached',
+                  'shader_window', 'borrowed_pages'],
+  'gpu_submit' : ['channel', 'submit', 'syncpt_per_submit',
+                  'syncpt_cpu_incr', 'fence_wait', 'fence_wait_many',
+                  'gpu_write', 'pushbuf_size'],
+  # Both cases fault the GPU on purpose and lose a channel doing it, so
+  # they are one .nro that is run last rather than cases inside the two
+  # suites above. tests/gpu_fault/suite.c says it in full.
+  'gpu_fault' : ['sparse', 'mmu_fault'],
+  # Owns the display: no console.
+  'display' : ['console_handoff', 'nwindow'],
+  # Needs a console *and* an operator, which is why it is neither in
+  # `display` nor in `platform`.
+  'dock' : ['mode_change'],
+}
 
 # The build stamp every test prints in its first lines. Regenerated on
 # every build (build_always_stale), which is the whole point: a .nro on
@@ -262,21 +215,20 @@ testfw = static_library(
 test_nros = []
 
 # ---------------------------------------------------------------------
-# Tests 12 and 13 — Mesa's own code, measured on hardware.
+# mesa_runtime — Mesa's own code, measured on hardware.
 # ---------------------------------------------------------------------
-# Phase 3 items 4 (threads) and 5 (timers/clocks). They link the archives
-# Mesa's build produced, not sources recompiled with flags of our own:
-# the object under test has to be the object Mesa builds, or the
-# measurement describes a different build. -DHAVE_PTHREAD,
-# -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are Mesa's own
-# configure results here, copied so
-# its headers declare the same types; both appear in
-# build/mesa-probe/build.ninja.
+# Phase 3 items 4 (threads) and 5 (timers/clocks), plus the shader disk
+# cache. They link the archives Mesa's build produced, not sources
+# recompiled with flags of our own: the object under test has to be the
+# object Mesa builds, or the measurement describes a different build.
+# -DHAVE_PTHREAD, -DHAVE_STRUCT_TIMESPEC and -DENABLE_SHADER_CACHE are
+# Mesa's own configure results here, copied so its headers declare the
+# same types; both appear in build/mesa-probe/build.ninja.
 #
 # Skipped, with a message, when Mesa has not been built — a bare clone
-# must still produce the eleven tests that need only the toolchain.
+# must still produce the six suites that need only the toolchain.
 #
-# The Makefile states the same four facts — MESA_TESTS, MESA_LIBS and
+# The Makefile states the same four facts — MESA_SUITES, MESA_LIBS and
 # MESA_CFLAGS' defines and include paths — and each build system is meant
 # to stay readable on its own, so they are duplicated rather than shared.
 # scripts/check-mesa-test-parity.sh is what enforces that: a comment
@@ -287,7 +239,7 @@ fs = import('fs')
 
 # Not hardcoded: scripts/configure-mesa.sh and scripts/build-mesa.sh both
 # honour $MESA_BUILD_DIR, and looking somewhere else than the directory
-# the caller actually built in would skip these two tests while claiming
+# the caller actually built in would skip these tests while claiming
 # Mesa had not been built. scripts/configure-horizon.sh passes the same
 # value through (see meson.options for why it is an option and not an
 # environment variable).
@@ -295,23 +247,25 @@ mesa_build_dir = get_option('mesa_build_dir')
 # libmesa_util.a reaches blake3 through mesa-blake3.h's inline wrappers —
 # disk_cache_compute_key() is one — so libblake3.a has to be on the link
 # line of anything that calls into the shader cache. It was not needed
-# while t_threads and t_ostime were the only two tests here, because
+# while c11_threads and os_time were the only two cases here, because
 # neither of them hashes anything.
 mesa_test_libs = [
   mesa_build_dir / 'src/c11/impl/libmesa_util_c11.a',
   mesa_build_dir / 'src/util/libmesa_util.a',
   mesa_build_dir / 'src/util/blake3/libblake3.a',
 ]
-mesa_tests = ['t_threads', 't_ostime', 't_shader_cache']
+mesa_suites = {
+  'mesa_runtime' : ['disk_cache', 'c11_threads', 'os_time'],
+}
 
 # ---------------------------------------------------------------------
-# Test 14 — the mandatory Vulkan sequence (Phase 4 exit criterion).
+# The Vulkan suites — the whole nouveau driver.
 # ---------------------------------------------------------------------
-# It links the whole nouveau Vulkan driver, so it needs a different Mesa
-# build from tests 12 and 13: scripts/configure-mesa-nvk.sh's, which has
-# -Dvulkan-drivers=nouveau. Skipped with a message when that build is
-# not there, exactly as those two are — a bare clone must still produce
-# the tests that need only the toolchain.
+# They link the whole nouveau Vulkan driver, so they need a different
+# Mesa build from mesa_runtime: scripts/configure-mesa-nvk.sh's, which
+# has -Dvulkan-drivers=nouveau. Skipped with a message when that build is
+# not there, exactly as that one is — a bare clone must still produce the
+# suites that need only the toolchain.
 #
 # The order matters here and nowhere else in this file: these are static
 # archives with genuine cycles between them (nvk needs vulkan_runtime,
@@ -382,223 +336,145 @@ nvk_test_libs = [
   'src/util/blake3/libblake3.a',
   'src/c11/impl/libmesa_util_c11.a',
 ]
-nvk_tests = [
-  't_vulkan',
-  # Phase 5 item 1. Everything later in the phase reads its result back
-  # through a copy, so this is the one that has nothing behind it.
-  't_vk_transfer',
-  # Phase 7: the only test that asks what the shader cache is FOR — is a
-  # shader compiled on one launch still compiled on the next. Needs two
-  # launches of the same build to mean anything; the first is cold and
-  # says so.
-  't_vk_cache',
-  # Phase 5 items 3 and 4. One test because an off-screen image is only
-  # observable once something renders to it, and the smallest thing that
-  # does is a clear — which NVK implements as a render pass, not a blit.
-  't_vk_image',
-  # Phase 5 item 2 — the first shader this project runs. NAK and NIL
-  # have been linked since Phase 4 and have never produced machine code
-  # that executed.
-  't_vk_compute',
-  # A loop whose trip count comes from memory, in the shape of Godot's
-  # cluster loops: with to == 0 the body must not run. Written because
-  # the Forward+ scene shader looked like it did; both pass on hardware,
-  # so the shape is not what breaks there. See
-  # docs/MEASURED-ON-HARDWARE.md.
-  't_vk_loop',
-  't_vk_loop2',
-  # Nested control flow deep enough that the convergence stack needs
-  # memory behind it. sm50's crs_size() counts one stack slot per
-  # nesting level and reserves nothing below 16; nouveau counts two
-  # for the same field. Godot's Forward+ fragment shader lives between
-  # the two rules, so this asks whether that regime works at all. It
-  # does, at twelve levels around a loop.
-  't_vk_crs',
-  # Whether a fragment shader reads descriptor set 1 correctly, which is
-  # what survives now that the four control-flow tests below all pass.
-  # Three binding shapes over identical sets: both sets in one
-  # vkCmdBindDescriptorSets, two calls in Godot's order, and two calls in
-  # the other order.
-  't_vk_set1',
-  # The same twelve levels in the FRAGMENT stage. t_vk_crs above is a
-  # compute shader, and the two pipes do not carry the convergence stack
-  # through the same state: compute puts the size in the QMD and programs
-  # SET_SHADER_LOCAL_MEMORY_NON_THROTTLED, graphics puts it in the shader
-  # program header and programs SET_SHADER_LOCAL_MEMORY_C/D/E. Godot's
-  # Forward+ scene fragment shader is the only shader in its whole process
-  # with a non-zero crs_size, and its draw is the one that never retires.
-  't_vk_crsfrag',
-  # A colour pass that declares three render targets and writes one, two
-  # of them with no image view -- the fifth and last of the pipeline-state
-  # differences between Godot's Forward+ and Mobile draws, and the only
-  # one never asked on its own.
-  't_vk_mrt',
-  # The same question in the fragment stage, where a kill exists:
-  # a loop that is never entered, one that runs, and one that runs
-  # after half the lanes have been killed. The scene shader reports
-  # uses_kill, and this was the last thing a compute test could not
-  # ask. All three cases are right on hardware.
-  't_vk_kill',
-  # What a GPU timestamp tick is worth. NVK publishes timestampPeriod =
-  # 1.0f for every device it drives, which is true of the GPUs nouveau
-  # was written for and was never checked here — and that number is the
-  # only thing turning a query result into a duration. Measures the
-  # query clock and the GET_GPU_TIME clock separately against the system
-  # counter, because VK_EXT_calibrated_timestamps is only correct if
-  # they are the same domain and nothing has shown that they are.
-  't_vk_timestamp',
-  # Phase 5 item 5 — the first draw call. Vertex processing,
-  # rasterisation and the ROP, none of which any earlier item reaches.
-  't_vk_triangle',
-  # Phase 5 item 6 — sampling: descriptors, samplers and mip levels.
-  't_vk_texture',
-  # Phase 5 item 7 — the depth test, and the depth buffer read back as
-  # a value rather than trusted because the colours came out right.
-  't_vk_depth',
-  # Phase 5 item 8 — twelve colour formats, each checked against the
-  # bytes its encoding says it must hold.
-  't_vk_format',
-  # Phase 5 item 9 — several submits in flight at once, demonstrated by
-  # an unsignalled fence and by wall clock, not by absence of errors.
-  't_vk_submits',
-  # Fase E: D12 asked through vkQueueBindSparse rather than through
-  # horizon_gpu talking to itself. t_sparse measured that this chip
-  # swallows a write to an unbound sparse page and restores that state
-  # when a bound block is unbound; this asks whether nvkmd_horizon and
-  # NVK carry it. One flag, nvkmd_info::has_sparse, gates eight
-  # VkPhysicalDeviceFeatures, and this exercises the two a buffer can
-  # reach — so it says which two rather than implying the rest.
-  't_vk_sparse',
-  # Not an item: the two things this project's own patches changed and
-  # nothing had ever measured — patch 0046's extension gating, checked
-  # in both directions, and patch 0045's alloc_tiled_mem, reached
-  # through the one path that can reach it.
-  't_vk_caps',
-  # Phase 6: the swapchain itself. It owns the display, so it runs with
-  # no console and reports through its log alone — and every one of the
-  # phase's four exit criteria is a section of it.
-  't_vk_swapchain',
-  # Phase 6, the part t_vk_swapchain does not reach: the swapchain while
-  # something else legitimately happens at the same time, and over a
-  # length that a slot leaked once per generation would show up in.
-  # "Anything multi-threaded" had never been verified before it.
-  't_vk_wsi_mt',
-  # Phase 6: VK_SUBOPTIMAL_KHR, and the line between it and
-  # VK_ERROR_OUT_OF_DATE_KHR. It was one of the things that never had
-  # a test.
-  't_vk_suboptimal',
-  # Phase 6: VK_PRESENT_MODE_IMMEDIATE_KHR, which stood beside
-  # VK_SUBOPTIMAL_KHR as advertised and never measured through
-  # Vulkan. It compares the two present modes against each other in one
-  # run, so the verdict is a ratio on one console rather than a number
-  # carried between runs.
-  't_vk_immediate',
-  # Phase 6, and the one shape every other presenting test leaves out: a
-  # frame a graphics pipeline drew. The four tests above present a
-  # vkCmdClearColorImage on purpose, so nothing here had ever put the 3D
-  # pipeline's ROP into a scanout surface, and a report of 157 ms frames
-  # from an application that does had no control to be measured against.
-  't_vk_present_draw',
-  # Zcull. The pdev advertises has_zcull_info and NVK programs Zcull
-  # whenever a depth attachment is cleared, and the failure mode is a
-  # fragment wrongly rejected — no fault, no notifier, just geometry that
-  # is not there. So this renders one workload twice in one run, once
-  # with NVK_HORIZON_ZCULL=0, and compares the two images. It is what
-  # decides whether the capability keeps being advertised.
-  't_vk_zcull',
-  # Volume, not features: many distinct compute pipelines back to back,
-  # which is the only thing that makes NVK's contiguous shader heap grow
-  # past the first chunk it binds at device creation, plus the churn that
-  # exercises its free list and the per-pipeline compile times that are
-  # what an application feels as stutter.
-  't_vk_pipelines',
-  # The other half of volume: hundreds of draws with the pipeline
-  # changing between them, the same draws split across many render
-  # passes, and blending — which the fixture refused to do until now
-  # because every earlier test wanted the destination out of its answer.
-  't_vk_draws',
-]
 
-# Shaders each NVK test needs, by test name. An entry is the stem of
+# Each suite's cases run in the order listed: a case reads its result
+# back through machinery the case before it established, which used to
+# be a run order in tests/README.md and is now a property of the build.
+nvk_suites = {
+  'vk_core' : ['bringup', 'transfer', 'upload_chunks', 'device_memory',
+               'image_clear',
+               'capabilities', 'timestamps', 'concurrent_submits',
+               'submit_batching', 'sparse_binding'],
+  'vk_shaders' : ['compute_dispatch', 'dynamic_loop', 'packed_bound_loop',
+                  'nested_control_flow', 'nested_control_flow_frag',
+                  'crs_matrix',
+                  'fragment_kill', 'descriptor_set1', 'priv_reg'],
+  'vk_render' : ['triangle', 'texture', 'depth', 'formats', 'multi_target',
+                 'zcull', 'draw_volume'],
+  # Alone, because what it reports is a compile time and a measurement
+  # that runs behind other work is a different measurement.
+  'vk_pipelines' : ['pipeline_volume'],
+  # Alone, because a cold run deletes the driver's shader cache and it
+  # needs two launches of one build to mean anything.
+  'vk_cache' : ['shader_reuse'],
+  # Owns the display.
+  'vk_wsi' : ['swapchain', 'suboptimal', 'concurrency'],
+  # Owns the display. Kept apart from vk_wsi: both of its cases report a
+  # number rather than a return code.
+  'vk_present' : ['drawn_frame', 'present_modes'],
+}
+
+# Shaders each case needs, by "<suite>/<case>". An entry is the stem of
 # tests/shaders/<stem>.spvasm; scripts/spv-embed.py assembles it with
 # spirv-as, validates it with spirv-val and writes <stem>.spv.h into the
-# build directory, which the test includes.
+# build directory, which the case includes.
+#
+# PER CASE AND NOT PER SUITE, although the build only needs the union.
+# scripts/check-mesa-test-parity.sh compares each entry against the
+# #include lines of that one file, and an empty list is the value worth
+# guarding: vk_core/image_clear must reach its first render pass with
+# nothing uploaded to NVK's shader heap or it stops being the regression
+# test for patch 0030. Unioning first would let a shader another case in
+# the same suite needs answer for it.
 #
 # Assembly rather than GLSL because the container has no network and the
 # base image has no glslang, while SPIRV-Tools is already in the derived
 # image for mesa_clc. See scripts/spv-embed.py for the trade.
-nvk_test_shaders = {
-  't_vulkan' : [],
-  't_vk_transfer' : [],
-  # None on purpose: t_vk_image must reach its first render pass without
-  # anything having been uploaded to the shader heap, or it stops being
-  # able to catch the regression patch 0048 fixed.
-  't_vk_image' : [],
-  't_vk_compute' : ['comp_write_id'],
-  't_vk_loop' : ['comp_loop'],
-  't_vk_loop2' : ['comp_loop2'],
-  't_vk_crs' : ['comp_crs'],
-  't_vk_crsfrag' : ['fmt_vert_fullscreen', 'crs_frag_deep'],
-  # kill_frag_loop with its kill turned off: already proven right on this
-  # chip, so the only variable across t_vk_mrt's cases is the target count.
-  't_vk_mrt' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
-  't_vk_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
-  't_vk_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
-  # The same shader t_vk_compute uses, on purpose: a failure in t_vk_cache
-  # should be about the cache and not about a shader nothing else runs.
-  't_vk_cache' : ['comp_write_id'],
+nvk_case_shaders = {
+  'vk_core/bringup' : [],
+  'vk_core/transfer' : [],
+  'vk_core/upload_chunks' : [],
+  'vk_core/device_memory' : [],
+  # None on purpose: see the note above.
+  'vk_core/image_clear' : [],
+  # Shared with vk_render/formats: the same full-target triangle and the
+  # same push-constant colour, because what this case measures is where
+  # the pixels land, not what draws them.
+  'vk_core/capabilities' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
+  'vk_core/timestamps' : [],
+  # A compute job whose duration the case controls, so it can still be
+  # running when the next submit is issued.
+  'vk_core/concurrent_submits' : ['comp_spin'],
+  # Created and never dispatched: what the case needs is the shader-heap
+  # upload that vkCreateComputePipelines performs on the upload queue's
+  # channel, so that the submission after it takes a cross-channel wait.
+  'vk_core/submit_batching' : ['comp_write_id'],
+  'vk_core/sparse_binding' : [],
+
+  'vk_shaders/compute_dispatch' : ['comp_write_id'],
+  'vk_shaders/dynamic_loop' : ['comp_loop'],
+  'vk_shaders/packed_bound_loop' : ['comp_loop2'],
+  'vk_shaders/nested_control_flow' : ['comp_crs'],
+  'vk_shaders/nested_control_flow_frag' : ['fmt_vert_fullscreen',
+                                           'crs_frag_deep'],
+  # Four fragment shaders from one template, differing in the nesting
+  # depth and in how many values stay live across it — see
+  # scripts/gen-crs-matrix.py, which generates them.
+  'vk_shaders/crs_matrix' : ['fmt_vert_fullscreen', 'crs_mx_a', 'crs_mx_b',
+                             'crs_mx_c', 'crs_mx_d', 'crs_mx_e',
+                             'crs_mx_f', 'crs_mx_g', 'crs_mx_h'],
+  'vk_shaders/fragment_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
+  'vk_shaders/descriptor_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
+  # crs_mx_g again, because the question is whether an ordinary draw
+  # changes when the queue context asks for the two privileged register
+  # writes, and a shader the suite already renders is the control.
+  'vk_shaders/priv_reg' : ['fmt_vert_fullscreen', 'crs_mx_g'],
+
   # Two pipelines: A builds its positions from gl_VertexIndex and writes
   # a constant colour, B fetches position and colour from a vertex
   # buffer and interpolates. Four shaders so that a failure in B alone
   # names attribute fetch or interpolation.
-  't_vk_triangle' : ['tri_vert_index', 'tri_frag_const',
-                     'tri_vert_attrib', 'tri_frag_interp'],
+  'vk_render/triangle' : ['tri_vert_index', 'tri_frag_const',
+                          'tri_vert_attrib', 'tri_frag_interp'],
   # One vertex shader for all three cases; two fragment shaders because
   # implicit and explicit LOD are different instructions.
-  't_vk_texture' : ['tex_vert_fullscreen', 'tex_frag_sample',
-                    'tex_frag_lod1'],
+  'vk_render/texture' : ['tex_vert_fullscreen', 'tex_frag_sample',
+                         'tex_frag_lod1'],
   # One pair for all four draws: what differs between them is twenty
   # bytes of push constant and a scissor rectangle.
-  't_vk_depth' : ['depth_vert_z', 'depth_frag_pc'],
+  'vk_render/depth' : ['depth_vert_z', 'depth_frag_pc'],
   # Three fragment shaders because a fragment output's numeric type has
   # to match its attachment's.
-  't_vk_format' : ['fmt_vert_fullscreen', 'fmt_frag_float',
-                   'fmt_frag_uint', 'fmt_frag_sint'],
-  # A compute job whose duration the test controls, so it can still be
-  # running when the next submit is issued.
-  't_vk_submits' : ['comp_spin'],
-  # Shared with t_vk_format: the same full-target triangle and the same
-  # push-constant colour, because what t_vk_caps measures is where the
-  # pixels land, not what draws them.
-  't_vk_caps' : ['fmt_vert_fullscreen', 'fmt_frag_float'],
-  # None: a presented frame here is a vkCmdClearColorImage, so nothing
-  # about the swapchain depends on a shader compiling.
-  't_vk_swapchain' : [],
-  # None, for the same reason.
-  't_vk_wsi_mt' : [],
-  # None, for the same reason.
-  't_vk_suboptimal' : [],
-  # None, for the same reason.
-  't_vk_immediate' : [],
-  # Shared with t_vk_texture, and shared on purpose: the frame this test
-  # presents has to be a fullscreen textured blit that already works, or
-  # a slow frame here would be one more thing to rule out rather than a
-  # measurement. Same triangle, same sampler, a surface-sized texture.
-  't_vk_present_draw' : ['tex_vert_fullscreen', 'tex_frag_sample'],
-  # The depth pair t_vk_depth already uses, on purpose: what t_vk_zcull
+  'vk_render/formats' : ['fmt_vert_fullscreen', 'fmt_frag_float',
+                         'fmt_frag_uint', 'fmt_frag_sint'],
+  # kill_frag_loop with its kill turned off: already proven right on this
+  # chip, so the only variable across the cases is the target count.
+  'vk_render/multi_target' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
+  # The depth pair vk_render/depth already uses, on purpose: what zcull
   # measures is which fragments survive, so the draws should be ones
   # whose behaviour is already established. comp_write_id is never
   # dispatched — the pipeline is built and destroyed so that NVK uploads
   # a shader through the upload queue, which is a different channel.
-  't_vk_zcull' : ['depth_vert_z', 'depth_frag_pc', 'comp_write_id'],
+  'vk_render/zcull' : ['depth_vert_z', 'depth_frag_pc', 'comp_write_id'],
+  # The same depth pair again. What this case varies is the number of
+  # draws, the pipeline between them and the blend state — none of which
+  # is a property of the shaders.
+  'vk_render/draw_volume' : ['depth_vert_z', 'depth_frag_pc'],
+
   # One shader, specialized many times. comp_write_id would not do: it
   # is four instructions and identical every time, so a hundred
   # pipelines built from it are one compile and one heap allocation.
-  't_vk_pipelines' : ['comp_chain'],
-  # The same depth pair again. What this test varies is the number of
-  # draws, the pipeline between them and the blend state — none of which
-  # is a property of the shaders.
-  't_vk_draws' : ['depth_vert_z', 'depth_frag_pc'],
+  'vk_pipelines/pipeline_volume' : ['comp_chain'],
+
+  # The same shader vk_shaders/compute_dispatch uses, on purpose: a
+  # failure here should be about the cache and not about a shader
+  # nothing else runs.
+  'vk_cache/shader_reuse' : ['comp_write_id'],
+
+  # None: a presented frame in these three is a vkCmdClearColorImage, so
+  # nothing about the swapchain depends on a shader compiling.
+  'vk_wsi/swapchain' : [],
+  'vk_wsi/suboptimal' : [],
+  'vk_wsi/concurrency' : [],
+
+  # Shared with vk_render/texture, and shared on purpose: the frame this
+  # case presents has to be a fullscreen textured blit that already
+  # works, or a slow frame here would be one more thing to rule out
+  # rather than a measurement. Same triangle, same sampler, a
+  # surface-sized texture.
+  'vk_present/drawn_frame' : ['tex_vert_fullscreen', 'tex_frag_sample'],
+  # None, for the same reason as the vk_wsi three.
+  'vk_present/present_modes' : [],
 }
 
 # meson.project_source_root() / p returns p unchanged when p is absolute,
@@ -658,11 +534,10 @@ if mesa_libs_present
       '-lzstd', '-lz',
     ],
   )
-  horizon_tests += mesa_tests
 else
-  message('skipping ' + ' '.join(mesa_tests) + ': no Mesa archives in ' +
-          mesa_build_dir + '; run scripts/configure-mesa.sh and ' +
-          'scripts/build-mesa.sh first')
+  message('skipping ' + ' '.join(mesa_suites.keys()) +
+          ': no Mesa archives in ' + mesa_build_dir +
+          '; run scripts/configure-mesa.sh and scripts/build-mesa.sh first')
 endif
 
 nvk_whole_lib_paths = []
@@ -709,100 +584,133 @@ if nvk_libs_present
     # <vulkan/vulkan.h> hides VK_NN_vi_surface — VkViSurfaceCreateInfoNN,
     # PFN_vkCreateViSurfaceNN, the extension's name macro — so a test
     # could not name the surface type the driver advertises. It costs the
-    # tests that do not present nothing but a few declarations.
+    # suites that do not present nothing but a few declarations.
     compile_args : ['-DVK_USE_PLATFORM_VI_NN'],
   )
-  horizon_tests += nvk_tests
 else
-  message('skipping ' + ' '.join(nvk_tests) + ': no NVK archives in ' +
+  message('skipping ' + ' '.join(nvk_suites.keys()) + ': no NVK archives in ' +
           nvk_build_dir + '; run scripts/build-mesa-nvk.sh first')
 endif
 
-# Shader assembly. Gated on the same condition as the tests that use the
+# Shader assembly. Gated on the same condition as the suites that use the
 # headers: spirv-as and spirv-val live in the derived toolchain image,
 # which is also the only thing that can have produced the NVK archives,
 # so a tree with the archives has the tools and a tree without them
 # needs neither.
-nvk_shader_headers = {}
+nvk_suite_shaders = {}
 if nvk_libs_present
   spirv_as = find_program('spirv-as')
   spirv_val = find_program('spirv-val')
   spv_embed = find_program('scripts/spv-embed.py')
 
-  # Each shader is assembled ONCE, however many tests include it: two
+  # Each shader is assembled ONCE, however many cases include it: two
   # custom_targets writing the same output is a configure error, and
-  # t_vk_image and t_vk_compute already share one.
+  # vk_shaders/compute_dispatch and vk_cache/shader_reuse already share
+  # one.
   shader_header_by_name = {}
-  foreach t : nvk_tests
-    foreach s : nvk_test_shaders.get(t, [])
-      if not shader_header_by_name.has_key(s)
-        shader_header_by_name += { s : custom_target(
-          s + '.spv.h',
-          input : files('tests/shaders' / (s + '.spvasm')),
-          output : s + '.spv.h',
-          # --target-env vulkan1.1 is SPIR-V 1.3, which is where
-          # StorageBuffer becomes a core storage class. Higher would work
-          # on this device and buy nothing the tests need.
-          command : [
-            spv_embed,
-            '--spirv-as', spirv_as.full_path(),
-            '--spirv-val', spirv_val.full_path(),
-            '--target-env', 'vulkan1.1',
-            '-o', '@OUTPUT@', '@INPUT@',
-          ],
-        ) }
-      endif
+  foreach suite, cases : nvk_suites
+    foreach c : cases
+      foreach s : nvk_case_shaders.get(suite + '/' + c, [])
+        if not shader_header_by_name.has_key(s)
+          shader_header_by_name += { s : custom_target(
+            s + '.spv.h',
+            input : files('tests/shaders' / (s + '.spvasm')),
+            output : s + '.spv.h',
+            # --target-env vulkan1.1 is SPIR-V 1.3, which is where
+            # StorageBuffer becomes a core storage class. Higher would
+            # work on this device and buy nothing the tests need.
+            command : [
+              spv_embed,
+              '--spirv-as', spirv_as.full_path(),
+              '--spirv-val', spirv_val.full_path(),
+              '--target-env', 'vulkan1.1',
+              '-o', '@OUTPUT@', '@INPUT@',
+            ],
+          ) }
+        endif
+      endforeach
     endforeach
   endforeach
 
-  foreach t : nvk_tests
-    t_headers = []
-    foreach s : nvk_test_shaders.get(t, [])
-      t_headers += shader_header_by_name[s]
+  # The union per suite, which is what a .nro actually compiles in. A
+  # header listed twice would be a duplicate source, so the names are
+  # collected before the targets are.
+  foreach suite, cases : nvk_suites
+    s_names = []
+    foreach c : cases
+      foreach s : nvk_case_shaders.get(suite + '/' + c, [])
+        if not s_names.contains(s)
+          s_names += s
+        endif
+      endforeach
     endforeach
-    nvk_shader_headers += { t : t_headers }
+    s_headers = []
+    foreach s : s_names
+      s_headers += shader_header_by_name[s]
+    endforeach
+    nvk_suite_shaders += { suite : s_headers }
   endforeach
 endif
 
-foreach t : horizon_tests
-  # Tests 12 and 13 additionally see Mesa's headers and archives; the
-  # other eleven are built with no Mesa in sight, as before.
+# One dictionary of everything this configuration can build, so the loop
+# below has a single shape. The tier a suite belongs to still decides
+# what it links, and that is read back from the three lists.
+all_suites = horizon_suites
+if mesa_libs_present
+  all_suites += mesa_suites
+endif
+if nvk_libs_present
+  all_suites += nvk_suites
+endif
+
+foreach suite, cases : all_suites
+  # mesa_runtime additionally sees Mesa's headers and archives; the
+  # Vulkan suites see the whole driver; the rest are built with no Mesa
+  # in sight, as before.
   t_deps = [idep_horizon_gpu]
-  # Rebuilding Mesa must relink these two, or they would keep measuring
-  # the archives of an older Mesa build. Meson already infers that:
+  # Rebuilding Mesa must relink these, or they would keep measuring the
+  # archives of an older Mesa build. Meson already infers that:
   # guess_external_link_dependencies() (ninjabackend.py:3636 in meson
   # 1.11.2, the version toolchain/versions.env pins) records any link
   # argument that is an absolute path to an existing library file, and
   # the generated rule reads
-  #   build t_threads.elf: c_LINKER ... | .../libmesa_util_c11.a ...
+  #   build mesa_runtime.elf: c_LINKER ... | .../libmesa_util_c11.a ...
   # Declaring it as well costs one line and does not depend on that
   # inference staying a documented guess — nor on the archives existing
   # when this directory was configured, which is what the guess requires
   # and scripts/build-horizon.sh now detects separately.
   t_link_depends = []
-  t_sources = [files('tests' / (t + '.c'))]
-  if mesa_libs_present and mesa_tests.contains(t)
+
+  # The suite's table first, then its cases in the order the suite lists
+  # them. suite.c is what defines suite_name, test_uses_display and the
+  # case table; a case named there and not written here is a link error.
+  t_sources = [files('tests' / suite / 'suite.c')]
+  foreach c : cases
+    t_sources += files('tests' / suite / (c + '.c'))
+  endforeach
+
+  if mesa_libs_present and mesa_suites.has_key(suite)
     t_deps += idep_mesa_core
     t_link_depends = mesa_test_lib_paths
   endif
-  if nvk_libs_present and nvk_tests.contains(t)
+  if nvk_libs_present and nvk_suites.has_key(suite)
     t_deps += idep_nvk_driver
     t_link_depends = nvk_test_lib_paths
-    # The Vulkan fixture, compiled into each test that has a driver to
+    # The Vulkan fixture, compiled into each suite that has a driver to
     # talk to rather than built as a library: it needs Mesa's Vulkan
-    # headers, which only these tests have on their include path, and a
-    # per-test object keeps the tests that predate it unchanged.
+    # headers, which only these suites have on their include path, and a
+    # per-suite object keeps the suites that predate it unchanged.
     #
     # Its generated shader headers are listed as sources so ninja
-    # produces them before the test compiles; nothing links from them.
+    # produces them before the cases compile; nothing links from them.
     t_sources += files('tests/common/vkfw.c')
-    t_sources += nvk_shader_headers.get(t, [])
+    t_sources += nvk_suite_shaders.get(suite, [])
   endif
 
   # name_suffix 'elf': elf2nro takes an ELF, and naming it so keeps the
   # intermediate distinguishable from the .nro in the build directory.
   t_elf = executable(
-    t,
+    suite,
     t_sources,
     include_directories : [horizon_gpu_inc, tests_inc],
     link_with : testfw,
@@ -817,17 +725,17 @@ foreach t : horizon_tests
   # two build paths produce .nro files that differ only where the
   # toolchain makes them differ.
   t_nacp = custom_target(
-    t + '.nacp',
-    output : t + '.nacp',
+    suite + '.nacp',
+    output : suite + '.nacp',
     command : [
-      nacptool, '--create', t, 'mesa-nvk-horizon', 'phase1', '@OUTPUT@',
+      nacptool, '--create', suite, 'mesa-nvk-horizon', 'phase1', '@OUTPUT@',
     ],
   )
 
   test_nros += custom_target(
-    t + '.nro',
+    suite + '.nro',
     input : [t_elf, t_nacp],
-    output : t + '.nro',
+    output : suite + '.nro',
     command : [elf2nro, '@INPUT0@', '@OUTPUT@', '--nacp=@INPUT1@'],
     # Not the default build: see the `lib`/`test` alias_targets below.
     build_by_default : false,
@@ -852,8 +760,14 @@ alias_target('test-nros', test_nros)
 # Their results are hardware (HW) runs, and are recorded as such
 # together with the log that produced them.
 
+n_cases = 0
+foreach suite, cases : all_suites
+  n_cases += cases.length()
+endforeach
+
 summary({
   'toolchain' : meson.get_external_property('devkitpro_prefix', 'unknown'),
   'libnx' : meson.get_external_property('libnx_prefix', 'unknown'),
-  'tests' : horizon_tests.length(),
+  'suites' : all_suites.keys().length(),
+  'cases' : n_cases,
 }, section : 'mesa-nvk-horizon')

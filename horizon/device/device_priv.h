@@ -45,6 +45,11 @@ struct horizon_gpu_device {
      *                     is empty and nothing can retire. */
     bool full_barrier_waits;
     bool eager_reap;
+    /* Whether mem_create proves a heap block is writable before it
+     * touches it. Default on; HORIZON_GPU_HEAP_CHECK=0 turns it off,
+     * which is the other half of the A/B and also the way to get the
+     * crash back on purpose. */
+    bool heap_page_check;
 
     /* Opt-in (device.h) and the sticky record of it having been used. The
      * flag is written by channel creation from any thread, so it is atomic

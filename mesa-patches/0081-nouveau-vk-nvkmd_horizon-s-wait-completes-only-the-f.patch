@@ -1,0 +1,110 @@
+From e36590546720b92d1357d37587804cd6e777d2d5 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:19:22 +0000
+Subject: [PATCH 81/82] nouveau/vk: nvkmd_horizon's wait completes only the
+ fence it waited on
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 3 item 4 (vk_sync over syncpoints)
+Why: nvk_horizon_sync_wait snapshots the fence, drops the mutex, waits,
+ then takes the mutex and marks the object SIGNALLED with passed_value
+ raised to signalled_value RE-READ from the object. The snapshot's
+ stated premise is that the payload is immutable while PENDING, which
+ holds for a binary VkFence or VkSemaphore. It does not hold for the
+ upload stream's sync: nvk_mem_stream signals it again and again with a
+ rising value, and set_fence() from a flush on another thread — any
+ thread calling nvk_upload_queue_upload/fill — can land while this
+ thread is blocked on the previous fence, which happens on the exec
+ queue's CPU fallback when the wait ring is full. The wait then returned
+ for fence F1 and marked the object SIGNALLED with F2's value: get_value()
+ handed nvk_mem_stream a time point the copy engine had not reached, and
+ nvk_mem_stream_get_chunk recycles the chunk that engine is still reading
+ from. The transition is now made only if the payload is still the one
+ waited on — same channel and fence, or the same imported set —
+ otherwise the object stays PENDING on its newer fence, and only the
+ value the wait did establish is recorded as passed. A CPU signal that
+ arrived meanwhile has made the object SIGNALLED itself and is left so.
+Evidence: nvkmd_horizon_sync.c before this patch:
+   mtx_lock(&sync->mutex);
+   sync->state = NVK_HORIZON_SYNC_SIGNALLED;
+   sync->passed_value = MAX2(sync->passed_value, sync->signalled_value);
+ with signalled_value written by nvk_horizon_sync_set_fence under the
+ same mutex, from nvkmd_horizon_ctx_signal. nvk_mem_stream.c:
+ nvk_mem_stream_get_chunk recycles on
+ `stream->time_point_passed >= chunk->idle_time_point` after
+ vk_sync_get_value(). nvkmd_horizon_ctx.c: nvkmd_horizon_ctx_flush_gpu_
+ waits falls back to nvkmd_horizon_ctx_wait_cpu when
+ horizon_gpu_submit_waits reports BUSY.
+ Class X: cross-built; the interleaving needs two threads and a full
+ wait ring and has not been produced on a console.
+Upstream: no — the backend is Horizon's.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c | 43 ++++++++++++++++---
+ 1 file changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index 899b4ae..7fa281e 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -461,6 +461,7 @@ nvk_horizon_sync_wait(struct vk_device *device,
+       ext_fences[i] = sync->ext_fences[i];
+    struct nvkmd_horizon_meter *meter = sync->meter;
+    const uint64_t fence_set_ns = sync->fence_set_ns;
++   const uint64_t waited_value = sync->signalled_value;
+    mtx_unlock(&sync->mutex);
+ 
+    /* THE LINE THE METER EXISTS TO DRAW. Everything before this point
+@@ -496,11 +497,43 @@ nvk_horizon_sync_wait(struct vk_device *device,
+    }
+ 
+    mtx_lock(&sync->mutex);
+-   sync->state = NVK_HORIZON_SYNC_SIGNALLED;
+-   /* The fence covers every timeline value up to the one it carries.
+-    * Re-read rather than snapshotted: a CPU signal may have raised it
+-    * while the fence wait was running. */
+-   sync->passed_value = MAX2(sync->passed_value, sync->signalled_value);
++   /* THE FENCE THAT WAS WAITED ON IS THE ONE THIS MAY COMPLETE.
++    *
++    * The snapshot above was taken so the mutex is not held across the
++    * wait, and "immutable while PENDING" is what a binary sync can
++    * promise. The upload stream's sync cannot: it is signalled again
++    * and again with a rising value (nvk_mem_stream), and a set_fence()
++    * from a flush on another thread can land while this thread is
++    * blocked on the previous fence. Marking the object SIGNALLED then
++    * would report the NEWER submit complete — get_value() would hand
++    * nvk_mem_stream a value the GPU has not reached, and it recycles a
++    * chunk the copy engine is still reading. So the transition is made
++    * only if the payload is still the one that was waited on; otherwise
++    * the object stays PENDING on its newer fence and only the value
++    * this wait did establish is recorded as passed.
++    *
++    * A CPU signal that arrived meanwhile has already made the object
++    * SIGNALLED with its own value, and that is left exactly as it is.
++    */
++   bool same = sync->state == NVK_HORIZON_SYNC_PENDING &&
++               sync->ext_fence_count == ext_count;
++   if (same && ext_count == 0) {
++      same = sync->chan == chan &&
++             sync->fence.syncpt_id == fence.syncpt_id &&
++             sync->fence.threshold == fence.threshold;
++   }
++   for (uint32_t i = 0; same && i < ext_count; i++) {
++      same = sync->ext_fences[i].syncpt_id == ext_fences[i].syncpt_id &&
++             sync->ext_fences[i].threshold == ext_fences[i].threshold;
++   }
++   if (same)
++      sync->state = NVK_HORIZON_SYNC_SIGNALLED;
++   /* The fence covers every timeline value up to the one it carried
++    * when it was snapshotted; a CPU signal since then has raised
++    * signalled_value and is entitled to be counted too. */
++   sync->passed_value = MAX2(sync->passed_value, waited_value);
++   if (sync->state == NVK_HORIZON_SYNC_SIGNALLED)
++      sync->passed_value = MAX2(sync->passed_value, sync->signalled_value);
+    cnd_broadcast(&sync->cond);
+    mtx_unlock(&sync->mutex);
+ 
+-- 
+2.43.0
+

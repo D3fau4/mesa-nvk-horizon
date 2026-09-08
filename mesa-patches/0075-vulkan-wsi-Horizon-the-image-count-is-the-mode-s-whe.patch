@@ -1,0 +1,186 @@
+From 992e62dd1f1c4e1c9af882dc8670e3eacc39aeaf Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 21:00:00 +0000
+Subject: [PATCH 75/76] vulkan/wsi: Horizon, the image count is the mode's when
+ the query names one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: nvk_instance.c advertises VK_KHR_surface_maintenance1 and
+ VK_EXT_surface_maintenance1, so an application may chain
+ VkSurfacePresentModeKHR into
+ vkGetPhysicalDeviceSurfaceCapabilities2KHR and ask what ONE present
+ mode needs. The Vulkan specification says of that query that
+ VkSurfaceCapabilitiesKHR::minImageCount and maxImageCount "are valid
+ only for the specified presentMode"
+ (Vulkan-Docs, chapters/VK_KHR_surface/wsi.adoc). This backend answered
+ the BufferQueue's mode-agnostic floor to every such question, while
+ wsi_horizon_surface_create_swapchain raised the count to three for
+ IMMEDIATE — the compositor honours swapInterval 0 only with three
+ buffers registered. So an application that asked what IMMEDIATE costs
+ was told two and then given three.
+Evidence: measured on a console 2026-09-07,
+ sdmc:/horizon_gpu_tests/vk_wsi.log, with this patch applied.
+ vk_wsi/swapchain section I asks the surface about one present mode at a
+ time and then creates a swapchain at the count it was told:
+     I: FIFO wants 2 to 4 images; scaling 0x00000000, gravity
+        0x00000000/0x00000000, scaled 16x16 to 1280x720
+     I: IMMEDIATE wants 3 to 4 images; scaling 0x00000000, gravity
+        0x00000000/0x00000000, scaled 16x16 to 1280x720
+     I: FIFO asked for the 2 images its mode advertises and got 2
+     I: IMMEDIATE asked for the 3 images its mode advertises and got 3
+ Without it both queries answer "2 to 4" and the IMMEDIATE swapchain
+ comes back holding three. vk_wsi is PASS 622/622 [3/3] with it.
+Upstream: no — the three-buffer floor is the Horizon compositor's rule
+ about swapInterval 0, and NWindow exists nowhere else.
+
+ONE FUNCTION, BOTH CALLERS. wsi_horizon_min_images_for_mode is the
+queue's floor with the mode's own floor over it, and it is what the
+capabilities query answers and what creation applies. The literal 3 and
+the comment explaining it move there; the constant it becomes,
+WSI_HORIZON_IMMEDIATE_MIN_IMAGES, sits beside WSI_HORIZON_MIN_IMAGES
+and WSI_HORIZON_MAX_IMAGES where the other buffer counts are.
+
+WHAT DOES NOT CHANGE. The extents do not depend on the present mode on
+this backend, so the per-mode query answers the same currentExtent,
+minImageExtent and maxImageExtent as the mode-agnostic one; and
+maxImageCount is the design's fixed four either way. Only minImageCount
+moves, and only when the caller asked about a mode — a query with
+nothing chained still gets the queue's number, which is what the
+specification means by the two being allowed to differ.
+
+Nothing an application could previously do stops working: three images
+is what an IMMEDIATE swapchain always got, and a minimum that is
+published rather than applied silently is the same swapchain with the
+number said out loud.
+---
+ src/vulkan/wsi/wsi_horizon.c | 89 +++++++++++++++++++++++++++---------
+ 1 file changed, 67 insertions(+), 22 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index a272f5f..86ee8eb 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -120,6 +120,12 @@
+ #define WSI_HORIZON_MIN_IMAGES 2
+ #define WSI_HORIZON_MAX_IMAGES 4
+ 
++/* And the floor IMMEDIATE has on top of that, which is a property of
++ * the compositor rather than of the queue: swapInterval 0 is honoured
++ * only with three or more buffers registered. See
++ * wsi_horizon_min_images_for_mode. */
++#define WSI_HORIZON_IMMEDIATE_MIN_IMAGES 3
++
+ /* Smallest swapchain extent this backend offers, per side.
+  *
+  * MEASURED, not chosen: t_nwindow's extent ramp registered and presented
+@@ -558,6 +564,50 @@ wsi_horizon_min_image_count(VkIcdSurfaceBase *surface)
+    return MAX2(min_images, WSI_HORIZON_MIN_IMAGES);
+ }
+ 
++/* THE FLOOR FOR ONE PRESENT MODE, which is not the same number for
++ * every mode — and that is why the capabilities query has to be told
++ * which mode is being asked about.
++ *
++ * IMMEDIATE TAKES THE THIRD IMAGE RATHER THAN QUIETLY BECOMING FIFO.
++ * swapInterval 0 is honoured by the compositor only with three or more
++ * buffers registered; below that the system enforces 1. The swap
++ * interval used to be computed as `image_count >= 3 ? 0 : 1` *after*
++ * the count was fixed, so an application asking for IMMEDIATE with two
++ * images — a count the published capabilities allow — got swapInterval
++ * 1 and a success code, which is FIFO wearing another mode's name.
++ * Advertising a present mode obliges implementing it for every valid
++ * swapchain. minImageCount is a minimum and the implementation chooses
++ * the actual count, so raising it is the conformant answer and needs no
++ * agreement from the application. Reported by Codex on PR #8.
++ *
++ * IT IS NOW PUBLISHED AND NOT ONLY APPLIED, which is the half that was
++ * missing. VK_KHR_surface_maintenance1 — advertised by this driver —
++ * lets an application ask for the capabilities of one present mode by
++ * chaining VkSurfacePresentModeKHR into
++ * vkGetPhysicalDeviceSurfaceCapabilities2KHR, and the specification
++ * says of that query that minImageCount and maxImageCount "are valid
++ * only for the specified presentMode". This backend answered the
++ * queue's mode-agnostic floor to every such question, so an application
++ * that asked about IMMEDIATE was told two and then given three behind
++ * its back: legal, because a minimum is a minimum, and useless, because
++ * the point of asking per mode is to find out what that mode costs.
++ * One function, both callers, and they cannot drift.
++ */
++static uint32_t
++wsi_horizon_min_images_for_mode(VkIcdSurfaceBase *surface,
++                                VkPresentModeKHR present_mode)
++{
++   uint32_t count = wsi_horizon_min_image_count(surface);
++
++   if (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
++      count = MAX2(count, WSI_HORIZON_IMMEDIATE_MIN_IMAGES);
++
++   /* A floor above the ceiling would be a capability nothing can
++    * satisfy: Vulkan requires maxImageCount to be at least
++    * minImageCount. */
++   return MIN2(count, WSI_HORIZON_MAX_IMAGES);
++}
++
+ static VkResult
+ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
+                                      struct wsi_device *wsi_device,
+@@ -658,6 +708,16 @@ wsi_horizon_surface_get_capabilities2(VkIcdSurfaceBase *surface,
+    if (result != VK_SUCCESS)
+       return result;
+ 
++   /* ASKED ABOUT ONE MODE, ANSWERED ABOUT THAT MODE. The extents and
++    * the transforms do not depend on the present mode here; the image
++    * count does, and wsi_horizon_min_images_for_mode is the same
++    * function that will decide it at creation. */
++   if (present_mode != NULL) {
++      caps->surfaceCapabilities.minImageCount =
++         wsi_horizon_min_images_for_mode(surface,
++                                         present_mode->presentMode);
++   }
++
+    vk_foreach_struct(ext, caps->pNext) {
+       switch (ext->sType) {
+       case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
+@@ -2949,29 +3009,14 @@ wsi_horizon_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
+ 
+    uint32_t image_count = pCreateInfo->minImageCount;
+-   /* The same floor the capabilities published, asked the same way, so a
+-    * swapchain cannot end up below the minimum its own surface
+-    * advertised. */
++   /* The same floor the capabilities published, asked the same way and
++    * about the same present mode, so a swapchain cannot end up below
++    * the minimum its own surface advertised — and an application that
++    * asked what IMMEDIATE costs cannot be surprised by the answer. See
++    * wsi_horizon_min_images_for_mode. */
+    image_count = MAX2(image_count,
+-                      wsi_horizon_min_image_count(icd_surface));
+-
+-   /* IMMEDIATE TAKES THE THIRD IMAGE RATHER THAN QUIETLY BECOMING FIFO.
+-    *
+-    * swapInterval 0 is honoured by the compositor only with three or
+-    * more buffers registered; below that the system enforces 1. The
+-    * swap interval used to be computed as `image_count >= 3 ? 0 : 1`
+-    * *after* the count was fixed, so an application asking for
+-    * IMMEDIATE with two images — a count the published capabilities
+-    * allow — got swapInterval 1 and a success code, which is FIFO
+-    * wearing another mode's name. Advertising a present mode obliges
+-    * implementing it for every valid swapchain.
+-    *
+-    * minImageCount is a minimum and the implementation chooses the
+-    * actual count, so raising it here is the conformant answer and
+-    * needs no agreement from the application. Reported by Codex on
+-    * PR #8. */
+-   if (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
+-      image_count = MAX2(image_count, 3);
++                      wsi_horizon_min_images_for_mode(icd_surface,
++                                                      present_mode));
+    /* On the copy fallback the extra image buys nothing — libnx's
+     * Framebuffer owns the window's slots and this count only sizes our
+     * own staging images — but the path is not chosen yet here, and
+-- 
+2.53.0.windows.2
+

@@ -12,6 +12,12 @@
  */
 #include "crc32.h"
 
+#include <string.h>
+
+#if defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
+
 /* Reflected form of the IEEE 802.3 polynomial 0x04C11DB7 (RFC 1952 § 8).
  * Reflected because the octets are fed least-significant bit first,
  * which is what makes this the same CRC-32 as gzip, PNG and zlib. */
@@ -38,6 +44,7 @@
  * regenerates all 256 entries from HORIZON_CRC32_POLY and compares them
  * one by one, so these numbers are checked by code on every run rather
  * than by eye. */
+#if !defined(__ARM_FEATURE_CRC32)
 static const uint32_t horizon_crc32_table[256] = {
     0x00000000U, 0x77073096U, 0xEE0E612CU, 0x990951BAU,
     0x076DC419U, 0x706AF48FU, 0xE963A535U, 0x9E6495A3U,
@@ -104,6 +111,7 @@ static const uint32_t horizon_crc32_table[256] = {
     0xB3667A2EU, 0xC4614AB8U, 0x5D681B02U, 0x2A6F2B94U,
     0xB40BBE37U, 0xC30C8EA1U, 0x5A05DF1BU, 0x2D02EF8DU,
 };
+#endif /* !__ARM_FEATURE_CRC32 */
 
 uint32_t horizon_crc32_init(void)
 {
@@ -117,8 +125,42 @@ uint32_t horizon_crc32_update(uint32_t crc, const void *data, size_t len)
     if (p == NULL || len == 0)
         return crc;
 
+#if defined(__ARM_FEATURE_CRC32)
+    /* THE SAME CRC, IN HARDWARE. Every Switch build here carries
+     * -march=armv8-a+crc, and the CRC32B/CRC32X instructions that
+     * enables compute exactly this polynomial in exactly this
+     * convention: the running value is the table loop's `crc`, with no
+     * inversion at either end, so __crc32b(crc, byte) is one iteration
+     * of the loop below and __crc32x(crc, word) is eight of them. The
+     * table stays for every other target, the host tests among them,
+     * and is what this path is checked against — with an aarch64
+     * build of the host suite run under user-mode emulation, byte for
+     * byte over the same inputs — rather than trusted by construction.
+     *
+     * Bytes to an 8-byte boundary one at a time, then whole words, then
+     * the tail. The word is read through memcpy: AArch64 allows the
+     * unaligned load, C does not, and memcpy of eight bytes is the load
+     * either way at -O2. */
+    while (len > 0 && ((uintptr_t)p & 7u) != 0) {
+        crc = __crc32b(crc, *p++);
+        len--;
+    }
+    while (len >= 8) {
+        uint64_t word;
+
+        memcpy(&word, p, sizeof(word));
+        crc = __crc32d(crc, word);
+        p += 8;
+        len -= 8;
+    }
+    while (len > 0) {
+        crc = __crc32b(crc, *p++);
+        len--;
+    }
+#else
     for (size_t i = 0; i < len; i++)
         crc = horizon_crc32_table[(crc ^ p[i]) & 0xFFu] ^ (crc >> 8);
+#endif
 
     return crc;
 }

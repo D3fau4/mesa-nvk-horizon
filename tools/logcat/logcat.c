@@ -2,8 +2,8 @@
  * logcat — print a file from the console's SD card over nxlink.
  *
  * WHY THIS EXISTS. Every test in tests/ writes its record to
- * sdmc:/horizon_gpu_tests/<name>.log, and the tests that matter most in
- * Phase 6 set `test_uses_display`, which means no console: the log file
+ * sdmc:/horizon_gpu_tests/<suite>.log, and the suites that matter most
+ * in Phase 6 set `test_uses_display`, which means no console: the log file
  * IS the whole record and nothing of it reaches a screen. testfw used to
  * stream itself over nxlink and that was removed at the user's direction
  * (2026-08-08) — the socket driver was the one variable that
@@ -19,7 +19,7 @@
  * It links libnx and nothing else — no horizon_gpu, no Mesa, no testfw.
  *
  *   nxlink -s -a <ip> logcat.nro                    # list the directory
- *   nxlink -s -a <ip> logcat.nro t_vk_immediate     # one log, by stem
+ *   nxlink -s -a <ip> logcat.nro vk_present          # one log, by stem
  *   nxlink -s -a <ip> logcat.nro sdmc:/some/file    # any path
  *   nxlink -s -a <ip> logcat.nro sdmc:/some/dir     # list any directory
  *
@@ -42,7 +42,7 @@
  * the heap is about 400 MiB and a log is a few tens of kilobytes. */
 #define LOGCAT_CHUNK 4096
 
-/* A bare stem — "t_vk_immediate" — is resolved against LOGCAT_DIR and
+/* A bare stem — "vk_present" — is resolved against LOGCAT_DIR and
  * given the .log suffix. Anything containing ':' is taken as a whole
  * path, because that is what a Horizon device-qualified path looks like
  * and there is no other way to name a file outside the log directory.

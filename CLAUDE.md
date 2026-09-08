@@ -26,9 +26,11 @@ patch series name `docs/architecture.md`, `docs/milestones.md`,
 asked. When adding a Mesa patch, keep the four-field header format below even though
 the milestones list its first field cites is gone.
 
-`docs/` holds **exactly two files**, `MEASURED-ON-HARDWARE.md` and
-`PENDING-HARDWARE-RUNS.md`, neither of which is any of the three above. The three
-cited there are still gone.
+`docs/` holds **three files**: `MEASURED-ON-HARDWARE.md`,
+`PENDING-HARDWARE-RUNS.md` and `GM20B-HANG-SNAPSHOT.md`, none of which is any of
+the three above. The three cited there are still gone. (This paragraph said "two"
+until 2026-09-07; `GM20B-HANG-SNAPSHOT.md` has been tracked since `70adcd4` and
+describes the `HORIZON_GPU_HANG_SNAPSHOT=1` instrumentation, not a hardware run.)
 
 `docs/PENDING-VERIFICATION.md` is gone too, and two Mesa patches still cite it:
 `0054` in its commit message, and `0055` in a comment its diff adds to
@@ -63,6 +65,11 @@ It exists because the merge of PR #22 landed four class-X debts, each with its
 the file's own header forbids them. They are here instead, under the same rules the
 dead ledger had: **delete the file when the last section closes**, never empty it.
 
+Four of its sections closed on the console run of 2026-09-07 and what they settled
+moved to `MEASURED-ON-HARDWARE.md`; the same run opened two more, which are the two
+failures the fourteen-suite run has. The file is not a record of that run — the
+run's results are in the counterpart file — it is only what is still owed.
+
 It is deliberately not called `PENDING-VERIFICATION.md`. That name is cited by `0054`
 and `0055`, and what those two point at is in `MEASURED-ON-HARDWARE.md` — reusing it
 would make two dangling references silently resolve to the wrong file.
@@ -72,8 +79,12 @@ would make two dangling references silently resolve to the wrong file.
 ### Host tests — the only thing that needs no toolchain
 
 ```sh
-scripts/run-host-tests.sh          # 8 suites of horizon/'s pure logic, ASan+UBSan
+scripts/run-host-tests.sh          # 8 host suites of horizon/'s pure logic, ASan+UBSan
 ```
+
+These are a different mechanism from the console test suites below: their own `main()`
+in `tests/host/hostfw.h`, the host compiler, sanitizers. Nothing about the `.nro` suites
+applies to them.
 
 There is no per-test flag. To run one suite, compile it the way the script does:
 
@@ -91,6 +102,13 @@ Suite → sources: `h_align` (header only), `h_va_space` + `horizon/vm/va_space.
 `h_status` + `horizon/debug/status.c`, `h_log` + `horizon/debug/log.c`,
 `h_blob_cache` + `horizon/cache/{blob_cache,crc32}.c`.
 
+A ninth, `h_nvkmd_sync`, is the one exception to "no Mesa": it compiles
+`mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c` against Mesa's
+headers and a simulated syncpoint, to pin the wait/set_fence interleaving
+patch `0081` fixes. The script builds it only when `mesa/` has the series
+applied and `$MESA_NVK_BUILD_DIR` (default `build/mesa-nvk`) holds the
+generated headers, and prints a `note:` when it skips — a skip is not a pass.
+
 ### Gates — run these before pushing; CI runs the same four
 
 ```sh
@@ -103,11 +121,11 @@ scripts/run-host-tests.sh
 `scripts/check-dispatch-complete.sh` and `scripts/check-tls-relocs.sh` need built
 artefacts; `scripts/ci-build-archives.sh` runs them at the end against what it just built.
 
-### Cross build (`lib` default; `test`/`all` add the test `.nro`s)
+### Cross build (`lib` default; `test`/`all` add the suite `.nro`s)
 
 ```sh
 scripts/build-switch.sh -j4        # libhorizon_gpu.a only (default goal)
-scripts/build-switch.sh test -j4   # + every test .nro; `all` is a synonym
+scripts/build-switch.sh test -j4   # + every suite .nro; `all` is a synonym
 make install PREFIX=...            # into devkitPro portlibs; PREFIX as an *argument*
 ```
 
@@ -142,9 +160,11 @@ on the host, never wrapped in `docker run`.
 
 ### On a console
 
-Copy the `.nro` to `sdmc:/switch/horizon_gpu_tests/`. Each prints `RESULT: PASS (n/n)` and
-logs to `sdmc:/horizon_gpu_tests/<name>.log`, including the `horizon-build-id` line — a
-result without it cannot be attributed to a build.
+Copy the `.nro` to `sdmc:/switch/horizon_gpu_tests/`. Each is one **suite** and prints a
+`CASE:` line per case plus a final `RESULT: PASS (n/n)`, logging to
+`sdmc:/horizon_gpu_tests/<suite>.log`, including the `horizon-build-id` line — a result
+without it cannot be attributed to a build. `tests/README.md` has the run order, the
+two suites that need two launches, and which one needs an operator.
 
 ## Architecture
 
@@ -184,22 +204,66 @@ thread doing path work corrupts the first one's path.
 | `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/`, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
+### `tests/` — fourteen suites, fifty-seven cases
+
+**One `.nro` per suite, several cases per suite.** A suite is a directory:
+`tests/<suite>/suite.c` is the table of cases and `tests/<suite>/<case>.c` is one case.
+Every result is identified as `<suite>/<case>` — `vk_shaders/dynamic_loop` — in the
+banner before it, in its `CASE:` verdict line, and as the Vulkan application name the
+driver sees.
+
+| Tier | Suites | Needs |
+|---|---|---|
+| `horizon_gpu` | `platform` `gpu_memory` `gpu_submit` `gpu_fault` `display` `dock` | the toolchain |
+| Mesa's own code | `mesa_runtime` | Mesa's core archives |
+| Vulkan through NVK | `vk_core` `vk_shaders` `vk_render` `vk_pipelines` `vk_cache` `vk_wsi` `vk_present` | the full NVK driver |
+
+A case's own header comment is where its rationale lives. The build files state only
+what the build needs, so a fact about a test is not written down in two places that can
+drift.
+
+**A new test is a case in an existing suite.** Write `tests/<suite>/<case>.c` opening
+with `TEST_CASE_DECL(<suite>, <case>)`, name it in `tests/<suite>/suite.c` in the
+position its dependencies want, and name it in **both** `CASES_<suite>` in the Makefile
+and the `<suite>` entry in `meson.build` (plus `nvk_case_shaders` if it uses a shader).
+`check-mesa-test-parity.sh` fails on any of those left half-done.
+
+**A new `.nro` needs a technical reason that grouping would break**, and the reason goes
+in the new suite's header. The four that exist are the shape of it: a console *and* an
+operator (`dock`); a deliberate fault whose after-effects on the console are unconfirmed
+(`gpu_fault`); a measurement a busier process would change (`vk_pipelines`); state
+destroyed across launches on a protocol of its own (`vk_cache`). "These feel like
+different things" is not one of them. `test_uses_display` is also decided once per
+`.nro`, before the first case runs, so a case needing a console and a case needing the
+display cannot share one.
+
+The framework gives a case three things a separate `.nro` used to give it for free, and
+they are the reason grouping is safe: an early return fails **that case** and the suite
+carries on; the environment is snapshotted and restored around every case, with a note
+naming anything it had to undo; and `t_log_scan` searches only from where the running
+case's output began. What it cannot give back is an option a library latched into a
+static on first read — hence `vk_cache`.
+
+Ordering inside a suite is the dependency order, which used to be a numbered run order
+in `tests/README.md` and is now a property of `suite.c`.
+
 ### Two build systems, deliberately duplicated
 
 The **Makefile** is the reference path — it produced the `.nro`s verified on hardware, and
 must stay readable without running a script. **`meson.build`** exercises the cross file and
-is what the Mesa work plugs into. They restate the same facts about the Mesa-linking tests
-(`t_threads`, `t_ostime`, `t_shader_cache`: which archives, which defines — `-DHAVE_PTHREAD
+is what the Mesa work plugs into. They restate the same facts about the suites and their
+cases — which suites exist, which cases are in each, and for the Mesa-linking one
+(`mesa_runtime`) which archives and which defines: `-DHAVE_PTHREAD
 -DHAVE_STRUCT_TIMESPEC -DENABLE_SHADER_CACHE`, copied from what Mesa's own configure decided
-here). **Edit one, edit the other**; `check-mesa-test-parity.sh` fails otherwise.
+here. **Edit one, edit the other**; `check-mesa-test-parity.sh` fails otherwise.
 
-Those three tests are skipped when Mesa's archives are absent from `$MESA_BUILD_DIR`
-(default `build/mesa-probe`); the Makefile then prunes their stale artefacts so a manifest
+`mesa_runtime` is skipped when Mesa's archives are absent from `$MESA_BUILD_DIR`
+(default `build/mesa-probe`); the Makefile then prunes its stale artefacts so a manifest
 never attributes the previous build's binaries to this one.
 
 ### `mesa-patches/`
 
-49 numbered `git format-patch` files applied on `MESA_COMMIT` from `toolchain/versions.env`.
+77 numbered `git format-patch` files applied on `MESA_COMMIT` from `toolchain/versions.env`.
 A patch is identified by **its commit subject and its diff** — the applier matches both, so
 changing either after it has been applied is reported as divergence. Every patch message
 carries, in this order:

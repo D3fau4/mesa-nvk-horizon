@@ -17,6 +17,7 @@
 #ifndef HORIZON_GPU_MEMORY_H
 #define HORIZON_GPU_MEMORY_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "device.h"
@@ -79,6 +80,40 @@ horizon_gpu_result horizon_gpu_mem_create(horizon_gpu_device *dev,
                                           horizon_gpu_cache_policy policy,
                                           horizon_gpu_mem **out_mem);
 
+/* The same, WITHOUT the zero fill. Everything else — the rounding, the
+ * nvmap registration, the cache maintenance, the error paths and who
+ * owns what — is identical.
+ *
+ * WHAT THE CALLER IS ASSERTING, and it is not "I do not mind what is in
+ * there". It is: every byte anything will ever read from this object is
+ * written first, by this process or by the GPU, before it is read. A
+ * consumer that reads a byte it never wrote gets whatever the heap held
+ * before — this process's own earlier allocations, since aligned_alloc
+ * hands back memory the process has used. Nothing crosses a process
+ * boundary, but "our own stale data" and "zero" are different answers
+ * and only one of them is deterministic.
+ *
+ * WHAT IS *NOT* SKIPPED, and this is the part that makes the path safe
+ * rather than merely fast. The armDCacheFlush that follows the fill in
+ * horizon_gpu_mem_create is not the fill's cleanup: it is there because
+ * the heap this allocation came from may hold DIRTY CACHE LINES from
+ * its previous tenant, and a dirty line is a write that has not
+ * happened yet. Left alone it lands later, at an eviction nobody chose,
+ * on top of whatever the GPU has since written there — which is the
+ * silent wrong answer measured on a console on 2026-08-24. That flush
+ * happens on this path too, and unconditionally. Skipping the fill
+ * makes it cheaper as a side effect: a line nothing wrote is not dirty,
+ * so there is nothing to write back.
+ *
+ * NOT THE DEFAULT, AND NOT A TUNABLE. There is no environment variable
+ * that turns this on for allocations that did not ask for it; a caller
+ * either promises the above at the call site or does not use it. See
+ * horizon/memory/mem.c for the audit of who in this tree does. */
+horizon_gpu_result
+horizon_gpu_mem_create_uninit(horizon_gpu_device *dev, uint64_t size,
+                              uint64_t align, horizon_gpu_cache_policy policy,
+                              horizon_gpu_mem **out_mem);
+
 /* Fails with HORIZON_GPU_ERR_BUSY while GPU mappings of this object are
  * alive. Closing invalidates the CPU pointer (memory-model § 7).
  *
@@ -123,6 +158,63 @@ horizon_gpu_result horizon_gpu_mem_flush(horizon_gpu_mem *mem,
                                          uint64_t offset, uint64_t size);
 horizon_gpu_result horizon_gpu_mem_invalidate(horizon_gpu_mem *mem,
                                               uint64_t offset, uint64_t size);
+
+/* One region of this process's address space, as the kernel describes
+ * it. The three flag words are the kernel's own values, passed through
+ * rather than interpreted, so a log carrying them can be read against
+ * libnx's MemoryState/MemoryAttribute/Permission lists. */
+typedef struct horizon_gpu_heap_region {
+    uint64_t addr;
+    uint64_t size;
+    uint32_t type;
+    uint32_t attr;
+    uint32_t perm;
+} horizon_gpu_heap_region;
+
+/* Whether every page of [p, p + size) is memory THIS process may write.
+ *
+ * WHY A GPU ALLOCATOR HAS TO ASK. nx-hbloader runs one .nro after
+ * another in the SAME process and hands each of them the same heap, so
+ * whatever the previous program left behind is inside the next
+ * program's malloc arena. A page lent to another process — a
+ * TransferMemory made from heap, which is how libnx gives the socket
+ * and audio services their buffers — reads back as
+ * `attr=IsBorrowed perm=None`, and it is still borrowed if the program
+ * that lent it died before closing it. malloc knows nothing about any
+ * of that and will hand the range out again.
+ *
+ * Writing such a page is a CPU Data Abort, and so is cleaning it: on
+ * aarch64 `dc civac` faults exactly as a store does. That is the whole
+ * of the "Godot dies right after the Vulkan API line" crash — it landed
+ * in the zero fill while there was one, and moved to the cache flush
+ * when the fill was skipped, because the flush runs on both paths.
+ *
+ * `bad` is filled in with the offending region when the answer is
+ * false, and left alone when it is true. A range the kernel refuses to
+ * describe is false as well: not being able to prove a page is ours is
+ * the same as knowing it is not.
+ */
+bool horizon_gpu_heap_range_is_ours(const void *p, uint64_t size,
+                                    horizon_gpu_heap_region *bad);
+
+/* How much heap horizon_gpu has set aside because it failed the check
+ * above, and how many blocks that is. Both only ever grow: a block that
+ * fails is never freed, because freeing it returns it to the allocator
+ * that just offered it. Zero on a healthy launch. */
+void horizon_gpu_heap_quarantine_stats(uint64_t *bytes, uint32_t *blocks);
+
+/* How many regions of this process's address space are lent to another
+ * process, their total size, and the first of them.
+ *
+ * A launch that answers 0 was handed a clean heap. A launch that
+ * answers more than that inherited a borrow from whatever ran in this
+ * process before it — hbloader runs each .nro in the same process — and
+ * that is the condition every allocation here then has to be checked
+ * against. Called once at device creation so a log carries the answer
+ * without a test having to be run; costs one syscall per region and
+ * changes nothing. `first` may be NULL. */
+uint32_t horizon_gpu_heap_borrowed_regions(uint64_t *bytes,
+                                           horizon_gpu_heap_region *first);
 
 #ifdef __cplusplus
 }

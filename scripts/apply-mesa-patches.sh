@@ -269,9 +269,20 @@ for p in "${pending[@]}"; do
     echo "  $(basename "$p")"
 done
 
+# --committer-date-is-author-date: the committer date is otherwise "now",
+# and it is hashed into every commit, so two applies of a byte-identical
+# series produced two different HEADs (measured: e73193e and c6a414b
+# from the same three patches, minutes apart; with the flag, 12e6281
+# both times). HEAD is what mesa/bin/git_sha1_gen.py records as
+# MESA_GIT_SHA1, and nvk_instance.c mixes that into the driver identity
+# the shader cache rejects a file by — so every fresh checkout that
+# built the same sources shipped a driver whose cache file from the
+# previous build was thrown away on first use. With the author dates,
+# which the patch files carry, the applied history is a function of the
+# series alone.
 if ! git -C "$DEST" \
         -c "user.name=$AM_NAME" -c "user.email=$AM_EMAIL" \
-        am "${abs_pending[@]}"; then
+        am --committer-date-is-author-date "${abs_pending[@]}"; then
     echo "apply-mesa-patches: git am failed; aborting it to leave $DEST" >&2
     echo "                    as it was found." >&2
     git -C "$DEST" am --abort || true

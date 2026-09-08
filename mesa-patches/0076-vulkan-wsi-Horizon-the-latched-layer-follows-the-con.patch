@@ -1,0 +1,144 @@
+From d40ed2c292ee2c47591d982d544a271e08dceb89 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 21:05:00 +0000
+Subject: [PATCH 76/76] vulkan/wsi: Horizon, the latched layer follows the
+ consumer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: `0070` latches the layer's size and answers every capabilities
+ query from the latch, because the field it reads has two authors and
+ one of them is this backend. Nothing updated the latch afterwards. So
+ if the consumer ever did resize the layer, the surface would go on
+ reporting the size that is gone — and maxImageExtent with it, which
+ means the recreation that the SUBOPTIMAL result asks the application
+ for could not ask for the new size. That is the defect `0070` fixed,
+ reached from the other end.
+Evidence: this branch is unexercised on this console, and that
+ is itself the measurement. dock/mode_change, 2026-09-07, with somebody
+ docking and undocking inside the window: four mode changes, the applet
+ hook firing six times, and "nwindowGetDimensions, NWindow::default_*
+ and appletGetDefaultDisplayResolution were 1280x720 throughout, with a
+ buffer queued on every poll". So nothing this console does moves the
+ layer, wsi_horizon_extent_changed's last branch never fires here, and
+ vk_wsi is PASS 622/622 [3/3] with the patch applied — unchanged, which
+ is what a patch that adds an unreached path should be.
+Upstream: no — NWindow, the BufferQueue's default buffer size and this
+ latch exist nowhere else.
+
+WHERE THE CONSUMER'S VOICE IS ALREADY ISOLATED. wsi_horizon_extent_
+changed exists to decide whether a swapchain is suboptimal, and to do
+that it has to separate the consumer's answer from this backend's own
+registration and from the connect-late echo of the previous one. When
+it gets past all three exclusions, what it is holding is a size the
+consumer reported and this process never asked for. That is the only
+place in the backend where the two voices are told apart, so that is
+where the latch is updated.
+
+The two answers were inconsistent before this: the same event made
+every acquire and present report VK_SUBOPTIMAL_KHR while
+vkGetPhysicalDeviceSurfaceCapabilitiesKHR kept saying the output had
+not moved. One fact, two answers.
+
+NOTHING ON THIS CONSOLE REACHES IT. `dock/mode_change` watched
+nwindowGetDimensions, NWindow::default_* and
+appletGetDefaultDisplayResolution across four dock and undock
+transitions on 2026-09-07, with a buffer queued on every poll, and all
+three said 1280x720 throughout. The consumer-resize branch is therefore
+unexercised on this platform, which is stated in the comment and owed
+to docs/PENDING-HARDWARE-RUNS.md rather than claimed as tested.
+---
+ src/vulkan/wsi/wsi_horizon.c | 68 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 66 insertions(+), 2 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 86ee8eb..136c122 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -1692,6 +1692,63 @@ wsi_horizon_release_slots(struct wsi_horizon_swapchain *chain)
+  * once more, and saying otherwise would send an application off to
+  * recreate a swapchain that was already right.
+  */
++/* THE LATCH IS NOT A PROMISE THAT THE LAYER CANNOT MOVE.
++ *
++ * wsi_horizon_layer_extent latches the layer's size once and answers
++ * every capabilities query from the latch, because the field it reads
++ * has two authors and one of them is this backend (see struct
++ * wsi_horizon). The author it must never ignore is the other one: if
++ * the consumer ever does resize the layer, a latch taken before that
++ * would keep reporting a size the output no longer has, and an
++ * application recreating its swapchain — which is exactly what the
++ * SUBOPTIMAL result below asks it to do — would find maxImageExtent
++ * bounding it to the size that is gone. That is the defect `0070`
++ * fixed, arrived at from the other end.
++ *
++ * So the one place in this backend that can tell the consumer's voice
++ * apart from its own updates the latch. By the time
++ * wsi_horizon_extent_changed reaches here it has excluded this
++ * backend's own registration and the connect-late echo of the previous
++ * one; what is left is the consumer reporting an output this process
++ * never asked for.
++ *
++ * NOTHING MEASURED ON THIS CONSOLE REACHES IT, and the measurement is
++ * recent. `dock/mode_change` watched `nwindowGetDimensions`,
++ * `NWindow::default_*` and `appletGetDefaultDisplayResolution` across
++ * four dock and undock transitions on 2026-09-07 with a buffer queued
++ * on every poll, and all three said 1280x720 throughout: the layer does
++ * not move when the display mode does. This is therefore the path for
++ * an event nobody has observed, written so that if one ever happens the
++ * application is told a resize rather than a stale number. It is
++ * `docs/PENDING-HARDWARE-RUNS.md`'s to close.
++ */
++static void
++wsi_horizon_layer_moved(struct wsi_horizon_swapchain *chain,
++                        VkExtent2D reported)
++{
++   struct wsi_horizon *wsi = wsi_horizon_platform(chain->base.wsi);
++
++   simple_mtx_lock(&wsi->lock);
++
++   const bool moved = wsi->layer_window == chain->window &&
++                      (wsi->layer.width != reported.width ||
++                       wsi->layer.height != reported.height);
++   if (moved)
++      wsi->layer = reported;
++
++   simple_mtx_unlock(&wsi->lock);
++
++   /* Once per move rather than once per acquire: `moved` is false on
++    * every call after the first, because the latch now holds the value
++    * being compared against. */
++   if (moved) {
++      mesa_logi("wsi_horizon: the consumer says the output is %ux%u, "
++                "which is neither this swapchain's registration nor the "
++                "one before it; the layer follows it from here",
++                reported.width, reported.height);
++   }
++}
++
+ static bool
+ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+ {
+@@ -1767,8 +1824,15 @@ wsi_horizon_extent_changed(struct wsi_horizon_swapchain *chain)
+        height == chain->registered_before.height)
+       return false;
+ 
+-   return width != chain->output_at_create.width ||
+-          height != chain->output_at_create.height;
++   if (width == chain->output_at_create.width &&
++       height == chain->output_at_create.height)
++      return false;
++
++   /* The consumer, and nobody else, has changed the output. Say so to
++    * the surface as well as to the application — see
++    * wsi_horizon_layer_moved. */
++   wsi_horizon_layer_moved(chain, (VkExtent2D) { width, height });
++   return true;
+ }
+ 
+ /* Folds one completed acquire into the meter and reports the window
+-- 
+2.53.0.windows.2
+

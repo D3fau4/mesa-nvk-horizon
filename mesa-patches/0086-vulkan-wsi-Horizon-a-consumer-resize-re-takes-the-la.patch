@@ -1,0 +1,90 @@
+From 6f37f9840a7d87924fb2827bda4492a76acc1ac3 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 8 Sep 2026 21:35:19 +0200
+Subject: [PATCH 86/87] vulkan/wsi/Horizon: a consumer resize re-takes the
+ latch it does not hold
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: the layer latch is a one-entry cache keyed on the window that
+ asked last, and 0076 made wsi_horizon_layer_moved update it only when
+ that key already named this swapchain's window. Two NWindows on one
+ physical device are enough to break it: a capabilities query for
+ window B re-keys the cache while a swapchain on window A is still
+ alive, and the consumer's resize report that then reaches A is
+ discarded — `moved` is false, the log line is not printed and the
+ latch is not written. The next capabilities query for A relatches
+ through nwindowGetDimensions, which prefers the producer's
+ NWindow::width — A's own registration — over the output the consumer
+ reported, so currentExtent and maxImageExtent go on describing a size
+ the output no longer has. That is precisely the stale pair 0070
+ exists to prevent, arrived at from a third direction.
+Evidence: wsi_horizon.c as 0076 left it:
+   const bool moved = wsi->layer_window == chain->window &&
+                      (wsi->layer.width != reported.width ||
+                       wsi->layer.height != reported.height);
+ and, forty lines up, struct wsi_horizon: "A second window on the same
+ physical device re-takes it rather than inheriting the first one's,
+ which is the only thing a one-entry cache has to get right" —
+ wsi_horizon_layer_extent re-takes it exactly that way, and this
+ function did not.
+ Class X: cross-built 2026-09-08 with this tree's flags,
+ aarch64-none-elf-gcc (devkitA64) 15.2.0, no warning. Unreachable on
+ the console so far for two separate reasons: dock/mode_change measured
+ on 2026-09-07 that the layer does not move when the display mode does,
+ and nothing in the tests opens a second NWindow.
+Upstream: no — the backend is Horizon's.
+
+`reported` has already been isolated as the consumer's own voice by
+wsi_horizon_extent_changed, so it is the better value whatever the
+cache happens to hold. Both fields are written, which is what re-taking
+a one-entry cache means.
+---
+ src/vulkan/wsi/wsi_horizon.c | 28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 136c122..83ea967 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -1730,11 +1730,31 @@ wsi_horizon_layer_moved(struct wsi_horizon_swapchain *chain,
+ 
+    simple_mtx_lock(&wsi->lock);
+ 
+-   const bool moved = wsi->layer_window == chain->window &&
+-                      (wsi->layer.width != reported.width ||
+-                       wsi->layer.height != reported.height);
+-   if (moved)
++   /* THE CACHE IS RE-TAKEN, NOT CONSULTED FOR PERMISSION.
++    *
++    * `layer_window` names whichever window asked last, because that is
++    * all a one-entry cache can hold (see struct wsi_horizon). A second
++    * NWindow on this physical device therefore evicts the first one's
++    * latch merely by having its capabilities queried — and if this
++    * function then insisted on finding its own window there, the
++    * consumer's resize of THIS window would be dropped on the floor.
++    * The next query for it would relatch through nwindowGetDimensions,
++    * which prefers the producer's NWindow::width — this swapchain's
++    * own registration — over the output the consumer just reported,
++    * and currentExtent and maxImageExtent would still be the stale
++    * pair 0070 exists to prevent.
++    *
++    * `reported` has already been isolated as the consumer's voice by
++    * wsi_horizon_extent_changed, so it is the better value whatever
++    * the cache currently holds. Both fields are written. */
++   const bool retaken = wsi->layer_window != chain->window;
++   const bool moved = retaken ||
++                      wsi->layer.width != reported.width ||
++                      wsi->layer.height != reported.height;
++   if (moved) {
++      wsi->layer_window = chain->window;
+       wsi->layer = reported;
++   }
+ 
+    simple_mtx_unlock(&wsi->lock);
+ 
+-- 
+2.53.0.windows.2
+
