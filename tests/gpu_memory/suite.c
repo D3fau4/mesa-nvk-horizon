@@ -24,6 +24,7 @@ TEST_CASE_DECL(gpu_memory, va_reserve);
 TEST_CASE_DECL(gpu_memory, va_map);
 TEST_CASE_DECL(gpu_memory, uncached);
 TEST_CASE_DECL(gpu_memory, shader_window);
+TEST_CASE_DECL(gpu_memory, borrowed_pages);
 
 /* No display: main() starts a console and reports through it. */
 TEST_SUITE("gpu_memory", false,
@@ -32,4 +33,5 @@ TEST_SUITE("gpu_memory", false,
            TEST_CASE(gpu_memory, va_reserve),
            TEST_CASE(gpu_memory, va_map),
            TEST_CASE(gpu_memory, uncached),
-           TEST_CASE(gpu_memory, shader_window));
+           TEST_CASE(gpu_memory, shader_window),
+           TEST_CASE(gpu_memory, borrowed_pages));

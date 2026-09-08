@@ -20,6 +20,7 @@
 #include "device_priv.h"
 #include "../memory/align.h"
 #include "horizon_gpu/cmds.h"
+#include "horizon_gpu/memory.h"
 
 /* result.h mirrors libnx Result as uint32_t; hold that to be true. */
 _Static_assert(sizeof(horizon_gpu_nv_result) == sizeof(Result),
@@ -92,6 +93,41 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     dev->full_barrier_waits = barrier_env && barrier_env[0] == '1';
     const char *reap_env = getenv("HORIZON_GPU_EAGER_REAP");
     dev->eager_reap = reap_env && reap_env[0] == '1';
+
+    /* Default ON, because the failure it prevents is a process death
+     * with no return path — see horizon_gpu_heap_range_is_ours. The
+     * variable exists so a case can measure what it costs and so the
+     * crash can be reproduced deliberately. */
+    const char *heap_env = getenv("HORIZON_GPU_HEAP_CHECK");
+    dev->heap_page_check = !(heap_env && heap_env[0] == '0');
+
+    /* Said here, once, because it is the fact that explains a crash
+     * nobody else can explain: this process was handed a heap with a
+     * hole in it, by whatever ran in it before. Silent when there is
+     * none, which is every healthy launch. */
+    {
+        uint64_t borrowed_B = 0;
+        horizon_gpu_heap_region first = { 0 };
+        const uint32_t borrowed =
+            horizon_gpu_heap_borrowed_regions(&borrowed_B, &first);
+        if (borrowed != 0) {
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "this process holds %u region(s) lent to another "
+                         "process, %llu bytes, first 0x%llx+0x%llx "
+                         "type=%u attr=0x%x perm=0x%x. malloc does not "
+                         "know, so every allocation here is checked "
+                         "before it is touched%s",
+                         (unsigned)borrowed,
+                         (unsigned long long)borrowed_B,
+                         (unsigned long long)first.addr,
+                         (unsigned long long)first.size,
+                         (unsigned)first.type, (unsigned)first.attr,
+                         (unsigned)first.perm,
+                         dev->heap_page_check
+                            ? "" : " — EXCEPT IT IS NOT, because "
+                                   "HORIZON_GPU_HEAP_CHECK=0");
+        }
+    }
 
     const char *untrusted_env = getenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE");
     dev->allow_untrusted_syncpt_baseline =

@@ -15,6 +15,162 @@
 #include "align.h"
 #include "../device/device_priv.h"
 
+/* THE HEAP IS NOT ALL OURS, AND THE ALLOCATOR DOES NOT KNOW.
+ *
+ * nx-hbloader runs one .nro after another in the SAME process and hands
+ * each of them the same heap, so anything the previous program left
+ * behind is inside the next program's malloc arena. The kind that
+ * matters here is a page lent to another process: a TransferMemory made
+ * from heap — which is how libnx gives the socket and audio services
+ * their buffers — leaves its source pages `attr=IsBorrowed perm=None`
+ * for as long as the borrow lasts, and a program that died without
+ * closing one never ends it. malloc knows nothing about that and hands
+ * the range out again.
+ *
+ * Writing such a page is a CPU Data Abort with no return path: the
+ * process dies on the HOME menu with the crash dialog. So is CLEANING
+ * it — on aarch64 `dc civac` faults exactly as a store does — which is
+ * why the check below guards the whole block and not just the fill.
+ *
+ * MEASURED: Godot on this driver died before its first frame on roughly
+ * one launch in three, and the Atmosphère report put the fault in
+ * memset called from horizon_gpu_mem_create, filling the swapchain
+ * image. The faulting page was `type=Heap attr=IsBorrowed(0x1)
+ * perm=None(0x0)` — present in the process and unwritable. When patch
+ * 0072 let that allocation skip its zero fill the deaths continued,
+ * with the log now ending one line later: the fill was gone and
+ * armDCacheFlush was left standing on the same page.
+ *
+ * A REJECTED BLOCK IS NEVER FREED. Freeing it would return it to the
+ * allocator that just offered it, and the next call would get it
+ * straight back. It is set aside instead, which is a deliberate leak of
+ * a block this process cannot use for anything anyway, counted so a log
+ * can say how much.
+ */
+static _Atomic uint64_t mem_quarantine_B;
+static _Atomic uint32_t mem_quarantine_n;
+
+/* How far mem_create will walk before giving up. Each rejected block
+ * stays allocated, so every attempt gets an address past the last one
+ * and a run of them walks THROUGH the borrowed span rather than
+ * retrying the same place — which is why the meaningful bound is bytes
+ * and not attempts.
+ *
+ * MEASURED ON A CONSOLE 2026-09-08, twice, and THE SPAN IS NOT A
+ * CONSTANT. gpu_memory/borrowed_pages section E on one netloaded suite:
+ * three borrowed heap regions, 0x47000 + 0x800000 + 0x21000 = 8814592
+ * bytes. The device-creation scan on a later launch of the same build:
+ * three regions again, 23404544 bytes, the first of them 0xe31000 on
+ * its own. hbloader runs the .nro inside its own process and is holding
+ * its netloader sockets the whole time, so how much of the heap is lent
+ * depends on what it has been doing, not on anything this program can
+ * see.
+ *
+ * So the budget is set well above the largest span observed rather than
+ * at it, because the cost of being wrong in one direction is a leaked
+ * block and in the other is the process dying. The attempt count is
+ * only there to stop an allocator that hands back the same address
+ * forever. */
+#define MEM_HEAP_CHECK_TRIES    32u
+#define MEM_HEAP_CHECK_BUDGET_B (UINT64_C(48) << 20)
+
+bool horizon_gpu_heap_range_is_ours(const void *p, uint64_t size,
+                                    horizon_gpu_heap_region *bad)
+{
+    if (!p || size == 0)
+        return false;
+
+    uint64_t addr = (uint64_t)(uintptr_t)p;
+    const uint64_t end = addr + size;
+    if (end < addr)                     /* wrapped: not a range we made */
+        return false;
+
+    while (addr < end) {
+        MemoryInfo info = { 0 };
+        u32 pageinfo = 0;
+        const Result rc = svcQueryMemory(&info, &pageinfo, addr);
+        if (R_FAILED(rc)) {
+            if (bad)
+                *bad = (horizon_gpu_heap_region){ .addr = addr };
+            return false;
+        }
+
+        const horizon_gpu_heap_region region = {
+            .addr = info.addr, .size = info.size,
+            .type = info.type, .attr = info.attr, .perm = info.perm,
+        };
+
+        /* Two ways to fail, and they are different questions. Not
+         * writable is what faults. Borrowed but writable would not
+         * fault, and writing it would still be writing into a buffer
+         * another process is reading, so it is refused too. */
+        if ((info.perm & Perm_Rw) != Perm_Rw ||
+            (info.attr & MemAttr_IsBorrowed) != 0) {
+            if (bad)
+                *bad = region;
+            return false;
+        }
+
+        /* The kernel always describes the region CONTAINING addr, so
+         * this advances — unless it answers something degenerate, and
+         * then the honest answer is "cannot prove it" rather than a
+         * loop that never ends. */
+        const uint64_t next = info.addr + info.size;
+        if (info.size == 0 || next <= addr) {
+            if (bad)
+                *bad = region;
+            return false;
+        }
+        addr = next;
+    }
+    return true;
+}
+
+uint32_t horizon_gpu_heap_borrowed_regions(uint64_t *bytes,
+                                           horizon_gpu_heap_region *first)
+{
+    uint64_t addr = 0, total = 0;
+    uint32_t found = 0;
+
+    for (;;) {
+        MemoryInfo info = { 0 };
+        u32 pageinfo = 0;
+        if (R_FAILED(svcQueryMemory(&info, &pageinfo, addr)))
+            break;
+        if (info.size == 0)
+            break;
+
+        if ((info.attr & MemAttr_IsBorrowed) != 0) {
+            if (found == 0 && first) {
+                *first = (horizon_gpu_heap_region){
+                    .addr = info.addr, .size = info.size,
+                    .type = info.type, .attr = info.attr,
+                    .perm = info.perm,
+                };
+            }
+            found++;
+            total += info.size;
+        }
+
+        const uint64_t next = info.addr + info.size;
+        if (next <= addr)
+            break;
+        addr = next;
+    }
+
+    if (bytes)
+        *bytes = total;
+    return found;
+}
+
+void horizon_gpu_heap_quarantine_stats(uint64_t *bytes, uint32_t *blocks)
+{
+    if (bytes)
+        *bytes = atomic_load(&mem_quarantine_B);
+    if (blocks)
+        *blocks = atomic_load(&mem_quarantine_n);
+}
+
 /* WHO MAY ASK FOR UNINITIALISED STORAGE, AND WHO IN THIS TREE DOES.
  *
  * The rule is one sentence: every byte anything will ever read must be
@@ -97,10 +253,55 @@ static horizon_gpu_result mem_create(horizon_gpu_device *dev,
     mem->align = align;
     mem->policy = policy;
 
-    mem->cpu = aligned_alloc(align, rounded);
-    if (!mem->cpu) {
-        free(mem);
-        return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+    /* Every block is proved writable before anything touches it, and
+     * one that is not is set aside rather than freed — the long comment
+     * at the top of this file is why. */
+    uint64_t set_aside_B = 0;
+    for (uint32_t attempt = 0; ; attempt++) {
+        mem->cpu = aligned_alloc(align, rounded);
+        if (!mem->cpu) {
+            free(mem);
+            return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        }
+        if (!dev->heap_page_check)
+            break;
+
+        horizon_gpu_heap_region bad = { 0 };
+        if (horizon_gpu_heap_range_is_ours(mem->cpu, rounded, &bad))
+            break;
+
+        atomic_fetch_add(&mem_quarantine_B, rounded);
+        const uint32_t n_set_aside =
+            atomic_fetch_add(&mem_quarantine_n, 1u) + 1u;
+        horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                     "heap block %p+0x%llx holds memory this process may "
+                     "not write: region 0x%llx+0x%llx type=%u attr=0x%x "
+                     "perm=0x%x. Setting it aside and asking again "
+                     "(%u block(s), %llu bytes set aside so far); "
+                     "HORIZON_GPU_HEAP_CHECK=0 takes the fault instead",
+                     mem->cpu, (unsigned long long)rounded,
+                     (unsigned long long)bad.addr,
+                     (unsigned long long)bad.size,
+                     (unsigned)bad.type, (unsigned)bad.attr,
+                     (unsigned)bad.perm, (unsigned)n_set_aside,
+                     (unsigned long long)atomic_load(&mem_quarantine_B));
+
+        mem->cpu = NULL;                /* set aside, never freed */
+        set_aside_B += rounded;
+
+        if (attempt + 1u >= MEM_HEAP_CHECK_TRIES ||
+            set_aside_B >= MEM_HEAP_CHECK_BUDGET_B) {
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "%u heap block(s) of 0x%llx bytes in a row held "
+                         "memory this process may not write (%llu bytes "
+                         "set aside for this one allocation); refusing it "
+                         "rather than faulting on it",
+                         (unsigned)(attempt + 1u),
+                         (unsigned long long)rounded,
+                         (unsigned long long)set_aside_B);
+            free(mem);
+            return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        }
     }
     /* Zero-fill: deterministic content for tests and no stale data handed
      * to the GPU. Skipped only by horizon_gpu_mem_create_uninit, whose

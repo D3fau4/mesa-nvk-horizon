@@ -36,6 +36,95 @@ and `git log --follow` on any of these paths reaches the old file.
 
 ---
 
+## The heap a netloaded homebrew is handed has holes in it
+
+2026-09-08, `gpu_memory/borrowed_pages`, **PASS 14/14**, suite **PASS
+147/147** [7/7]. On an ordinary netloaded launch, before this process
+had done anything, the address space held **three heap regions lent to
+another process**:
+
+    0x33ad000000 + 0x047000  type=5 attr=0x1 perm=0x0  BORROWED
+    0x33ad051000 + 0x800000  type=5 attr=0x1 perm=0x0  BORROWED
+    0x33b332f000 + 0x021000  type=5 attr=0x1 perm=0x0  BORROWED
+
+28 regions walked, 8814592 bytes borrowed. `type=5` is `MemType_Heap`,
+`attr=0x1` is `MemAttr_IsBorrowed`, `perm=0x0` is `Perm_None`: heap this
+process holds, cannot write, and did not lend.
+
+**And the span is not a constant.** The scan `horizon_gpu` now runs at
+device creation reported, on a later launch of the same build, three
+regions again but **23404544 bytes**, the first of them 0xe31000 on its
+own. How much of the heap is lent depends on what hbloader has been
+doing, not on anything the program can see, so an allocator walking past
+the hole has to budget well above the largest span observed rather than
+at it.
+
+**Where they come from.** nx-hbloader runs each `.nro` inside its own
+process and hands it the same heap, so everything hbloader itself is
+holding is in the middle of the program's malloc arena. 0x800000 is the
+size libnx gives the socket service, and hbloader is the netloader —
+it needs its sockets for as long as it is running, which is the whole
+time. Nothing is leaking; the heap simply is not all ours. malloc knows
+none of this and will hand any of those pages out.
+
+**Writing one ends the process.** A store to a `Perm_None` page is a CPU
+Data Abort with no return path — and so is *cleaning* it, because on
+aarch64 `dc civac` faults exactly as a store does. This is the
+"Godot dies right after the Vulkan API line" crash, seen on roughly one
+launch in three: the 2026-08-25 Atmosphère report put it in `memset`
+called from `horizon_gpu_mem_create` zero-filling a swapchain image, and
+when patch `0072` let that allocation skip its zero fill the deaths
+carried on with the log ending one line later, on the `armDCacheFlush`
+that runs whether or not the fill did.
+
+**What the case establishes besides the scan.** The condition can be
+made on purpose — `svcCreateTransferMemory` over a heap range with
+`Perm_None` puts the source pages into exactly that state — so the
+predicate `horizon_gpu_heap_range_is_ours` is tested against a real
+borrowed page rather than a description of one: an ordinary block is
+ours (and takes a write and a flush); lent with `Perm_None` it is
+refused; lent with `Perm_Rw` it is *still* refused, because writable is
+not unshared; closed, it is ours again. `mem_create` now proves every
+block before it touches it and sets aside any that fails — never frees
+it, because freeing returns it to the allocator that just offered it.
+
+**And it is the crash, shown both ways on one Godot binary.** Ten runs
+of the same `.nro`, one variable, everything else held:
+
+| `HORIZON_GPU_HEAP_CHECK` | runs | died before the first frame |
+|---|---:|---:|
+| default (the block is checked) | 5 | **0** |
+| `0` (it is not) | 5 | **2** |
+
+The two deaths end at the same place the older ones did — the log's last
+line is `an allocation asked not to be zero filled and was not
+(3932160 bytes)`, and then the process is gone. 3932160 is the swapchain
+image.
+
+**The five that lived say why.** Every one of them carries the guard
+naming that exact allocation and refusing it:
+
+    [horizon_gpu:W] heap block 0x33b31c0000+0x3c0000 holds memory this
+    process may not write: region 0x33b332f000+0x21000 type=5 attr=0x1
+    perm=0x0. Setting it aside and asking again (1 block(s), 3932160
+    bytes set aside so far)
+
+0x3c0000 is 3932160. So this is not a rate argument: the allocation that
+kills the process is identified in the run that survives, in the act of
+being refused, and the run then renders all eight Forward+ phases.
+
+**The hole grows as you netload.** Across those ten runs the borrowed
+region count went 7, 7, 8, 8, 9 and the total sat around 81 MB — one
+more 0x21000 region per netload, on top of a 0x4acc000 one that is about
+the size of the `.nro` hbloader had just received. Which is the other
+half of why the old crash looked like "one launch in three": it depends
+on where the heap top is when the swapchain is created, and that moves.
+
+**The quarantine counter is the number that says the guard did
+something**, and in `gpu_memory/borrowed_pages` it was 0 blocks: that
+suite's own allocations did not land on a hole. The scan is what says
+the hole was there to land on.
+
 ## The suites re-run after the capabilities audit
 
 2026-09-07, handheld, 1280x720, full-memory takeover over Animal
