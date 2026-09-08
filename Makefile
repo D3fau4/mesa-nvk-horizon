@@ -263,7 +263,17 @@ $(BUILD)/horizon_build_id.h: FORCE | $(BUILD)/
 $(BUILD)/testfw.o: tests/common/testfw.c $(BUILD)/horizon_build_id.h | $(BUILD)/
 	$(CC) $(CFLAGS) -I$(BUILD) -MMD -MP -c $< -o $@
 
-$(BUILD)/%.t.o: tests/%.c | $(BUILD)/
+# $(OBJ_DIRS) AND NOT JUST $(BUILD)/, because a case object is written
+# to $(BUILD)/<suite>/ and nothing in this rule's own graph creates that
+# directory. It used to work only because $(LIB_OBJS) names every
+# directory as an order-only prerequisite and `test` asks for `lib`
+# first — an ordering `make -j` does not honour, since the goal's
+# prerequisites are made in parallel, and one `make $(BUILD)/<suite>.elf`
+# on a clean tree does not have at all: `make -n BUILD=zzbuild
+# zzbuild/platform/suite.t.o` printed `mkdir -p zzbuild/` and then a
+# compile into zzbuild/platform/, which is the "No such file or
+# directory" the comment above OBJ_DIRS describes.
+$(BUILD)/%.t.o: tests/%.c | $(OBJ_DIRS)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -MMD -MP -c $< -o $@
 
 # $(COMPAT_LIB) is a prerequisite but not in $^: it is reached through
