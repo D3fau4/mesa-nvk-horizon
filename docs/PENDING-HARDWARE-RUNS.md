@@ -179,6 +179,16 @@ three said 1280x720 throughout. The same is true of the SUBOPTIMAL
 result itself: its only live condition is a consumer-side resize, and
 this platform has not been observed to have one.
 
+**And the branch had a second way of not firing, which review found
+rather than a run.** `0086`: the latch is a one-entry cache keyed on
+whichever window asked last, and `wsi_horizon_layer_moved` used to
+update it only when that key already named this swapchain's window —
+so a capabilities query for a second `NWindow` was enough to make a
+real resize report on the first one a no-op. Nothing in the tests opens
+a second window, so no run could have shown it and none can show it
+fixed either; it is here because it is the same unobserved branch, and
+the wrong `maxImageExtent` at the end of it is the same one.
+
 **Done when** a run has produced a consumer-reported output size that
 is not this process's own — dock/undock while presenting is the only
 candidate anybody has proposed, and it has now been measured not to do

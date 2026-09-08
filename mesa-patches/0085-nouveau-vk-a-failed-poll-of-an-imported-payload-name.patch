@@ -1,0 +1,82 @@
+From fbc1178220ceb307271c54ffd5269a374da1ea6d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 8 Sep 2026 21:34:30 +0200
+Subject: [PATCH 85/87] nouveau/vk: a failed poll of an imported payload names
+ the fence that failed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 8 (Correct fence-based synchronisation at
+ acquire and present)
+Why: nvk_horizon_sync_get_value polls an imported payload through
+ nvk_horizon_sync_wait_imported, which names the fence that actually
+ failed through an out parameter. 0063 declared the variable it writes
+ to INSIDE the branch that makes the call, so it went out of scope
+ before the error path, and the error path then built a second
+ `blamed` that was always ext_fences[0]. A payload holds up to
+ NVKMD_MAX_SYNCPT_FENCES of them, so a failure of the second, third or
+ fourth was reported as a failure of the first — and on a console the
+ syncpoint id and the threshold in that line are the whole diagnostic.
+Evidence: nvkmd_horizon_sync.c as 0063 left it, the two declarations
+ fifteen lines apart:
+   if (sync->ext_fence_count > 0) {
+      horizon_gpu_fence blamed = sync->ext_fences[0];
+      res = nvk_horizon_sync_wait_imported(..., &blamed);
+   ...
+   } else if (res.status != HORIZON_GPU_ERR_TIMEOUT) {
+      const horizon_gpu_fence blamed = sync->ext_fence_count > 0
+                                          ? sync->ext_fences[0]
+                                          : sync->fence;
+ The blocking path forty lines above has it right and is what this now
+ matches. Class X: cross-built 2026-09-08 with this tree's flags,
+ aarch64-none-elf-gcc (devkitA64) 15.2.0, no warning. Not reachable on
+ a console yet — the compositor's release fences are the only imported
+ payload and no run has had one of them fail.
+Upstream: no — the backend is Horizon's.
+
+One declaration, before the branch, initialised to the fence this sync
+would be blamed for if the helper never runs.
+---
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_sync.c   | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+index 7fa281e..023c544 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c
+@@ -593,8 +593,20 @@ nvk_horizon_sync_get_value(struct vk_device *device,
+        * measurable time.
+        */
+       horizon_gpu_result res = horizon_gpu_ok();
++
++      /* DECLARED OUT HERE BECAUSE THE ERROR PATH BELOW IS WHAT READS
++       * IT. nvk_horizon_sync_wait_imported names the fence that
++       * actually failed through this pointer, and an imported payload
++       * holds up to NVKMD_MAX_SYNCPT_FENCES of them; a copy scoped to
++       * the branch would be filled in and then thrown away, and the
++       * log would blame ext_fences[0] for a failure of the second,
++       * third or fourth. The log is the whole diagnostic here — a
++       * console prints a syncpoint id and a threshold and nothing
++       * else — so naming the wrong one is naming nothing. */
++      horizon_gpu_fence blamed =
++         sync->ext_fence_count > 0 ? sync->ext_fences[0] : sync->fence;
++
+       if (sync->ext_fence_count > 0) {
+-         horizon_gpu_fence blamed = sync->ext_fences[0];
+          res = nvk_horizon_sync_wait_imported(sync->ext_dev,
+                                               sync->ext_fences,
+                                               sync->ext_fence_count, 0,
+@@ -609,9 +621,6 @@ nvk_horizon_sync_get_value(struct vk_device *device,
+           * on it is entitled to hear about it. */
+          cnd_broadcast(&sync->cond);
+       } else if (res.status != HORIZON_GPU_ERR_TIMEOUT) {
+-         const horizon_gpu_fence blamed = sync->ext_fence_count > 0
+-                                             ? sync->ext_fences[0]
+-                                             : sync->fence;
+          VkResult vkr =
+             vk_errorf(device, nvkmd_horizon_result(res),
+                       "%s(%" PRIu32 ", %"
+-- 
+2.53.0.windows.2
+
