@@ -97,13 +97,20 @@ static bool logcat_dump(const char *path)
 /* Lists `dir`: LOGCAT_DIR when run without arguments, or any argument
  * that names a directory rather than a file — Atmosphere's crash reports
  * (sdmc:/atmosphere/crash_reports/) carry a timestamp in their name, so
- * they cannot be fetched without listing the directory first. */
-static void logcat_list(const char *dir)
+ * they cannot be fetched without listing the directory first.
+ *
+ * FALSE WHEN THE LISTING DID NOT HAPPEN, and that answer has to reach
+ * the exit status. This tool is driven from a script over nxlink with
+ * nobody at the console, so a zero exit is read as "the log came back";
+ * a directory that is unreadable, that hits an I/O error, or that is
+ * gone between the stat() and the opendir() would otherwise print one
+ * line into a stream nobody is watching and still let this say `done`. */
+static bool logcat_list(const char *dir)
 {
     DIR *d = opendir(dir);
     if (d == NULL) {
         printf("logcat: cannot open %s\n", dir);
-        return;
+        return false;
     }
 
     printf("===== %s =====\n", dir);
@@ -125,6 +132,7 @@ static void logcat_list(const char *dir)
     }
     closedir(d);
     fflush(stdout);
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -154,13 +162,15 @@ int main(int argc, char **argv)
             char path[320];
             logcat_resolve(argv[i], path, sizeof(path));
             struct stat st;
-            if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
-                logcat_list(path);
-            else if (!logcat_dump(path))
+            if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                if (!logcat_list(path))
+                    ok = false;
+            } else if (!logcat_dump(path)) {
                 ok = false;
+            }
         }
-    } else {
-        logcat_list(LOGCAT_DIR);
+    } else if (!logcat_list(LOGCAT_DIR)) {
+        ok = false;
     }
 
     printf("logcat: %s\n", ok ? "done" : "done, with errors above");
