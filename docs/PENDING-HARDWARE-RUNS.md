@@ -34,6 +34,11 @@ result is now identified as `<suite>/<case>` — so what an older log calls
 `t_vk_zcull` this file calls `vk_render/zcull`, and it is the same code. The
 mapping for every one of them is `tests/<suite>/suite.c`.
 
+**The numbers below have holes in them.** A section that closes leaves
+this file rather than being renumbered, because commit messages cite
+these numbers and renumbering would make those citations point at
+something else. What left is in the closed lists at the bottom.
+
 ---
 
 ## 1 A wait submit no longer drains the pipeline, and only half of that has run
@@ -209,34 +214,23 @@ claim is false.
 
 ---
 
-## 8 A sparse bind waits for its acquires, and the case that shows it has not run
+## Closed on 2026-09-08
 
-**Class X.** `0082` makes `nvkmd_horizon_ctx_bind` wait, on the CPU,
-for the bind context's last fence before the first `MAP_BUFFER_EX` or
-`UNMAP_BUFFER` ioctl — the fence of the submit that carried the
-host-engine acquires `ctx_wait()` queued, which is reached only once
-those acquires have resolved. Before it, an unbind that
-`vkQueueBindSparse` ordered behind a render's semaphore ran while the
-render was still executing.
-
-`vk_core/sparse_binding` section D is that shape, cross-compiled and
-never run: eight fills of a 16 MiB scratch buffer and then a fill of
-block 1, submitted with a signal semaphore and no CPU wait;
-`vkQueueBindSparse` waiting on that semaphore and unbinding block 1;
-`vkGetFenceStatus` on the fill's fence read right before the bind call;
-then the block's backing memory — still allocated, host-visible —
-mapped and checked for the fill's pattern. Sections A to C still bind
-only after a CPU wait, and pass either way.
-
-**Done when** section D has reported, on one run, both `MEASURED D:
-the fill was still pending when vkQueueBindSparse was called` and the
-block holding the fill's pattern with 0 words wrong. A run where the
-fill was already complete distinguishes nothing and closes nothing:
-raise `SCRATCH_FILLS` and run again. A run where the pending fill
-landed as B's pattern is the failure `0082` exists for, on a build that
-carries it, and reopens the question.
-
----
+- **The Forward+ reproducer does not reproduce it at 1280x720 either.**
+  Section 6 asked for the matrix at an extent with a real number of
+  warps in flight. It got it on 2026-09-08: all eight variants render at
+  1280x720, G and H — 112 registers, with and without a convergence
+  stack — to the texel. Occupancy is off the list; the measurement is in
+  the counterpart file.
+- **A sparse bind waits for its acquires, and the case that shows it
+  has not run.** It ran. `vk_core/sparse_binding` section D, on a
+  console: `MEASURED D: the fill was still pending when
+  vkQueueBindSparse was called`, and `MEASURED D: the block holds the
+  fill the unbind was ordered behind (0 of 32768 words wrong, first
+  0x1d1dd1d1)` — which is both halves of what the section asked for, on
+  a build carrying `0082`. `vk_wsi` 622/622 and `vk_present` 1038/1038
+  beside it, so the picture is not wrong. Suite `PASS 1916/1916`
+  [10/10].
 
 ## Closed on 2026-09-07
 
@@ -282,12 +276,6 @@ still owed.
   field this backend writes, and `vk_wsi/swapchain` section H cycles
   the resolution down and back three times to say so. `suboptimal` is
   273/273.
-- **The Forward+ reproducer does not reproduce it at 1280x720 either.**
-  Section 6 asked for the matrix at an extent with a real number of
-  warps in flight. It got it on 2026-09-08: all eight variants render at
-  1280x720, G and H — 112 registers, with and without a convergence
-  stack — to the texel. Occupancy is off the list; the measurement is in
-  the counterpart file.
 - **The uninitialised allocation path is worth routing something
   through.** `NVKMD_MEM_NO_ZERO_INIT` exists through `nvkmd.h` and both
   backends, `vkAllocateMemory` is the one consumer that takes it, and
