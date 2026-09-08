@@ -54,7 +54,26 @@ static _Atomic uint32_t mem_quarantine_n;
  * stays allocated, so every attempt gets an address past the last one
  * and a run of them walks THROUGH the borrowed span rather than
  * retrying the same place — which is why the meaningful bound is bytes
- * and not attempts.
+ * and not attempts, AND WHY THERE IS NO LONGER AN ATTEMPT COUNT AT
+ * ALL.
+ *
+ * There was one, 32, and it defeated the budget for every allocation
+ * smaller than the span. A 4 KiB request could set aside 128 KiB and a
+ * 64 KiB request 2 MiB before refusing, against borrowed regions this
+ * same comment records at 8 and 23 MiB — so the small allocations,
+ * which are most of them, gave up inside the borrowed span and
+ * returned OUT_OF_MEMORY while the budget still had 46 MiB of room.
+ * Device creation and application start-up fail on that. Raised in
+ * review of PR #25.
+ *
+ * The budget bounds the walk on its own: every rejection adds at least
+ * a page to it, so the longest possible walk is
+ * MEM_HEAP_CHECK_BUDGET_B / HORIZON_GPU_SMALL_PAGE_SIZE steps and
+ * every step leaks the block it rejected. What the count was for — an
+ * allocator that hands back the SAME address forever, which cannot
+ * happen while nothing is freed but would be an infinite loop if it
+ * did — is now detected directly, by comparing the address with the
+ * one before it.
  *
  * MEASURED ON A CONSOLE 2026-09-08, twice, and THE SPAN IS NOT A
  * CONSTANT. gpu_memory/borrowed_pages section E on one netloaded suite:
@@ -68,10 +87,7 @@ static _Atomic uint32_t mem_quarantine_n;
  *
  * So the budget is set well above the largest span observed rather than
  * at it, because the cost of being wrong in one direction is a leaked
- * block and in the other is the process dying. The attempt count is
- * only there to stop an allocator that hands back the same address
- * forever. */
-#define MEM_HEAP_CHECK_TRIES    32u
+ * block and in the other is the process dying. */
 #define MEM_HEAP_CHECK_BUDGET_B (UINT64_C(48) << 20)
 
 bool horizon_gpu_heap_range_is_ours(const void *p, uint64_t size,
@@ -257,7 +273,9 @@ static horizon_gpu_result mem_create(horizon_gpu_device *dev,
      * one that is not is set aside rather than freed — the long comment
      * at the top of this file is why. */
     uint64_t set_aside_B = 0;
-    for (uint32_t attempt = 0; ; attempt++) {
+    uint32_t set_aside_n = 0;
+    const void *last_rejected = NULL;
+    for (;;) {
         mem->cpu = aligned_alloc(align, rounded);
         if (!mem->cpu) {
             free(mem);
@@ -270,38 +288,69 @@ static horizon_gpu_result mem_create(horizon_gpu_device *dev,
         if (horizon_gpu_heap_range_is_ours(mem->cpu, rounded, &bad))
             break;
 
+        /* THE ALLOCATOR IS SUPPOSED TO MOVE, and this is the only way
+         * this loop can fail to terminate. Nothing rejected is ever
+         * freed, so aligned_alloc has no way to offer the same address
+         * twice — if it does, asking again is asking the same
+         * question, and the budget below would take
+         * MEM_HEAP_CHECK_BUDGET_B / rounded turns to notice. */
+        const bool repeated = (const void *)mem->cpu == last_rejected;
+
         atomic_fetch_add(&mem_quarantine_B, rounded);
         const uint32_t n_set_aside =
             atomic_fetch_add(&mem_quarantine_n, 1u) + 1u;
-        horizon_logf(&dev->log, HORIZON_LOG_WARN,
-                     "heap block %p+0x%llx holds memory this process may "
-                     "not write: region 0x%llx+0x%llx type=%u attr=0x%x "
-                     "perm=0x%x. Setting it aside and asking again "
-                     "(%u block(s), %llu bytes set aside so far); "
-                     "HORIZON_GPU_HEAP_CHECK=0 takes the fault instead",
-                     mem->cpu, (unsigned long long)rounded,
-                     (unsigned long long)bad.addr,
-                     (unsigned long long)bad.size,
-                     (unsigned)bad.type, (unsigned)bad.attr,
-                     (unsigned)bad.perm, (unsigned)n_set_aside,
-                     (unsigned long long)atomic_load(&mem_quarantine_B));
 
+        /* THE FIRST ONE IN FULL, THEN COUNTED. A 4 KiB allocation
+         * crossing a 14 MiB borrowed span rejects some thousands of
+         * blocks, and one WARN apiece is a log this backend writes to
+         * an SD card faster than it allocates. The first line carries
+         * the region, which is the part that identifies the borrow;
+         * the rest differ only in their address, and the summary after
+         * the loop says how many there were. */
+        if (set_aside_n == 0 || repeated) {
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "heap block %p+0x%llx holds memory this process may "
+                         "not write: region 0x%llx+0x%llx type=%u attr=0x%x "
+                         "perm=0x%x. Setting it aside and asking again "
+                         "(%u block(s), %llu bytes set aside so far); "
+                         "HORIZON_GPU_HEAP_CHECK=0 takes the fault instead",
+                         mem->cpu, (unsigned long long)rounded,
+                         (unsigned long long)bad.addr,
+                         (unsigned long long)bad.size,
+                         (unsigned)bad.type, (unsigned)bad.attr,
+                         (unsigned)bad.perm, (unsigned)n_set_aside,
+                         (unsigned long long)atomic_load(&mem_quarantine_B));
+        }
+
+        last_rejected = mem->cpu;
         mem->cpu = NULL;                /* set aside, never freed */
         set_aside_B += rounded;
+        set_aside_n++;
 
-        if (attempt + 1u >= MEM_HEAP_CHECK_TRIES ||
-            set_aside_B >= MEM_HEAP_CHECK_BUDGET_B) {
+        if (repeated || set_aside_B >= MEM_HEAP_CHECK_BUDGET_B) {
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "%u heap block(s) of 0x%llx bytes in a row held "
                          "memory this process may not write (%llu bytes "
-                         "set aside for this one allocation); refusing it "
+                         "set aside for this one allocation%s); refusing it "
                          "rather than faulting on it",
-                         (unsigned)(attempt + 1u),
+                         (unsigned)set_aside_n,
                          (unsigned long long)rounded,
-                         (unsigned long long)set_aside_B);
+                         (unsigned long long)set_aside_B,
+                         repeated ? ", and the allocator offered the same "
+                                    "address twice" : "");
             free(mem);
             return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
         }
+    }
+
+    /* What the per-block lines above stopped saying, said once. */
+    if (set_aside_n > 0) {
+        horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                     "walked past %u borrowed heap block(s) of 0x%llx bytes "
+                     "(%llu bytes set aside for this allocation) before one "
+                     "at %p was ours",
+                     (unsigned)set_aside_n, (unsigned long long)rounded,
+                     (unsigned long long)set_aside_B, mem->cpu);
     }
     /* Zero-fill: deterministic content for tests and no stale data handed
      * to the GPU. Skipped only by horizon_gpu_mem_create_uninit, whose

@@ -214,6 +214,39 @@ claim is false.
 
 ---
 
+## 8 The borrowed-heap walk can go further than 32 blocks now, and nothing has taken it that far
+
+**Class X.** `mem_create` proves every block malloc hands it is
+writable before anything touches it, and sets aside — never frees —
+the ones that are not, asking again until it gets one that is ours.
+The walk had two bounds and the wrong one always fired first: 32
+attempts, or 48 MiB set aside. For any allocation smaller than the
+borrowed span the attempt count came first, and by a long way — 32
+blocks of 4 KiB is 128 KiB, against borrowed regions this console has
+reported at 8814592 and 23404544 bytes on two launches of one build.
+An allocation landing at the start of such a span therefore refused
+with `OUT_OF_MEMORY` while the budget still had 46 MiB of room, which
+is a device creation or an application start-up that fails. Raised in
+review of PR #25; the cap is gone, the byte budget bounds the walk on
+its own, and the case the cap was really for — an allocator offering
+the same address twice — is now detected by comparing addresses.
+
+**No run has walked past more than one block.** The two runs that
+measured the spans on 2026-09-08 allocated in megabytes, where 32
+attempts was never the binding constraint, and the Godot crash that
+started all of this was a swapchain image. The small-allocation case
+is the one nothing has produced on purpose.
+
+**Done when** a console log shows the summary line this adds — `walked
+past N borrowed heap block(s)` with N above 32 — followed by the suite
+passing, so that the long walk is known to end in a usable block and
+not in a slower failure; or when a run establishes that newlib's malloc
+never puts a small GPU allocation inside a borrowed span in the first
+place, in which case the length of the walk was never what mattered
+and this closes the other way.
+
+---
+
 ## Closed on 2026-09-08
 
 - **The Forward+ reproducer does not reproduce it at 1280x720 either.**
