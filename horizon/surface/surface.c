@@ -70,7 +70,15 @@ horizon_gpu_scanout_plan(const horizon_gpu_scanout_desc *desc,
     if (scanout_size_B > UINT32_MAX)
         return HORIZON_GPU_SCANOUT_SIZE_OVERFLOW;
 
-    if (scanout_size_B > desc->size_B)
+    /* THE OFFSET IS PART OF THE BOUND, not a decoration on it. The
+     * display block reads [offset_B, offset_B + scanout_size_B), and it
+     * is that end the allocation has to cover — an image placed at a
+     * non-zero offset in an object exactly its own size fits the size
+     * comparison and still has the compositor reading past the object.
+     * horizon_range_fits_u64 is the same helper the memory layer uses,
+     * so the sum cannot wrap the comparison it is meant to fail. */
+    if (!horizon_range_fits_u64(desc->offset_B, scanout_size_B,
+                                desc->size_B))
         return HORIZON_GPU_SCANOUT_ALLOCATION_TOO_SMALL;
 
     if (out_scanout_size_B)

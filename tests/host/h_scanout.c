@@ -84,6 +84,40 @@ int main(void)
     d.size_B = 3932160 + 4096;
     H_CHECK(v_of(&d) == HORIZON_GPU_SCANOUT_OK, "a larger allocation is OK");
 
+    /* THE OFFSET COUNTS AGAINST THE ALLOCATION. An object exactly the
+     * scanout extent long, with the image starting one byte into it, is
+     * one byte short — and it passes a comparison that looks at the
+     * extent alone, which is what this pair of cases pins. The display
+     * block reads [offset_B, offset_B + scanout_size_B), so it is that
+     * end that has to be inside the object. */
+    d = base();
+    d.offset_B = 1;
+    H_CHECK(v_of(&d) == HORIZON_GPU_SCANOUT_ALLOCATION_TOO_SMALL,
+            "a non-zero offset in an allocation sized for the extent "
+            "alone is refused");
+
+    d = base();
+    d.offset_B = 4096;
+    d.size_B = 3932160 + 4096;
+    H_CHECK(v_of(&d) == HORIZON_GPU_SCANOUT_OK,
+            "the same offset with room for it is OK");
+
+    d = base();
+    d.offset_B = 4096;
+    d.size_B = 3932160 + 4095;
+    H_CHECK(v_of(&d) == HORIZON_GPU_SCANOUT_ALLOCATION_TOO_SMALL,
+            "one byte short of the offset plus the extent is refused");
+
+    /* The sum is computed wide enough that it cannot wrap into an
+     * accept. Both fields are inside the 32-bit limit the check above
+     * enforces, and their sum is not. */
+    d = base();
+    d.offset_B = UINT32_MAX;
+    d.size_B = UINT32_MAX;
+    H_CHECK(v_of(&d) == HORIZON_GPU_SCANOUT_ALLOCATION_TOO_SMALL,
+            "an offset near the top of the field cannot wrap into an "
+            "accept");
+
     /* ---- one check per rejection, in the order they are applied ---- */
     d = base();
     d.block_linear = false;

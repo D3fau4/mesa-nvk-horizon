@@ -101,7 +101,8 @@ typedef enum horizon_gpu_scanout_verdict {
  *
  * On HORIZON_GPU_SCANOUT_OK, `*out_scanout_size_B` is the byte extent
  * the display block will read — the stride times the height rounded out
- * to a whole block, which is what has to fit inside the allocation — and
+ * to a whole block. What has to fit inside the allocation is that
+ * extent placed at `offset_B`, not the extent on its own. And
  * `*out_stride_px` is the row stride expressed in pixels, which is the
  * unit the buffer description carries it in.
  *
