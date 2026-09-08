@@ -184,28 +184,6 @@ about on those terms rather than kept for a case nobody can produce.
 
 ---
 
-## 6 The Forward+ hang has an in-tree reproducer that does not reproduce it
-
-**Class HW.** `vk_shaders/crs_matrix` was built to separate the last
-pair standing — a memory-backed convergence stack and a high register
-count — and it renders all eight variants, including the one whose
-compiled profile matches the shader that hangs (112 registers, 1024
-bytes of convergence stack, walked divergently). The measurement is in
-`docs/MEASURED-ON-HARDWARE.md`; what it leaves open is that the case
-differs from the failing draw in four ways, and only one of them is
-cheap to close.
-
-**Done when** the matrix has been run at an extent that puts a real
-number of warps in flight — 16x16 is a handful and the draw that hangs
-is 1280x720 — with everything else held. Per-warp convergence-stack
-memory is the one resource that scales with the warp count, so if the
-pair is going to hang anything it is there. If that renders too, the
-remaining differences are the shader's size, what it reads, and the
-frame around it, and the next step is to say which of those is worth a
-variable rather than to keep adding them at once.
-
----
-
 ## 7 A wait the channel already carries is no longer queued again, and nothing has run it
 
 **Class X.** `0080` gives `nvkmd_horizon_ctx` a memory of the highest
@@ -304,6 +282,12 @@ still owed.
   field this backend writes, and `vk_wsi/swapchain` section H cycles
   the resolution down and back three times to say so. `suboptimal` is
   273/273.
+- **The Forward+ reproducer does not reproduce it at 1280x720 either.**
+  Section 6 asked for the matrix at an extent with a real number of
+  warps in flight. It got it on 2026-09-08: all eight variants render at
+  1280x720, G and H — 112 registers, with and without a convergence
+  stack — to the texel. Occupancy is off the list; the measurement is in
+  the counterpart file.
 - **The uninitialised allocation path is worth routing something
   through.** `NVKMD_MEM_NO_ZERO_INIT` exists through `nvkmd.h` and both
   backends, `vkAllocateMemory` is the one consumer that takes it, and

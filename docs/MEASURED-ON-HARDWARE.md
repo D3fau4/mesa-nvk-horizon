@@ -362,14 +362,41 @@ Two things this settles besides that:
   here — reserve 1024 there. Numbers from the two are not comparable and
   were compared once.
 
-**WHAT THE CASE DOES NOT REPRODUCE, which is where the next single
-variable comes from.** 16x16 is a few warps; the draw that hangs is
-1280x720, and per-warp convergence-stack memory is a resource that
-scales with the number of warps in flight. 1006 instructions against
-3932. A push constant against uniform buffers, storage buffers,
-textures and a discard. One draw against a frame with a depth prepass
-and a dozen pipelines. The occupancy one is a single number in
-`tests/vk_shaders/crs_matrix.c` and is the cheapest thing to try next.
+**WHAT THE CASE DOES NOT REPRODUCE.** 1006 instructions against 3932. A
+push constant against uniform buffers, storage buffers, textures and a
+discard. One draw against a frame with a depth prepass and a dozen
+pipelines. The fourth entry on that list was occupancy, and the section
+below is it being taken off.
+
+## Nor do they at 1280x720, which is the whole of the occupancy question
+
+2026-09-08, `vk_shaders/crs_matrix`, **PASS 1010/1010**, suite **PASS
+1529/1529** [8/8], build `0441584-dirty` on mesa `fda375c`. The case now
+runs the whole matrix twice — once at 16x16 with every texel compared,
+then all eight variants again at **1280x720**, the extent of the draw
+that hangs, with a dense block plus a prime-strided sample compared
+(4994 texels of the 921600 drawn, per draw). Nothing else changed.
+
+**All eight render at 1280x720**, all four inputs each, 4994 of 4994
+compared texels right every time, including:
+
+| variant | crs | gprs | instrs | 16x16 | 1280x720 |
+|---|---|---|---|---|---|
+| G | 0 | **112** | 814 | renders | **renders** |
+| H | **1024** | **112** | 1006 | renders | **renders** |
+
+G is the closest in-tree analogue of the shader that hangs — same
+register count, same reservation (none), since that shader reports
+`crs=0` on this driver. H carries a memory-backed convergence stack on
+top. Both draw 921600 pixels, nearly thirty thousand warps against the
+matrix's previous eight, and both are right to the texel.
+
+So **occupancy is not it either**. Per-warp convergence-stack memory was
+the only resource anybody had named that scales with warps in flight and
+with nothing else this case varies, and it does not separate the pair at
+the extent that fails. Three differences are left between this case and
+the failing draw — the shader's size, what it reads, and the frame
+around it — and none of them is per-warp state.
 
 ## The Forward+ hang is not the register count, and Mobile is what says so
 

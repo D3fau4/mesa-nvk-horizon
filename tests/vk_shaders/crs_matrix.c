@@ -90,18 +90,29 @@
  * allocator that lost one of them shows up as a wrong sum rather than as
  * a number nobody reads.
  *
- * WHAT THIS CASE DOES NOT REPRODUCE, which is the list the next single
- * variable comes off. Measured 2026-09-07, every variant renders,
- * including H at 112 registers with a 1024-byte reservation walked
- * divergently — the compiled profile of the shader that hangs. So the
- * differences that remain are:
+ * OCCUPANCY IS THE THIRD DIMENSION, AND IT IS WHY THIS FILE CHANGED.
+ * Measured 2026-09-07 at 16x16, every variant rendered — including H at
+ * 112 registers with a 1024-byte reservation walked divergently, the
+ * compiled profile of the shader that hangs. But 16x16 is 256 pixels,
+ * which is eight warps; the draw that hangs is 1280x720, which is
+ * nearly thirty thousand. Per-warp state — the convergence stack, the
+ * slice of the register file each warp holds — is a resource that
+ * scales with exactly that number and with nothing else this case
+ * varies, so a matrix that renders at eight warps says nothing about
+ * the one question left standing about the pair.
  *
- *   occupancy      16x16 is 256 pixels, which is a handful of warps.
- *                  The draw that hangs is 1280x720, three thousand
- *                  times more of them, and per-warp convergence-stack
- *                  memory is a resource that scales with exactly that.
- *                  This is the cheapest next variable and it is one
- *                  number in this file.
+ * So the whole matrix runs twice: once at 16x16, where every texel is
+ * compared, and once at 1280x720, where the same draw puts as many
+ * warps in flight as the failing one does. The second pass compares a
+ * dense block at the origin plus a prime-strided sample across the rest
+ * — about a thousand texels, chosen so that x, y and (x^y)&1 all vary
+ * along the walk — because comparing nine hundred thousand of them
+ * against 104 live values each costs minutes of CPU and answers nothing
+ * the sample does not.
+ *
+ * WHAT IS STILL NOT VARIED, which is the list the next single variable
+ * comes off:
+ *
  *   size           1006 instructions here against 3932 there.
  *   what it reads  a push constant, and nothing else. The shader that
  *                  hangs reads uniform buffers, storage buffers and
@@ -112,11 +123,14 @@
  * None of those is varied here on purpose: this case exists because the
  * last four attempts moved two things at once.
  *
- * ORDER MATTERS HERE. The variants run A to F — least to most suspected
- * — and the log is flushed per line, so if one of them takes the channel
- * down the file already holds everything the run established. A device
- * lost between variants stops the case rather than reporting three more
- * failures with one cause.
+ * ORDER MATTERS HERE. The small extent runs first, all eight variants,
+ * and only then does any of them draw at 1280x720: the small pass is
+ * the shape that has passed on hardware, so a run that dies in the big
+ * pass still carries a full result for it. Within a pass the variants
+ * run A to H — least to most suspected — and the log is flushed per
+ * line, so if one of them takes the channel down the file already holds
+ * everything the run established. A device lost between variants stops
+ * the case rather than reporting more failures with one cause.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -137,15 +151,37 @@
 #include "crs_mx_g.spv.h"
 #include "crs_mx_h.spv.h"
 
-#define W            16u
-#define H            16u
-#define TEXELS       (W * H)
+#define SMALL_W      16u
+#define SMALL_H      16u
+/* The extent of the draw that hangs, which is the whole point of the
+ * second pass. */
+#define BIG_W        1280u
+#define BIG_H        720u
 #define TEXEL_B      16u                    /* R32G32B32A32_UINT */
-#define IMAGE_B      (TEXELS * TEXEL_B)
 #define TAIL_B       1024u
-#define READBACK_B   (IMAGE_B + TAIL_B)
+#define READBACK_B   ((BIG_W * BIG_H) * TEXEL_B + TAIL_B)
 #define POISON       0xdeadbeefu
 #define CLEAR_U      0xc1ea5eedu
+
+/* How the big pass is sampled: every texel of the first block, then one
+ * in every BIG_STRIDE. The stride is prime and coprime with 1280, so
+ * the walk does not keep landing in the same column and (x^y)&1 — the
+ * bit that decides which lanes enter the nest — varies along it. */
+#define DENSE_TEXELS 4096u
+#define BIG_STRIDE   1021u
+
+/* The two passes. `dense` is what makes the small one a full
+ * comparison and the big one a sample; nothing else differs. */
+struct crs_extent {
+   uint32_t w, h;
+   bool dense;
+};
+
+static const struct crs_extent EXTENTS[] = {
+   { SMALL_W, SMALL_H, true },
+   { BIG_W,   BIG_H,   false },
+};
+#define NUM_EXTENTS (sizeof(EXTENTS) / sizeof(EXTENTS[0]))
 
 /* The widest live band any variant has. */
 #define MAX_LIVE     104u
@@ -265,12 +301,16 @@ static void expect_texel(const struct crs_variant *v,
    out[3] = sum;
 }
 
-/* One variant, all four inputs, one image and one pipeline. Returns
- * false when the device is gone and there is no point continuing. */
+/* One variant at one extent, all four inputs, one image and one
+ * pipeline. Returns false when the device is gone and there is no point
+ * continuing. */
 static bool run_variant(vkfw *fw, const struct crs_variant *v,
-                        vkfw_buffer *dst)
+                        const struct crs_extent *e, vkfw_buffer *dst)
 {
    test_ctx *t = fw->t;
+   const uint32_t w = e->w, h = e->h;
+   const uint32_t texels = w * h;
+   const uint32_t image_B = texels * TEXEL_B;
    const VkFormat format = VK_FORMAT_R32G32B32A32_UINT;
    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -279,7 +319,7 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
    vkfw_gfx gfx = { 0 };
    bool alive = true;
 
-   if (!vkfw_image_create(fw, format, (VkExtent3D){ W, H, 1 }, 1, 1,
+   if (!vkfw_image_create(fw, format, (VkExtent3D){ w, h, 1 }, 1, 1,
                           usage, VK_IMAGE_TILING_OPTIMAL, &img))
       return true;
 
@@ -301,8 +341,8 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
    /* The pipeline is where the shader is compiled, so the `NAK crs:`
     * line for this variant appears in the log here — before any draw
     * that could take the channel down. */
-   t_note(t, "%s: compiling (%u nesting levels, %u values live)",
-          v->name, v->levels, v->live);
+   t_note(t, "%s @%ux%u: compiling (%u nesting levels, %u values live)",
+          v->name, w, h, v->levels, v->live);
 
    const vkfw_gfx_desc desc = {
       .vs_spv = fmt_vert_fullscreen_spv,
@@ -313,9 +353,11 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
       .depth_format = VK_FORMAT_UNDEFINED,
       .push_constant_B = (uint32_t)sizeof(struct push_data),
       .push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT,
-      .width = W, .height = H,
+      .width = w, .height = h,
    };
-   if (!vkfw_gfx_create(fw, v->name, &desc, &gfx))
+   char pipe_name[128];
+   snprintf(pipe_name, sizeof(pipe_name), "%s @%ux%u", v->name, w, h);
+   if (!vkfw_gfx_create(fw, pipe_name, &desc, &gfx))
       goto out;
 
    for (uint32_t ii = 0; ii < NUM_INPUTS; ii++) {
@@ -323,8 +365,8 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
       VkCommandBuffer cb;
 
       if (vkfw_device_lost(fw)) {
-         t_note(t, "%s: device lost; \"%s\" and what follows not attempted",
-                v->name, in->what);
+         t_note(t, "%s @%ux%u: device lost; \"%s\" and what follows not "
+                   "attempted", v->name, w, h, in->what);
          alive = false;
          goto out;
       }
@@ -332,8 +374,9 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
       /* Said before the submit rather than after it: if this draw is
        * the one that never retires, this line is the last thing in the
        * log and it names exactly which shader and which input. */
-      t_note(t, "%s: about to draw \"%s\" (n=%u mode=%u)",
-             v->name, in->what, in->n, in->mode);
+      t_note(t, "%s @%ux%u: about to draw \"%s\" (n=%u mode=%u), "
+                "%u pixels", v->name, w, h, in->what, in->n, in->mode,
+             texels);
 
       if (!vkfw_buffer_poison(fw, dst, POISON))
          goto out;
@@ -358,7 +401,7 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
       };
       const VkRenderingInfo ri = {
          .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-         .renderArea = { .offset = { 0, 0 }, .extent = { W, H } },
+         .renderArea = { .offset = { 0, 0 }, .extent = { w, h } },
          .layerCount = 1,
          .colorAttachmentCount = 1,
          .pColorAttachments = &att,
@@ -388,14 +431,15 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1,
          },
-         .imageExtent = { W, H, 1 },
+         .imageExtent = { w, h, 1 },
       };
       fw->vk.vkCmdCopyImageToBuffer(cb, img.img,
                                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                     dst->buf, 1, &region);
 
-      char what[96];
-      snprintf(what, sizeof(what), "%s: %s", v->name, in->what);
+      char what[160];
+      snprintf(what, sizeof(what), "%s @%ux%u: %s", v->name, w, h,
+               in->what);
 
       if (!vkfw_submit_and_wait(fw, cb, what))
          continue;
@@ -403,39 +447,46 @@ static bool run_variant(vkfw *fw, const struct crs_variant *v,
          continue;
 
       const uint32_t *base = (const uint32_t *)dst->map;
-      uint32_t wrong = 0, first = TEXELS, deep = 0;
-      for (uint32_t p = 0; p < TEXELS; p++) {
-         const uint32_t x = p % W, y = p / W;
+      uint32_t wrong = 0, first = texels, deep = 0, looked = 0;
+      for (uint32_t p = 0; p < texels; p++) {
+         /* The big pass looks at the dense block and then every
+          * BIG_STRIDE'th texel; the small one at all of them. */
+         if (!e->dense && p >= DENSE_TEXELS && (p % BIG_STRIDE) != 0u)
+            continue;
+
+         const uint32_t x = p % w, y = p / w;
          uint32_t want[4];
          expect_texel(v, in, x, y, want);
          deep += (want[1] == in->n && in->n != 0);
+         looked++;
          const uint32_t *got = base + (size_t)p * 4u;
          bool ok = true;
          for (uint32_t k = 0; k < 4; k++)
             ok = ok && got[k] == want[k];
          if (!ok) {
-            if (first == TEXELS)
+            if (first == texels)
                first = p;
             wrong++;
          }
       }
 
       t_check(t, wrong == 0,
-              "%s: %u/%u texels right (%u lanes reached the loop)",
-              what, TEXELS - wrong, TEXELS, deep);
+              "%s: %u/%u compared texels right, of %u drawn (%u lanes "
+              "reached the loop)", what, looked - wrong, looked, texels,
+              deep);
       if (wrong != 0) {
          uint32_t want[4];
-         expect_texel(v, in, first % W, first / W, want);
+         expect_texel(v, in, first % w, first / w, want);
          const uint32_t *got = base + (size_t)first * 4u;
          t_note(t, "%s: first wrong texel %u (%u,%u): got acc=%u i=%u "
                    "cond=0x%x sum=0x%08x, want acc=%u i=%u cond=0x%x "
-                   "sum=0x%08x", what, first, first % W, first / W,
+                   "sum=0x%08x", what, first, first % w, first / w,
                 got[0], got[1], got[2], got[3],
                 want[0], want[1], want[2], want[3]);
       }
 
-      vkfw_expect_words(fw, (const uint8_t *)dst->map + IMAGE_B, POISON,
-                        (READBACK_B - IMAGE_B) / 4u,
+      vkfw_expect_words(fw, (const uint8_t *)dst->map + image_B, POISON,
+                        (READBACK_B - image_B) / 4u,
                         "nothing was written past the image");
    }
 
@@ -477,10 +528,27 @@ TEST_CASE_DECL(vk_shaders, crs_matrix)
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &dst))
       goto out;
 
-   for (uint32_t i = 0; i < NUM_VARIANTS; i++) {
-      if (!run_variant(&fw, &VARIANTS[i], &dst)) {
-         t_note(t, "%u variant(s) after \"%s\" not attempted",
-                (unsigned)(NUM_VARIANTS - i - 1), VARIANTS[i].name);
+   for (uint32_t xi = 0; xi < NUM_EXTENTS; xi++) {
+      const struct crs_extent *e = &EXTENTS[xi];
+      bool alive = true;
+
+      t_note(t, "=== %ux%u, %u pixels, %s ===", e->w, e->h, e->w * e->h,
+             e->dense ? "every texel compared"
+                      : "a dense block plus a strided sample compared");
+
+      for (uint32_t i = 0; i < NUM_VARIANTS; i++) {
+         if (!run_variant(&fw, &VARIANTS[i], e, &dst)) {
+            t_note(t, "%u variant(s) after \"%s\" at %ux%u not attempted",
+                   (unsigned)(NUM_VARIANTS - i - 1), VARIANTS[i].name,
+                   e->w, e->h);
+            alive = false;
+            break;
+         }
+      }
+
+      if (!alive) {
+         t_note(t, "%u extent(s) after %ux%u not attempted",
+                (unsigned)(NUM_EXTENTS - xi - 1), e->w, e->h);
          break;
       }
    }
