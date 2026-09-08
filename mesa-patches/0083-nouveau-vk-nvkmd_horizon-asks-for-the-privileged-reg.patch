@@ -1,0 +1,269 @@
+From 96acecd5ea7576b5cfd6e8d426fe2a2a0c6c1438 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 8 Sep 2026 18:47:34 +0200
+Subject: [PATCH 83/83] nouveau/vk: nvkmd_horizon asks for the privileged
+ register write Horizon takes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 5 item 4 (Godot's Forward+ hang)
+Why: nvk_push_draw_state_init() makes two privileged graphics-register
+ writes on MAXWELL_B, gated on one flag, and nvkmd_horizon published
+ that flag false. The reason recorded in the file was known-risk R18 —
+ "Horizon rejects privileged graphics-register writes from an
+ unprivileged channel and resets the channel" — which was inherited
+ from the reference ports and never measured here. A console has now
+ measured it, and the answer is different for the two registers: FECS
+ takes gr_gpcs_tpcs_sm_disp_ctrl (0x419f78) and refuses
+ gr_gpcs_tpcs_sms_hww_warp_esr_report_mask (0x419e44). One flag cannot
+ express that, so it becomes two, and Horizon reads them from a mask.
+ The write FECS takes is the one that clears bit 3 of sm_disp_ctrl, and
+ what that bit does — enable FP helper-invocation memory loads — is
+ what Godot's Forward+ scene fragment shader needs: it discards and
+ reads uniform buffers, storage buffers and textures, so its helper
+ lanes load, and with the loads suppressed one of them takes the SM
+ somewhere it does not come back from.
+Evidence: tests/vk_shaders/priv_reg, on a console, 2026-09-08. Asking
+ for both (NVK_HORIZON_PRIV_REG=3) killed the channel and named the
+ register that did it:
+   channel 0x627b63d5e0: fault notification 31 (MMU fault) — marking lost
+   error: notifier=31 error_type=2 (graphics exception) info_all_zero=no
+   intr=0x00080000 addr=0x00102310 data=0x0000000000419e44 class=0xb197
+ gr_intr bit 19 is the FECS-error bit; 0x419e44 is the second write.
+ The first, 0x419f78, goes out before it in the same push and appears
+ in no trap record. Asking for that one alone (=1): vk_shaders PASS
+ (1603/1603) [9/9], priv_reg 74/74, the same draw byte-identical with
+ and without it — 262144/262144 words agree.
+ Then one Godot binary, one variable, GODOT_NO_PSO_CACHE=1 and
+ MESA_SHADER_CACHE_DISABLE=true on both so neither run could come from
+ the other's compiled shaders:
+   NVK_HORIZON_PRIV_REG=1  all eight bench phases render — 3d_cubes_200
+     at 1.55 ms CPU / 10.65 ms GPU, 3d_shadow_800 with 3529 draws,
+     3d_cubes_2000, the run reaches its summary screen. Twice.
+   NVK_HORIZON_PRIV_REG=0  "-- phase 4/8: 3d_cubes_200" and then
+     channel 0x152e95c010: fault notification 8 (fifo idle timeout) —
+     marking lost, every submit after it VK_ERROR_DEVICE_LOST
+ which is the failure recorded six runs out of six since 2026-08-23.
+Upstream: no — the split is only interesting to a KMD that answers the
+ two registers differently, and nouveau does not. nvkmd_nouveau sets
+ both true, so its behaviour is unchanged.
+---
+ src/nouveau/vulkan/nvk_cmd_draw.c             |   2 +-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c | 118 ++++++++++++++++--
+ .../vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c |   6 +-
+ src/nouveau/vulkan/nvkmd/nvkmd.h              |  17 +++
+ 4 files changed, 127 insertions(+), 16 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_cmd_draw.c b/src/nouveau/vulkan/nvk_cmd_draw.c
+index 14c0236..2b644e7 100644
+--- a/src/nouveau/vulkan/nvk_cmd_draw.c
++++ b/src/nouveau/vulkan/nvk_cmd_draw.c
+@@ -246,7 +246,7 @@ nvk_push_draw_state_init(struct nvk_queue *queue, struct nv_push *p)
+     * This clears bit 14 of gr_gpcs_tpcs_sms_hww_warp_esr_report_mask
+     */
+    if (pdev->info.cls_eng3d >= MAXWELL_B &&
+-       pdev->nvkmd->kmd_info.has_priv_reg_writes) {
++       pdev->nvkmd->kmd_info.has_priv_reg_write_esr_mask) {
+       unsigned reg = get_sms_hww_warp_esp_report_mask_reg(&pdev->info);
+       P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_SET_PRIV_REG));
+       P_INLINE_DATA(p, 0);
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+index 6ac248e..a982f4e 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
+@@ -491,6 +491,14 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+     *                      measured would corrupt images rather than
+     *                      fail.
+     */
++   /* Read before the initialiser rather than inside it: the two
++    * capabilities below come from one number, and the log line after
++    * it reports the number the process was given rather than
++    * re-deriving it from the bools. The default is 1 and the comment
++    * on has_priv_reg_writes is why. */
++   const uint32_t priv_reg_mask =
++      (uint32_t)debug_get_num_option("NVK_HORIZON_PRIV_REG", 1);
++
+    pdev->base.kmd_info = (struct nvkmd_info) {
+       /* Decision D12. The condition NVK used, cls_eng3d >= MAXWELL_B, is
+        * a fact about GM20B and says nothing about the address space, so
+@@ -516,24 +524,92 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+        * the work is known and bounded, and nothing in Phase 4 needs it.
+        */
+       .has_sparse = true,
+-      /* Horizon rejects privileged graphics-register writes from an
+-       * unprivileged channel and resets the channel, after which every
+-       * submit on it times out. Recorded in Phase 0 as known-risks R18,
+-       * from the reference ports' hardware experience, and expected
+-       * there in Phase 5; it arrives in Phase 4 because
+-       * nvk_push_draw_state_init issues two of them while the queue's
+-       * context is being initialised, long before any draw.
++      /* Horizon was expected to reject privileged graphics-register
++       * writes from an unprivileged channel and reset the channel,
++       * after which every submit on it times out. That is known-risks
++       * R18, recorded in Phase 0 from the reference ports' hardware
++       * experience and expected in Phase 5; it arrived in Phase 4
++       * because nvk_push_draw_state_init issues two of them while the
++       * queue's context is being initialised, long before any draw.
++       *
++       * R18 WAS INHERITED, NOT MEASURED HERE, and one thing in the tree
++       * argues with it: deko3d makes masked writes to 0x00418800,
++       * 0x00419a08, 0x00419f78, 0x00404468 and 0x00419a04 from an
++       * ordinary Horizon application, and 0x00419f78 is the first of
++       * the two registers NVK wants. NVK reaches it the way any
++       * unprivileged channel would — an MME macro that hands the
++       * register to SET_FALCON04 and spins on a scratch handshake — so
++       * whether it works here is a question about this console's FECS
++       * microcode, and nobody has asked it.
+        *
+        * What NVK loses by not making them, from its own comments:
+        * gr_gpcs_tpcs_sm_disp_ctrl bit 3 enables FP helper invocation
+        * memory loads, without which one dEQP subgroups test fails
+-       * occasionally; and sms_hww_warp_esp_report_mask disables Out Of
+-       * Range Address exceptions for a case involving an empty fragment
+-       * shader. Neither is reachable by anything this port runs today,
+-       * and R18's instruction was to determine the cost rather than
+-       * inherit a silent no-op — so it is written down here.
++       * occasionally; and sms_hww_warp_esr_report_mask bit 14 disables
++       * Out Of Range Address exceptions, which otherwise KILL THE
++       * CONTEXT — NVK's own words — for a case involving an empty
++       * fragment shader and, it says, for array overruns on I/O
++       * arrays. A killed graphics context is what a fifo idle timeout
++       * looks like from here, and one of those is the open Forward+
++       * hang.
++       *
++       * MEASURED ON A CONSOLE 2026-09-08, vk_shaders/priv_reg: R18 is
++       * right about one of the two and wrong about the other. A queue
++       * context that asked for both came up, and its first submit died
++       * with
++       *
++       *   channel: fault notification 31 (MMU fault) — marking lost
++       *   error: notifier=31 error_type=2 (graphics exception)
++       *   intr=0x00080000 addr=0x00102310 data=0x0000000000419e44
++       *
++       * gr_intr bit 19 is the FECS-error bit and the trapped data is
++       * 0x419e44 — the warp-ESR report mask, the SECOND write. The
++       * first register, 0x419f78, is issued before it in the same push
++       * and never appears in a trap record, so FECS took that one and
++       * refused this one.
++       *
++       * So the knob is a mask rather than a switch, because losing the
++       * accepted write to avoid the refused one would be paying for
++       * nothing:
++       *
++       *   NVK_HORIZON_PRIV_REG=0   neither
++       *                        1   sm_disp_ctrl only — THE DEFAULT
++       *                        2   the ESR mask only, which faults
++       *                        3   both, which is what NVK does
++       *
++       * AND THE DEFAULT IS 1 BECAUSE THE ACCEPTED WRITE IS THE FIX FOR
++       * THE FORWARD+ HANG. Measured the same day, one Godot binary, one
++       * variable, everything else held — GODOT_NO_PSO_CACHE=1 and
++       * MESA_SHADER_CACHE_DISABLE=true on both runs so neither could
++       * come from the other's compiled shaders:
++       *
++       *   NVK_HORIZON_PRIV_REG=1   all eight bench phases render,
++       *                            3d_cubes_200 at 10.65 ms of GPU,
++       *                            3d_shadow_800 with 3529 draws, the
++       *                            run reaches its summary
++       *   NVK_HORIZON_PRIV_REG=0   3d_cubes_200 takes the channel down
++       *                            with `fault notification 8 (fifo
++       *                            idle timeout)`, and every submit
++       *                            after it is VK_ERROR_DEVICE_LOST
++       *
++       * which is the failure this project has been reducing since
++       * 2026-08-23 and had six runs out of six of. What the bit does is
++       * what NVK says it does: it enables FP helper-invocation memory
++       * loads. Godot's Forward+ scene fragment shader discards and
++       * reads uniform buffers, storage buffers and textures, so it has
++       * helper lanes that load; suppressed, one of those loads takes
++       * the SM somewhere it does not come back from. Nothing in
++       * tests/ had ever asked for that combination, which is why a
++       * fragment shader with 112 registers and a divergent convergence
++       * stack renders here and Godot's does not.
++       *
++       * Read live rather than through a cached DEBUG_GET_ONCE, so a
++       * test may change it between two instances in one process — the
++       * same reason NVK_HORIZON_ZCULL is read that way, and what
++       * vk_shaders/priv_reg needs to run both halves.
+        */
+-      .has_priv_reg_writes = false,
++      .has_priv_reg_writes = (priv_reg_mask & 1u) != 0u,
++      .has_priv_reg_write_esr_mask = (priv_reg_mask & 2u) != 0u,
+       /* MEASURED ON A CONSOLE 2026-08-24, tests/t_vk_timestamp.c:
+        *
+        *   note MEASURED DEVICE clock (GET_GPU_TIME) over 3 window(s):
+@@ -566,6 +642,22 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
+       .has_compression = false,
+    };
+ 
++   /* Said once, at device creation. A console leaves nothing but its
++    * log, so a run has to carry which of the shapes it was. */
++   if (priv_reg_mask != 0u)
++      mesa_logi("nvkmd_horizon: NVK_HORIZON_PRIV_REG=%u — queue context "
++                "initialisation will write %s%s%s",
++                (unsigned)priv_reg_mask,
++                pdev->base.kmd_info.has_priv_reg_writes
++                   ? "gr_gpcs_tpcs_sm_disp_ctrl (0x419f78)" : "",
++                (pdev->base.kmd_info.has_priv_reg_writes &&
++                 pdev->base.kmd_info.has_priv_reg_write_esr_mask)
++                   ? " and " : "",
++                pdev->base.kmd_info.has_priv_reg_write_esr_mask
++                   ? "gr_gpcs_tpcs_sms_hww_warp_esr_report_mask "
++                     "(0x419e44), which a console refused on 2026-09-08"
++                   : "");
++
+    /* Bind alignment is the address space's big-page size: a mapping
+     * must start on one, because that is the granularity the GPU MMU
+     * fills. Queried, never assumed — as_big_page_size is what the
+diff --git a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
+index 0879588..e09dff3 100644
+--- a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
+@@ -101,9 +101,11 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
+        * and binds into it, so the answer here is the chip's, which is
+        * what the feature check already asked. */
+       .has_sparse = true,
+-      /* nouveau lets a channel drive SET_PRIV_REG; this is where NVK's
+-       * behaviour has always been, and the class check still gates it. */
++      /* nouveau lets a channel drive SET_PRIV_REG for both registers;
++       * this is where NVK's behaviour has always been, and the class
++       * check still gates them. */
+       .has_priv_reg_writes = true,
++      .has_priv_reg_write_esr_mask = true,
+       .has_dma_buf = true,
+       .has_get_vram_used = nouveau_ws_device_vram_used(ws_dev) != 0,
+       .has_alloc_tiled = nouveau_ws_device_has_tiled_bo(ws_dev),
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index 7490c2b..c66f4ad 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -161,8 +161,25 @@ struct nvkmd_info {
+     * underneath lets an unprivileged channel use it is a separate
+     * question, and on some the answer is no — the write is rejected and
+     * the channel is reset, after which every submit times out.
++    *
++    * IT IS TWO FLAGS BECAUSE ONE KMD ANSWERS THE TWO REGISTERS
++    * DIFFERENTLY. Measured on a Switch (GM20B, nvgpu through Horizon)
++    * on 2026-09-08: a queue context that made both writes took a
++    * graphics exception whose trapped method data was 0x419e44 — the
++    * second register, the warp-ESR report mask — with
++    * gr_intr = 0x00080000, which is the FECS-error bit. The first
++    * register never appears in a trap record, so FECS accepted it and
++    * refused the other. A capability that can only be all-or-nothing
++    * would cost the accepted one to avoid the refused one.
++    *
++    *   has_priv_reg_writes           gr_gpcs_tpcs_sm_disp_ctrl bit 3,
++    *                                 FP helper-invocation memory loads
++    *   has_priv_reg_write_esr_mask   gr_gpcs_tpcs_sms_hww_warp_esr_
++    *                                 report_mask bit 14, Out Of Range
++    *                                 Address exceptions
+     */
+    bool has_priv_reg_writes;
++   bool has_priv_reg_write_esr_mask;
+    bool has_dma_buf;
+    bool has_get_vram_used;
+    bool has_alloc_tiled;
+-- 
+2.53.0.windows.2
+

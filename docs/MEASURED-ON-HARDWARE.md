@@ -398,6 +398,87 @@ the extent that fails. Three differences are left between this case and
 the failing draw — the shader's size, what it reads, and the frame
 around it — and none of them is per-warp state.
 
+## Godot's Forward+ hang is a privileged register write this port refused
+
+2026-09-08. **One binary, one variable, and the hang is gone.**
+`nvk_push_draw_state_init` makes two privileged graphics-register
+writes on MAXWELL_B; `nvkmd_horizon` published `has_priv_reg_writes =
+false` and made neither. `NVK_HORIZON_PRIV_REG` (patch `0083`) turns
+them on one at a time, and a console answered three questions with it.
+
+**1. Horizon takes one of the two writes and refuses the other.**
+Asking for both — `NVK_HORIZON_PRIV_REG=3`, `vk_shaders/priv_reg`'s
+first shape — killed the channel on the queue context's first submit
+and named the register that did it:
+
+    channel 0x627b63d5e0: fault notification 31 (MMU fault) — marking lost
+    error: notifier=31 error_type=2 (graphics exception) info_all_zero=no
+    intr=0x00080000 addr=0x00102310 data=0x0000000000419e44 class=0xb197
+
+`gr_intr` bit 19 is the FECS-error bit, and `0x419e44` is
+`gr_gpcs_tpcs_sms_hww_warp_esr_report_mask` — the **second** write, the
+one that disables Out Of Range Address exceptions. The first,
+`gr_gpcs_tpcs_sm_disp_ctrl` at `0x419f78`, goes out before it in the
+same push and appears in no trap record. So FECS took that one.
+
+That is half of known-risk R18 confirmed and half of it refuted. R18
+said Horizon rejects privileged graphics-register writes from an
+unprivileged channel and resets the channel; it does that for one
+register and not for the other, and the capability had to become two
+flags to say so.
+
+**2. The accepted write changes nothing about an ordinary draw.**
+`vk_shaders/priv_reg`, `NVK_HORIZON_PRIV_REG=1`: **PASS 74/74**, suite
+**PASS 1603/1603** [9/9]. The same 256x256 draw of `crs_mx_g` with and
+without the write is identical, 262144 of 262144 words, and neither
+half is the clear value anywhere.
+
+**3. It is the Forward+ fix.** One Godot binary — `bench_fp` on this
+build, engine `495e59f37` — run twice with everything held but the
+mask, `GODOT_NO_PSO_CACHE=1` and `MESA_SHADER_CACHE_DISABLE=true` both
+times so neither run could be reading the other's compiled shaders:
+
+| `NVK_HORIZON_PRIV_REG` | what happened |
+|---|---|
+| **0** | `-- phase 4/8: 3d_cubes_200`, then `channel 0x152e95c010: fault notification 8 (fifo idle timeout) — marking lost`, and every submit after it `VK_ERROR_DEVICE_LOST` |
+| **1** | all eight phases, twice |
+
+which is the failure this project has been reducing since 2026-08-23
+and had six runs out of six of. Forward+, at 1280x720 in handheld:
+
+| phase | fps | frame ms | cpu ms | gpu ms | draws |
+|---|---:|---:|---:|---:|---:|
+| idle | 60.0 | 16.67 | 0.37 | 0.26 | 0 |
+| 2d_overdraw_32 | 20.0 | 50.00 | 0.62 | 41.83 | 0 |
+| 2d_sprites_1200 | 57.7 | 17.32 | 4.20 | 2.81 | 0 |
+| 3d_cubes_200 | 60.0 | 16.65 | 1.55 | 10.65 | 200 |
+| 3d_cubes_800 | 60.0 | 16.67 | 3.84 | 14.38 | 800 |
+| 3d_cubes_2000 | 28.2 | 35.47 | 9.11 | 27.24 | 2000 |
+| 3d_shadow_800 | 30.0 | 33.37 | 8.68 | 23.27 | 3529 |
+| 3d_omni_16 | 36.5 | 27.4 | 1.81 | 22.36 | 200 |
+
+**What the bit does, and why every test in this tree missed it.** NVK's
+own comment says clearing bit 3 of `gr_gpcs_tpcs_sm_disp_ctrl` "enables
+FP helper invocation memory loads", and cites one dEQP subgroups test
+that occasionally fails without it. Godot's Forward+ scene fragment
+shader discards *and* reads uniform buffers, storage buffers and
+textures — so it has helper lanes that load — and with those loads
+suppressed one of them takes the SM somewhere it does not come back
+from. Nothing in `tests/` had ever asked for that pair: `crs_matrix`
+reads a push constant and nothing else, `descriptor_set1` reads set 1
+without discarding, `fragment_kill` discards without reading. Which is
+why a fragment shader with 112 registers, a 1024-byte convergence stack
+and 921600 pixels renders here and Godot's does not.
+
+**And it explains the shape of every earlier exclusion.** "Not the
+executed code" is right — the shader does not have to run the load for
+the quad to have a helper lane issuing one. "Not the register count",
+"not the convergence stack", "not the instruction count", "not
+occupancy", "not a wrong descriptor read", "not zcull", "not the depth
+prepass": all right, and all beside the point, because the variable was
+never in the shader or in the state NVK sets for it. It was one bit of
+GPU configuration that this backend declined to write.
+
 ## The Forward+ hang is not the register count, and Mobile is what says so
 
 2026-09-07, one run, `bench_mob_reg` — the Mobile build from 2026-09-02

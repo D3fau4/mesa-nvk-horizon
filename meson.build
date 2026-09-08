@@ -348,7 +348,7 @@ nvk_suites = {
   'vk_shaders' : ['compute_dispatch', 'dynamic_loop', 'packed_bound_loop',
                   'nested_control_flow', 'nested_control_flow_frag',
                   'crs_matrix',
-                  'fragment_kill', 'descriptor_set1'],
+                  'fragment_kill', 'descriptor_set1', 'priv_reg'],
   'vk_render' : ['triangle', 'texture', 'depth', 'formats', 'multi_target',
                  'zcull', 'draw_volume'],
   # Alone, because what it reports is a compile time and a measurement
@@ -415,6 +415,10 @@ nvk_case_shaders = {
                              'crs_mx_f', 'crs_mx_g', 'crs_mx_h'],
   'vk_shaders/fragment_kill' : ['fmt_vert_fullscreen', 'kill_frag_loop'],
   'vk_shaders/descriptor_set1' : ['fmt_vert_fullscreen', 'set1_frag'],
+  # crs_mx_g again, because the question is whether an ordinary draw
+  # changes when the queue context asks for the two privileged register
+  # writes, and a shader the suite already renders is the control.
+  'vk_shaders/priv_reg' : ['fmt_vert_fullscreen', 'crs_mx_g'],
 
   # Two pipelines: A builds its positions from gl_VertexIndex and writes
   # a constant colour, B fetches position and colour from a vertex

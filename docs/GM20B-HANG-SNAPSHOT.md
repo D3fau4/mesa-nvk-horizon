@@ -231,11 +231,21 @@ The hypotheses this note listed have been answered:
    the log) and the hang is unchanged; `NVK_HORIZON_ZCULL=0` turns the
    whole capability off and the hang is unchanged. Single variable, both
    directions.
-2. **Incomplete B197/context initialisation — still open, and now the
-   most likely place left.** The final marker is a `before-span` on a
-   work push whose only work-issuing method is the draw, which is what
-   this note said would put the failure in GR and make SPA and the two
-   privileged Maxwell-B workarounds the next controlled comparisons.
+2. **Incomplete B197/context initialisation — YES, AND IT WAS ONE OF
+   THE TWO PRIVILEGED WRITES.** This note said the final `before-span`
+   on a work push "would put the failure in GR and make SPA and the two
+   privileged Maxwell-B workarounds the next controlled comparisons",
+   and that is where it was. `NVK_HORIZON_PRIV_REG` (patch `0083`)
+   makes them one at a time; Horizon's FECS takes
+   `gr_gpcs_tpcs_sm_disp_ctrl` (0x419f78) and refuses
+   `gr_gpcs_tpcs_sms_hww_warp_esr_report_mask` (0x419e44) with a FECS
+   error naming the register. With the accepted one made, Godot's
+   Forward+ renders all eight bench phases; without it, on the same
+   binary, `3d_cubes_200` takes the channel down exactly as before. The
+   full measurement is in `docs/MEASURED-ON-HARDWARE.md`. What the bit
+   does is enable FP helper-invocation memory loads, and Godot's scene
+   fragment shader is the first thing this project has run that both
+   discards and reads memory.
 3. **Cross-channel acquire — no.** Every marker on the failing submit is
    `kind=work`; no `kind=acquire` span is involved.
 4. **SLM backing/programming — no.** `NAK_DEBUG=crsinfo` shows the scene
@@ -248,20 +258,22 @@ The hypotheses this note listed have been answered:
    frontend reached the push and consumed its entry.
 6. **Deko3d-only tiled cache — untested, and still the lowest.**
 
-What is not yet distinguished is which property of that one draw does it:
-its fragment shader (3932 instructions, 112 GPRs) or the state only it
-sets. Of the five pipeline-state differences the 2026-08-23 Forward+ /
-Mobile dump found, four are now excluded individually — Zcull, the depth
-prepass and its `DEPTH_FUNC EQUAL`, the register count, and
-`SET_CT_SELECT.TARGET_COUNT 3` with two `DISABLED` targets (`t_vk_mrt`,
-96/96). The fifth, the RGBA16F colour target, needs no new test:
-`t_vk_format` already renders to `R16G16B16A16_SFLOAT` *and* to Mobile's
-`A2B10G10R10_UNORM_PACK32` as colour attachments and passes.
+It was neither the fragment shader's own properties nor the pipeline
+state, which is why the search through both came up empty. Of the five
+pipeline-state differences the 2026-08-23 Forward+ / Mobile dump found,
+all five were excluded individually — Zcull, the depth prepass and its
+`DEPTH_FUNC EQUAL`, the register count, `SET_CT_SELECT.TARGET_COUNT 3`
+with two `DISABLED` targets (`t_vk_mrt`, 96/96), and the RGBA16F colour
+target (`t_vk_format` renders to `R16G16B16A16_SFLOAT` *and* to
+Mobile's `A2B10G10R10_UNORM_PACK32` and passes). The shader itself was
+then excluded too, one property at a time: not the executed code, not
+the instruction count, not the program size, not shader local memory,
+not the convergence stack, not the register count, not occupancy.
 
-So **all five are excluded**, with one residual: `t_vk_depth` covers a
-depth attachment with writes off and depth-tested draws, but not
-`DEPTH_FUNC OGL_EQUAL` specifically. Nothing else at the state level is
-left, which leaves the fragment shader itself.
+Every one of those exclusions was correct. The variable was in neither
+place: it was a bit of GPU configuration the queue context never wrote
+because this backend published a capability as false without measuring
+it.
 
 ## The hypotheses as they were written
 
