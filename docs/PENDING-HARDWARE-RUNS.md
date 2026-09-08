@@ -231,7 +231,7 @@ claim is false.
 
 ---
 
-## 8 A sparse bind waits for its acquires, and no case puts a semaphore in its way
+## 8 A sparse bind waits for its acquires, and the case that shows it has not run
 
 **Class X.** `0082` makes `nvkmd_horizon_ctx_bind` wait, on the CPU,
 for the bind context's last fence before the first `MAP_BUFFER_EX` or
@@ -239,20 +239,24 @@ for the bind context's last fence before the first `MAP_BUFFER_EX` or
 host-engine acquires `ctx_wait()` queued, which is reached only once
 those acquires have resolved. Before it, an unbind that
 `vkQueueBindSparse` ordered behind a render's semaphore ran while the
-render was still executing. `vk_core/sparse_binding` never sees the
-difference: it binds only after a CPU wait for the fill that precedes
-it.
+render was still executing.
 
-**Done when** a section of `vk_core/sparse_binding` has done the
-ordered shape: fill a bound block from the GPU with a signal semaphore
-and no CPU wait; `vkQueueBindSparse` waiting on that semaphore and
-unbinding the block; wait for the bind's fence; read the memory back.
-The pattern must be there every time over a loop of repetitions.
-Before `0082` it may be missing, because `gpu_fault/sparse` measured
-that a write into an unbound page is swallowed — which is what an
-unbind that ran early would do to the fill.
+`vk_core/sparse_binding` section D is that shape, cross-compiled and
+never run: eight fills of a 16 MiB scratch buffer and then a fill of
+block 1, submitted with a signal semaphore and no CPU wait;
+`vkQueueBindSparse` waiting on that semaphore and unbinding block 1;
+`vkGetFenceStatus` on the fill's fence read right before the bind call;
+then the block's backing memory — still allocated, host-visible —
+mapped and checked for the fill's pattern. Sections A to C still bind
+only after a CPU wait, and pass either way.
 
----
+**Done when** section D has reported, on one run, both `MEASURED D:
+the fill was still pending when vkQueueBindSparse was called` and the
+block holding the fill's pattern with 0 words wrong. A run where the
+fill was already complete distinguishes nothing and closes nothing:
+raise `SCRATCH_FILLS` and run again. A run where the pending fill
+landed as B's pattern is the failure `0082` exists for, on a build that
+carries it, and reopens the question.
 
 ---
 
