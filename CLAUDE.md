@@ -102,6 +102,13 @@ Suite → sources: `h_align` (header only), `h_va_space` + `horizon/vm/va_space.
 `h_status` + `horizon/debug/status.c`, `h_log` + `horizon/debug/log.c`,
 `h_blob_cache` + `horizon/cache/{blob_cache,crc32}.c`.
 
+A ninth, `h_nvkmd_sync`, is the one exception to "no Mesa": it compiles
+`mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c` against Mesa's
+headers and a simulated syncpoint, to pin the wait/set_fence interleaving
+patch `0081` fixes. The script builds it only when `mesa/` has the series
+applied and `$MESA_NVK_BUILD_DIR` (default `build/mesa-nvk`) holds the
+generated headers, and prints a `note:` when it skips — a skip is not a pass.
+
 ### Gates — run these before pushing; CI runs the same four
 
 ```sh
