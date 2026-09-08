@@ -189,6 +189,23 @@ a second window, so no run could have shown it and none can show it
 fixed either; it is here because it is the same unobserved branch, and
 the wrong `maxImageExtent` at the end of it is the same one.
 
+**And a third way, from the Codex review of PR #26 — this one is not
+fixed.** The latch is only ever refreshed from
+`wsi_horizon_layer_moved`, which runs while a live swapchain is
+observing a present result. Two cases therefore keep a stale latch and
+no code in the tree notices: a consumer resize that happens *between*
+swapchains, with nothing presenting to see it, and a freshly
+initialised `NWindow` that malloc happens to place at the address the
+one-entry cache still holds — pointer equality is the whole key. The
+review asked for "a lifecycle/revalidation path that does not treat
+pointer equality as proof", and there is nothing to build one out of:
+`0070`'s own Evidence is that `nwindowGetDimensions` returns
+`NWindow::width` when it is set, which is this backend's registration,
+so revalidating reads back our own echo. `NWindow::default_*` at
+connect and at queue is the consumer's only voice, and it is what the
+latch already holds. So this is written down rather than fixed, and it
+closes with the rest of the section.
+
 **Done when** a run has produced a consumer-reported output size that
 is not this process's own — dock/undock while presenting is the only
 candidate anybody has proposed, and it has now been measured not to do
