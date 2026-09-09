@@ -337,30 +337,63 @@ int main(void)
 
     /* ---------------------------------------------------------------
      * Overwriting a key, and removing one.
+     *
+     * THE COUNTERS ARE CHECKED AT EVERY STEP HERE, and this is where
+     * they have to be. `entries`, `keys` and `live_bytes` used to be
+     * recomputed by a walk over the whole index after each mutation, so
+     * they were right by construction and there was nothing to get
+     * wrong; they are now maintained incrementally in bc_index_set and
+     * bc_index_erase, which is three branches that can each be wrong on
+     * their own. An overwrite is the interesting one: it must replace
+     * the entry's contribution to live_bytes rather than add to it, and
+     * it must not count a second entry.
      * --------------------------------------------------------------- */
     remove(BC_PATH);
     {
         horizon_gpu_blob_cache *c = open_a();
+        horizon_gpu_blob_cache_stats st;
         uint8_t key[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
 
         H_CHECK(put_n(c, 3, 40), "store v1");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1 && st.keys == 0 && st.live_bytes == 40,
+                "one entry of 40 bytes is live");
+
         H_CHECK(put_n(c, 3, 400), "store v2 under the same key");
         H_CHECK(get_is(c, 3, 400), "the newer value wins");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1,
+                "the overwrite replaced the entry rather than adding one");
+        H_CHECK(st.live_bytes == 400,
+                "and live_bytes is the new payload, not the sum of both");
         horizon_gpu_blob_cache_close(c);
 
         c = open_a();
         H_CHECK(get_is(c, 3, 400), "and it still wins after a reopen");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1 && st.live_bytes == 400,
+                "the scan that rebuilt the index agrees with the puts that "
+                "built it");
 
         key_for(3, key);
         H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(c, key)),
                 "remove");
         H_CHECK(is_miss(c, 3), "removed is a miss");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "and removing the only entry takes its bytes with it");
         H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(c, key)),
                 "removing what is not there is not an error");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "and the second remove decremented nothing");
         horizon_gpu_blob_cache_close(c);
 
         c = open_a();
         H_CHECK(is_miss(c, 3), "and it stays removed across a reopen");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "with nothing live on the other side of it either");
         horizon_gpu_blob_cache_close(c);
     }
 
@@ -1151,6 +1184,14 @@ int main(void)
                     "the newest entry survived");
             H_CHECK(st.entries == survivors,
                     "the index counts exactly the survivors");
+            /* live_bytes against the payloads just read back through
+             * the index, which is what the field claims to be. The
+             * rewrite drops records and the counters are maintained
+             * per index operation, so a compaction that forgot to
+             * subtract a dropped entry would show here and nowhere
+             * else. */
+            H_CHECK(st.live_bytes == survivor_bytes,
+                    "and live_bytes is the payload those survivors hold");
             horizon_gpu_blob_cache_close(c);
 
             c = open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
@@ -1163,6 +1204,8 @@ int main(void)
                 H_CHECK(st2.entries == survivors &&
                             st2.file_size == st.file_size,
                         "with the same survivors and the same size");
+                H_CHECK(st2.live_bytes == survivor_bytes,
+                        "and the same live payload after the reopen");
                 bool same = true;
                 for (uint32_t i = 0; i < n; i++) {
                     if (removed[i])
