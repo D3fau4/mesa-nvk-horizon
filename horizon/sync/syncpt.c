@@ -136,6 +136,7 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
                 wait_us = horizon_timeout_ns_to_us_clamped(timeout_ns - used);
             }
             bool reached = false;
+            atomic_fetch_add(&dev->nv_wait_chunks, 1u);
             res = sync_fence_reached_via_wait(fence, wait_us, &reached);
             if (horizon_gpu_failed(res))
                 return res;
@@ -178,6 +179,7 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
                 nap_ns > timeout_ns - elapsed_ns)
                 nap_ns = timeout_ns - elapsed_ns;
             unslept_ns = 0;
+            atomic_fetch_add(&dev->nv_wait_paced, 1u);
             svcSleepThread((s64)nap_ns);
             continue;
         }
@@ -215,6 +217,7 @@ horizon_gpu_result horizon_gpu_fence_wait(horizon_gpu_device *dev,
          * burning the core.
          */
         uint64_t chunk_start = armGetSystemTick();
+        atomic_fetch_add(&dev->nv_wait_chunks, 1u);
         last_rc = nvFenceWait(&nvf, chunk_us);
         if (horizon_nv_wait_timed_out(last_rc))
             continue;

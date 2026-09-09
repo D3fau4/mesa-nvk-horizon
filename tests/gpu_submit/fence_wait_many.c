@@ -52,14 +52,27 @@
  *
  *   2. The consequence, through our layer. At the ceiling and beyond,
  *      the same fan-out through horizon_gpu_fence_wait, timing the
- *      batch. Every thread must still return TIMEOUT — correctness is
- *      not in question — and the wall time says whether the waits ran
- *      concurrently or degenerated into the spin described above.
+ *      batch AND counting what the loops did.
+ *
+ * AND PART 2 ASSERTS ON THE COST, NOT ON THE VERDICT. It used to check
+ * only that every wait returned TIMEOUT, and that check cannot fail for
+ * the defect this whole case exists for: a spinning wait and a paced
+ * wait both burn the caller's entire deadline and both end in TIMEOUT.
+ * The wall time cannot separate them either — every thread's deadline
+ * is wall-clock, so N threads spinning and N threads sleeping both come
+ * back at about WAIT_NS. What separates them is how many times the loop
+ * went round, which is why horizon_gpu_device_wait_stats exists and is
+ * what this part now bounds: a paced loop issues at most one chunk per
+ * HORIZON_NV_WAIT_PACE_MAX_NS of deadline, and an unpaced one issues as
+ * many as two ioctls come back in.
  *
  * WHAT IT DOES NOT DO. It does not fail on a low ceiling. The number is
  * a property of the platform, not a bug in this code, and the point of
- * running it is to learn the number. It fails only if a wait returns
- * something other than TIMEOUT, which would be a correctness break.
+ * running it is to learn the number. Nor does it fail on a slow batch:
+ * whether this platform runs the waits concurrently or serialises them
+ * is its own property, reported and not judged. It fails if a wait
+ * returns something other than TIMEOUT, and if the loops went round
+ * more often than pacing them allows.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -77,6 +90,12 @@
 #include "horizon_gpu/submit.h"
 #include "horizon_gpu/sync.h"
 #include "horizon_gpu/vm.h"
+/* For HORIZON_NV_WAIT_PACE_MAX_NS alone. The bound part 2 asserts is
+ * derived from the number the loops actually pace with, so that raising
+ * that number cannot silently loosen this test; everything else here
+ * still spells out its own opinion of a Result rather than borrowing
+ * the layer's (raw_timed_out below). */
+#include "../../horizon/sync/nv_wait.h"
 #include "common/testfw.h"
 
 /* Upper bound on the fan-out. Chosen so the worst case — every wait
@@ -427,11 +446,30 @@ TEST_CASE_DECL(gpu_submit, fence_wait_many)
 
     /* ---- part 2: the consequence, through our layer -----------------
      *
-     * Both rows must answer TIMEOUT — that is the correctness claim.
-     * The wall time is the diagnosis: a batch that took about one
-     * WAIT_NS ran its waits concurrently, and a batch that took
-     * appreciably longer serialised them. Neither outcome fails the
-     * test; an answer other than TIMEOUT does. */
+     * Both rows must answer TIMEOUT — that is the correctness claim —
+     * and both must have got there without spinning, which is the claim
+     * the pacing makes and the one only the meter can check.
+     *
+     * THE BOUND. Each thread waits WAIT_NS on a fence that cannot
+     * retire, so its loop goes round until the deadline passes. A chunk
+     * that blocks is a whole SYNC_WAIT_CHUNK_US of that deadline; a
+     * chunk that does not block is followed by a sleep of at most
+     * HORIZON_NV_WAIT_PACE_MAX_NS. So the worst case a paced loop can
+     * reach is one chunk per pacing nap — WAIT_NS /
+     * HORIZON_NV_WAIT_PACE_MAX_NS of them — and the factor below is
+     * slack for the ioctl time the nap does not cover. An unpaced loop
+     * is bounded by nothing but how fast two ioctls return, which the
+     * 2026-08-24 measurement put orders of magnitude above this.
+     *
+     * Contention only helps: threads that get less of a core go round
+     * fewer times, never more.
+     *
+     * The wall time stays a note. Whether this platform runs the waits
+     * concurrently or serialises them is its property to report, not
+     * this test's to judge. */
+    const uint64_t chunks_per_thread_max =
+        (WAIT_NS / HORIZON_NV_WAIT_PACE_MAX_NS) * 4u;
+
     const uint32_t probe_n[2] = {
         highest_clean ? highest_clean : 1u,
         n_pending < MAX_THREADS ? n_pending : MAX_THREADS,
@@ -445,13 +483,37 @@ TEST_CASE_DECL(gpu_submit, fence_wait_many)
             continue;
         uint64_t batch_ns = 0;
         uint32_t unarmed = 0;
+        horizon_gpu_device_wait_stats before = { 0 }, after = { 0 };
+
+        horizon_gpu_device_get_wait_stats(dev, &before);
         uint32_t clean = fan_out(t, dev, pending, n, true, &batch_ns,
                                  &unarmed);
+        horizon_gpu_device_get_wait_stats(dev, &after);
+
+        const uint64_t chunks = after.wait_chunks - before.wait_chunks;
+        const uint64_t paced = after.paced_chunks - before.paced_chunks;
+
         t_note(t, "layer N=%2u: %2u/%2u TIMEOUT in %5" PRIu64 " ms "
                "(one wait is %" PRIu64 " ms)", n, clean, n,
                batch_ns / 1000000, WAIT_NS / 1000000);
+        t_note(t, "MEASURED N=%2u: %" PRIu64 " wait chunk(s) issued, "
+               "%" PRIu64 " of them paced — %" PRIu64 " per thread, "
+               "against %" PRIu64 " allowed", n, chunks, paced,
+               chunks / n, chunks_per_thread_max);
         t_check(t, clean == n,
                 "N=%u: every wait through the layer returned TIMEOUT", n);
+        t_check(t, chunks <= chunks_per_thread_max * n,
+                "N=%u: and did it in %" PRIu64 " chunks, not by spinning "
+                "(at most %" PRIu64 ")", n, chunks,
+                chunks_per_thread_max * n);
+        /* A chunk that did not block is what the pacing is for; one
+         * that did needs no nap. So `paced` is a property of the
+         * platform's nvFenceWait, not a verdict — but it must never
+         * exceed the chunks it is counted out of, which is the one way
+         * these two numbers can be wrong about each other. */
+        t_check(t, paced <= chunks,
+                "N=%u: and paced no more chunks than it issued "
+                "(%" PRIu64 " of %" PRIu64 ")", n, paced, chunks);
     }
 
 out_release:

@@ -59,6 +59,14 @@ static inline bool horizon_nv_wait_timed_out(Result rc)
  * chunk to a fence that had in fact retired. A wait must not be slower
  * than the thing it is waiting for.
  *
+ * AND IT IS OBSERVABLE. Pacing changes no verdict and no wall time —
+ * a spinning wait and a paced wait both consume the caller's deadline
+ * and both end in TIMEOUT — so the only difference a caller can see is
+ * how many times the loop went round. Both loops count that into the
+ * device's wait meter (horizon_gpu_device_wait_stats), which is what
+ * lets gpu_submit/fence_wait_many part 2 assert this instead of
+ * describing it.
+ *
  * HERE BECAUSE IT WAS IN BOTH FILES. syncpt.c had SYNC_PACE_MAX_NS and
  * channel.c had CHANNEL_PACE_MAX_NS, same value, same paragraph, and
  * the second one said so — which is the shape this header exists to

@@ -104,6 +104,40 @@ typedef struct horizon_gpu_device_counters {
     uint32_t live_channels;
 } horizon_gpu_device_counters;
 
+/* What the two wait loops have had to do, on this device.
+ *
+ * WHY THIS IS PUBLISHED AT ALL. horizon_gpu_fence_wait and
+ * horizon_gpu_channel_wait_fence are the same loop written twice: read
+ * the counter, and while the fence is short, block in nvFenceWait for a
+ * bounded chunk. A chunk that comes back WITHOUT having blocked is not
+ * the loop's pulse, and treating it as one turns a bounded wait into
+ * two ioctls back to back for the caller's whole deadline — measured on
+ * 2026-08-24, a core burned while every wait went on returning the
+ * right answer. Both loops now sleep out what such a chunk did not
+ * spend.
+ *
+ * NEITHER THE VERDICT NOR THE WALL TIME CAN SEE THAT, which is why the
+ * numbers are here. A spinning wait and a paced wait both consume the
+ * caller's whole deadline and both end in TIMEOUT; the only difference
+ * visible from outside is how many times the loop went round. So a test
+ * that asserts the pacing has to assert on these
+ * (gpu_submit/fence_wait_many part 2) and there is nothing else it
+ * could assert on.
+ *
+ * Monotonic for the life of the device and never reset: a caller
+ * measuring one phase takes a copy before and subtracts. Atomic,
+ * because several threads wait at once and that is the case these
+ * exist for. A zero-timeout poll (horizon_gpu_fence_poll) is not a
+ * chunk: it is one question asked once, not a loop. */
+typedef struct horizon_gpu_device_wait_stats {
+    /* nvFenceWait calls issued as a wait loop's pulse, by both loops. */
+    uint64_t wait_chunks;
+    /* Of those, the ones that returned without having blocked and were
+     * followed by a pacing sleep. Zero is the healthy answer: every
+     * chunk was armed and spent its time in the kernel. */
+    uint64_t paced_chunks;
+} horizon_gpu_device_wait_stats;
+
 typedef struct horizon_gpu_device_create_info {
     /* 0 = use the queried characteristics.big_page_size for the address
      * space; a non-zero value must be one of available_big_page_sizes. */
@@ -141,6 +175,11 @@ horizon_gpu_device_get_info(const horizon_gpu_device *dev,
 horizon_gpu_result
 horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
                                 horizon_gpu_device_counters *out_counters);
+
+/* Copies the wait meter out. Both arguments must be non-NULL. */
+horizon_gpu_result
+horizon_gpu_device_get_wait_stats(const horizon_gpu_device *dev,
+                                  horizon_gpu_device_wait_stats *out_stats);
 
 /* True once at least one channel of this device came up with an untrusted
  * syncpoint baseline. Sticky: it stays true after that channel is

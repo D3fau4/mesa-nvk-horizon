@@ -1243,6 +1243,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             }
 
             uint64_t chunk_start = armGetSystemTick();
+            atomic_fetch_add(&chan->dev->nv_wait_chunks, 1u);
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
                 return channel_reached_or_lost(chan);
@@ -1285,6 +1286,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                                  "deadline instead of re-asking",
                                  fence.syncpt_id, last_rc);
                 }
+                atomic_fetch_add(&chan->dev->nv_wait_paced, 1u);
                 svcSleepThread((s64)nap_ns);
             }
             /* Round the loop rather than returning: one expired chunk is
@@ -1334,6 +1336,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                 nap_ns > timeout_ns - elapsed_ns)
                 nap_ns = timeout_ns - elapsed_ns;
             unslept_ns = 0;
+            atomic_fetch_add(&chan->dev->nv_wait_paced, 1u);
             svcSleepThread((s64)nap_ns);
             continue;
         }
@@ -1364,6 +1367,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
          * channel_reached_or_lost() can say that. Real failures continue
          * to surface through the read and the notifier above. */
         uint64_t chunk_start = armGetSystemTick();
+        atomic_fetch_add(&chan->dev->nv_wait_chunks, 1u);
         last_rc = nvFenceWait(&nvf, chunk_us);
         if (horizon_nv_wait_timed_out(last_rc))
             continue;

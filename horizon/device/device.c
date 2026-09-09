@@ -322,6 +322,17 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
     return horizon_gpu_ok();
 }
 
+horizon_gpu_result
+horizon_gpu_device_get_wait_stats(const horizon_gpu_device *dev,
+                                  horizon_gpu_device_wait_stats *out_stats)
+{
+    if (!dev || !out_stats)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    out_stats->wait_chunks = atomic_load(&dev->nv_wait_chunks);
+    out_stats->paced_chunks = atomic_load(&dev->nv_wait_paced);
+    return horizon_gpu_ok();
+}
+
 bool horizon_gpu_device_untrusted_syncpt_seen(const horizon_gpu_device *dev)
 {
     return dev ? atomic_load(&dev->untrusted_syncpt_seen) : false;

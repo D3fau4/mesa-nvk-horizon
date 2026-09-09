@@ -70,6 +70,16 @@ struct horizon_gpu_device {
     _Atomic uint32_t live_va_ranges;
     _Atomic uint32_t live_mappings;
     _Atomic uint32_t live_channels;
+
+    /* The wait meter (horizon_gpu_device_wait_stats). Written by both
+     * wait loops from whichever thread is waiting — several at once is
+     * the case they exist for — so they are atomic for the same reason
+     * the live counts are, and for a stronger one: those are only ever
+     * touched under the caller's own serialisation of one object,
+     * while these are incremented by threads that share nothing but
+     * the device. */
+    _Atomic uint64_t nv_wait_chunks;
+    _Atomic uint64_t nv_wait_paced;
 };
 
 #endif /* HORIZON_DEVICE_PRIV_H */
