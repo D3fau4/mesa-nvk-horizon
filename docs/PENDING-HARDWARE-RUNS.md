@@ -262,7 +262,9 @@ the same address twice — is now detected by comparing addresses.
 measured the spans on 2026-09-08 allocated in megabytes, where 32
 attempts was never the binding constraint, and the Godot crash that
 started all of this was a swapchain image. The small-allocation case
-is the one nothing has produced on purpose.
+is the one nothing had produced on purpose — until
+`gpu_memory/borrowed_retry` (section 10), which lends 64 pages and then
+asks for one, and which has not run either.
 
 **Done when** a console log shows the summary line this adds — `walked
 past N borrowed heap block(s)` with N above 32 — followed by the suite
@@ -271,6 +273,129 @@ not in a slower failure; or when a run establishes that newlib's malloc
 never puts a small GPU allocation inside a borrowed span in the first
 place, in which case the length of the walk was never what mattered
 and this closes the other way.
+
+---
+
+## 9 Three review items closed with cases, and no console has run any of them
+
+**Class X.** The adversarial review of `git diff main...HEAD -- horizon
+compat` (2026-09-09) found six things that were real and closed with a
+test rather than an edit; `tests/` was outside the group it reviewed, so
+it wrote them down instead of fixing them. Three of the six are now
+cases, cross-compiled and never executed:
+
+- **`platform/crc32`.** The shipped CRC-32 had no known-answer coverage
+  of any class. Every cross build passes `-march=armv8-a+crc+crypto`, so
+  `__ARM_FEATURE_CRC32` is defined, the 256-entry table is compiled out
+  and the `CRC32B`/`CRC32X` branch is what runs — while
+  `run-host-tests.sh` compiles with `cc` and no `-march`, so
+  `h_blob_cache` only ever exercises the table. The new case asserts
+  that this build really is the hardware one, regenerates the 256
+  polynomial steps through the byte loop, checks six vectors taken from
+  zlib, and compares the whole-buffer answer with the byte-at-a-time
+  answer at every alignment 0..7 and every length 0..259 — which is the
+  only way the `__crc32d` word loop is separable from the byte loops
+  around it.
+- **`gpu_memory/va_map`'s alignment guard.** `vm_map` refuses to map an
+  object in pages larger than the object's own alignment, because
+  MapBufferEx accepts such a mapping and then resolves it to nothing
+  (measured 2026-08-24). All nineteen `horizon_gpu_vm_map` call sites in
+  `tests/` passed a legal pairing, so the guard had no coverage. The
+  case now maps a 4 KiB-aligned object of one big page into the big-page
+  reservation and asserts `HORIZON_GPU_ERR_INVALID_ARG`.
+- **`gpu_memory/borrowed_pages` section B/E.**
+  `horizon_gpu_heap_borrowed_regions` is called once per device creation
+  to emit the warning that explains the Godot crash, and had no test:
+  the case answered the same question with a hand-written twin of the
+  same walk and never called it. The two walks are now compared —
+  count, bytes and first region — *inside section B's lend*, where a
+  borrowed region exists by construction. Comparing them on a healthy
+  launch would be 0 against 0, which agrees whatever either function
+  does.
+
+**Done when** one console run reports `platform` and `gpu_memory`
+passing with these lines in the logs: `crc32`'s alignment/length sweep
+(2080 pairs), `va_map`'s refusal, and `B/E`'s three comparisons against
+a non-zero region count. Nothing here is expected to be interesting; it
+is here because a `.nro` that exists is not a test that has run.
+
+---
+
+## 10 An allocation offered a borrowed block, on purpose, has never been tried
+
+**Class X, and the one of these that can fail for a reason that is not a
+bug.** `mem_create`'s walk — set the block aside, never free it, ask
+again — is what stands between a Vulkan application and the Data Abort
+that killed Godot on one launch in three. Its only externally visible
+evidence is `horizon_gpu_heap_quarantine_stats`, and section F of
+`borrowed_pages` read those counters and then asserted `t_check(t, true,
+...)`, which is a line in the log and not a check. The walk has run for
+real exactly once, in the five surviving Godot runs of 2026-09-08, where
+it set aside the 0x3c0000 swapchain image and the run then rendered all
+eight phases — a measurement, not an assertion, and not repeatable on
+demand.
+
+`gpu_memory/borrowed_retry` makes the condition on purpose: allocate
+256 KiB, free it so the allocator is holding it, lend it with
+`svcCreateTransferMemory`, then ask `horizon_gpu_mem_create` for one
+4 KiB page. Nothing rejected is ever freed, so each attempt gets an
+address past the last one and the walk marches through the lend instead
+of retrying the same place. **The lend is `Perm_Rw` and that is the whole safety
+argument**: a lent range is refused because it is *borrowed* — section C
+measured that on a console — while staying readable and writable, so
+malloc's own bookkeeping inside a chunk it considers free cannot fault.
+With `Perm_None` every free-list write would end the process.
+
+**What is not established is that newlib's malloc hands the block back.**
+Nothing in the tree has ever asked it to. If it serves the request from
+somewhere else the case fails, deliberately and with a message saying
+which of the two happened, because a green line that asked nothing is
+what it exists to replace.
+
+**Done when** a run reports it passing — the quarantine grew, by exactly
+the blocks set aside, the summary line naming the walk is in the log,
+and the allocation still succeeded — or reports it failing with "malloc
+having served this request from somewhere else", in which case the way
+to produce the condition is wrong and the case has to be built on
+something other than the free list. Do not weaken it into a note: that
+is where it started.
+
+**The same run is what section 8 is waiting for**, and this is the only
+thing in the tree that can produce it: 4 KiB blocks against a 64-page
+lend is a walk of dozens, and the count is in the note and in the
+summary line. Judge section 8 from the number that run prints.
+
+---
+
+## 11 The wait pacing is now countable, and the count has never been taken
+
+**Class X.** `horizon_gpu_fence_wait` and
+`horizon_gpu_channel_wait_fence` sleep out a chunk that returned without
+blocking, because otherwise the loop is two ioctls back to back for the
+caller's whole deadline — measured 2026-08-24, a core burned while every
+wait returned the right answer. `gpu_submit/fence_wait_many` part 2 was
+the case that motivated the fix and could not observe it: it asserted
+that every wait returned TIMEOUT, and a spinning wait and a paced wait
+both burn the deadline and both return TIMEOUT. The wall time cannot
+separate them either — every thread's deadline is wall-clock, so N
+threads spinning and N threads sleeping both come back at about
+`WAIT_NS`.
+
+So the loops now count, into `horizon_gpu_device_wait_stats`: chunks
+issued, and chunks that were paced. Part 2 brackets each fan-out with a
+copy of that meter and asserts the chunks against `WAIT_NS /
+HORIZON_NV_WAIT_PACE_MAX_NS` per thread, times four for the ioctl time
+the nap does not cover — 1200 chunks per thread against the tens of
+thousands an unpaced loop would reach in 300 ms.
+
+**Done when** a run has printed the two `MEASURED N=` lines and passed.
+The numbers are the point: if `paced` is 0 at every N, then every chunk
+on this platform is armed and the pacing has never fired in this test,
+and part 2 is proving the bound rather than the pacing — say so, and
+either find a fan-out where a chunk does come back early or admit that
+the only evidence for the spin remains the 2026-08-24 measurement. If
+the bound is exceeded while `paced` is large, the factor of four is what
+is wrong and not the loop.
 
 ---
 
