@@ -72,12 +72,19 @@ _Static_assert(HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
  * re-checked at a useful rate without busy-polling. */
 #define CHANNEL_WAIT_CHUNK_US INT32_C(100000)
 
-/* Same bound, and the same reason, as SYNC_PACE_MAX_NS in
- * horizon/sync/syncpt.c: a millisecond is enough to stop a chunk that
- * did not block becoming a hot loop, and short enough that a counter
- * read lagging the kernel's answer cannot add most of a chunk to a
- * fence that has in fact retired. */
-#define CHANNEL_PACE_MAX_NS UINT64_C(1000000)
+/* NVGPU_IOCTL_CHANNEL_SET_TIMESLICE — _IOWR(0x48, 0x1d, u32), switchbrew
+ * NV_services. libnx exposes no wrapper for it, so the diagnostic knob in
+ * horizon_gpu_channel_create issues it through nvIoctl; the number is
+ * named here rather than written inline at the call. */
+#define HORIZON_NVGPU_IOCTL_CHANNEL_SET_TIMESLICE 0xC004481Du
+
+/* How many info words nvgpu's error record carries. Derived from libnx's
+ * NvError rather than written out at each of the two sites that walk it:
+ * the array belongs to a header neither of them owns, and 31 was spelled
+ * out in both. */
+#define CHANNEL_NVERROR_INFO_WORDS \
+    (uint32_t)(sizeof(((const NvError *)0)->info) / \
+               sizeof(((const NvError *)0)->info[0]))
 
 horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
                                                uint32_t *out_hw)
@@ -255,7 +262,8 @@ horizon_gpu_result horizon_channel_check_fault(horizon_gpu_channel *chan)
                 /* Only the non-zero words are printed, with their
                  * index: the block is mostly zero and 31 zeroes in a
                  * log are 31 lines nobody reads. */
-                for (uint32_t i = first; i < 31; i++) {
+                for (uint32_t i = first;
+                     i < CHANNEL_NVERROR_INFO_WORDS; i++) {
                     if (err.info[i] != 0)
                         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                                      "channel %p:   info[%u] = 0x%08x",
@@ -509,7 +517,7 @@ channel_dump_hang_snapshot(horizon_gpu_channel *chan, uint32_t notifier,
 
     if (R_SUCCEEDED(error_info_rc)) {
         bool all_zero = true;
-        for (uint32_t i = 0; i < 31; i++)
+        for (uint32_t i = 0; i < CHANNEL_NVERROR_INFO_WORDS; i++)
             all_zero &= err->info[i] == 0;
         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                      "error: notifier=%u error_type=%u (%s) "
@@ -1214,8 +1222,8 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                              fence.syncpt_id, last_rc, fence.threshold);
             }
             uint64_t nap_ns = unslept_ns;
-            if (nap_ns > CHANNEL_PACE_MAX_NS)
-                nap_ns = CHANNEL_PACE_MAX_NS;
+            if (nap_ns > HORIZON_NV_WAIT_PACE_MAX_NS)
+                nap_ns = HORIZON_NV_WAIT_PACE_MAX_NS;
             if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
                 nap_ns > timeout_ns - elapsed_ns)
                 nap_ns = timeout_ns - elapsed_ns;

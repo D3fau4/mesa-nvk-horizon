@@ -14,6 +14,7 @@
 #define HORIZON_SYNC_NV_WAIT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <switch.h>
 
@@ -45,5 +46,24 @@ static inline bool horizon_nv_wait_timed_out(Result rc)
     return rc == KERNELRESULT(TimedOut) ||
            rc == MAKERESULT(Module_LibnxNvidia, LibnxNvidiaError_Timeout);
 }
+
+/* Upper bound on the pacing sleep both wait loops take.
+ *
+ * The point of the sleep is to stop a chunk that did not block turning
+ * the loop into two ioctls back to back; a millisecond of it does that,
+ * cutting the ioctl rate by three orders of magnitude. Sleeping out the
+ * whole unspent chunk would do it better and would also mean that a
+ * counter read lagging the kernel's own answer — measured happening,
+ * 2026-08-24: nvFenceWait returned success at 1347 us of a 100 ms chunk
+ * while SyncptRead still showed the old value — could add most of a
+ * chunk to a fence that had in fact retired. A wait must not be slower
+ * than the thing it is waiting for.
+ *
+ * HERE BECAUSE IT WAS IN BOTH FILES. syncpt.c had SYNC_PACE_MAX_NS and
+ * channel.c had CHANNEL_PACE_MAX_NS, same value, same paragraph, and
+ * the second one said so — which is the shape this header exists to
+ * end. The loops themselves still differ (only the channel's re-checks
+ * the error notifier), so only the number and its reason moved. */
+#define HORIZON_NV_WAIT_PACE_MAX_NS UINT64_C(1000000)
 
 #endif /* HORIZON_SYNC_NV_WAIT_H */
