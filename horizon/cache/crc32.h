@@ -5,7 +5,11 @@
  * (CLAUDE.md layer rules, enforced by scripts/check-layering.sh), and
  * the blob cache's whole robustness story is a checksum, so it needs one
  * that is in this layer. It is forty lines and it is exercised against
- * published test vectors in tests/host/h_blob_cache.c.
+ * published test vectors twice, because it is two implementations:
+ * tests/host/h_blob_cache.c covers the table under sanitizers, and
+ * tests/platform/crc32.c covers the CRC32B/CRC32X path, which only a
+ * build defining __ARM_FEATURE_CRC32 compiles and therefore only a
+ * console runs.
  *
  * The values this produces are byte-for-byte the ordinary CRC-32: the
  * reflected polynomial 0xEDB88320 (the reverse of 0x04C11DB7), an

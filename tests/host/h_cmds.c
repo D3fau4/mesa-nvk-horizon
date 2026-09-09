@@ -46,6 +46,37 @@ int main(void)
     H_CHECK(horizon_cmds_fence_incr(buf, 0x1000) == 0,
             "id beyond 12-bit index rejected");
 
+    /* The increment-only fence block, for a submit whose command list is
+     * host methods with no memory effect (horizon_gpu_submit_waits).
+     *
+     * Checked against the four words spelled out, not against a slice of
+     * the block above: the point of this encoding is what it does NOT
+     * contain, and a check written as "the tail of the full block"
+     * would keep passing if a WFI reappeared at the front of it. */
+    uint32_t bbuf[HORIZON_CMDS_FENCE_INCR_BARE_DWORDS];
+    n = horizon_cmds_fence_incr_bare(bbuf, 42);
+    H_CHECK(n == HORIZON_CMDS_FENCE_INCR_BARE_DWORDS,
+            "bare incr dword count");
+    H_CHECK(bbuf[0] == 0x2001001C && bbuf[1] == 0,
+            "bare incr: SYNCPOINTA payload 0 first, no WFI before it");
+    H_CHECK(bbuf[2] == 0x2001001D, "bare incr: SYNCPOINTB header");
+    H_CHECK(bbuf[3] == ((42u << 8) | 1u),
+            "bare incr: (id<<8) | OPERATION_INCR");
+    H_CHECK(horizon_cmds_fence_incr_bare(bbuf, 0x1000) == 0,
+            "bare incr: id beyond 12-bit index rejected");
+    /* The two blocks must agree on the increment itself: they name the
+     * same syncpoint in the same encoding, and only the barrier methods
+     * in front differ. If these ever diverged, a channel's fences would
+     * mean two different things depending on which submit produced
+     * them. */
+    H_CHECK(bbuf[0] == 0x2001001C, "bare incr: same SYNCPOINTA header");
+    (void)horizon_cmds_fence_incr(buf, 42);
+    (void)horizon_cmds_fence_incr_bare(bbuf, 42);
+    H_CHECK(buf[5] == bbuf[0] && buf[6] == bbuf[1] &&
+            buf[7] == bbuf[2] && buf[8] == bbuf[3],
+            "bare incr: the increment itself is identical to the full "
+            "block's");
+
     /* Syncpoint wait list. */
     uint32_t wbuf[HORIZON_CMDS_SYNCPT_WAIT_DWORDS];
     n = horizon_cmds_syncpt_wait(wbuf, 7, 0xDEADBEEF);

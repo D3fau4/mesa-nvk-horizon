@@ -1,8 +1,0 @@
-== t_display ==
-  note this test owns the display: no console was started, and this file is the whole record
-  ok   no console was started: main() acted on test_uses_display rather than merely being told about it
-  ok   nwindowGetDefault() returned a window
-  ok   nwindowGetDimensions -> 0x00000000 (1280 x 720)
-  note the default window is 1280 x 720
-  note if you are reading this line, a console-less run reported itself and Phase 6 can report through this file
-RESULT: PASS (3/3)

@@ -195,8 +195,8 @@ for blk in open(lock).read().split('[[package]]'):
 #   error: addr2line-0.27.0.crate hashes to efe1709..., but the
 #          lockfile says efe1709.... Refusing to vendor it.
 # which is a gate that cannot be satisfied and cannot be diagnosed from
-# what it prints. Same class as the CRLF defect scripts/split-status.py
-# was fixed for; this is the file the *shell* reads back.
+# what it prints. Same class of CRLF defect this project has hit before;
+# this is the file the *shell* reads back.
 open(out, 'w', newline='\n').write(
     ''.join(f"{n} {v} {c}\n" for n, v, c in pkgs))
 print(f"fetch-rust-crates: {len(pkgs)} registry packages in the lockfile")

@@ -18,10 +18,9 @@ extern "C" {
 #endif
 
 /* Extends a 32-bit hardware syncpoint value to 64 bits against a 64-bit
- * reference (the per-channel shadow of requested increments,
- * docs/synchronization.md § 1.1). Valid while the true value lies within
- * (reference - 2^31, reference + 2^31); submit keeps the in-flight window
- * far below that. */
+ * reference (the per-channel shadow of requested increments). Valid
+ * while the true value lies within (reference - 2^31, reference + 2^31);
+ * submit keeps the in-flight window far below that. */
 static inline uint64_t horizon_syncpt_extend(uint64_t reference, uint32_t hw)
 {
     uint64_t candidate = (reference & ~UINT64_C(0xffffffff)) | hw;
@@ -39,7 +38,7 @@ static inline uint64_t horizon_syncpt_extend(uint64_t reference, uint32_t hw)
 /* Nanoseconds -> microseconds for libnx waits: rounds up (so a nonzero
  * wait never becomes a busy-poll zero) and saturates at INT32_MAX µs.
  * The reference lost a factor of 1000 here once (drm_shim.c:980-982);
- * this is the single conversion point (docs/synchronization.md § 6). */
+ * this is the single conversion point. */
 static inline int32_t horizon_timeout_ns_to_us_clamped(uint64_t ns)
 {
     uint64_t us = ns / 1000 + (ns % 1000 != 0);
@@ -60,8 +59,7 @@ static inline int32_t horizon_timeout_ns_to_us_clamped(uint64_t ns)
  *
  * whose upper end *is* C. Anchoring inside that half-space makes the
  * predicate monotone in the offset from the anchor, so a binary search
- * finds C in 31 probes, plus one to place the anchor and one to verify
- * (docs/synchronization.md § 9.3).
+ * finds C in 31 probes, plus one to place the anchor and one to verify.
  *
  * This file never learns what an ioctl is: the predicate is the caller's,
  * so the search is pure arithmetic and unit-tested as such

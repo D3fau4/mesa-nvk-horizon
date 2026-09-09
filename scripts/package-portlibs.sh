@@ -61,7 +61,7 @@ WORK=build/portlibs-work
 if [ ! -d "$MESA_NVK_BUILD_DIR" ]; then
     echo "error: $MESA_NVK_BUILD_DIR does not exist, so this tree has no" \
          "NVK driver to package. scripts/build-mesa-nvk.sh is what" \
-         "produces it (docs/BUILDING.md §4)." >&2
+         "produces it." >&2
     exit 1
 fi
 horizon_nvk_archive_gate || exit 1
@@ -220,8 +220,8 @@ stage_file LICENSES/README.md "$STAGE/licenses/mesa-nvk-horizon/LICENSES.md"
 # reinstalling rewrites it, and share/mesa-nvk-horizon/installed-files.txt
 # lists it so `make uninstall` removes it.
 #
-# THERE IS STILL NO ICD, NO LOADER AND NO SHARED LIBRARY (docs/USAGE.md).
-# Nothing finds this driver at run time.
+# THERE IS STILL NO ICD, NO LOADER AND NO SHARED LIBRARY. Nothing finds
+# this driver at run time.
 #
 # WHICH MEANS YOU CANNOT CALL vkCreateInstance. There is no such symbol
 # to link against: a Vulkan loader is what normally defines the vk*

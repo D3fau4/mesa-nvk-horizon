@@ -34,7 +34,7 @@ static bool vm_page_size_valid(const horizon_gpu_device *dev,
 static horizon_gpu_result
 vm_reserve_common(horizon_gpu_device *dev, uint64_t size, uint32_t page_size,
                   uint64_t align, uint64_t fixed_base, bool fixed,
-                  horizon_gpu_va_range **out_range)
+                  bool sparse, horizon_gpu_va_range **out_range)
 {
     if (!dev || !out_range || size == 0)
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
@@ -70,9 +70,18 @@ vm_reserve_common(horizon_gpu_device *dev, uint64_t size, uint32_t page_size,
 
     /* align_or_offset carries the alignment when the kernel chooses and
      * the base when the caller does; the flags word says which (Linux
-     * nvgpu NVGPU_AS_IOCTL_ALLOC_SPACE semantics). Neither form asks for
-     * NvAllocSpaceFlags_Sparse — sparse address space is decision D12. */
-    const u32 as_flags = fixed ? NvAllocSpaceFlags_FixedOffset : 0;
+     * nvgpu NVGPU_AS_IOCTL_ALLOC_SPACE semantics).
+     *
+     * NvAllocSpaceFlags_Sparse asks the kernel to back the whole interval
+     * with page-table entries that resolve to nothing instead of leaving
+     * it unmapped. What that actually does on this chip — whether a read
+     * of an unbacked page returns zero or faults, and whether unmapping
+     * one buffer out of the middle of such a reservation restores that
+     * state or punches a hole — is what t_sparse measures. Until it has,
+     * this flag is reachable and unproven. */
+    u32 as_flags = fixed ? NvAllocSpaceFlags_FixedOffset : 0;
+    if (sparse)
+        as_flags |= NvAllocSpaceFlags_Sparse;
     const uint64_t align_or_offset = fixed ? fixed_base : align;
     uint64_t base = fixed ? fixed_base : 0;
     Result rc = nvioctlNvhostAsGpu_AllocSpace(dev->as.fd, (u32)pages,
@@ -152,7 +161,16 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
                                           uint64_t align,
                                           horizon_gpu_va_range **out_range)
 {
-    return vm_reserve_common(dev, size, page_size, align, 0, false,
+    return vm_reserve_common(dev, size, page_size, align, 0, false, false,
+                             out_range);
+}
+
+horizon_gpu_result
+horizon_gpu_vm_reserve_sparse(horizon_gpu_device *dev, uint64_t size,
+                              uint32_t page_size, uint64_t align,
+                              horizon_gpu_va_range **out_range)
+{
+    return vm_reserve_common(dev, size, page_size, align, 0, false, true,
                              out_range);
 }
 
@@ -161,7 +179,8 @@ horizon_gpu_result horizon_gpu_vm_reserve_fixed(horizon_gpu_device *dev,
                                                 uint32_t page_size,
                                                 horizon_gpu_va_range **out_range)
 {
-    return vm_reserve_common(dev, size, page_size, 0, base, true, out_range);
+    return vm_reserve_common(dev, size, page_size, 0, base, true, false,
+                             out_range);
 }
 
 uint64_t horizon_gpu_va_range_base(const horizon_gpu_va_range *range)
@@ -236,6 +255,28 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
     if (!horizon_is_aligned_u64(offset_in_range, page) ||
         !horizon_is_aligned_u64(mem_offset, page))
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+
+    /* THE BUFFER'S OWN ALIGNMENT MUST COVER THE PAGE IT IS MAPPED IN.
+     *
+     * MapBufferEx does not check this and does not fail: t_sparse's run
+     * on 2026-08-24 handed it a 4 KiB-aligned NvMap and page=0x20000,
+     * got Result 0 and the requested VA back, and the GPU's write to
+     * that VA went nowhere — no fault, no error, no data. A mapping
+     * that silently resolves to nothing is worse than one that is
+     * refused, and nothing above this layer can tell the difference.
+     *
+     * mem->align is what nvMapCreate was told, so it is the alignment
+     * the kernel has to work with. Rejecting here also keeps the size
+     * argument honest: `rounded` is a multiple of `page`, and with
+     * align >= page the object's own size is a multiple of it too. */
+    if (page > mem->align) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "map of a 0x%llx-aligned object in 0x%x pages: the "
+                     "kernel would accept this and the mapping would "
+                     "resolve to nothing",
+                     (unsigned long long)mem->align, page);
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    }
 
     uint64_t rounded;
     if (!horizon_align_up_u64(size, page, &rounded))
@@ -319,7 +360,17 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
         }
         horizon_va_set_remove(&range->live, offset_in_range);
         free(mapping);
-        return horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        /* VA_EXHAUSTED AND NOT ERR_NV, and the change is written down
+         * because these numbers appear in hardware logs kept as
+         * evidence: a run from 2026-08 and a later one must mean the
+         * same thing by the same number. No nv call failed here —
+         * MapBufferEx returned success — so ERR_NV reported .nv = 0
+         * and sent a reader looking for a service error that was not
+         * there. result.h reads "no space in the requested VA
+         * interval", which is the kernel's likeliest reason for
+         * honouring a FixedOffset request somewhere else, and not its
+         * only possible one. */
+        return horizon_gpu_err(HORIZON_GPU_ERR_VA_EXHAUSTED);
     }
 
     mapping->range = range;

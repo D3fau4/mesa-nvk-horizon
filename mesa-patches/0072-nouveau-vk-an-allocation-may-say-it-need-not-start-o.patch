@@ -1,0 +1,342 @@
+From 18c3de30e5886cfd8f7c79257f28601748732555 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 19:00:00 +0000
+Subject: [PATCH 72/74] nouveau/vk: an allocation may say it need not start out
+ zero
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 7 item 1 (CPU cost of submission)
+Why: on the Horizon backend every nvkmd allocation comes out of this
+ process's own heap through nvmap, and horizon_gpu_mem_create memsets it
+ to zero before returning. Nothing in nvkmd could say it did not need
+ that, so every allocation paid it — including the ones NVK itself
+ declares it is not relying on, and including the ones NVK then fills
+ again for VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT.
+Evidence: measured on a console 2026-09-07, gpu_memory/alloc, the fill
+ alone: 21 us of a 64 KiB allocation, 182 us of a 1 MiB one and 1403 us
+ of an 8 MiB one — 1992 us against 589 us for the same 8 MiB with
+ horizon_gpu_mem_create_uninit. Recorded in
+ docs/MEASURED-ON-HARDWARE.md, "What zeroing an allocation costs".
+Upstream: no — the flag is meaningful only on a backend that fills in
+ user space, and this is the only one.
+
+THE FLAG IS A HINT A BACKEND MAY IGNORE AND A PROMISE THE CALLER MAY
+NOT. NVKMD_MEM_NO_ZERO_INIT asserts that every byte anything will ever
+read from the object is written first. The nouveau backend ignores it
+and must: its pages come from the kernel, which zeroes them because
+they may have belonged to ANOTHER process, and that is a guarantee no
+caller of this interface is in a position to waive. It also has nothing
+to save, since that backend never fills them itself. Both halves are
+written down where each backend allocates.
+
+ONE CONSUMER TAKES IT, AND THE AUDIT IS WHY THE OTHERS DO NOT.
+
+vkAllocateMemory (nvk_device_memory.c). Vulkan says nothing about the
+contents of a VkDeviceMemory; an application that reads a byte before
+writing one has undefined contents on every implementation. The one
+case where zeroes are promised —
+VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT — this file already honours
+itself, with a memset or an upload-queue fill that it synchronises, as
+it does for NVK_DEBUG=zero_memory and NVK_DEBUG=trash_memory.
+`enum nvk_memory_init` is that decision, and NVK_MEMORY_INIT_NONE is
+NVK saying it is not relying on the contents. So on a backend that
+zeroes every allocation, the ZERO case is filled TWICE and the NONE
+case is filled for nobody. Nothing crosses a process boundary: the
+memory is this process's own, and the nouveau backend ignores the flag
+precisely so that it keeps mattering there. Imports are excluded
+because they allocate nothing.
+
+COMMAND-BUFFER CHUNKS TOOK IT AND A CONSOLE TOOK IT BACK. The first
+version of this patch flagged nvk_cmd_pool.c too, on the argument that
+the GPU is only ever pointed at [addr, addr + used) and nv_push writes
+every dword up to `used`. The same pool also backs
+nvk_cmd_buffer_upload_alloc, whose bytes the GPU reads as DATA, and
+whose new-chunk path never recorded `used_B` — so flush_mem_list could
+skip the clean for a chunk the CPU had written, and what the GPU then
+read was whatever the fill used to put there. MEASURED 2026-09-07,
+vk_core/transfer section C: "48/64 words match — first mismatch at word
+0: got 0xff97803c, want 0xa5dac00d (16 wrong)", one cache line of a
+vkCmdUpdateBuffer arriving as heap rubbish, on a case that had passed
+for weeks. The missing used_B is the next patch; the fill stays on
+these chunks regardless, because the rule the flag was introduced under
+is that a consumer takes it only where every observable byte is SHOWN
+to be written first, and this one has now been shown not to be.
+
+WHAT ELSE KEEPS THE FILL, and why:
+
+  - descriptor pools and the descriptor tables in nvk_mem_arena /
+    nvk_heap. A descriptor the application never wrote is read by
+    HARDWARE, at whatever index a shader forms, and the failure would
+    be a wrong texture rather than an error.
+  - query pools. vkGetQueryPoolResults reads an availability word and
+    the reset that writes it is the application's to issue; garbage
+    there is a result reported as ready.
+  - nvk_mem_stream's chunks, for the reason the command pool lost the
+    flag: they are handed out as data and recycled.
+  - nvk_device.c's zero page, the QMD heap, the shader heap and
+    everything else NVK reads back or hands to a fixed-function unit.
+  - the hang recorder in horizon_gpu, which is not reached from here
+    and keeps the fill for its own reason: the zeros are how "the GPU
+    never reached this slot" is recognised.
+
+NVK_HORIZON_ZERO_ALL_MEM=1 turns the skip off again for allocations
+that asked for it, and the backend says once in the log when it has
+actually skipped one. Homebrew is launched with no environment, so the
+only way to compare the two shapes at one clock is a case setting the
+variable on itself between two runs — the same shape as
+MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT and NVK_HORIZON_BATCH_EXEC — and
+the log line is what tells a run that measured no difference whether
+the flag arrived at all. It is also the first thing to reach for if an
+application misbehaves after this patch.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YajZtX9CeYzC35x2t1QJJh
+---
+ src/nouveau/vulkan/nvk_cmd_pool.c             | 21 +++++++
+ src/nouveau/vulkan/nvk_device_memory.c        | 32 +++++++++-
+ .../vulkan/nvkmd/horizon/nvkmd_horizon.h      | 11 ++++
+ .../vulkan/nvkmd/horizon/nvkmd_horizon_mem.c  | 60 ++++++++++++++++++-
+ .../vulkan/nvkmd/nouveau/nvkmd_nouveau_mem.c  |  8 +++
+ src/nouveau/vulkan/nvkmd/nvkmd.h              | 30 ++++++++++
+ 6 files changed, 158 insertions(+), 4 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_cmd_pool.c b/src/nouveau/vulkan/nvk_cmd_pool.c
+index fbabd31..2dd3796 100644
+--- a/src/nouveau/vulkan/nvk_cmd_pool.c
++++ b/src/nouveau/vulkan/nvk_cmd_pool.c
+@@ -21,6 +21,27 @@ nvk_cmd_mem_create(struct nvk_cmd_pool *pool, bool force_gart, struct nvk_cmd_me
+    if (mem == NULL)
+       return vk_error(pool, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   /* NO NVKMD_MEM_NO_ZERO_INIT HERE, AND A CONSOLE IS WHY.
++    *
++    * The audit that added the flag said a chunk is only ever a
++    * pushbuffer — the GPU pointed at [addr, addr + used), every dword
++    * up to `used` written by nv_push. That is not the whole truth: the
++    * same pool also backs nvk_cmd_buffer_upload_alloc, whose bytes the
++    * GPU reads as DATA, and its new-chunk path does not record
++    * `used_B`, so flush_mem_list can skip the clean for a chunk the CPU
++    * has written. With the allocator filling, the bytes the GPU then
++    * read were zeros; without it they are whatever the heap held.
++    *
++    * MEASURED ON A CONSOLE 2026-09-07: vk_core/transfer, section C,
++    * "C inline update landed: 48/64 words match — first mismatch at
++    * word 0: got 0xff97803c, want 0xa5dac00d (16 wrong)". Sixty-four
++    * bytes of a vkCmdUpdateBuffer, one cache line, arriving as heap
++    * rubbish. 202 of 203 checks, on a case that had passed for weeks.
++    *
++    * The missing used_B is fixed in its own patch. The fill stays off
++    * this allocation anyway: the rule the flag was introduced under is
++    * that a consumer takes it only where every observable byte is shown
++    * to be written first, and this one has now been shown not to be. */
+    const uint32_t flags = force_gart ? NVKMD_MEM_GART
+                                      : NVKMD_MEM_LOCAL;
+ 
+diff --git a/src/nouveau/vulkan/nvk_device_memory.c b/src/nouveau/vulkan/nvk_device_memory.c
+index e502936..ba5b2a4 100644
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -202,9 +202,39 @@ nvk_AllocateMemory(VkDevice device,
+       }
+    }
+ 
+-   const enum nvkmd_mem_flags flags =
++   enum nvkmd_mem_flags flags =
+       nvk_memory_type_flags(type, handle_types, pinned_to_vram);
+ 
++   /* THE ALLOCATOR NEED NOT ZERO THIS ONE, and this function is the
++    * proof rather than the assumption.
++    *
++    * Vulkan says nothing about the contents of vkAllocateMemory: an
++    * application that reads a byte of it before writing one has
++    * undefined contents by the specification, on every implementation.
++    * The one case where zeroes are promised is
++    * VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT, and this file already
++    * honours that itself, below, with a memset or an upload-queue fill
++    * that it then synchronises — as it does for NVK_DEBUG=zero_memory
++    * and NVK_DEBUG=trash_memory. `enum nvk_memory_init` is that
++    * decision, and NVK_MEMORY_INIT_NONE is NVK saying it is not
++    * relying on the contents.
++    *
++    * So on a backend that zeroes every allocation, the ZERO case is
++    * filled TWICE and the NONE case is filled for nobody. On the
++    * Horizon backend that fill is a memset this process pays for out of
++    * its own heap — 1403 us of an 8 MiB allocation, measured on a
++    * console on 2026-09-07 — and it is the largest single cost in
++    * vkAllocateMemory there.
++    *
++    * NOTHING CROSSES A PROCESS BOUNDARY. The concern the flag's comment
++    * in nvkmd.h raises about the kernel's zeroing does not arise here:
++    * the memory is this process's own, and the nouveau backend ignores
++    * the flag precisely so that it keeps arising there.
++    *
++    * The import path is excluded because it allocates nothing. */
++   if (!(fd_info && fd_info->handleType))
++      flags |= NVKMD_MEM_NO_ZERO_INIT;
++
+    const uint64_t aligned_size =
+       align64(pAllocateInfo->allocationSize, alignment);
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+index a1b104c..a82c830 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
+@@ -97,6 +97,17 @@ struct nvkmd_horizon_dev {
+    /* Borrowed from the pdev; not owned. See the header comment. */
+    horizon_gpu_device *gpu;
+ 
++   /* Whether this device has already said that it skipped a zero fill.
++    *
++    * PER DEVICE AND NOT PER PROCESS, because a test is what reads it
++    * and a test's log scan sees only what its own case produced: one
++    * .nro holds several cases, each of which builds its own device, and
++    * a process-wide flag would put the line in whichever case happened
++    * to allocate first. Not synchronised — the worst a race can do is
++    * print the line twice, and a mutex to make a log line rarer is a
++    * mutex for nothing. */
++   bool said_no_zero_fill;
++
+    /* Every live VA of this device, so a GPU address can be named.
+     *
+     * An MMU fault is the one GPU failure that says nothing useful on its
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index 0d191a4..b30db0c 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -262,14 +262,68 @@ nvkmd_horizon_alloc_mem_kind(struct nvkmd_dev *_dev,
+       (flags & NVKMD_MEM_COHERENT) ? HORIZON_GPU_MEM_UNCACHED
+                                    : HORIZON_GPU_MEM_CACHED;
+ 
++   /* THE ZERO FILL, AND WHO IS ALLOWED TO SKIP IT.
++    *
++    * horizon_gpu_mem_create zeroes; horizon_gpu_mem_create_uninit does
++    * not, and is otherwise the same function — same rounding, same
++    * nvmap registration, same cache maintenance, and in particular the
++    * same unconditional armDCacheFlush, which is there for the dirty
++    * lines the previous tenant of this heap memory left behind and not
++    * as the fill's cleanup. Skipping the fill is therefore a memset
++    * this process does not do, and nothing else.
++    *
++    * Only for callers that passed NVKMD_MEM_NO_ZERO_INIT. There is
++    * deliberately no environment variable that turns it on for
++    * allocations that did not ask.
++    *
++    * NVK_HORIZON_ZERO_ALL_MEM=1 turns it OFF for allocations that did,
++    * which is the opposite direction and is the only way to measure
++    * what it buys: homebrew is launched with no environment, so an A/B
++    * is a case setting this on itself between two runs at one clock —
++    * the same shape as MESA_VK_WSI_HORIZON_CPU_ACQUIRE_WAIT and
++    * NVK_HORIZON_BATCH_EXEC. It is also the first thing to try when an
++    * application misbehaves after this patch: if zeroing everything
++    * fixes it, the application is reading memory it never wrote and the
++    * consumer that asked for the flag is wrong.
++    *
++    * READ PER ALLOCATION, AND ONLY WHEN IT COULD MATTER. Caching it in
++    * a static would make the variable a property of the process, and
++    * then the A/B it exists for could not happen: a case has to set it
++    * on itself between two runs at one clock, because a .nro is
++    * launched with no environment at all. The getenv behind
++    * debug_get_bool_option is a walk of an environment homebrew keeps
++    * small, next to an nvmap registration and a page-aligned
++    * allocation — and it is not reached at all unless the caller asked
++    * to skip the fill. */
++   const bool skip_fill =
++      (flags & NVKMD_MEM_NO_ZERO_INIT) &&
++      !debug_get_bool_option("NVK_HORIZON_ZERO_ALL_MEM", false);
++
++   /* SAID ONCE PER DEVICE, so a test can prove the flag arrived.
++    * Without it there is no way to tell "the flag reached the allocator
++    * and the saving is inside the noise" from "the flag never reached
++    * the allocator" — and on 2026-09-07 vk_core/device_memory measured
++    * a difference of zero and could not say which it had. Per device
++    * rather than per process because that is the scope a case's log
++    * scan can see; see struct nvkmd_horizon_dev. */
++   if (skip_fill && !dev->said_no_zero_fill) {
++      dev->said_no_zero_fill = true;
++      mesa_logi("nvkmd_horizon: an allocation asked not to be zero filled "
++                "and was not (%" PRIu64 " bytes); "
++                "NVK_HORIZON_ZERO_ALL_MEM=1 turns this off", size_B);
++   }
++
+    horizon_gpu_result res =
+-      horizon_gpu_mem_create(dev->gpu, size_B, align, policy,
+-                             &mem->gpu_mem);
++      skip_fill ? horizon_gpu_mem_create_uninit(dev->gpu, size_B, align,
++                                                policy, &mem->gpu_mem)
++                : horizon_gpu_mem_create(dev->gpu, size_B, align, policy,
++                                         &mem->gpu_mem);
+    if (res.status != HORIZON_GPU_OK) {
+       FREE(mem);
+       return vk_errorf(log_obj, nvkmd_horizon_result(res),
+-                       "horizon_gpu_mem_create(%" PRIu64 ", %" PRIu64 ") "
++                       "horizon_gpu_mem_create%s(%" PRIu64 ", %" PRIu64 ") "
+                        "failed: status %d, nv 0x%08" PRIx32,
++                       skip_fill ? "_uninit" : "",
+                        size_B, align, (int)res.status, res.nv);
+    }
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_mem.c b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_mem.c
+index 6bd7d7c..127fa67 100644
+--- a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_mem.c
++++ b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_mem.c
+@@ -139,6 +139,14 @@ nvkmd_nouveau_alloc_tiled_mem(struct nvkmd_dev *_dev,
+    align_B = MAX2(align_B, dev->base.pdev->bind_align_B);
+    size_B = align64(size_B, align_B);
+ 
++   /* NVKMD_MEM_NO_ZERO_INIT IS IGNORED HERE, AND MUST BE. The pages
++    * behind a nouveau BO come from the kernel, which zeroes them
++    * because they may have belonged to another process — a guarantee
++    * about somebody else's data, which no caller of this interface is
++    * in a position to waive. There is also nothing to save: the driver
++    * does not fill them itself, so the flag would turn off a memset
++    * that does not exist. See nvkmd.h.
++    */
+    enum nouveau_ws_bo_flags nouveau_flags = domains;
+    if (flags & NVKMD_MEM_CAN_MAP)
+       nouveau_flags |= NOUVEAU_WS_BO_MAP;
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index ee4bf63..7490c2b 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -58,6 +58,36 @@ enum nvkmd_mem_flags {
+ 
+    /** This memory object has coherent CPU maps */
+    NVKMD_MEM_COHERENT   = 1 << 5,
++
++   /** The contents of this memory object need not start out zero.
++    *
++    * A HINT A BACKEND MAY IGNORE, AND A PROMISE THE CALLER MAY NOT.
++    * The caller is asserting that every byte anything will ever read
++    * from this object is written first — by the CPU, by the GPU, or by
++    * the caller's own explicit fill. It is not "I do not mind what is
++    * in there": a consumer that reads a byte nobody wrote gets whatever
++    * the backend's allocator last had there.
++    *
++    * WHY IT EXISTS. On a backend where the kernel hands out fresh
++    * anonymous pages — the nouveau one — this is already true and the
++    * flag costs nothing; that backend ignores it, and MUST, because the
++    * kernel's zeroing is a guarantee about OTHER processes' data and is
++    * not the caller's to waive. On the Horizon backend the allocation
++    * comes from this process's own heap through nvmap, so the zero fill
++    * is a memset this process pays for. MEASURED ON A CONSOLE
++    * 2026-09-07, gpu_memory/alloc: 21 us of a 64 KiB allocation, 182 us
++    * of a 1 MiB one and 1403 us of an 8 MiB one — 1992 us against
++    * 589 us for the same 8 MiB without it.
++    *
++    * NVK ALREADY MODELS THIS, which is what makes the flag safe to
++    * introduce rather than a new promise. nvk_device_memory.c computes
++    * an `enum nvk_memory_init` per allocation and does its own
++    * synchronous fill for NVK_MEMORY_INIT_ZERO — the case
++    * VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT and NVK_DEBUG=zero_memory
++    * ask for. Everything else is NVK_MEMORY_INIT_NONE, and NONE means
++    * NVK is not relying on the contents.
++    */
++   NVKMD_MEM_NO_ZERO_INIT = 1 << 6,
+ };
+ 
+ #define NVKMD_MEM_PLACEMENT_FLAGS \
+-- 
+2.53.0.windows.2
+

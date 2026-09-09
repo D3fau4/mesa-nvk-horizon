@@ -1,10 +1,7 @@
-From e7cb1fca28a3e835518b19da42afeac6860a5b56 Mon Sep 17 00:00:00 2001
+From 8d3839affa45f951f78516d92f203ef5b092ea45 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 4 Aug 2026 16:04:47 +0000
-Subject: [PATCH 27/49] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+Subject: [PATCH 27/56] nouveau/vk: nvkmd_horizon, implement alloc_tiled_mem
 
 mesa-nvk-horizon: Phase 5 item 3 (off-screen images)
 Why: nvkmd_dev_alloc_tiled_mem calls dev->ops->alloc_tiled_mem with no
@@ -25,7 +22,7 @@ Upstream: no -- it implements an operation for this backend.
 
 The operation is implementable here, and cheaply. A block-linear layout
 is a property of the GPU *mapping* on this platform, not of the memory
-object (docs/memory-model.md § 1 #9), and alloc_mem already reserves and
+object, and alloc_mem already reserves and
 binds a VA for every object it creates. So the only difference between
 the two entry points is the PTE kind that VA carries, and the body
 becomes one function taking the kind.
@@ -57,7 +54,7 @@ Cross build: libnvk.a builds. RUN ON A CONSOLE 2026-08-04: t_vk_caps
 52/52 reaches this operation through the one path that can -- a
 DRM_FORMAT_MOD_LINEAR image used as a colour attachment, which makes
 NVK allocate a tiled shadow here -- and all 4096 texels come back
-correct (docs/hw-logs/t_vk_caps-run1-debt-batch-PASS.log).
+correct.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ---
@@ -68,7 +65,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  4 files changed, 100 insertions(+), 21 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 8072cf3..12d235a 100644
+index 216f551f44a..4835ffbe8d5 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -247,6 +247,13 @@ VkResult nvkmd_horizon_alloc_mem(struct nvkmd_dev *dev,
@@ -86,7 +83,7 @@ index 8072cf3..12d235a 100644
                                  struct vk_object_base *log_obj,
                                  enum nvkmd_va_flags flags, uint8_t pte_kind,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
-index fb71079..8c01a74 100644
+index fb710792f2e..8c01a748c4f 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_dev.c
 @@ -80,11 +80,18 @@ const struct nvkmd_dev_ops nvkmd_horizon_dev_ops = {
@@ -114,7 +111,7 @@ index fb71079..8c01a74 100644
     .alloc_va = nvkmd_horizon_alloc_va,
     .create_ctx = nvkmd_horizon_create_ctx,
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
-index f6901f2..a54b2ed 100644
+index f6901f2e3ff..a54b2ed90f5 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
 @@ -153,12 +153,18 @@ const struct nvkmd_mem_ops nvkmd_horizon_mem_ops = {
@@ -231,7 +228,7 @@ index f6901f2..a54b2ed 100644
 +                                       pte_kind, flags, mem_out);
 +}
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 6b797ca..41cf692 100644
+index 551144e0f3a..3813d17dfed 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -289,10 +289,14 @@ nvkmd_horizon_create_pdev(struct vk_object_base *log_obj,
@@ -263,5 +260,5 @@ index 6b797ca..41cf692 100644
        .has_overmap = false,
        .has_compression = false,
 -- 
-2.43.0
+2.53.0.windows.2
 

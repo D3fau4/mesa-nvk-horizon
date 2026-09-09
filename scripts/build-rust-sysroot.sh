@@ -21,8 +21,8 @@
 # WHY core AND alloc AND NOT std. aarch64-nintendo-switch-freestanding
 # reports `"std": false` and has no `target_family`, so a std built for
 # it selects Rust's `sys/pal/unsupported` — the parts of std that make
-# it worth having return errors. docs/rust-toolchain.md § 6 records the
-# measurement. NAK and NIL are made no_std by mesa-patches/ instead.
+# it worth having return errors, measured directly against this target.
+# NAK and NIL are made no_std by mesa-patches/ instead.
 #
 # ONLY FOR A LOCAL devkitA64 INSTALL. In container mode the sysroot is
 # baked into the derived toolchain image instead

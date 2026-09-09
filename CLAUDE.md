@@ -1,136 +1,337 @@
-# CLAUDE.md — working rules for this repository
+# CLAUDE.md
 
-`mesa-nvk-horizon` builds a **native Horizon OS backend for Mesa/NVK** so that Vulkan
-runs on the Nintendo Switch's Tegra X1 (GM20B, Maxwell 2nd gen) through `libnx` and the
-`nv` system services — with no DRM emulation layer in between.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> [`CONTRIBUTING.md`](CONTRIBUTING.md) is this same contract addressed to a person: the
-> layer rules, the rejected designs, the evidence discipline and the gates. When one of
-> them changes, change both — they are two readings of one set of rules, not two sets.
+## What this is
 
-## Target architecture (non-negotiable)
+A native **Horizon OS** backend for **Mesa/NVK**, so Vulkan runs on the Nintendo Switch's
+Tegra X1 (GM20B, Maxwell 2nd gen) through `libnx` and the `nv` system services — with no
+DRM emulation layer in between.
 
 ```
-Vulkan application
-        │
-        ▼
-Mesa / NVK                         ← upstream, pinned, patched only via mesa-patches/
-        │
-        ▼
-nvkmd_horizon                      ← NVK's kernel-mode-driver backend, Horizon flavour
-        │
-        ▼
-horizon_gpu  (this repo, horizon/) ← Vulkan-free, WSI-free GPU abstraction
-        │
-        ├── NvMap            (memory objects)
-        ├── NvAddressSpace   (GPU VA)
-        ├── NvGpuChannel     (GPFIFO channels)
-        ├── GPFIFO           (command submission)
-        ├── NvFence          (completion)
-        └── syncpoints       (monotonic counters)
-        │
-        ▼
-libnx / nv services / Horizon OS
+Vulkan app → Mesa/NVK → nvkmd_horizon → horizon_gpu → libnx → Horizon OS
 ```
 
-## Explicitly rejected designs
+Only `horizon/`, `compat/`, `tests/`, `scripts/` and the two build files are our source.
+`mesa/` is a pinned, gitignored checkout; our entire Mesa delta is the numbered patch
+series in `mesa-patches/`.
 
-These are the failure modes of the reference ports (see `docs/reference-analysis.md`).
-Do not reintroduce them:
+### Stale references
 
-1. **No simulated `/dev/dri` device.** No render node, no synthetic file descriptor sentinel.
-2. **No fake `open` / `openat` / `stat` / `fstat` / `mmap` / `munmap` / `close` wrappers**
-   (`-Wl,--wrap=...` interposition of libc is banned as an architecture; a genuinely missing
-   newlib function may still be provided in `compat/`, documented individually).
-3. **No re-implementation of the nouveau DRM uAPI.** No `drm_nouveau_gem_new`,
-   no `drm_nouveau_exec`, no `drm_nouveau_vm_bind`, no `drmSyncobj*` family.
-4. **No synthetic GEM handles.** Memory objects are `NvMap`-backed and referenced by
-   explicit typed handles owned by a context.
-5. **No global variables for device, window, swapchain or channel.** Every entry point
-   takes an explicit context or object pointer. No `g_dev`, no `g_swapchain`.
-6. **No CPU wait after every submit.** Submission is asynchronous. A CPU stall is allowed
-   only where Vulkan semantics require it (`vkWaitForFences`, `vkQueueWaitIdle`,
-   `vkDeviceWaitIdle`, swapchain acquire) or when the documented debug-synchronous mode
-   is explicitly enabled.
-7. **No whole Mesa files copied into this repo and edited.** Mesa changes live as tracked
-   patches in `mesa-patches/`, or upstream. `mesa/` is a pinned checkout, never our source.
+`CONTRIBUTING.md`, `MANIFEST.sha256` and `scripts/check-history-intact.sh` do not
+exist, but are still cited widely: comments, script headers, `README.md` and the
+patch series name `docs/architecture.md`, `docs/milestones.md`,
+`docs/reference-analysis.md`, `CONTRIBUTING.md` and "Phase N item M" throughout.
+**Do not follow those links or assume the files exist**; do not re-create them unless
+asked. When adding a Mesa patch, keep the four-field header format below even though
+the milestones list its first field cites is gone.
 
-## Layer rules
+`docs/` holds **three files**: `MEASURED-ON-HARDWARE.md`,
+`PENDING-HARDWARE-RUNS.md` and `GM20B-HANG-SNAPSHOT.md`, none of which is any of
+the three above. The three cited there are still gone. (This paragraph said "two"
+until 2026-09-07; `GM20B-HANG-SNAPSHOT.md` has been tracked since `70adcd4` and
+describes the `HORIZON_GPU_HANG_SNAPSHOT=1` instrumentation, not a hardware run.)
+
+`docs/PENDING-VERIFICATION.md` is gone too, and two Mesa patches still cite it:
+`0054` in its commit message, and `0055` in a comment its diff adds to
+`nvkmd_horizon.c`. Both were left alone deliberately — a patch is identified by its
+subject and its diff, so editing one to chase a filename is exactly the churn the
+divergence check exists to catch. What they point at is in
+`docs/MEASURED-ON-HARDWARE.md`.
+
+The record of what was done, what was actually tested and what is still open lives in
+the commit messages.
+
+### `docs/MEASURED-ON-HARDWARE.md` — read it before re-measuring anything
+
+Facts established by running code on a console, collected so nobody re-litigates
+them. Everything in it is class **HW**; nothing in it needs action.
+
+**It is not a debt ledger and must not become one.** It replaced
+`docs/PENDING-VERIFICATION.md`, which was one: that file tracked work cross-compiled
+and never run, every section carried a **Done when** line, and it was deleted on
+2026-08-25 when its last section closed — as its own rules demanded, rather than
+being hollowed out into an "all clear" that says nothing.
+
+So work that is still owed does **not** belong here. It goes in a commit message, or
+in a new ledger with the same discipline: a **Done when** line per section, and the
+file deleted rather than emptied when they are all met. Add to this file only when a
+measurement on hardware settles something that would otherwise get measured twice.
+
+### `docs/PENDING-HARDWARE-RUNS.md` — that new ledger
+
+It exists because the merge of PR #22 landed four class-X debts, each with its
+**Done when** line, and a textual merge put them in `MEASURED-ON-HARDWARE.md`, where
+the file's own header forbids them. They are here instead, under the same rules the
+dead ledger had: **delete the file when the last section closes**, never empty it.
+
+Four of its sections closed on the console run of 2026-09-07 and what they settled
+moved to `MEASURED-ON-HARDWARE.md`; the same run opened two more, which are the two
+failures the fourteen-suite run has. The file is not a record of that run — the
+run's results are in the counterpart file — it is only what is still owed.
+
+It is deliberately not called `PENDING-VERIFICATION.md`. That name is cited by `0054`
+and `0055`, and what those two point at is in `MEASURED-ON-HARDWARE.md` — reusing it
+would make two dangling references silently resolve to the wrong file.
+
+## Commands
+
+### Host tests — the only thing that needs no toolchain
+
+```sh
+scripts/run-host-tests.sh          # 8 host suites of horizon/'s pure logic, ASan+UBSan
+```
+
+These are a different mechanism from the console test suites below: their own `main()`
+in `tests/host/hostfw.h`, the host compiler, sanitizers. Nothing about the `.nro` suites
+applies to them.
+
+There is no per-test flag. To run one suite, compile it the way the script does:
+
+```sh
+cc -std=c11 -O1 -g -Wall -Wextra -Werror -Ihorizon/include \
+   -fsanitize=address,undefined -fno-sanitize-recover=all \
+   -o build/host-tests/h_blob_cache \
+   tests/host/h_blob_cache.c horizon/cache/blob_cache.c horizon/cache/crc32.c \
+&& ./build/host-tests/h_blob_cache
+```
+
+Suite → sources: `h_align` (header only), `h_va_space` + `horizon/vm/va_space.c`,
+`h_syncpt_math` (header only), `h_cmds` + `horizon/submit/cmds.c`,
+`h_scanout` + `horizon/surface/surface.c`,
+`h_status` + `horizon/debug/status.c`, `h_log` + `horizon/debug/log.c`,
+`h_blob_cache` + `horizon/cache/{blob_cache,crc32}.c`.
+
+A ninth, `h_nvkmd_sync`, is the one exception to "no Mesa": it compiles
+`mesa/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_sync.c` against Mesa's
+headers and a simulated syncpoint, to pin the wait/set_fence interleaving
+patch `0081` fixes. The script builds it only when `mesa/` has the series
+applied and `$MESA_NVK_BUILD_DIR` (default `build/mesa-nvk`) holds the
+generated headers, and prints a `note:` when it skips — a skip is not a pass.
+
+### Gates — run these before pushing; CI runs the same four
+
+```sh
+scripts/check-mesa-test-parity.sh  # the Makefile and meson.build still agree
+scripts/check-layering.sh          # horizon/ stayed Vulkan-, Mesa- and nwindow-free
+scripts/check-no-abs-paths.sh      # no /home/, /work, D:\, /mnt/ in tracked build inputs
+scripts/run-host-tests.sh
+```
+
+`scripts/check-dispatch-complete.sh` and `scripts/check-tls-relocs.sh` need built
+artefacts; `scripts/ci-build-archives.sh` runs them at the end against what it just built.
+
+### Cross build (`lib` default; `test`/`all` add the suite `.nro`s)
+
+```sh
+scripts/build-switch.sh -j4        # libhorizon_gpu.a only (default goal)
+scripts/build-switch.sh test -j4   # + every suite .nro; `all` is a synonym
+make install PREFIX=...            # into devkitPro portlibs; PREFIX as an *argument*
+```
+
+`build-switch.sh` execs `make` directly when `$DEVKITPRO` is set, otherwise runs it inside
+`ghcr.io/d3fau4/nx-dev:latest` (override with `HORIZON_NX_IMAGE`), mounting the tree at
+the *same* path inside the container as outside.
+
+`make install`/`uninstall` are one script called twice — never add files to one side only.
+Pass `PREFIX`/`DESTDIR` as make arguments, not environment: devkitPro's Cygwin make on
+Windows drops the environment form silently.
+
+### Full build, including Mesa/NVK (tens of minutes)
+
+```sh
+scripts/ci-build-archives.sh       # what CI runs; the whole pipeline in order
+```
+
+That is: `fetch-mesa.sh` → `apply-mesa-patches.sh` → `fetch-mesa-subprojects.sh` →
+`fetch-rust-tools.sh` → `fetch-rust-crates.sh` → `fetch-clc-deps.sh` →
+`build-toolchain-image.sh` (or `build-rust-sysroot.sh` with a local devkitA64) →
+`build-mesa-clc.sh` → `configure-mesa.sh` → `build-mesa.sh` → `build-mesa-nvk.sh` →
+`build-horizon.sh`, then the two artefact-dependent gates. It ends by asserting that
+every `.a` the tests link exists and that every `.nro` `meson.build` names links them —
+if you touch `mesa-patches/`, this is what tells you first.
+
+The Meson path (`meson.build`) is configured through `scripts/configure-horizon.sh`; it is
+**cross-only and errors out on a host build** by design. Individual steps go through
+`horizon_run` / `horizon_meson` / `horizon_ninja` in `scripts/toolchain-env.sh`, which
+spawns a per-command `docker run` when `$DEVKITPRO` is unset and runs directly when it is
+set. The toolchain image has no pip and no outbound network — fetch/setup steps must run
+on the host, never wrapped in `docker run`.
+
+### On a console
+
+Copy the `.nro` to `sdmc:/switch/horizon_gpu_tests/`. Each is one **suite** and prints a
+`CASE:` line per case plus a final `RESULT: PASS (n/n)`, logging to
+`sdmc:/horizon_gpu_tests/<suite>.log`, including the `horizon-build-id` line — a result
+without it cannot be attributed to a build. `tests/README.md` has the run order, the
+two suites that need two launches, and which one needs an operator.
+
+## Architecture
+
+### `horizon/` — the Vulkan-free GPU abstraction
+
+C11 + libnx + newlib only. Modules: `device/` (nv service session, GPU characteristics),
+`memory/` (`NvMap` objects, `align.h` overflow-checked arithmetic), `vm/` (`NvAddressSpace`,
+VA reservation and mapping), `channel/` (`NvGpuChannel`, GPFIFO), `submit/` (command
+building, submission), `sync/` (syncpoints, `NvFence`), `cache/` (the shader cache's
+storage), `debug/` (logging, status strings), `surface/` (block-linear scanout layout —
+the "surface-info struct" the layer rules reserve, and pure arithmetic, so the host
+suites reach it).
+
+Two properties drive its shape:
+
+- **It compiles and its tests run without Mesa or libnx present.** That is why
+  `horizon/cache/` lives here rather than beside the driver: the host tests hand the same
+  translation unit truncated and bit-flipped files under sanitizers.
+- **`horizon/include/` is libnx-free.** No `<switch...>` include, no `Nv*` type, no
+  `Result` — `horizon_gpu_result` mirrors libnx's `Result` and the `.c` files
+  `static_assert` the equivalence. `check-layering.sh` enforces both.
+
+`horizon_gpu_status` values are **appended, never inserted or renumbered**: the numbers
+appear in hardware logs kept as evidence.
+
+The blob cache performs **no path operation after `open()`** — libnx routes
+`open`/`stat`/`unlink`/`mkdir`/`rename` through one unlocked global buffer, so a second
+thread doing path work corrupts the first one's path.
+
+### Layer rules (enforced by `scripts/check-layering.sh`)
 
 | Layer | May depend on | Must NOT depend on |
 |---|---|---|
-| `horizon/` | libnx, newlib, C11 | Vulkan, Mesa, NVK, WSI, `nwindow` semantics beyond a surface-info struct |
+| `horizon/` | libnx, newlib, C11 | Vulkan, Mesa, NVK, WSI, `nwindow` beyond a surface-info struct |
 | `nvkmd_horizon` (in `mesa-patches/`) | NVK internals, `horizon/` | libnx directly, `nwindow` |
 | WSI Horizon (in `mesa-patches/`) | Vulkan WSI runtime, `horizon/` surface info, libnx `nwindow` | `nvkmd_horizon` internals |
-| `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/` internals, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
+| `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/`, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
-`horizon/` must compile and its tests must run **without Mesa present**.
+### `tests/` — fourteen suites, sixty-one cases
 
-`horizon/cache/` is in that layer and not beside the driver on purpose: it is the
-shader cache's *storage*, its whole value is what it does with a damaged file, and a
-format that is only tested where it runs is a format nobody has tested against the
-damage. Being libnx-free and Mesa-free is what lets `scripts/run-host-tests.sh`
-compile the same translation unit the console does and hand it truncated and
-bit-flipped files under sanitizers. It performs **no path operation after `open()`** —
-libnx routes `open`/`stat`/`unlink`/`mkdir`/`rename` through one unlocked global
-buffer, so a second thread doing path work corrupts the first one's path.
+**One `.nro` per suite, several cases per suite.** A suite is a directory:
+`tests/<suite>/suite.c` is the table of cases and `tests/<suite>/<case>.c` is one case.
+Every result is identified as `<suite>/<case>` — `vk_shaders/dynamic_loop` — in the
+banner before it, in its `CASE:` verdict line, and as the Vulkan application name the
+driver sees.
 
-## Toolchain fallback (devkitA64)
+| Tier | Suites | Needs |
+|---|---|---|
+| `horizon_gpu` | `platform` `gpu_memory` `gpu_submit` `gpu_fault` `display` `dock` | the toolchain |
+| Mesa's own code | `mesa_runtime` | Mesa's core archives |
+| Vulkan through NVK | `vk_core` `vk_shaders` `vk_render` `vk_pipelines` `vk_cache` `vk_wsi` `vk_present` | the full NVK driver |
 
-Cross-compilation needs devkitA64/devkitPro (`$DEVKITPRO`, providing libnx, elf2nro,
-nacptool). If it is not installed in the current environment:
+A case's own header comment is where its rationale lives. The build files state only
+what the build needs, so a fact about a test is not written down in two places that can
+drift.
 
-- **Use the Docker image `ghcr.io/d3fau4/nx-dev:latest`** as the toolchain, not a fresh
-  devkitPro install — package servers (`pkg.devkitpro.org`) and GitHub release tarballs may
-  be unreachable behind a restrictive proxy, while `ghcr.io` typically is not.
-- Prefer `scripts/build-switch.sh` (wraps `make`): it already implements this fallback —
-  runs `make` directly when `$DEVKITPRO` is set, otherwise runs it inside the container.
-  Override the image with `HORIZON_NX_IMAGE` if a different one is needed.
-- Manual invocation, if not going through the script:
-  ```sh
-  # start the daemon first if it is not already running (root, no systemd):
-  dockerd --iptables=false --bridge=none &
-  docker run --rm -e DEVKITPRO=/opt/devkitpro -v "$PWD":/work -w /work \
-      ghcr.io/d3fau4/nx-dev:latest make all -j4
-  ```
-- The image's `/opt/devkitpro` layout matches a normal devkitPro install
-  (`devkitA64/`, `libnx/`, `tools/bin/{elf2nro,nacptool}`); libnx headers can be extracted
-  from it (`docker cp`) if a local copy is useful for reference.
-- This is a cross-compile, not a hardware run. Keep the host / cross / hardware-verified
-  distinction from the Process rules below regardless of which toolchain path was used.
+**A new test is a case in an existing suite.** Write `tests/<suite>/<case>.c` opening
+with `TEST_CASE_DECL(<suite>, <case>)`, name it in `tests/<suite>/suite.c` in the
+position its dependencies want, and name it in **both** `CASES_<suite>` in the Makefile
+and the `<suite>` entry in `meson.build` (plus `nvk_case_shaders` if it uses a shader).
+`check-mesa-test-parity.sh` fails on any of those left half-done.
 
-## Coding rules
+**A new `.nro` needs a technical reason that grouping would break**, and the reason goes
+in the new suite's header. The four that exist are the shape of it: a console *and* an
+operator (`dock`); a deliberate fault whose after-effects on the console are unconfirmed
+(`gpu_fault`); a measurement a busier process would change (`vk_pipelines`); state
+destroyed across launches on a protocol of its own (`vk_cache`). "These feel like
+different things" is not one of them. `test_uses_display` is also decided once per
+`.nro`, before the first case runs, so a case needing a console and a case needing the
+display cannot share one.
 
-- Explicit-width integer types (`uint32_t`, `uint64_t`, `size_t`). No bare `int` for
-  sizes, offsets, handles or GPU addresses.
-- Check every `Result` from libnx. Never discard one silently.
-- Every constant gets a name and a comment citing its source (switchbrew, envytools,
-  deko3d, nouveau headers).
-- Check for overflow on every size/offset/alignment computation.
-- Every allocation has exactly one documented owner. Partially-initialised objects are
-  torn down in reverse order on the error path.
-- No mass refactors. No mixing functional changes with renames or reformatting.
+The framework gives a case three things a separate `.nro` used to give it for free, and
+they are the reason grouping is safe: an early return fails **that case** and the suite
+carries on; the environment is snapshotted and restored around every case, with a note
+naming anything it had to undo; and `t_log_scan` searches only from where the running
+case's output began. What it cannot give back is an option a library latched into a
+static on first read — hence `vk_cache`.
+
+Ordering inside a suite is the dependency order, which used to be a numbered run order
+in `tests/README.md` and is now a property of `suite.c`.
+
+### Two build systems, deliberately duplicated
+
+The **Makefile** is the reference path — it produced the `.nro`s verified on hardware, and
+must stay readable without running a script. **`meson.build`** exercises the cross file and
+is what the Mesa work plugs into. They restate the same facts about the suites and their
+cases — which suites exist, which cases are in each, and for the Mesa-linking one
+(`mesa_runtime`) which archives and which defines: `-DHAVE_PTHREAD
+-DHAVE_STRUCT_TIMESPEC -DENABLE_SHADER_CACHE`, copied from what Mesa's own configure decided
+here. **Edit one, edit the other**; `check-mesa-test-parity.sh` fails otherwise.
+
+`mesa_runtime` is skipped when Mesa's archives are absent from `$MESA_BUILD_DIR`
+(default `build/mesa-probe`); the Makefile then prunes its stale artefacts so a manifest
+never attributes the previous build's binaries to this one.
+
+### `mesa-patches/`
+
+77 numbered `git format-patch` files applied on `MESA_COMMIT` from `toolchain/versions.env`.
+A patch is identified by **its commit subject and its diff** — the applier matches both, so
+changing either after it has been applied is reported as divergence. Every patch message
+carries, in this order:
+
+```
+mesa-nvk-horizon: Phase <N> item <M> (<item name>)
+Why: <the assumption Mesa makes that does not hold on newlib/libnx>
+Evidence: <the exact measurement — configure line, compiler error, command>
+Upstream: <yes|no> — <why>
+```
+
+`Evidence` is what was actually observed, quoted — not a rationale. Prefer writing the fix
+as a general trait of the libc or the compiler over `#ifdef HORIZON`. One functional change
+per patch, bisectable, no drive-by cleanups. Regenerate with
+`git -C mesa format-patch -o ../mesa-patches "$MESA_COMMIT"`, then re-read the whole diff.
+`.patch` files are byte-exact by contract (`.editorconfig`, `.gitattributes`).
+
+## Rejected designs — do not reintroduce
+
+These are the failure modes of the GPL reference ports studied early on; several are
+grepped for by `check-layering.sh`.
+
+1. No simulated `/dev/dri`, no render node, no synthetic fd sentinel.
+2. No fake `open`/`openat`/`stat`/`mmap`/`close` wrappers. `-Wl,--wrap=` interposition of
+   libc is banned **as an architecture** — a genuinely missing newlib function may still go
+   in `compat/`, documented individually.
+3. No re-implementation of the nouveau DRM uAPI (`drm_nouveau_gem_new`, `drm_nouveau_exec`,
+   `drm_nouveau_vm_bind`, `drmSyncobj*`).
+4. No synthetic GEM handles — memory objects are `NvMap`-backed, referenced by explicit
+   typed handles owned by a context.
+5. No global state for device, window, swapchain or channel. Every entry point takes an
+   explicit context pointer. No `g_dev`, no `g_swapchain`.
+6. No CPU wait after every submit. Submission is asynchronous; a stall is allowed only
+   where Vulkan requires it (`vkWaitForFences`, `vkQueueWaitIdle`, `vkDeviceWaitIdle`,
+   swapchain acquire) or in the documented debug-synchronous mode.
+7. No Mesa file copied into this tree and edited.
+
+## Code
+
+- Explicit-width types (`uint32_t`, `uint64_t`, `size_t`). No bare `int` for sizes, offsets,
+  handles or GPU addresses.
+- Check every `Result` from libnx; never discard one silently.
+- Every constant gets a name and a comment citing its source — switchbrew, envytools,
+  deko3d, nouveau headers. A magic number with no provenance is a guess.
+- Check overflow on every size/offset/alignment computation; `horizon/memory/align.h` is
+  the arithmetic to use and it is host-tested.
+- One documented owner per allocation; partially-initialised objects are torn down in
+  reverse order on the error path.
+- No mass refactors; never mix a functional change with renames or reformatting.
 - Failures are reported, never hidden behind a sleep or a global wait.
+- Every file carries `SPDX-License-Identifier: MIT` and the project copyright line.
+- 4-space indent, 79-column C, LF (`.editorconfig`). `-Wall -Wextra -Werror` everywhere.
 
-## Process rules
+## Evidence discipline
 
-- Follow the phase order in `docs/milestones.md`. Deviating requires a documented blocker
-  in `STATUS.md`.
-- `STATUS.md` is updated with every unit of work: current phase, what is done, what was
-  actually tested, known failures, pending decisions, next concrete task.
-- Distinguish rigorously between **host build**, **cross build**, and **verified on real
-  hardware**. Never claim Switch behaviour from a successful compile.
-- Record the exact commands run and their results.
-- Small, thematic local commits. **Never `git push` without explicit authorisation.**
-- Never delete a file without explaining why. Never overwrite the user's work.
-- Any code adapted from another project keeps its attribution and licence header, and is
-  listed in `LICENSES/` and in `docs/reference-analysis.md`.
+Three classes, never collapsed into each other:
 
-## Licence hazard
+| Class | Means | Does **not** prove |
+|---|---|---|
+| **H** — host | Built and run via `scripts/run-host-tests.sh` | Anything about the Switch |
+| **X** — cross | Cross-compiled for aarch64 Horizon; a `.nro` exists | That it runs, or is correct |
+| **HW** — hardware | Ran on a real console, with the log | Only what the log actually shows |
 
-The reference ports analysed in Phase 0 are **GPL-2.0 / AGPL-3.0** (they disagree with each
-other — see `docs/reference-analysis.md`). Mesa/NVK is **MIT**. Copying reference code into
-this tree would make the result copyleft and un-upstreamable. Default policy: **derive facts
-and hardware knowledge, not source text.** Any literal reuse needs an explicit decision
-recorded in `STATUS.md` under pending decisions.
+A successful compile is never described as working. State which class you have, and record
+the exact commands run and their results.
+
+## Working habits
+
+- Small, thematic commits. Subject says what changed and, where it fits, what was wrong
+  before. **Never `git push` without explicit authorisation.**
+- Never delete a file without explaining why.

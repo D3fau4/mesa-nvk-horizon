@@ -25,6 +25,31 @@ struct horizon_gpu_device {
 
     horizon_log log;
     bool debug_synchronous;
+    /* Opt-in GPFIFO progress instrumentation.  See channel_priv.h: this
+     * inserts WFI-ordered semaphore breadcrumbs around caller spans and is
+     * intentionally too intrusive to enable by default. */
+    bool hang_snapshot;
+
+    /* Two opt-outs that exist so a single console run can measure the
+     * change against the behaviour it replaced, rather than a number
+     * from this build being compared with a number from another one.
+     * Both restore exactly what the code did before; neither is a
+     * supported configuration.
+     *
+     * full_barrier_waits  HORIZON_GPU_FULL_BARRIER_WAITS=1 — put the
+     *                     L2-invalidate prologue and the wait-for-idle
+     *                     + L2-writeback fence block back on a
+     *                     memory-free wait submit.
+     * eager_reap          HORIZON_GPU_EAGER_REAP=1 — read the syncpoint
+     *                     on every reap even when the retirement list
+     *                     is empty and nothing can retire. */
+    bool full_barrier_waits;
+    bool eager_reap;
+    /* Whether mem_create proves a heap block is writable before it
+     * touches it. Default on; HORIZON_GPU_HEAP_CHECK=0 turns it off,
+     * which is the other half of the A/B and also the way to get the
+     * crash back on purpose. */
+    bool heap_page_check;
 
     /* Opt-in (device.h) and the sticky record of it having been used. The
      * flag is written by channel creation from any thread, so it is atomic
@@ -45,6 +70,16 @@ struct horizon_gpu_device {
     _Atomic uint32_t live_va_ranges;
     _Atomic uint32_t live_mappings;
     _Atomic uint32_t live_channels;
+
+    /* The wait meter (horizon_gpu_device_wait_stats). Written by both
+     * wait loops from whichever thread is waiting — several at once is
+     * the case they exist for — so they are atomic for the same reason
+     * the live counts are, and for a stronger one: those are only ever
+     * touched under the caller's own serialisation of one object,
+     * while these are incremented by threads that share nothing but
+     * the device. */
+    _Atomic uint64_t nv_wait_chunks;
+    _Atomic uint64_t nv_wait_paced;
 };
 
 #endif /* HORIZON_DEVICE_PRIV_H */

@@ -44,6 +44,27 @@ uint32_t horizon_cmds_fence_incr(uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS],
 }
 
 uint32_t
+horizon_cmds_fence_incr_bare(uint32_t buf[HORIZON_CMDS_FENCE_INCR_BARE_DWORDS],
+                             uint32_t syncpt_id)
+{
+    if (syncpt_id > HORIZON_SYNCPT_ID_MAX)
+        return 0;
+
+    /* The last four dwords of horizon_cmds_fence_incr and nothing else.
+     * Deliberately written out rather than sharing a helper with it: the
+     * two blocks mean different things, and the header above says which
+     * submit may use which. A shared tail would make the difference a
+     * parameter and invite it to be passed the wrong way round. */
+    uint32_t n = 0;
+    buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_SYNCPOINTA, 1);
+    buf[n++] = 0; /* payload is unused for an increment */
+    buf[n++] = horizon_cmd_hdr_incr(0, HORIZON_NVA06F_SYNCPOINTB, 1);
+    buf[n++] = (syncpt_id << HORIZON_SYNCPOINTB_INDEX_SHIFT) |
+               HORIZON_SYNCPOINTB_OP_INCR;
+    return n;
+}
+
+uint32_t
 horizon_cmds_syncpt_wait(uint32_t buf[HORIZON_CMDS_SYNCPT_WAIT_DWORDS],
                          uint32_t syncpt_id, uint32_t threshold)
 {
@@ -66,13 +87,15 @@ horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
                                uint64_t gpu_va, uint32_t payload)
 {
     /* OFFSET_LOWER is bits 31:2 and OFFSET_UPPER is bits 7:0 of the next
-     * method, so the address must be 4-byte aligned and must fit 40 bits
-     * — which is exactly the GPU VA width this address space reports.
+     * method, so the address must be 4-byte aligned and must fit
+     * HORIZON_CMDS_GPU_VA_BITS bits. Device creation refuses an address
+     * space whose queried gpu_va_bit_count differs from that constant, so
+     * the two agree by construction rather than by assumption.
      * Reject rather than truncate: a truncated address is still a valid
      * address, and the GPU would write to it. */
     if ((gpu_va & UINT64_C(3)) != 0)
         return 0;
-    if ((gpu_va >> 40) != 0)
+    if ((gpu_va >> HORIZON_CMDS_GPU_VA_BITS) != 0)
         return 0;
 
     uint32_t n = 0;

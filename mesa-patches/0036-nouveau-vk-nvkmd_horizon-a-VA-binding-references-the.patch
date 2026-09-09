@@ -1,7 +1,7 @@
-From 993cebe73338445c758d262ee314cd71df0df207 Mon Sep 17 00:00:00 2001
+From 5646ec56ccc2a994f64d4ec322a0c6709d26bc5d Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:49 +0000
-Subject: [PATCH 36/49] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
+Subject: [PATCH 36/56] =?UTF-8?q?nouveau/vk:=20nvkmd=5Fhorizon,=20a=20VA?=
  =?UTF-8?q?=20binding=20references=20the=20memory=20it=20binds=20=E2=80=94?=
  =?UTF-8?q?=20unless=20it=20is=20the=20memory's=20own?=
 MIME-Version: 1.0
@@ -39,12 +39,12 @@ Evidence: HARDWARE. t_vk_swapchain on the owner's console, 2026-08-05:
  fourteen images — each one "destroy refused, 1 live mapping(s)", and
  vkDestroyDevice then refused outright with "device destroy refused:
  live mem=14 va_ranges=0 mappings=0 channels=0"
- (docs/hw-logs/t_vk_swapchain-run1-*.log). With the reference but
+ live mem=14 va_ranges=0 mappings=0 channels=0". With the reference but
  without the self-binding exception (the intermediate state, patch 0058
  of the pre-compaction series): "device destroy refused: live mem=33
  va_ranges=33 mappings=33 channels=0" — the VAs leaking too is the
  signature of the cycle
- (docs/hw-logs/t_vk_swapchain-run2-refcycle-FAIL.log). The cycle fix
+ signature of the cycle. The cycle fix
  was patch 0060; run 4 shows "device destroy refused" absent from the
  whole log.
 Upstream: no — it is this backend's ownership rules meeting nvkmd's.
@@ -57,7 +57,7 @@ from its own VA".
  1 file changed, 60 insertions(+)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index c543c25..9ffe7c4 100644
+index 350f4c343c7..07a849fbe52 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -30,6 +30,36 @@ struct nvkmd_horizon_binding {
@@ -149,5 +149,5 @@ index c543c25..9ffe7c4 100644
     return VK_SUCCESS;
  }
 -- 
-2.43.0
+2.53.0.windows.2
 

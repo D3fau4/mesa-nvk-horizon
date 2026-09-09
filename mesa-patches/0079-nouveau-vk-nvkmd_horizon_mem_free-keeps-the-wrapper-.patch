@@ -1,0 +1,59 @@
+From 57f9c3f68df4fd86200e37dca30989334650597e Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:19:21 +0000
+Subject: [PATCH 79/82] nouveau/vk: nvkmd_horizon_mem_free keeps the wrapper
+ only when the destroy did nothing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 3 item 2 (nvkmd_horizon memory objects)
+Why: nvkmd_horizon_mem_free returned without freeing the nvkmd wrapper
+ on every failure of horizon_gpu_mem_destroy. That is right for
+ ERR_BUSY, which memory.h defines as "nothing happened: the object is
+ intact and still owned by the caller", and wrong for every other
+ status, which the same contract defines as "the destroy completed and
+ the error describes what it cost" — ERR_NV in particular means the
+ backing pages were deliberately leaked rather than returned to the
+ heap uncached, and the horizon_gpu object is gone. Keeping the wrapper
+ then keeps a dangling gpu_mem pointer alive in an object that nothing
+ will free and nothing may use.
+Evidence: horizon/include/horizon_gpu/memory.h, on
+ horizon_gpu_mem_destroy:
+   HORIZON_GPU_ERR_NV — the object is GONE and must NOT be passed here
+     again; a second call is a use-after-free ...
+   BUSY is therefore the only retryable one. Everything else means the
+   destroy completed, and the error describes what it cost.
+ nvkmd_horizon_mem.c: `if (res.status != HORIZON_GPU_OK) { mesa_loge(...);
+ return; }` ahead of FREE(mem).
+ Class X: cross-built; the ERR_NV path needs svcSetMemoryAttribute to
+ refuse a restore, which no console run has produced.
+Upstream: no — the backend is Horizon's.
+---
+ src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+index b30db0c..4aa105d 100644
+--- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
++++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_mem.c
+@@ -36,7 +36,15 @@ nvkmd_horizon_mem_free(struct nvkmd_mem *_mem)
+        */
+       mesa_loge("horizon_gpu_mem_destroy failed: status %d, nv 0x%08" PRIx32,
+                 (int)res.status, res.nv);
+-      return;
++      /* BUSY is the one answer that means "nothing happened": the
++       * object is intact and the wrapper still owns it, so both stay.
++       * Every other failure means the destroy COMPLETED and the error
++       * says what it cost (memory.h: ERR_NV is a backing deliberately
++       * leaked rather than returned uncached to the heap). The
++       * horizon_gpu object is gone then, and a wrapper kept around it
++       * would be a dangling pointer nobody may pass anywhere again. */
++      if (res.status == HORIZON_GPU_ERR_BUSY)
++         return;
+    }
+ 
+    FREE(mem);
+-- 
+2.43.0
+

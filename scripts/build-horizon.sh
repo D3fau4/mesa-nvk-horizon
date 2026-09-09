@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Builds libhorizon_gpu.a and the ten Phase 1 test .nros through Meson.
+# Builds libhorizon_gpu.a through Meson. With no target this builds only
+# the archive; `test` also builds every test .nro this configuration can
+# produce (mirrors the Makefile's `lib`/`test` split).
 #
-#   scripts/build-horizon.sh [extra meson compile args...]
+#   scripts/build-horizon.sh [lib|test] [extra meson compile args...]
 #
 # Idempotent: configures first if needed, then lets ninja decide what
 # actually has to be rebuilt. A second run with no source change is a
@@ -9,7 +11,7 @@
 #
 # This is the Meson path. scripts/build-switch.sh is the Makefile path,
 # which is the one whose output was verified on real hardware; keep both
-# working (STATUS.md).
+# working.
 #
 # Copyright (c) mesa-nvk-horizon contributors
 # SPDX-License-Identifier: MIT
@@ -55,6 +57,14 @@ if [ "$now" != "$then" ]; then
     echo "[${then:-unrecorded}]; reconfiguring so meson.build asks again"
     scripts/configure-horizon.sh
 fi
+
+# Meson reserves `test` (and `all`) as target names, so meson.build calls
+# the .nro alias `test-nros`. Translate here rather than there: this
+# script's documented arguments are the Makefile's goals, and those two
+# names are what every caller and CLAUDE.md already say.
+case "${1:-}" in
+    test|all) shift; set -- test-nros "$@" ;;
+esac
 
 horizon_meson compile -C "$HORIZON_BUILD_DIR" "$@"
 

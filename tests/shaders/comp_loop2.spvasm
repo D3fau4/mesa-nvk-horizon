@@ -1,0 +1,177 @@
+; comp_loop2 -- comp_loop with Godot's exact bound idiom on the packed cluster word, in the shape the
+; Godot 4.1 Forward+ scene shader uses for its cluster loops, so that what
+; goes wrong there can be measured without Godot.
+;
+; One storage buffer of 32-bit words, laid out as (WORDS = 32 lanes x 4
+; groups = 128 invocations):
+;
+;   [  0..127]  to[id]     upper bound of the outer loop, per invocation
+;   [128..255]  act[id]    0 = this invocation skips the loop altogether,
+;                          which is how a fragment warp with inactive lanes
+;                          looks to the SM
+;   [256..383]  out_n[id]  what the loop accumulated
+;   [384..511]  out_i[id]  the value of i when the loop exited
+;   [512..575]  data[k]    64 mask words read by the loop body
+;
+; The invocation does:
+;
+;   n = 0; i = 0;
+;   if (act[id] != 0) {
+;       for (i = 0; i < to[id]; i++) {
+;           mask = data[(i + id) & 63];
+;           while (mask != 0) {              // Godot: while (merged_mask != 0)
+;               bit = findMSB(mask);         //   uint bit = findMSB(...)
+;               mask &= ~(1u << bit);        //   merged_mask &= ~(1u << bit)
+;               if ((bit & 1) == 0) continue;//   if (...) continue;
+;               n += bit;
+;           }
+;           n += 1;
+;       }
+;   }
+;   out_n[id] = n; out_i[id] = i;
+;
+; The CPU recomputes both words exactly. With to[id] == 0 the loop body
+; must not run: out_n must be 0 and out_i must be 0. Measured on GM20B,
+; the Godot scene shader ran this body for every fragment with to == 0.
+;
+; SPIR-V 1.3 (--target-env vulkan1.1), same reasons as comp_write_id.
+;
+; Copyright (c) mesa-nvk-horizon contributors
+; SPDX-License-Identifier: MIT
+               OpCapability Shader
+          %ext = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 32 1 1
+
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %Buf 0 Offset 0
+               OpDecorate %Buf Block
+               OpDecorate %ssbo DescriptorSet 0
+               OpDecorate %ssbo Binding 0
+
+       %void = OpTypeVoid
+     %fnvoid = OpTypeFunction %void
+       %bool = OpTypeBool
+       %uint = OpTypeInt 32 0
+      %int32 = OpTypeInt 32 1
+     %v3uint = OpTypeVector %uint 3
+   %ptr_in_v = OpTypePointer Input %v3uint
+   %ptr_in_u = OpTypePointer Input %uint
+        %gid = OpVariable %ptr_in_v Input
+
+        %rta = OpTypeRuntimeArray %uint
+        %Buf = OpTypeStruct %rta
+    %ptr_ssb = OpTypePointer StorageBuffer %Buf
+       %ssbo = OpVariable %ptr_ssb StorageBuffer
+  %ptr_ssb_u = OpTypePointer StorageBuffer %uint
+
+      %int_0 = OpConstant %int32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+    %uint_63 = OpConstant %uint 63
+   %uint_128 = OpConstant %uint 128
+   %uint_256 = OpConstant %uint 256
+   %uint_384 = OpConstant %uint 384
+   %uint_512 = OpConstant %uint 512
+  %uint_ones = OpConstant %uint 4294967295
+     %uint_5 = OpConstant %uint 5
+    %uint_16 = OpConstant %uint 16
+  %uint_ffff = OpConstant %uint 65535
+
+       %main = OpFunction %void None %fnvoid
+      %entry = OpLabel
+      %gidxp = OpAccessChain %ptr_in_u %gid %uint_0
+         %id = OpLoad %uint %gidxp
+        %top = OpAccessChain %ptr_ssb_u %ssbo %int_0 %id
+       %word = OpLoad %uint %top
+    ; Godot: item_min = w & 0xFFFF; item_max = w >> 16;
+    ;        item_from = item_min >> 5;
+    ;        item_to = item_max == 0 ? 0 : ((item_max - 1) >> 5) + 1;
+   %item_min = OpBitwiseAnd %uint %word %uint_ffff
+   %item_max = OpShiftRightLogical %uint %word %uint_16
+       %from = OpShiftRightLogical %uint %item_min %uint_5
+     %max_nz = OpINotEqual %bool %item_max %uint_0
+      %max_1 = OpISub %uint %item_max %uint_1
+     %max_sh = OpShiftRightLogical %uint %max_1 %uint_5
+     %to_nz  = OpIAdd %uint %max_sh %uint_1
+         %to = OpSelect %uint %max_nz %to_nz %uint_0
+       %aidx = OpIAdd %uint %id %uint_128
+         %ap = OpAccessChain %ptr_ssb_u %ssbo %int_0 %aidx
+        %act = OpLoad %uint %ap
+      %isact = OpINotEqual %bool %act %uint_0
+               OpSelectionMerge %after_if None
+               OpBranchConditional %isact %then %after_if
+
+       %then = OpLabel
+               OpBranch %o_hdr
+
+      %o_hdr = OpLabel
+          %i = OpPhi %uint %from %then %i_next %o_cont
+          %n = OpPhi %uint %uint_0 %then %n_out %o_cont
+               OpLoopMerge %o_exit %o_cont None
+               OpBranch %o_check
+
+    %o_check = OpLabel
+     %o_cond = OpULessThan %bool %i %to
+               OpBranchConditional %o_cond %o_body %o_exit
+
+     %o_body = OpLabel
+      %midx0 = OpIAdd %uint %i %id
+      %midx1 = OpBitwiseAnd %uint %midx0 %uint_63
+       %midx = OpIAdd %uint %midx1 %uint_512
+         %mp = OpAccessChain %ptr_ssb_u %ssbo %int_0 %midx
+      %mask0 = OpLoad %uint %mp
+               OpBranch %in_hdr
+
+     %in_hdr = OpLabel
+       %mask = OpPhi %uint %mask0 %o_body %mask_next %in_cont
+         %n2 = OpPhi %uint %n %o_body %n2_next %in_cont
+               OpLoopMerge %in_exit %in_cont None
+               OpBranch %in_check
+
+   %in_check = OpLabel
+    %in_cond = OpINotEqual %bool %mask %uint_0
+               OpBranchConditional %in_cond %in_body %in_exit
+
+    %in_body = OpLabel
+        %bit = OpExtInst %uint %ext FindUMsb %mask
+      %bitm0 = OpShiftLeftLogical %uint %uint_1 %bit
+       %bitm = OpNot %uint %bitm0
+  %mask_next = OpBitwiseAnd %uint %mask %bitm
+      %bitlo = OpBitwiseAnd %uint %bit %uint_1
+       %even = OpIEqual %bool %bitlo %uint_0
+               OpSelectionMerge %in_add None
+               OpBranchConditional %even %in_cont %in_add
+
+     %in_add = OpLabel
+     %n2_add = OpIAdd %uint %n2 %bit
+               OpBranch %in_cont
+
+    %in_cont = OpLabel
+    %n2_next = OpPhi %uint %n2 %in_body %n2_add %in_add
+               OpBranch %in_hdr
+
+    %in_exit = OpLabel
+      %n_out = OpIAdd %uint %n2 %uint_1
+               OpBranch %o_cont
+
+     %o_cont = OpLabel
+     %i_next = OpIAdd %uint %i %uint_1
+               OpBranch %o_hdr
+
+     %o_exit = OpLabel
+               OpBranch %after_if
+
+   %after_if = OpLabel
+       %nres = OpPhi %uint %uint_0 %entry %n %o_exit
+       %ires = OpPhi %uint %uint_0 %entry %i %o_exit
+      %oidxn = OpIAdd %uint %id %uint_256
+        %opn = OpAccessChain %ptr_ssb_u %ssbo %int_0 %oidxn
+               OpStore %opn %nres
+      %oidxi = OpIAdd %uint %id %uint_384
+        %opi = OpAccessChain %ptr_ssb_u %ssbo %int_0 %oidxi
+               OpStore %opi %ires
+               OpReturn
+               OpFunctionEnd

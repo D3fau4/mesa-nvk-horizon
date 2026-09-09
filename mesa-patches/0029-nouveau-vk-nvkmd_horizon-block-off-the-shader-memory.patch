@@ -1,7 +1,7 @@
-From 573d137a4fea58eacb7c0d232f34e88e958318d5 Mon Sep 17 00:00:00 2001
+From 6211a1802c149e97eb54ac143ca665f20f9d7160 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 23 Aug 2026 21:54:23 +0000
-Subject: [PATCH 29/49] nouveau/vk: nvkmd_horizon, block off the shader memory
+Subject: [PATCH 29/56] nouveau/vk: nvkmd_horizon, block off the shader memory
  window; fixed VA (extension 5)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -56,7 +56,7 @@ Why: the windows are apertures the hardware fixes, and nothing else
   stops an ordinary allocation being given that range; on this address
   space the shader heap covers both by default.
 Evidence: measured on a real console, t_va_window, 2026-08-04
-  (docs/hw-logs/t_va_window-run1-PASS.log):
+  (2026-08-04):
     small-page region [0x8000000, 0x3fffff000)      ~15.87 GiB
     P2 window fixed @0xfe000000: ok
     P3 heap 4 GiB non-fixed with the window held:
@@ -65,7 +65,7 @@ Evidence: measured on a real console, t_va_window, 2026-08-04
     P7 heap fixed first, then the window: both ok
   RUN ON A CONSOLE 2026-08-04: the shader-window overlap warning is
   gone from all four logs of that batch and vkCreateDevice still
-  succeeds (docs/hw-logs/t_vulkan-run8-window-blocked-PASS.log and the
+  succeeds, confirmed across that run and the
   three beside it).
 Upstream: no -- it uses a fixed reservation this address space provides.
 
@@ -84,7 +84,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  3 files changed, 151 insertions(+), 13 deletions(-)
 
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
-index 12d235a..d2aa0b6 100644
+index 4835ffbe8d5..bb3cfb02a17 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon.h
 @@ -70,6 +70,22 @@ struct nvkmd_horizon_pdev {
@@ -111,7 +111,7 @@ index 12d235a..d2aa0b6 100644
  
  NVKMD_DECL_SUBCLASS(pdev, horizon);
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
-index 41cf692..3e8131c 100644
+index 3813d17dfed..fda3854dcaf 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_pdev.c
 @@ -73,6 +73,18 @@ nvkmd_horizon_pdev_destroy(struct nvkmd_pdev *_pdev)
@@ -201,7 +201,7 @@ index 41cf692..3e8131c 100644
      * about Horizon, not a gap left for later:
      *
 diff --git a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
-index 8fa1682..c543c25 100644
+index e2c800f3f82..350f4c343c7 100644
 --- a/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 +++ b/src/nouveau/vulkan/nvkmd/horizon/nvkmd_horizon_va.c
 @@ -296,17 +296,17 @@ nvkmd_horizon_alloc_va(struct nvkmd_dev *_dev,
@@ -305,5 +305,5 @@ index 8fa1682..c543c25 100644
     va->base.dev = _dev;
     va->base.flags = flags;
 -- 
-2.43.0
+2.53.0.windows.2
 

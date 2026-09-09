@@ -3,8 +3,10 @@
  *
  * Creation order (torn down in reverse on every error path):
  *   nvGpuChannelCreate -> syncpoint identity + shadow init -> internal
- *   command buffer (mem, reservation, mapping, fence-increment list) ->
- *   optional Zcull (mem, mapping, bind).
+ *   command buffer (mem, reservation, mapping, the four write-once
+ *   command blocks) -> optional hang recorder (mem, reservation,
+ *   mapping, marker lists, record table) -> optional Zcull (mem,
+ *   mapping, bind).
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -15,6 +17,7 @@
 #include "channel_priv.h"
 #include "horizon_gpu/submit.h"
 #include "../device/device_priv.h"
+#include "../sync/nv_wait.h"
 #include "../memory/mem_priv.h"
 #include "../memory/align.h"
 #include "horizon_gpu/cmds.h"
@@ -25,6 +28,11 @@
 #define CHANNEL_FENCE_CMDS_OFFSET  UINT64_C(0x000)
 #define CHANNEL_SETOBJ_CMDS_OFFSET UINT64_C(0x100)
 #define CHANNEL_PROLOGUE_CMDS_OFFSET UINT64_C(0x200)
+/* The increment-only fence block a memory-free submit uses
+ * (horizon_cmds_fence_incr_bare). It sits in the gap the prologue leaves
+ * before the wait ring rather than after the ring: the ring already ends
+ * exactly on the last byte of the page, so there is no "after". */
+#define CHANNEL_BARE_FENCE_CMDS_OFFSET UINT64_C(0x300)
 
 /* Zcull context buffer VA alignment. Source: the reference's
  * hardware-tested channel bring-up (reference-analysis § 4: Zcull BO
@@ -45,8 +53,12 @@ _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
                HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_CMDBUF_SIZE,
                "prologue list would overrun the cmdbuf page");
 _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET +
-               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= HORIZON_CHANNEL_WAIT_CMDS_OFFSET,
-               "prologue list would overrun the wait ring");
+               HORIZON_CMDS_MEM_OP_DWORDS * 4 <= CHANNEL_BARE_FENCE_CMDS_OFFSET,
+               "prologue list would overrun the bare fence list");
+_Static_assert(CHANNEL_BARE_FENCE_CMDS_OFFSET +
+               HORIZON_CMDS_FENCE_INCR_BARE_DWORDS * 4 <=
+               HORIZON_CHANNEL_WAIT_CMDS_OFFSET,
+               "bare fence list would overrun the wait ring");
 /* The wait ring takes what is left of the page, and how much that is has
  * to be checked rather than believed: the slot count and the per-slot
  * size are two constants in another header, and either growing would
@@ -57,20 +69,42 @@ _Static_assert(HORIZON_CHANNEL_WAIT_CMDS_OFFSET +
                "wait ring would overrun the cmdbuf page");
 
 /* Wait loop chunk: 100 ms per kernel wait so the error notifier is
- * re-checked at a useful rate without busy-polling
- * (docs/synchronization.md § 6). */
+ * re-checked at a useful rate without busy-polling. */
 #define CHANNEL_WAIT_CHUNK_US INT32_C(100000)
+
+/* NVGPU_IOCTL_CHANNEL_SET_TIMESLICE — _IOWR(0x48, 0x1d, u32), switchbrew
+ * NV_services. libnx exposes no wrapper for it, so the diagnostic knob in
+ * horizon_gpu_channel_create issues it through nvIoctl; the number is
+ * named here rather than written inline at the call. */
+#define HORIZON_NVGPU_IOCTL_CHANNEL_SET_TIMESLICE 0xC004481Du
+
+/* How many info words nvgpu's error record carries. Derived from libnx's
+ * NvError rather than written out at each of the two sites that walk it:
+ * the array belongs to a header neither of them owns, and 31 was spelled
+ * out in both. */
+#define CHANNEL_NVERROR_INFO_WORDS \
+    (uint32_t)(sizeof(((const NvError *)0)->info) / \
+               sizeof(((const NvError *)0)->info[0]))
 
 horizon_gpu_result horizon_channel_read_syncpt(horizon_gpu_channel *chan,
                                                uint32_t *out_hw)
 {
     /* /dev/nvhost-ctrl fd owned by libnx's fence module (open since
      * device bring-up step 2). */
+    chan->stats.syncpt_reads++;
     Result rc = nvioctlNvhostCtrl_SyncptRead(nvFenceGetFd(),
                                              chan->syncpt_id, out_hw);
     if (R_FAILED(rc))
         return horizon_gpu_err_nv(rc);
     return horizon_gpu_ok();
+}
+
+void horizon_gpu_channel_get_stats(const horizon_gpu_channel *chan,
+                                   horizon_gpu_channel_stats *out)
+{
+    if (!chan || !out)
+        return;
+    *out = chan->stats;
 }
 
 static const char *channel_error_desc(uint32_t type)
@@ -89,6 +123,33 @@ static const char *channel_error_desc(uint32_t type)
     default:                                       return "unknown notification";
     }
 }
+
+/* The error *record*'s type is a different enumeration from the
+ * notification's, and a much shorter one. switchbrew documents it for
+ * NVGPU_IOCTL_CHANNEL_GET_ERROR_INFO, which is exclusive to this
+ * platform: "Error type (0=no_error, 1=mmu_error, 2=gr_error,
+ * 3=pbdma_error, 4=timeout)".
+ *
+ * The distinction is the whole value of reading the record: a channel
+ * that died with an empty info block and type=4 was classified by the
+ * kernel as a timeout, which is not the same fact as a graphics
+ * exception whose payload happened to be lost. */
+static const char *channel_error_info_desc(uint32_t type)
+{
+    switch (type) {
+    case 0:  return "no error";
+    case 1:  return "MMU error";
+    case 2:  return "graphics exception";
+    case 3:  return "PBDMA error";
+    case 4:  return "timeout";
+    default: return "unknown error type";
+    }
+}
+
+static void
+channel_dump_hang_snapshot(horizon_gpu_channel *chan, uint32_t notifier,
+                           uint32_t breadcrumb, const NvError *err,
+                           Result error_info_rc);
 
 horizon_gpu_result
 horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
@@ -139,25 +200,108 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
     return horizon_gpu_ok();
 }
 
-/* Checks the notifier; marks the channel lost when it reports an error. */
-static bool channel_check_fault(horizon_gpu_channel *chan)
+/* Checks the notifier; marks the channel lost when it reports an error.
+ * A notifier query failure is not the same as an empty notifier: callers
+ * must not retire work or report a successful wait when channel health
+ * could not be established.
+ *
+ * THE MEASUREMENT THAT PUT THIS ON THE SUCCESS PATH is written out at
+ * channel_reached_or_lost below, which is the caller that names the
+ * intent — "the fence says reached, and that is not sufficient". */
+horizon_gpu_result horizon_channel_check_fault(horizon_gpu_channel *chan)
 {
     uint32_t type = 0;
     const char *desc = NULL;
     horizon_gpu_result res = horizon_gpu_channel_get_error(chan, &type,
                                                            &desc);
-    if (horizon_gpu_succeeded(res) && type != 0) {
-        if (!chan->lost)
+    if (horizon_gpu_failed(res)) {
+        /* A NOTIFIER QUERY THAT FAILS IS NOT A HEALTHY CHANNEL, which
+         * is why this is propagated at all — but on a channel already
+         * marked lost the caller has a better answer than the ioctl's.
+         * horizon_gpu_channel_reap has no chan->lost short-circuit of
+         * its own, so without this it reported HORIZON_GPU_ERR_NV for
+         * a channel this layer had already given up on, and a caller
+         * watching for CHANNEL_LOST saw something else. */
+        if (chan->lost)
+            return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+        return res;
+    }
+
+    if (type != 0) {
+        if (!chan->lost) {
+            /* Capture the uncached word before issuing another channel ioctl.
+             * The notifier itself is already post-recovery on Horizon, but
+             * this value was written by the GPU in-stream before recovery and
+             * therefore preserves the progress evidence the reset destroys. */
+            const uint32_t breadcrumb = chan->hang_status
+                                            ? *chan->hang_status
+                                            : 0;
             horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                          "channel %p: fault notification %u (%s) — marking "
                          "lost", (void *)chan, type, desc);
+            /* The notification is a type and nothing else. nvgpu also
+             * keeps an error record for the channel — NvError, 31 words
+             * of it — and for a graphics exception that is where the
+             * class, the method and the offset the engine stopped on
+             * live. A fault that says only "8" costs a bisection; one
+             * that names a method costs a lookup, so it is read here on
+             * the path that has already decided the channel is lost and
+             * is never taken again for the same channel. */
+            NvError err;
+            memset(&err, 0, sizeof(err));
+            Result erc = nvGpuChannelGetErrorInfo(&chan->gc, &err);
+            channel_dump_hang_snapshot(chan, type, breadcrumb, &err, erc);
+            if (R_SUCCEEDED(erc)) {
+                horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                             "channel %p: error info type=%u (%s)",
+                             (void *)chan, err.type,
+                             channel_error_info_desc(err.type));
+                /* Only a graphics exception has a documented layout for
+                 * the words that follow, and it is the one worth
+                 * spelling out: switchbrew gives intr_value, addr,
+                 * data_hi, data_lo and class_num, in that order, for
+                 * type == 2. Naming them is the difference between a
+                 * fault that costs a lookup and one that costs a
+                 * bisection. The first five words are then skipped by
+                 * the dump below, which would only repeat them. */
+                uint32_t first = 0;
+                if (err.type == 2) {
+                    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                                 "channel %p:   intr=0x%08x addr=0x%08x "
+                                 "data=0x%08x%08x class=0x%04x",
+                                 (void *)chan, err.info[0], err.info[1],
+                                 err.info[2], err.info[3], err.info[4]);
+                    first = 5;
+                }
+                /* Only the non-zero words are printed, with their
+                 * index: the block is mostly zero and 31 zeroes in a
+                 * log are 31 lines nobody reads. */
+                for (uint32_t i = first;
+                     i < CHANNEL_NVERROR_INFO_WORDS; i++) {
+                    if (err.info[i] != 0)
+                        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                                     "channel %p:   info[%u] = 0x%08x",
+                                     (void *)chan, i, err.info[i]);
+                }
+            } else {
+                horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                             "channel %p: error info unavailable: 0x%08x",
+                             (void *)chan, erc);
+            }
+        }
         chan->lost = true;
     }
-    return chan->lost;
+    return chan->lost ? horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST)
+                      : horizon_gpu_ok();
 }
 
 /* "The fence says reached" is the answer a waiter wants, and on this
  * platform it is not sufficient on its own.
+ *
+ * THIS IS A NAME, NOT A STEP. It forwards to horizon_channel_check_fault
+ * and adds nothing; what it adds is at its three call sites, where
+ * "reached or lost" says what the wait concluded and a bare fault check
+ * would not. The rationale stays here, with the name it explains.
  *
  * MEASURED ON HARDWARE, 2026-08-04 (t_vk_image run 1). A render pass
  * MMU-faulted, nothing it was supposed to write was written, and
@@ -181,9 +325,7 @@ static bool channel_check_fault(horizon_gpu_channel *chan)
  * can tell the two apart from the outside. */
 static horizon_gpu_result channel_reached_or_lost(horizon_gpu_channel *chan)
 {
-    if (channel_check_fault(chan))
-        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
-    return horizon_gpu_ok();
+    return horizon_channel_check_fault(chan);
 }
 
 /* Logs a teardown step's failure during horizon_gpu_channel_create's error
@@ -201,6 +343,218 @@ static void channel_create_unwind_step(horizon_gpu_device *dev,
                      "channel_create unwind: %s failed (status=%s "
                      "nv=0x%08x) — leaking that object", step,
                      horizon_gpu_status_str(res.status), res.nv);
+}
+
+/* Build the write-once command lists used by the opt-in hang recorder.
+ *
+ * This is intentionally not described as USERD emulation.  It observes a
+ * different fact: the last WFI-ordered host semaphore command the frontend
+ * executed before nvgpu recovered the channel.  Switch 1's libnx path uses
+ * ALLOC_GPFIFO_EX2 and never receives the SETUP_BIND outputs which would
+ * identify USERD or hw_channel_id. */
+static horizon_gpu_result
+channel_hang_trace_init(horizon_gpu_channel *chan)
+{
+    horizon_gpu_device *dev = chan->dev;
+    horizon_gpu_result res = horizon_gpu_mem_create(
+        dev, HORIZON_CHANNEL_HANG_BUFFER_SIZE, 0,
+        HORIZON_GPU_MEM_UNCACHED, &chan->hang_mem);
+    if (horizon_gpu_failed(res))
+        return res;
+
+    res = horizon_gpu_vm_reserve(dev, HORIZON_CHANNEL_HANG_BUFFER_SIZE,
+                                 (uint32_t)HORIZON_GPU_SMALL_PAGE_SIZE, 0,
+                                 &chan->hang_range);
+    if (horizon_gpu_failed(res))
+        goto fail_mem;
+
+    res = horizon_gpu_vm_map(chan->hang_range, 0, chan->hang_mem, 0,
+                             HORIZON_CHANNEL_HANG_BUFFER_SIZE,
+                             HORIZON_GPU_PTE_KIND_PITCH, false,
+                             &chan->hang_map);
+    if (horizon_gpu_failed(res))
+        goto fail_range;
+
+    uint32_t *base = horizon_gpu_mem_cpu_ptr(chan->hang_mem);
+    if (!base) {
+        res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+        goto fail_map;
+    }
+
+    const uint64_t base_va = horizon_gpu_mapping_va(chan->hang_map);
+    chan->hang_status = (volatile uint32_t *)(
+        (uint8_t *)base + HORIZON_CHANNEL_HANG_STATUS_OFFSET);
+    chan->hang_cmds_va = base_va + HORIZON_CHANNEL_HANG_CMDS_OFFSET;
+
+    for (uint32_t slot = 0; slot < HORIZON_CHANNEL_HANG_MARKER_SLOTS;
+         slot++) {
+        uint32_t *cmd = (uint32_t *)((uint8_t *)base +
+            HORIZON_CHANNEL_HANG_CMDS_OFFSET +
+            (uint64_t)slot * HORIZON_CMDS_SEM_RELEASE_DWORDS * 4);
+        const uint32_t emitted = horizon_cmds_semaphore_release(
+            cmd, base_va + HORIZON_CHANNEL_HANG_STATUS_OFFSET, slot + 1u);
+        if (emitted != HORIZON_CMDS_SEM_RELEASE_DWORDS) {
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "channel %p: cannot encode hang marker %u at "
+                         "GPU VA 0x%llx", (void *)chan, slot,
+                         (unsigned long long)base_va);
+            res = horizon_gpu_err(HORIZON_GPU_ERR_STATE);
+            goto fail_map;
+        }
+    }
+
+    res = horizon_gpu_mem_flush(chan->hang_mem, 0,
+                                HORIZON_CHANNEL_HANG_BUFFER_SIZE);
+    if (horizon_gpu_failed(res))
+        goto fail_map;
+
+    chan->hang_records = calloc(HORIZON_CHANNEL_HANG_MARKER_SLOTS,
+                                sizeof(*chan->hang_records));
+    if (!chan->hang_records) {
+        res = horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);
+        goto fail_map;
+    }
+
+    horizon_logf(&dev->log, HORIZON_LOG_INFO,
+                 "channel %p: hang recorder status VA=0x%llx, marker "
+                 "VA=[0x%llx,0x%llx), slots=%u", (void *)chan,
+                 (unsigned long long)(base_va +
+                     HORIZON_CHANNEL_HANG_STATUS_OFFSET),
+                 (unsigned long long)chan->hang_cmds_va,
+                 (unsigned long long)(chan->hang_cmds_va +
+                     (uint64_t)HORIZON_CHANNEL_HANG_MARKER_SLOTS *
+                     HORIZON_CMDS_SEM_RELEASE_DWORDS * 4),
+                 HORIZON_CHANNEL_HANG_MARKER_SLOTS);
+    return horizon_gpu_ok();
+
+fail_map:
+    channel_create_unwind_step(dev, "vm_unmap(hang_map)",
+                               horizon_gpu_vm_unmap(chan->hang_map));
+    chan->hang_map = NULL;
+fail_range:
+    channel_create_unwind_step(dev, "vm_release(hang_range)",
+                               horizon_gpu_vm_release(chan->hang_range));
+    chan->hang_range = NULL;
+fail_mem:
+    channel_create_unwind_step(dev, "mem_destroy(hang_mem)",
+                               horizon_gpu_mem_destroy(chan->hang_mem));
+    chan->hang_mem = NULL;
+    chan->hang_status = NULL;
+    return res;
+}
+
+static const char *channel_hang_phase_desc(horizon_hang_marker_phase phase)
+{
+    switch (phase) {
+    case HORIZON_HANG_MARKER_BEFORE_SPAN: return "before-span";
+    case HORIZON_HANG_MARKER_AFTER_SPAN:  return "after-span";
+    default:                              return "invalid";
+    }
+}
+
+/* The caller captures `breadcrumb` before asking nvgpu for the error record,
+ * so every line in the dump describes one coherent observation even if that
+ * ioctl has side effects.  CCSR/PBDMA are stated as unavailable rather than
+ * printed as invented zeroes: normal applications cannot open nvhost-dbg-gpu
+ * without GpuDebug permission, and the legacy channel ABI supplies no
+ * hw_channel_id with which to address CCSR_CHANNEL_INST/CHANNEL anyway. */
+static void
+channel_dump_hang_snapshot(horizon_gpu_channel *chan, uint32_t notifier,
+                           uint32_t breadcrumb, const NvError *err,
+                           Result error_info_rc)
+{
+    const horizon_gpu_device_info *info = &chan->dev->info;
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "=== GM20B GPU HANG SNAPSHOT ===");
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "channel: object=%p nvhost_fd=%u hw_channel_id=unavailable "
+                 "class_3d=0x%04x gpfifo=0x%04x", (void *)chan,
+                 chan->gc.base.fd, info->threed_class, info->gpfifo_class);
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "USERD: unavailable (Switch 1 ALLOC_GPFIFO_EX2 does not "
+                 "return a USERD mapping); GP_GET=n/a GP_PUT=n/a PB_GET=n/a");
+
+    /* BOTH, because both are dereferenced below: the status word for
+     * the breadcrumb and the record table for what it names. They are
+     * set and cleared together, and testing only one is how a teardown
+     * that clears one first would reach the other. */
+    if (!chan->hang_status || !chan->hang_records) {
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "frontend: unavailable (set "
+                     "HORIZON_GPU_HANG_SNAPSHOT=1 before device creation)");
+    } else if (breadcrumb == 0) {
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "frontend: breadcrumb=0; no instrumented span boundary "
+                     "reached this channel");
+    } else if (breadcrumb > HORIZON_CHANNEL_HANG_MARKER_SLOTS ||
+               breadcrumb > chan->hang_next_slot) {
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "frontend: breadcrumb=%u is outside emitted slots "
+                     "(next=%u) — recorder data is invalid", breadcrumb,
+                     chan->hang_next_slot);
+    } else {
+        const horizon_hang_marker_record *rec =
+            &chan->hang_records[breadcrumb - 1u];
+        const uint64_t end = rec->gpu_va + (uint64_t)rec->num_dwords * 4;
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "frontend: breadcrumb=%u submit=%llu kind=%s span=%u "
+                     "phase=%s push=[0x%llx,0x%llx)", breadcrumb,
+                     (unsigned long long)rec->submit_id,
+                     rec->is_wait ? "acquire" : "work", rec->span_index,
+                     channel_hang_phase_desc(rec->phase),
+                     (unsigned long long)rec->gpu_va,
+                     (unsigned long long)end);
+        if (rec->phase == HORIZON_HANG_MARKER_BEFORE_SPAN) {
+            horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                         "frontend interpretation: the GPFIFO reached this "
+                         "push, but its WFI-ordered completion marker did "
+                         "not execute");
+        } else {
+            horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                         "frontend interpretation: every engine operation "
+                         "through this push completed before the marker");
+        }
+
+        if (breadcrumb < chan->hang_next_slot) {
+            const horizon_hang_marker_record *next =
+                &chan->hang_records[breadcrumb];
+            const uint64_t next_end = next->gpu_va +
+                                      (uint64_t)next->num_dwords * 4;
+            horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                         "frontend next-not-reached: breadcrumb=%u submit=%llu "
+                         "kind=%s span=%u phase=%s push=[0x%llx,0x%llx)",
+                         breadcrumb + 1u,
+                         (unsigned long long)next->submit_id,
+                         next->is_wait ? "acquire" : "work",
+                         next->span_index,
+                         channel_hang_phase_desc(next->phase),
+                         (unsigned long long)next->gpu_va,
+                         (unsigned long long)next_end);
+        }
+    }
+
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "CCSR: unavailable (no hw_channel_id / GpuDebug privilege)");
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "PBDMA: unavailable (privileged register access requires "
+                 "nvhost-dbg-gpu + GpuDebug)");
+
+    if (R_SUCCEEDED(error_info_rc)) {
+        bool all_zero = true;
+        for (uint32_t i = 0; i < CHANNEL_NVERROR_INFO_WORDS; i++)
+            all_zero &= err->info[i] == 0;
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "error: notifier=%u error_type=%u (%s) "
+                     "info_all_zero=%s", notifier, err->type,
+                     channel_error_info_desc(err->type),
+                     all_zero ? "yes" : "no");
+    } else {
+        horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                     "error: notifier=%u error_info=unavailable(0x%08x)",
+                     notifier, error_info_rc);
+    }
+    horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
+                 "================================");
 }
 
 horizon_gpu_result
@@ -244,6 +598,74 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         goto fail_free;
     }
 
+    /* DIAGNOSTIC SCHEDULING KNOBS, AND THEY SHIP. This block said
+     * "(uncommitted)" while being committed, which is worse than
+     * either. The Godot Forward+ draw stalls in quanta of ~165 ms, the
+     * period of the host scheduler's ctxsw-timeout check; the working
+     * hypothesis is a preemption request that cannot complete.
+     * Priority maps to the channel timeslice in nvgpu (low/medium/high
+     * = 1300/2600/5200 us), and the ioctl named at the top of this
+     * file sets the timeslice directly.
+     *
+     * Both are opt-in and nothing in this tree sets either, so a
+     * healthy launch reads two absent variables and does nothing. An
+     * unusable value is refused and said so, never substituted: the
+     * caller's create_info->prio is the answer when the environment
+     * has no better one, and a typo is not a better one. It used to
+     * be — any string that was neither "low" nor "high" reset the
+     * channel to Medium behind the caller's back. */
+    {
+        const char *p = getenv("HORIZON_GPU_CHANNEL_PRIO");
+        if (p) {
+            NvChannelPriority np = NvChannelPriority_Medium;
+            bool known = true;
+            if (!strcmp(p, "low"))         np = NvChannelPriority_Low;
+            else if (!strcmp(p, "medium")) np = NvChannelPriority_Medium;
+            else if (!strcmp(p, "high"))   np = NvChannelPriority_High;
+            else                           known = false;
+            if (!known) {
+                horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                             "diag: HORIZON_GPU_CHANNEL_PRIO='%s' is not "
+                             "low, medium or high — ignored; the channel "
+                             "keeps the priority it was created with", p);
+            } else {
+                Result prc = nvChannelSetPriority(&chan->gc.base, np);
+                horizon_logf(&dev->log,
+                             R_FAILED(prc) ? HORIZON_LOG_ERROR
+                                           : HORIZON_LOG_INFO,
+                             "diag: channel %p SetPriority(%s=%u) -> "
+                             "0x%08x", (void *)chan, p, (unsigned)np, prc);
+            }
+        }
+        const char *t = getenv("HORIZON_GPU_CHANNEL_TIMESLICE_US");
+        if (t) {
+            /* Parsed once, and checked: a zero or a truncated value
+             * went to the scheduler unexamined, and the log line
+             * re-parsed the string instead of printing what was
+             * sent. */
+            char *end = NULL;
+            const unsigned long v = strtoul(t, &end, 0);
+            if (end == t || *end != '\0' || v == 0 || v > UINT32_MAX) {
+                horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                             "diag: HORIZON_GPU_CHANNEL_TIMESLICE_US='%s' "
+                             "is not a microsecond count in 1..%u — "
+                             "ignored", t, (unsigned)UINT32_MAX);
+            } else {
+                const u32 asked = (u32)v;
+                u32 us = asked;
+                Result trc = nvIoctl(
+                    chan->gc.base.fd,
+                    HORIZON_NVGPU_IOCTL_CHANNEL_SET_TIMESLICE, &us);
+                horizon_logf(&dev->log,
+                             R_FAILED(trc) ? HORIZON_LOG_ERROR
+                                           : HORIZON_LOG_INFO,
+                             "diag: channel %p SetTimeslice(%u us) -> "
+                             "0x%08x (returned %u)", (void *)chan,
+                             (unsigned)asked, trc, (unsigned)us);
+            }
+        }
+    }
+
     chan->syncpt_id = nvGpuChannelGetSyncpointId(&chan->gc);
 
     /* Logged at creation, not only on failure. The fourth hardware run
@@ -269,7 +691,7 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                      chan->syncpt_id, res.nv);
         if (!dev->allow_untrusted_syncpt_baseline)
             goto fail_channel;
-        /* Opt-in path only (docs/synchronization.md § 9). The baseline is
+        /* Opt-in path only. The baseline is
          * whatever calloc left — zero — and it is recorded as untrusted so
          * no caller can mistake this channel's fences for measurements. */
         chan->syncpt_value_at_create = 0;
@@ -355,8 +777,10 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     /* And the per-submit PROLOGUE, which runs before the caller's work:
      * one MEM_OP, L2_SYSMEM_INVALIDATE.
      *
-     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04
-     * (docs/hw-logs/t_vk_transfer-run3-FAIL.log). The fence block above
+     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04, on the run this
+     * tree used to carry as docs/hw-logs/t_vk_transfer-run3-FAIL.log.
+     * The name is kept although the file is not: a date with nothing
+     * to look up is not evidence. The fence block above
      * writes dirty L2 back after the work, so a GPU write reaches memory.
      * Nothing did the other direction: a line the GPU has touched stays
      * resident in L2 after that writeback, *clean*, and a later CPU write
@@ -404,8 +828,30 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         goto fail_cmdbuf_map;
     }
 
-    /* One flush covering both blocks: they share the page, and the
-     * cmdbuf is CPU-cached like everything else here.
+    /* And the increment-only fence block, for a submit whose command
+     * list is host methods with no memory effect. cmds.h states exactly
+     * when that is; horizon_gpu_submit_waits is the only caller.
+     *
+     * Encoded even on a channel that never submits a wait: it is four
+     * dwords in a page that is already allocated, and building it here
+     * means the submit path never has a "write the commands first"
+     * branch to get wrong. */
+    chan->bare_fence_cmds_dwords =
+        horizon_cmds_fence_incr_bare(cmds + CHANNEL_BARE_FENCE_CMDS_OFFSET / 4,
+                                     chan->syncpt_id);
+    if (chan->bare_fence_cmds_dwords == 0) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "syncpoint id %u out of encoding range (bare fence)",
+                     chan->syncpt_id);
+        res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        goto fail_cmdbuf_map;
+    }
+
+    /* One flush covering all four write-once blocks — fence, SET_OBJECT,
+     * L2 prologue, bare fence: they share the page, and the cmdbuf is
+     * CPU-cached like everything else here. This said "both blocks"
+     * until 2026-09-09; the length below has spanned four since the
+     * bare fence list was added.
      *
      * The third argument is a LENGTH. It was written as
      * CHANNEL_PROLOGUE_CMDS_OFFSET + n*4, which is a length only
@@ -415,9 +861,11 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
      * this one was not. Found in review of PR #7. */
     _Static_assert(CHANNEL_PROLOGUE_CMDS_OFFSET > CHANNEL_FENCE_CMDS_OFFSET,
                    "the prologue block must follow the fence block");
+    _Static_assert(CHANNEL_BARE_FENCE_CMDS_OFFSET > CHANNEL_PROLOGUE_CMDS_OFFSET,
+                   "the bare fence block must follow the prologue block");
     const uint64_t flush_len =
-        (CHANNEL_PROLOGUE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
-        (uint64_t)chan->prologue_cmds_dwords * 4;
+        (CHANNEL_BARE_FENCE_CMDS_OFFSET - CHANNEL_FENCE_CMDS_OFFSET) +
+        (uint64_t)chan->bare_fence_cmds_dwords * 4;
     res = horizon_gpu_mem_flush(chan->cmdbuf_mem, CHANNEL_FENCE_CMDS_OFFSET,
                                 flush_len);
     if (horizon_gpu_failed(res))
@@ -429,10 +877,21 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                            CHANNEL_SETOBJ_CMDS_OFFSET;
     chan->prologue_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                              CHANNEL_PROLOGUE_CMDS_OFFSET;
+    chan->bare_fence_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
+                               CHANNEL_BARE_FENCE_CMDS_OFFSET;
     chan->wait_cmds_va = horizon_gpu_mapping_va(chan->cmdbuf_map) +
                          HORIZON_CHANNEL_WAIT_CMDS_OFFSET;
     /* The channel is callocated, so every slot already reads as free and
      * the ring already starts at 0; nothing else needs initialising. */
+
+    /* Optional progress recorder.  Its failure is fatal when explicitly
+     * requested: silently running the reproduction without the requested
+     * pre-recovery evidence would waste the console run. */
+    if (dev->hang_snapshot) {
+        res = channel_hang_trace_init(chan);
+        if (horizon_gpu_failed(res))
+            goto fail_cmdbuf_map;
+    }
 
     /* Optional Zcull context. */
     if (create_info->bind_zcull) {
@@ -440,7 +899,7 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
                                      HORIZON_GPU_MEM_CACHED,
                                      &chan->zcull_mem);
         if (horizon_gpu_failed(res))
-            goto fail_cmdbuf_map;
+            goto fail_hang_trace;
 
         res = horizon_gpu_vm_map(chan->internal_range, CHANNEL_ZCULL_ALIGN,
                                  chan->zcull_mem, 0,
@@ -477,6 +936,31 @@ fail_zcull_map:
 fail_zcull_mem:
     channel_create_unwind_step(dev, "mem_destroy(zcull_mem)",
                                horizon_gpu_mem_destroy(chan->zcull_mem));
+fail_hang_trace:
+    if (chan->hang_map) {
+        channel_create_unwind_step(dev, "vm_unmap(hang_map)",
+                                   horizon_gpu_vm_unmap(chan->hang_map));
+        chan->hang_map = NULL;
+    }
+    if (chan->hang_range) {
+        channel_create_unwind_step(dev, "vm_release(hang_range)",
+                                   horizon_gpu_vm_release(chan->hang_range));
+        chan->hang_range = NULL;
+    }
+    if (chan->hang_mem) {
+        channel_create_unwind_step(dev, "mem_destroy(hang_mem)",
+                                   horizon_gpu_mem_destroy(chan->hang_mem));
+        chan->hang_mem = NULL;
+        /* Both of these point INTO what was just freed, and the reader
+         * that dereferences them (channel_dump_hang_snapshot) gates on
+         * hang_status rather than on hang_mem. Cleared here for the
+         * same reason channel_hang_trace_init's own failure path
+         * clears them. */
+        chan->hang_status = NULL;
+        chan->hang_cmds_va = 0;
+    }
+    free(chan->hang_records);
+    chan->hang_records = NULL;
 fail_cmdbuf_map:
     channel_create_unwind_step(dev, "vm_unmap(cmdbuf_map)",
                                horizon_gpu_vm_unmap(chan->cmdbuf_map));
@@ -607,16 +1091,45 @@ horizon_gpu_result horizon_gpu_channel_reap(horizon_gpu_channel *chan,
      * against the 85 us of CPU a vkQueueSubmit already costs on this
      * platform (t_vk_submits), it is not the expensive part — and a
      * cheap wrong answer here is what this whole fix is about. */
-    if (channel_check_fault(chan))
-        return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+    chan->stats.reaps++;
+
+    horizon_gpu_result res = horizon_channel_check_fault(chan);
+    if (horizon_gpu_failed(res))
+        return res;
+
+    /* NOTHING TO RETIRE IS NOTHING TO READ.
+     *
+     * The syncpoint read below is an ioctl, and horizon_gpu_submit reaps
+     * before it queues — so it is an ioctl per submit. What it buys is
+     * the retirement callbacks, and it buys nothing at all when no
+     * caller has registered one: the value read is compared against an
+     * empty list and then discarded. Nothing else in this function, or
+     * in the two that call it, keeps state derived from it —
+     * shadow_target is advanced by the submit, not by the reap.
+     *
+     * The fault check above is NOT part of this and stays
+     * unconditional. It is the safety property (a faulted channel's
+     * counter says "finished" for work that never ran), it costs a
+     * non-blocking event wait rather than an ioctl, and the callers on
+     * the submit path see the fault through it.
+     *
+     * HORIZON_GPU_EAGER_REAP=1 restores the read, so one console run can
+     * measure the submit path both ways instead of comparing a number
+     * from this build with a number from another one. */
+    if (chan->retire_count == 0 && !chan->dev->eager_reap) {
+        chan->stats.reaps_without_read++;
+        if (out_retired)
+            *out_retired = 0;
+        return horizon_gpu_ok();
+    }
 
     uint32_t hw;
-    horizon_gpu_result res = horizon_channel_read_syncpt(chan, &hw);
+    res = horizon_channel_read_syncpt(chan, &hw);
     if (horizon_gpu_failed(res)) {
-        /* An untrusted-baseline channel (docs/synchronization.md § 9) is
-         * one whose platform has no syncpoint read at all, so this fails
-         * every time and would fail every submit with it —
-         * horizon_gpu_submit reaps before it queues.
+        /* An untrusted-baseline channel is one whose platform has no
+         * syncpoint read at all, so this fails every time and would
+         * fail every submit with it — horizon_gpu_submit reaps before
+         * it queues.
          *
          * Report "nothing retired" and carry on. Retirement on such a
          * channel is meaningless anyway, and of the two possible
@@ -692,6 +1205,13 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
 
     uint64_t start = armGetSystemTick();
     NvFence nvf = { .id = fence.syncpt_id, .value = fence.threshold };
+    /* How much of the last chunk the kernel did not spend blocking, and
+     * whether that has been reported once. Both explained at the bottom
+     * of this loop, which is the same defect and the same fix as
+     * horizon_gpu_fence_wait (horizon/sync/syncpt.c). */
+    uint64_t unslept_ns = 0;
+    Result last_rc = 0;
+    bool reported_spin = false;
 
     for (;;) {
         uint32_t hw;
@@ -722,14 +1242,53 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                     w_us = rem;
             }
 
+            uint64_t chunk_start = armGetSystemTick();
+            atomic_fetch_add(&chan->dev->nv_wait_chunks, 1u);
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
                 return channel_reached_or_lost(chan);
-            if (rc != KERNELRESULT(TimedOut))
+            if (!horizon_nv_wait_timed_out(rc))
                 return horizon_gpu_err_nv(rc);
 
-            if (channel_check_fault(chan))
-                return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+            res = horizon_channel_check_fault(chan);
+            if (horizon_gpu_failed(res))
+                return res;
+
+            /* THIS BRANCH SPINS TOO, and it did not use to say so. The
+             * pacing below was added for the counter path only, and a
+             * chunk that expires without blocking turns this loop into
+             * two ioctls back to back for the caller's whole deadline
+             * — the 2026-08-24 measurement, unchanged here. There is no
+             * counter to re-read on this path, so the nap is taken in
+             * place rather than at the top of the next iteration; the
+             * notifier is re-checked above it either way. */
+            uint64_t spent_ns =
+                armTicksToNs(armGetSystemTick() - chunk_start);
+            uint64_t asked_ns = (uint64_t)(uint32_t)w_us * 1000u;
+            if (spent_ns < asked_ns) {
+                uint64_t nap_ns = asked_ns - spent_ns;
+                if (nap_ns > HORIZON_NV_WAIT_PACE_MAX_NS)
+                    nap_ns = HORIZON_NV_WAIT_PACE_MAX_NS;
+                uint64_t now = armTicksToNs(armGetSystemTick() - start);
+                if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
+                    if (now >= timeout_ns)
+                        return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+                    if (nap_ns > timeout_ns - now)
+                        nap_ns = timeout_ns - now;
+                }
+                if (!reported_spin) {
+                    reported_spin = true;
+                    last_rc = rc;
+                    horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
+                                 "channel wait: syncpt %u chunk returned "
+                                 "0x%08x without blocking on the untrusted-"
+                                 "baseline path — pacing the rest of the "
+                                 "deadline instead of re-asking",
+                                 fence.syncpt_id, last_rc);
+                }
+                atomic_fetch_add(&chan->dev->nv_wait_paced, 1u);
+                svcSleepThread((s64)nap_ns);
+            }
             /* Round the loop rather than returning: one expired chunk is
              * not the caller's deadline. Returning TIMEOUT here made
              * every finite wait on this path last CHANNEL_WAIT_CHUNK_US
@@ -745,17 +1304,46 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
         if (horizon_gpu_syncpt_reached(hw, fence.threshold))
             return channel_reached_or_lost(chan);
 
-        if (channel_check_fault(chan))
-            return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
+        res = horizon_channel_check_fault(chan);
+        if (horizon_gpu_failed(res))
+            return res;
 
         uint64_t elapsed_ns = armTicksToNs(armGetSystemTick() - start);
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
             elapsed_ns >= timeout_ns)
             return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
 
+        /* The previous chunk came back without blocking and the
+         * counter still has not reached. Sleep out what it did not
+         * spend, then round the loop — the counter and the notifier are
+         * both re-read at the top, so a fence that retired during the
+         * chunk and a channel that faulted during it are both answered
+         * at full speed and neither pays for this. */
+        if (unslept_ns != 0) {
+            if (!reported_spin) {
+                reported_spin = true;
+                horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
+                             "channel wait: syncpt %u chunk returned "
+                             "0x%08x without blocking and the counter is "
+                             "still short of %u — pacing the rest of the "
+                             "deadline instead of re-asking",
+                             fence.syncpt_id, last_rc, fence.threshold);
+            }
+            uint64_t nap_ns = unslept_ns;
+            if (nap_ns > HORIZON_NV_WAIT_PACE_MAX_NS)
+                nap_ns = HORIZON_NV_WAIT_PACE_MAX_NS;
+            if (timeout_ns != HORIZON_GPU_NO_TIMEOUT &&
+                nap_ns > timeout_ns - elapsed_ns)
+                nap_ns = timeout_ns - elapsed_ns;
+            unslept_ns = 0;
+            atomic_fetch_add(&chan->dev->nv_wait_paced, 1u);
+            svcSleepThread((s64)nap_ns);
+            continue;
+        }
+
         /* Bounded kernel wait per iteration; the loop re-checks the
          * notifier so a faulted channel cannot hang us forever, even
-         * with HORIZON_GPU_NO_TIMEOUT (docs/synchronization.md § 6). */
+         * with HORIZON_GPU_NO_TIMEOUT. */
         int32_t chunk_us = CHANNEL_WAIT_CHUNK_US;
         if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
             uint64_t remaining_ns = timeout_ns - elapsed_ns;
@@ -763,10 +1351,38 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             if (rem_us < chunk_us)
                 chunk_us = rem_us;
         }
-        /* Result deliberately not treated as fatal: a timeout of this
-         * chunk is the loop's normal pulse; real failures surface via
-         * SyncptRead or the notifier above. */
-        (void)nvFenceWait(&nvf, chunk_us);
+
+        /* A chunk that expired is the loop's normal pulse and needs
+         * nothing. A chunk that returned early is the case this used to
+         * discard, and discarding it cost a core: MEASURED on
+         * 2026-08-24 (t_fence_wait_many), nvFenceWait answers success in
+         * 0 ms for a threshold past the syncpoint's maximum, because
+         * nvhost calls such a threshold expired rather than block on an
+         * increment nothing will make. The counter disagreed, so this
+         * loop kept asking — as fast as two ioctls come back, for the
+         * whole deadline, on every thread that was waiting.
+         *
+         * Success is still not turned into "reached": what this channel
+         * promises is that the GPU got there, and only the counter and
+         * channel_reached_or_lost() can say that. Real failures continue
+         * to surface through the read and the notifier above. */
+        uint64_t chunk_start = armGetSystemTick();
+        atomic_fetch_add(&chan->dev->nv_wait_chunks, 1u);
+        last_rc = nvFenceWait(&nvf, chunk_us);
+        if (horizon_nv_wait_timed_out(last_rc))
+            continue;
+        if (R_FAILED(last_rc))
+            return horizon_gpu_err_nv(last_rc);
+
+        /* How long it blocked, not what it returned, is what says
+         * whether this was a pulse — and it is acted on at the top of
+         * the next iteration, once the counter and the notifier have
+         * been re-read. A fence that retires *during* the chunk also
+         * makes nvFenceWait return early, and that is the ordinary
+         * successful wait: it must not be paced or warned about. */
+        uint64_t spent_ns = armTicksToNs(armGetSystemTick() - chunk_start);
+        uint64_t asked_ns = (uint64_t)(uint32_t)chunk_us * 1000u;
+        unslept_ns = spent_ns < asked_ns ? asked_ns - spent_ns : 0;
     }
 }
 
@@ -899,6 +1515,34 @@ skip_inflight_check:
             return res;
         chan->zcull_mem = NULL;
     }
+    if (chan->hang_map) {
+        res = horizon_gpu_vm_unmap(chan->hang_map);
+        if (horizon_gpu_failed(res))
+            return res;
+        chan->hang_map = NULL;
+    }
+    if (chan->hang_range) {
+        res = horizon_gpu_vm_release(chan->hang_range);
+        if (horizon_gpu_failed(res))
+            return res;
+        chan->hang_range = NULL;
+    }
+    if (chan->hang_mem) {
+        res = horizon_gpu_mem_destroy(chan->hang_mem);
+        if (horizon_gpu_failed(res))
+            return res;
+        chan->hang_mem = NULL;
+        /* AND THE POINTERS INTO IT, because this function returns
+         * early on a failure below and leaves `chan` alive: an unmap
+         * or a release that fails after this point hands the caller
+         * back a channel whose hang_status still addresses freed
+         * memory and whose hang_records is already NULL. The next
+         * check_fault would read the first and index the second. */
+        chan->hang_status = NULL;
+        chan->hang_cmds_va = 0;
+    }
+    free(chan->hang_records);
+    chan->hang_records = NULL;
     res = horizon_gpu_vm_unmap(chan->cmdbuf_map);
     if (horizon_gpu_failed(res))
         return res;

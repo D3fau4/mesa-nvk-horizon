@@ -1,7 +1,7 @@
-From 7c9986571a61db175e114eac6dd3ae4fe51dcc02 Mon Sep 17 00:00:00 2001
+From 7732420d77e1ee9cd30b22806a23ff108ae2da85 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <noreply@invalid>
 Date: Mon, 10 Aug 2026 15:21:06 +0200
-Subject: [PATCH 40/49] vulkan/wsi: Horizon, a resized window is suboptimal,
+Subject: [PATCH 40/56] vulkan/wsi: Horizon, a resized window is suboptimal,
  not out of date
 
 mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
@@ -48,10 +48,10 @@ Why: a display mode change - docking the console, which takes the layer
  that is not a retry, the compositor handed back a slot we already hold,
  the copy fallback has no framebuffer, or the application holds every
  image and is blocking for one only it can free. The full table is in
- docs/wsi.md 5.1 and in the comment above wsi_horizon_extent_changed().
+ The full table is in
 Evidence: hardware, run 21 (2026-08-10, build 2026-08-10T13:44:43.834Z
  13336c0-dirty mesa:c5e9e66, game mode 3155 MiB), tests/t_vk_suboptimal.c:
- RESULT PASS (273/273), docs/hw-logs/t_vk_suboptimal-run21-PASS.log.
+ RESULT PASS (273/273).
  .
  AND THE BOUNDARY OF THAT PASS, because it is not the whole claim. With
  the console undocked and nothing resizing the layer, a backend that
@@ -140,7 +140,7 @@ Upstream: no - this file is the Horizon backend itself.
  1 file changed, 139 insertions(+), 18 deletions(-)
 
 diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
-index 6d2ae10..d22f198 100644
+index 86ce94dc45b..a48c5a5a5c6 100644
 --- a/src/vulkan/wsi/wsi_horizon.c
 +++ b/src/vulkan/wsi/wsi_horizon.c
 @@ -347,9 +347,11 @@ wsi_horizon_surface_get_capabilities(VkIcdSurfaceBase *surface,
@@ -315,7 +315,7 @@ index 6d2ae10..d22f198 100644
 +       * Two aligned u32s, written where libnx writes them and read
 +       * where libnx reads them. It is the same unsynchronised pair
 +       * vkGetPhysicalDeviceSurfaceCapabilitiesKHR already reads beside
-+       * a concurrent present on the fallback path (docs/wsi.md § 7),
++       * a concurrent present on the fallback path,
 +       * so this adds no hazard that was not already there and is not
 +       * this backend's to fix: the structure belongs to libnx. */
 +      chain->window->default_width = out.width;
@@ -356,5 +356,5 @@ index 6d2ae10..d22f198 100644
  
  static VkResult
 -- 
-2.43.0
+2.53.0.windows.2
 

@@ -36,7 +36,6 @@ and a Rust toolchain for the Switch target, which costs considerably more.
 it puts the archives, headers and an `nvk.pc` into `$DEVKITPRO/portlibs/switch`, so
 `pkg-config --cflags --libs nvk` gives you a working link line and nothing has to know
 where this repository is. It is still a static link — there is no ICD and no loader.
-See [`docs/BUILDING.md`](docs/BUILDING.md) §6.
 
 ## Run it on a console
 
@@ -54,7 +53,6 @@ Copy the `.nro` to `sdmc:/switch/horizon_gpu_tests/` and launch from hbmenu. Eac
 | `toolchain/` | Meson cross file, the derived-image Dockerfile, Rust target JSON, and every pinned version |
 | `scripts/` | Reproducible fetch / configure / build / check / package / CI scripts |
 | `tests/` | Host suites and on-device tests |
-| `docs/` | Design notes, the reference audit, and hardware logs |
 | `examples/` | Reserved. Empty today. |
 | `Makefile`, `meson.build` | The two cross-build paths; they do not build the same set |
 
@@ -71,8 +69,8 @@ compatible and upstreamable. Policy and third-party components:
 [`LICENSES/`](LICENSES/README.md). Mesa and libnx retain their own licences.
 
 > The reference ports studied during early research are GPL-2.0/AGPL-3.0 licensed. No
-> source text from them is copied into this repository. See
-> `docs/reference-analysis.md` § Licensing.
+> source text from them is copied into this repository — only publicly documented
+> behaviour, re-expressed independently.
 
 ## Legal
 

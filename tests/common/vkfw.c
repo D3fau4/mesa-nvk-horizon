@@ -261,9 +261,13 @@ bool vkfw_init_full(vkfw *fw, test_ctx *t, const void *features2,
                 "GetInstanceProcAddr(vkCreateInstance)"))
       return false;
 
+   /* "<suite>/<case>", so a driver message or a capture names the case
+    * that produced it and not just the .nro it came from. t_case_id()
+    * is stable for the case's lifetime, which is longer than the
+    * instance's. */
    const VkApplicationInfo app = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = test_name,
+      .pApplicationName = t_case_id(t),
       .apiVersion = VK_API_VERSION_1_3,
    };
 
@@ -946,9 +950,8 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
    };
    const VkPipelineLayoutCreateInfo plci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = desc->set_layout != VK_NULL_HANDLE ? 1u : 0u,
-      .pSetLayouts = desc->set_layout != VK_NULL_HANDLE ? &desc->set_layout
-                                                        : NULL,
+      .setLayoutCount = desc->set_layout_count,
+      .pSetLayouts = desc->set_layouts,
       .pushConstantRangeCount = desc->push_constant_B != 0 ? 1u : 0u,
       .pPushConstantRanges = desc->push_constant_B != 0 ? &pcr : NULL,
    };
@@ -1036,21 +1039,47 @@ bool vkfw_gfx_create(vkfw *fw, const char *what, const vkfw_gfx_desc *desc,
                                          : VK_COMPARE_OP_ALWAYS,
    };
 
-   const VkPipelineColorBlendAttachmentState cba = {
+   /* Blending off unless the caller states otherwise, which is what
+    * every test written before this field existed depends on: a blend
+    * would make the destination part of an answer that is supposed to
+    * be about what was written. `desc->blend` is the whole attachment
+    * state, not a flag, because a test that wants a blend wants to say
+    * which one. */
+   const VkPipelineColorBlendAttachmentState cba_off = {
       .blendEnable = VK_FALSE,
       .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
    };
+   const VkPipelineColorBlendAttachmentState cba =
+      desc->blend != NULL ? *desc->blend : cba_off;
+
+   /* Attachment 0 is the caller's; any extra ones are declared but never
+    * blended into, which is what a subpass that does not write them
+    * looks like. */
+   if (!t_check(t, desc->colour_extra_count <= 7,
+                "%s: %u extra colour attachments, at most 7 fit", what,
+                desc->colour_extra_count))
+      return false;
+   const uint32_t colour_count = 1 + desc->colour_extra_count;
+   VkFormat colour_formats[8];
+   VkPipelineColorBlendAttachmentState cbas[8];
+   colour_formats[0] = desc->colour_format;
+   cbas[0] = cba;
+   for (uint32_t i = 1; i < colour_count; i++) {
+      colour_formats[i] = desc->colour_extra_formats[i - 1];
+      cbas[i] = cba_off;
+   }
+
    const VkPipelineColorBlendStateCreateInfo cb = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &cba,
+      .attachmentCount = colour_count,
+      .pAttachments = cbas,
    };
 
    const VkPipelineRenderingCreateInfo prci = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-      .colorAttachmentCount = 1,
-      .pColorAttachmentFormats = &desc->colour_format,
+      .colorAttachmentCount = colour_count,
+      .pColorAttachmentFormats = colour_formats,
       .depthAttachmentFormat = desc->depth_format,
       .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
    };

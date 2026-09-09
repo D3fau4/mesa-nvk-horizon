@@ -77,11 +77,10 @@ pattern='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]compat'
 out=$(grep -RInE "$pattern" horizon/ 2>/dev/null)
 [ -n "$out" ] && report "compat/ header included from horizon/" "$out"
 
-# 8-10. Rejected designs 1-3 (CLAUDE.md): no simulated /dev/dri device,
-#    no libc interposition via -Wl,--wrap, no nouveau DRM uAPI
-#    reimplementation. Scoped to our own code, not docs/ (which names
-#    these patterns to explain why the reference ports are not the model)
-#    or mesa/ (a pinned upstream checkout, not ours to police here).
+# 8-10. Rejected designs 1-3: no simulated /dev/dri device, no libc
+#    interposition via -Wl,--wrap, no nouveau DRM uAPI reimplementation.
+#    Scoped to our own code, not mesa/ (a pinned upstream checkout, not
+#    ours to police here).
 #    compat/ is in scope from Phase 3 on — see the header.
 GREP_EXCL=(--exclude=check-layering.sh)
 OURS=(horizon/ compat/ tests/ scripts/ Makefile)

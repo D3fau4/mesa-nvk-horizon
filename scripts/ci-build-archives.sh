@@ -175,36 +175,43 @@ horizon_nvk_libs_present || {
 # meson.build's own fs.exists(), is therefore satisfied by a file whose
 # objects could all be missing.
 #
-# Linking is what cannot be faked, and t_vk_swapchain.nro comes out at
-# 14 MiB against t_init.nro's 237 KiB — the driver actually being in
-# there.
+# Linking is what cannot be faked, and vk_wsi.nro comes out at tens of
+# MiB against platform.nro's few hundred KiB — the driver actually being
+# in there.
 #
 # THE NUMBER IS READ, NOT WRITTEN DOWN. It was 32 for one afternoon and
 # then `t_vk_suboptimal` landed on main and made it 33. A constant here
 # would have failed the next honest build and taught whoever hit it that
 # this check is something to edit rather than to believe. meson.build's
-# own three lists are the source — the same way scripts/package-horizon.sh
-# reads nvk_tests out of it rather than guessing from a name prefix.
+# own three suite dictionaries are the source — the same way
+# scripts/package-horizon.sh reads nvk_suites out of it rather than
+# guessing from a name prefix.
+#
+# One .nro per suite, so it is the keys that are counted and not the
+# cases inside them. A key is at a two-space indent in those
+# dictionaries and a case name never is.
 step "rebuilding the .nro against them"
-scripts/build-horizon.sh
+scripts/build-horizon.sh test
 
-meson_test_count() { # list name -> how many tests it names
-    sed -n "/^$1 = \[/,/]/p" meson.build | grep -o "'t_[a-z_0-9]*'" | wc -l
+meson_suite_count() { # dict name -> how many suites it names
+    sed -n "/^$1 = {/,/^}/p" meson.build | sed 's/#.*//' |
+        grep -c "^  '[a-z_0-9]*' *:"
 }
-want_nro=$(( $(meson_test_count horizon_tests) \
-           + $(meson_test_count mesa_tests) \
-           + $(meson_test_count nvk_tests) ))
+want_nro=$(( $(meson_suite_count horizon_suites) \
+           + $(meson_suite_count mesa_suites) \
+           + $(meson_suite_count nvk_suites) ))
 [ "$want_nro" -gt 0 ] || {
-    echo "error: no test lists found in meson.build; a check that cannot" >&2
-    echo "       tell how many artefacts to expect must not pass." >&2
+    echo "error: no suite dictionaries found in meson.build; a check" >&2
+    echo "       that cannot tell how many artefacts to expect must" >&2
+    echo "       not pass." >&2
     exit 1
 }
 
 n=$(find "$HORIZON_BUILD_DIR" -maxdepth 1 -name '*.nro' | wc -l)
 echo "ci-build-archives: $n .nro in $HORIZON_BUILD_DIR (meson.build names $want_nro)"
 if [ "$n" -ne "$want_nro" ]; then
-    echo "error: meson.build names $want_nro tests and $n .nro were built." >&2
-    echo "       A lower count means meson skipped tests whose archives" >&2
+    echo "error: meson.build names $want_nro suites and $n .nro were built." >&2
+    echo "       A lower count means meson skipped suites whose archives" >&2
     echo "       it could not find — check the configure output above." >&2
     exit 1
 fi

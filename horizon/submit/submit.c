@@ -1,7 +1,7 @@
 /*
  * horizon_gpu — asynchronous GPFIFO submission.
  *
- * The increment discipline (known-risks R4): telling libnx the expected
+ * The increment discipline: telling libnx the expected
  * fence value grew (nvGpuChannelIncrFence) and emitting the actual
  * in-stream syncpoint-increment command list are ONE indivisible
  * operation here — requesting without emitting stalls the channel
@@ -17,14 +17,82 @@
 #include "../device/device_priv.h"
 #include "../sync/syncpt_math.h"
 
-/* Debug-synchronous mode bound: generous but finite
- * (docs/synchronization.md § 8). */
+/* Debug-synchronous mode bound: generous but finite. */
 #define SUBMIT_DEBUG_SYNC_TIMEOUT_NS UINT64_C(2000000000)
 
-horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
+static uint64_t
+submit_hang_marker(horizon_gpu_channel *chan, uint64_t submit_id,
+                   uint32_t span_index, horizon_hang_marker_phase phase,
+                   const horizon_gpu_cmd_span *span, bool is_wait)
+{
+    const uint32_t slot = chan->hang_next_slot++;
+    horizon_hang_marker_record *rec = &chan->hang_records[slot];
+    *rec = (horizon_hang_marker_record) {
+        .submit_id = submit_id,
+        .gpu_va = span->gpu_va,
+        .num_dwords = span->num_dwords,
+        .span_index = span_index,
+        .phase = phase,
+        .is_wait = is_wait,
+    };
+    return chan->hang_cmds_va +
+           (uint64_t)slot * HORIZON_CMDS_SEM_RELEASE_DWORDS * 4;
+}
+
+/* The whole of a submit, with the one thing that varies made explicit.
+ *
+ * `memory_barrier` is what separates a submit that touched the caller's
+ * memory from one that provably did not:
+ *
+ *   true   the L2-invalidate prologue runs before the work and the
+ *          fence block after it is wait-for-idle + L2 writeback +
+ *          increment. That is what makes a fence on this channel mean
+ *          "the work is done AND its writes are visible to a CPU", and
+ *          it is the only shape a caller's command list may have,
+ *          because this layer cannot know what that list touched.
+ *
+ *   false  neither. The command list is host methods with no memory
+ *          effect, so there is nothing to invalidate before it, nothing
+ *          to write back after it, and no engine work for a
+ *          wait-for-idle to wait for — the host executes the list in
+ *          pushbuffer order, so an increment emitted after it is after
+ *          it. horizon_gpu_submit_waits is the only caller that may
+ *          pass this, and it builds its own list; see
+ *          horizon_cmds_fence_incr_bare.
+ *
+ * Nothing else differs, including the entry accounting: a false
+ * `memory_barrier` appends one own entry (the increment) instead of two
+ * (prologue and fence block).
+ *
+ * `is_wait` is only bookkeeping — which of the two public entry points
+ * this submit came from. It is a separate parameter and not derived
+ * from `memory_barrier` because the two are independent:
+ * HORIZON_GPU_FULL_BARRIER_WAITS=1 makes a wait submit take the full
+ * barrier, and a caller's submit is never a wait.
+ */
+/* Undo what submit_hang_marker consumed, beside the GPFIFO unwind.
+ *
+ * Every failure path below restores chan->gc.num_entries and, where it
+ * had been requested, chan->gc.fence_incr — but the recorder's cursor
+ * was advancing too, and it was not restored. The slots leaked, so the
+ * recorder exhausted early; worse, hang_next_slot then named markers
+ * that never reached the GPFIFO, which is exactly the "recorder data
+ * is invalid" condition channel_dump_hang_snapshot's breadcrumb bound
+ * exists to catch and the one shape of it that bound cannot see. */
+static void submit_unwind_hang(horizon_gpu_channel *chan, bool hang_trace,
+                               uint32_t first_marker_slot)
+{
+    if (!hang_trace)
+        return;
+    chan->hang_next_slot = first_marker_slot;
+    chan->hang_submit_id--;
+}
+
+static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                                       const horizon_gpu_cmd_span *spans,
                                       uint32_t num_spans,
                                       horizon_gpu_submit_flags flags,
+                                      bool memory_barrier, bool is_wait,
                                       horizon_gpu_fence *out_fence)
 {
     if (!chan || (num_spans > 0 && !spans))
@@ -34,8 +102,7 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
         return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
     /* Bound num_spans against the queue capacity before it is used for
      * anything, so the back-pressure arithmetic further down cannot
-     * wrap silently (CLAUDE.md: overflow-check every size computation)
-     * instead of refusing the submit.
+     * wrap silently instead of refusing the submit.
      *
      * This used to also claim an unbounded count "would let the
      * validation loop below read spans[] out of the caller's array".
@@ -68,31 +135,50 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     horizon_gpu_device *dev = chan->dev;
 
-    /* Cheap reap first: one syncpoint read
-     * (docs/synchronization.md § 3). */
+    /* Two write-once marker entries bracket each caller span.  If the
+     * recorder has filled, preserve normal submission rather than wrapping
+     * and changing metadata which an old in-flight payload still names. */
+    bool hang_trace = chan->hang_records != NULL && num_spans > 0;
+    const uint32_t marker_entries = num_spans * 2u;
+    if (hang_trace &&
+        marker_entries > HORIZON_CHANNEL_HANG_MARKER_SLOTS -
+                         chan->hang_next_slot) {
+        hang_trace = false;
+        if (!chan->hang_exhausted_logged) {
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "channel %p: hang recorder exhausted after %u "
+                         "markers; later submits are uninstrumented",
+                         (void *)chan, chan->hang_next_slot);
+            chan->hang_exhausted_logged = true;
+        }
+    }
+
+    /* Cheap reap first: one syncpoint read. */
     horizon_gpu_result res = horizon_gpu_channel_reap(chan, NULL);
     if (horizon_gpu_failed(res))
         return res;
 
     /* Known-quantity back-pressure instead of retry loops: refuse when
      * the entry queue cannot take this submit; the caller may wait on an
-     * older fence and retry (docs/synchronization.md § 2.1).
+     * older fence and retry.
      *
      * TWO entries beyond the caller's spans, not one: the L2-invalidate
      * prologue before the work and the fence block after it. Counting
      * only the fence would let a submit be accepted that then fails to
      * append, and the partial-append unwind below would have to undo an
      * entry the arithmetic said would fit. */
-    const uint32_t own_entries = 2;
+    const uint32_t own_entries = memory_barrier ? 2u : 1u;
     /* Safe to add here, and only because of the bound above: num_spans
      * is at most GPFIFO_QUEUE_SIZE - 2 and num_entries at most
      * GPFIFO_QUEUE_SIZE, so the sum is at most 2*0x800 + 2. Written
      * down because the same sum without that bound is what wrapped. */
-    if (chan->gc.num_entries + num_spans + own_entries > GPFIFO_QUEUE_SIZE) {
+    const uint32_t trace_entries = hang_trace ? marker_entries : 0;
+    if (chan->gc.num_entries + num_spans + own_entries + trace_entries >
+        GPFIFO_QUEUE_SIZE) {
         horizon_logf(&dev->log, HORIZON_LOG_WARN,
                      "channel %p: GPFIFO entry queue full (%u queued, %u "
                      "requested)", (void *)chan, chan->gc.num_entries,
-                     num_spans + own_entries);
+                     num_spans + own_entries + trace_entries);
         return horizon_gpu_err(HORIZON_GPU_ERR_BUSY);
     }
 
@@ -106,6 +192,9 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
 
     u32 entries_before = chan->gc.num_entries;
     Result rc;
+    const uint64_t hang_submit_id =
+        hang_trace ? ++chan->hang_submit_id : 0;
+    const uint32_t first_marker_slot = chan->hang_next_slot;
 
     /* The prologue goes first, before any of the caller's work: one
      * L2_SYSMEM_INVALIDATE, so the GPU cannot read an L2 line that the
@@ -116,37 +205,86 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
      *
      * Appended even when num_spans is zero: a submit with no work still
      * signals a fence, and a caller may be using that fence to conclude
-     * that everything it wrote before is visible to the GPU.
+     * that everything it wrote before is visible to the GPU. "No work"
+     * and "no memory effect" are different statements, and only the
+     * second one — which the caller of submit_impl asserts, not this
+     * function — makes the prologue skippable.
      */
-    rc = nvGpuChannelAppendEntry(&chan->gc, chan->prologue_cmds_va,
-                                 chan->prologue_cmds_dwords, entry_flags, 0);
-    if (R_FAILED(rc)) {
-        chan->gc.num_entries = entries_before;
-        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                     "AppendEntry(L2 invalidate prologue) failed: 0x%08x", rc);
-        return horizon_gpu_err_nv(rc);
+    if (memory_barrier) {
+        rc = nvGpuChannelAppendEntry(&chan->gc, chan->prologue_cmds_va,
+                                     chan->prologue_cmds_dwords, entry_flags,
+                                     0);
+        if (R_FAILED(rc)) {
+            chan->gc.num_entries = entries_before;
+            submit_unwind_hang(chan, hang_trace, first_marker_slot);
+            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                         "AppendEntry(L2 invalidate prologue) failed: 0x%08x",
+                         rc);
+            return horizon_gpu_err_nv(rc);
+        }
     }
 
     for (uint32_t i = 0; i < num_spans; i++) {
+        if (hang_trace) {
+            const uint64_t marker_va = submit_hang_marker(
+                chan, hang_submit_id, i, HORIZON_HANG_MARKER_BEFORE_SPAN,
+                &spans[i], is_wait);
+            rc = nvGpuChannelAppendEntry(
+                &chan->gc, marker_va, HORIZON_CMDS_SEM_RELEASE_DWORDS,
+                entry_flags, 0);
+            if (R_FAILED(rc)) {
+                chan->gc.num_entries = entries_before;
+                submit_unwind_hang(chan, hang_trace, first_marker_slot);
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "AppendEntry(hang marker before span %u) "
+                             "failed: 0x%08x", i, rc);
+                return horizon_gpu_err_nv(rc);
+            }
+        }
+
         rc = nvGpuChannelAppendEntry(&chan->gc, spans[i].gpu_va,
                                      spans[i].num_dwords, entry_flags, 0);
         if (R_FAILED(rc)) {
             chan->gc.num_entries = entries_before; /* drop partial append */
+            submit_unwind_hang(chan, hang_trace, first_marker_slot);
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "AppendEntry(va=0x%llx n=%u) failed: 0x%08x",
                          (unsigned long long)spans[i].gpu_va,
                          spans[i].num_dwords, rc);
             return horizon_gpu_err_nv(rc);
         }
+
+        if (hang_trace) {
+            const uint64_t marker_va = submit_hang_marker(
+                chan, hang_submit_id, i, HORIZON_HANG_MARKER_AFTER_SPAN,
+                &spans[i], is_wait);
+            rc = nvGpuChannelAppendEntry(
+                &chan->gc, marker_va, HORIZON_CMDS_SEM_RELEASE_DWORDS,
+                entry_flags, 0);
+            if (R_FAILED(rc)) {
+                chan->gc.num_entries = entries_before;
+                submit_unwind_hang(chan, hang_trace, first_marker_slot);
+                horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                             "AppendEntry(hang marker after span %u) "
+                             "failed: 0x%08x", i, rc);
+                return horizon_gpu_err_nv(rc);
+            }
+        }
     }
 
     /* --- indivisible: request the increment AND emit its command --- */
     nvGpuChannelIncrFence(&chan->gc);
-    rc = nvGpuChannelAppendEntry(&chan->gc, chan->fence_cmds_va,
-                                 chan->fence_cmds_dwords, entry_flags, 0);
+    const uint64_t fence_va = memory_barrier ? chan->fence_cmds_va
+                                             : chan->bare_fence_cmds_va;
+    const uint32_t fence_dwords = memory_barrier
+                                      ? chan->fence_cmds_dwords
+                                      : chan->bare_fence_cmds_dwords;
+    rc = nvGpuChannelAppendEntry(&chan->gc, fence_va, fence_dwords,
+                                 entry_flags, 0);
     if (R_FAILED(rc)) {
         chan->gc.fence_incr--; /* undo the request: keep the two in step */
         chan->gc.num_entries = entries_before;
+        submit_unwind_hang(chan, hang_trace, first_marker_slot);
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "AppendEntry(fence cmdlist) failed: 0x%08x", rc);
         return horizon_gpu_err_nv(rc);
@@ -161,16 +299,35 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
          * code exists is measured on hardware by t_submit. */
         chan->gc.fence_incr--;
         chan->gc.num_entries = entries_before;
+        submit_unwind_hang(chan, hang_trace, first_marker_slot);
+        /* A rejected kickoff can be the first userland observation of a
+         * notifier.  Take the same coherent snapshot as reap/wait before
+         * doing any other channel operation; get_error below then reads the
+         * sticky type latched by that check. */
+        (void)horizon_channel_check_fault(chan);
         uint32_t err_type = 0;
         const char *desc = "unavailable";
         (void)horizon_gpu_channel_get_error(chan, &err_type, &desc);
-        if (err_type != 0)
-            chan->lost = true;
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "Kickoff failed: 0x%08x (notifier: %u '%s')", rc,
                      err_type, desc);
         return horizon_gpu_err_nv(rc);
     }
+
+    /* All three counters move together, here, one line after the kickoff
+     * that made them true. They were not: wait_submits was incremented
+     * by the caller after submit_impl returned, so the post-kickoff
+     * shadow-versus-kernel fence check below — which returns
+     * CHANNEL_LOST for work that HAS reached hardware — skipped it while
+     * the other two had already counted. That breaks the subset relation
+     * channel.h documents, and makes `wait_submits - bare_fence_submits`
+     * underflow instead of reporting the full-barrier waits. Found by
+     * review on PR #22. */
+    chan->stats.submits++;
+    if (!memory_barrier)
+        chan->stats.bare_fence_submits++;
+    if (is_wait)
+        chan->stats.wait_submits++;
 
     chan->shadow_target += 1;
 
@@ -200,8 +357,26 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
                  "channel %p: submitted %u span(s)+incr, fence=%u:%u",
                  (void *)chan, num_spans, fence.syncpt_id, fence.threshold);
 
+    if (hang_trace) {
+        for (uint32_t i = 0; i < num_spans; i++) {
+            const uint64_t end = spans[i].gpu_va +
+                                 (uint64_t)spans[i].num_dwords * 4;
+            horizon_logf(&dev->log, HORIZON_LOG_INFO,
+                         "hangtrace: channel=%p submit=%llu kind=%s "
+                         "span=%u/%u push=[0x%llx,0x%llx) before=%u "
+                         "after=%u fence=%u:%u", (void *)chan,
+                         (unsigned long long)hang_submit_id,
+                         is_wait ? "acquire" : "work", i, num_spans,
+                         (unsigned long long)spans[i].gpu_va,
+                         (unsigned long long)end,
+                         first_marker_slot + i * 2u + 1u,
+                         first_marker_slot + i * 2u + 2u,
+                         fence.syncpt_id, fence.threshold);
+        }
+    }
+
     /* Diagnostic mode only — compiled in, never taken otherwise, and no
-     * test may need it to pass (docs/synchronization.md § 8). */
+     * test may need it to pass. */
     if (dev->debug_synchronous) {
         horizon_gpu_result wres =
             horizon_gpu_channel_wait_fence(chan, fence,
@@ -218,6 +393,20 @@ horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
     if (out_fence)
         *out_fence = fence;
     return horizon_gpu_ok();
+}
+
+horizon_gpu_result horizon_gpu_submit(horizon_gpu_channel *chan,
+                                      const horizon_gpu_cmd_span *spans,
+                                      uint32_t num_spans,
+                                      horizon_gpu_submit_flags flags,
+                                      horizon_gpu_fence *out_fence)
+{
+    /* Always the full barrier. A caller's command list is opaque here:
+     * what it read, what it wrote, and which engine did it are things
+     * this layer does not know, and the cheap answer is only correct
+     * when it is known. */
+    return submit_impl(chan, spans, num_spans, flags, true, false,
+                       out_fence);
 }
 
 /* Finds a slot in the channel's wait ring that the GPU is provably done
@@ -325,9 +514,41 @@ horizon_gpu_result horizon_gpu_submit_waits(horizon_gpu_channel *chan,
         .num_dwords = n,
     };
 
+    /* THE ONE SUBMIT THAT KNOWS IT TOUCHED NO MEMORY.
+     *
+     * The command list is `num_fences` syncpoint acquires, built four
+     * lines up by horizon_cmds_syncpt_wait — host methods, no engine
+     * work, no read or write of anything the caller owns. So the
+     * L2-invalidate prologue has nothing to invalidate, the
+     * wait-for-idle has no engine work to wait for, and the L2 writeback
+     * has nothing dirty to write back.
+     *
+     * Coherence is not weakened by dropping the writeback, and that is
+     * the claim worth being careful about: the writes this submit is
+     * waiting for belong to another channel, and that channel's own
+     * fence block flushed dirty L2 *before* it signalled the fence being
+     * waited on here. The guarantee is made where the writes were made.
+     *
+     * THE LIST ITSELF IS THE ONE THING IT DOES TOUCH, and the premise
+     * that covers it belongs here rather than implied: the acquires
+     * live in chan->cmdbuf_mem, in a wait-ring slot taken round-robin
+     * from HORIZON_CHANNEL_WAIT_SLOTS, so the host engine has fetched
+     * these very bytes before. The CPU half is handled a few lines up
+     * by horizon_gpu_mem_flush, for the reason stated there — the page
+     * is CPU-cached and the host engine does not snoop. The GPU half
+     * is an assumption and is written down as one: that a host-method
+     * fetch leaves no line in L2 for that address which the dropped
+     * prologue would have invalidated. Nothing in this tree
+     * establishes it; HORIZON_GPU_FULL_BARRIER_WAITS=1 is the A/B that
+     * would.
+     *
+     * HORIZON_GPU_FULL_BARRIER_WAITS=1 puts both back, so one console
+     * run can measure the two shapes against each other. */
+    const bool memory_barrier = chan->dev->full_barrier_waits;
+
     horizon_gpu_fence fence;
-    res = horizon_gpu_submit(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
-                             &fence);
+    res = submit_impl(chan, &span, 1, HORIZON_GPU_SUBMIT_DEFAULT,
+                      memory_barrier, true, &fence);
     if (horizon_gpu_failed(res))
         return res;
 

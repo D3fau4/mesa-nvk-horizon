@@ -1,0 +1,103 @@
+From 959f60dc573771db593268aa87bb385212ea73d6 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Tue, 8 Sep 2026 21:35:44 +0200
+Subject: [PATCH 87/87] vulkan/wsi/Horizon: the copy fallback's dequeue loop
+ can end
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 3 (zero-copy scanout)
+Why: 0071 gave the copy fallback its own retry loop around
+ nwindowDequeueBuffer, `for (;;)` with nothing in it that can stop.
+ "Would block" is an overloaded answer on this platform:
+ wsi_horizon_dequeue_would_block accepts LibnxBinderError_NoInit, which
+ is Android's NO_INIT/-ENODEV and is what BOTH a full queue and a
+ disconnected one return, and LibnxBinderError_InvalidOperation.
+ Retrying is right for the full queue and never terminates for the
+ disconnected one — so a window another swapchain has taken, or a lost
+ device, leaves the application inside vkQueuePresentKHR for good.
+ `said_stuck` only stops the warning repeating; the
+ VK_ERROR_OUT_OF_DATE_KHR the caller would act on is below the loop and
+ is never reached.
+Evidence: wsi_horizon.c as 0071 left it, the whole of the loop's exit
+ logic:
+   if (!wsi_horizon_dequeue_would_block(rc)) { ...; return NULL; }
+   if (!said_stuck && ...) { mesa_logw(...); said_stuck = true; }
+   svcSleepThread(WSI_HORIZON_REFRESH_NS / 8);
+ The zero-copy acquire loop, 500 lines above, asks two more questions
+ every round and says why at length: `wsi_horizon_presentable` for a
+ window taken from under it — "What separates them is ownership, and
+ ownership is knowable" — and `vk_device_is_lost` for a device that
+ cannot free a buffer either, added after run 14 hung on exactly this.
+ The same two are asked here.
+ Class X: cross-built 2026-09-08 with this tree's flags,
+ aarch64-none-elf-gcc (devkitA64) 15.2.0, no warning. No console has
+ hung on this path; what a console HAS shown is the abort this loop
+ replaced, three times, quoted in the function's header.
+Upstream: no — the backend is Horizon's.
+
+A live, owned window whose buffers are all queued is still waited on,
+because that is a real wait and vkQueuePresentKHR has no timeout in its
+signature. What ends now is the wait for something that is never
+coming, and it ends as NULL, which the caller already turns into
+VK_ERROR_OUT_OF_DATE_KHR.
+---
+ src/vulkan/wsi/wsi_horizon.c | 41 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 83ea967..3f1fefd 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -2683,6 +2683,47 @@ wsi_horizon_fb_begin(struct wsi_horizon_swapchain *chain, u32 *out_stride)
+          return NULL;
+       }
+ 
++      /* AND THE SAME TWO WAYS OUT, WHICH THIS LOOP DID NOT HAVE.
++       *
++       * "Would block" is an overloaded answer here: LibnxBinderError_
++       * NoInit is Android's NO_INIT/-ENODEV, which a FULL queue and a
++       * DISCONNECTED one both return, and InvalidOperation is the
++       * producer's allowance being spent. Retrying is right for the
++       * first and never terminates for the second, so a loop with
++       * neither a deadline nor a way to tell them apart hangs the
++       * application inside vkQueuePresentKHR — `said_stuck` only stops
++       * the log repeating, and the OUT_OF_DATE below is never reached.
++       *
++       * What separates them is ownership and health, which is
++       * knowable, and the zero-copy acquire loop already asks both
++       * questions every round for exactly this reason; the same two
++       * are asked here. A window another swapchain has taken answers
++       * NO_INIT forever and `presentable` says so. A lost device
++       * cannot free a buffer either, and vk_device_is_lost is an
++       * atomic read of a flag NVK already sets. A live, owned window
++       * whose buffers are all queued is a real wait and is still
++       * waited on, which is what a present with no timeout in its
++       * signature means.
++       *
++       * Both answers are NULL, which the caller turns into
++       * VK_ERROR_OUT_OF_DATE_KHR — the result an application can act
++       * on, and the one this path already gives for its other
++       * failures. */
++      if (!wsi_horizon_presentable(chain)) {
++         mesa_logw("wsi_horizon: the copy fallback's window was taken "
++                   "while it waited for a buffer; last dequeue said "
++                   "0x%08x", rc);
++         return NULL;
++      }
++
++      VK_FROM_HANDLE(vk_device, device, chain->base.device);
++      if (vk_device_is_lost(device)) {
++         mesa_logw("wsi_horizon: the device was lost while the copy "
++                   "fallback waited for a buffer; last dequeue said "
++                   "0x%08x", rc);
++         return NULL;
++      }
++
+       /* The same budget and the same idle as the zero-copy acquire, for
+        * the same measured reason: the release event on this window is
+        * permanently signalled, so a loop with no sleep in it is binder
+-- 
+2.53.0.windows.2
+

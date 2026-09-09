@@ -337,30 +337,63 @@ int main(void)
 
     /* ---------------------------------------------------------------
      * Overwriting a key, and removing one.
+     *
+     * THE COUNTERS ARE CHECKED AT EVERY STEP HERE, and this is where
+     * they have to be. `entries`, `keys` and `live_bytes` used to be
+     * recomputed by a walk over the whole index after each mutation, so
+     * they were right by construction and there was nothing to get
+     * wrong; they are now maintained incrementally in bc_index_set and
+     * bc_index_erase, which is three branches that can each be wrong on
+     * their own. An overwrite is the interesting one: it must replace
+     * the entry's contribution to live_bytes rather than add to it, and
+     * it must not count a second entry.
      * --------------------------------------------------------------- */
     remove(BC_PATH);
     {
         horizon_gpu_blob_cache *c = open_a();
+        horizon_gpu_blob_cache_stats st;
         uint8_t key[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
 
         H_CHECK(put_n(c, 3, 40), "store v1");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1 && st.keys == 0 && st.live_bytes == 40,
+                "one entry of 40 bytes is live");
+
         H_CHECK(put_n(c, 3, 400), "store v2 under the same key");
         H_CHECK(get_is(c, 3, 400), "the newer value wins");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1,
+                "the overwrite replaced the entry rather than adding one");
+        H_CHECK(st.live_bytes == 400,
+                "and live_bytes is the new payload, not the sum of both");
         horizon_gpu_blob_cache_close(c);
 
         c = open_a();
         H_CHECK(get_is(c, 3, 400), "and it still wins after a reopen");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 1 && st.live_bytes == 400,
+                "the scan that rebuilt the index agrees with the puts that "
+                "built it");
 
         key_for(3, key);
         H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(c, key)),
                 "remove");
         H_CHECK(is_miss(c, 3), "removed is a miss");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "and removing the only entry takes its bytes with it");
         H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(c, key)),
                 "removing what is not there is not an error");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "and the second remove decremented nothing");
         horizon_gpu_blob_cache_close(c);
 
         c = open_a();
         H_CHECK(is_miss(c, 3), "and it stays removed across a reopen");
+        horizon_gpu_blob_cache_get_stats(c, &st);
+        H_CHECK(st.entries == 0 && st.live_bytes == 0,
+                "with nothing live on the other side of it either");
         horizon_gpu_blob_cache_close(c);
     }
 
@@ -461,6 +494,107 @@ int main(void)
                         "and the key carrying both comes back with both");
                 horizon_gpu_blob_cache_close(c);
             }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * A SLOT VACATED BY A DELETE MUST NOT LEAK ITS HALVES TO THE NEXT
+     * KEY THAT LANDS THERE.
+     *
+     * The index is open-addressed with linear probing, and erasing the
+     * last half of a key re-inserts the rest of its cluster to keep the
+     * probe chains intact. The slot a moved key leaves behind was marked
+     * free with its data and mark halves still in it, and a fresh key
+     * inserted there took only the key bytes and the used bit — so it
+     * inherited whatever the previous occupant had: a mark it was never
+     * given, or an entry pointing at somebody else's record. Found by a
+     * differential fuzz against an in-memory model: has_key() came back
+     * true after a reopen for a key that had only ever been put(),
+     * removed and put() again.
+     *
+     * The keys below are built so their hashes collide on purpose. The
+     * hash is the first four bytes little-endian and the smallest index
+     * has 64 slots, so key[0] chooses the slot outright.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        horizon_gpu_blob_cache *c = open_a();
+        uint8_t a[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 5, 0, 0, 0, 'a' };
+        uint8_t b[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 5, 0, 0, 0, 'b' };
+        uint8_t k6[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 6, 0, 0, 0, 'c' };
+        const uint8_t payload[16] = { 1, 2, 3, 4 };
+
+        H_CHECK(c != NULL, "open for the vacated-slot case");
+        if (c != NULL) {
+            /* a takes slot 5; b collides and takes slot 6, carrying a
+             * mark. Removing a's entry empties a's slot and moves b down
+             * into it, which vacates slot 6. */
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put(
+                        c, a, payload, sizeof(payload))), "put a (slot 5)");
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put_key(
+                        c, b)), "put_key b (collides, slot 6)");
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(
+                        c, a)), "remove a: b moves down, slot 6 vacated");
+
+            /* A key that hashes straight to slot 6 lands in it. It has
+             * data and never had a mark. */
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put(
+                        c, k6, payload, sizeof(payload))),
+                    "put a third key into the vacated slot");
+            H_CHECK(!horizon_gpu_blob_cache_has_key(c, k6),
+                    "it did not inherit the mark b left in that slot");
+            H_CHECK(horizon_gpu_blob_cache_has_key(c, b),
+                    "b still has its own mark");
+
+            /* The scan on open replays the same records in the same
+             * order, so the same slot is vacated and refilled there. */
+            horizon_gpu_blob_cache_close(c);
+            c = open_a();
+            H_CHECK(c != NULL, "reopen");
+            if (c != NULL) {
+                H_CHECK(!horizon_gpu_blob_cache_has_key(c, k6),
+                        "and not after a reopen either");
+                H_CHECK(horizon_gpu_blob_cache_has_key(c, b),
+                        "while b keeps its mark across the reopen");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
+
+        /* The other half: the vacated slot carried an entry. A key that
+         * is only ever marked must not come back claiming somebody
+         * else's record. */
+        remove(BC_PATH);
+        c = open_a();
+        H_CHECK(c != NULL, "open for the inherited-entry case");
+        if (c != NULL) {
+            uint8_t p[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 9, 0, 0, 0, 'p' };
+            uint8_t q[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 9, 0, 0, 0, 'q' };
+            uint8_t k10[HORIZON_GPU_BLOB_CACHE_KEY_SIZE] = { 10, 0, 0, 0, 'r' };
+            horizon_gpu_blob_cache_stats st;
+
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put(
+                        c, p, payload, sizeof(payload))), "put p (slot 9)");
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put(
+                        c, q, payload, sizeof(payload))),
+                    "put q (collides, slot 10)");
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_remove(
+                        c, p)), "remove p: q moves down, slot 10 vacated");
+            H_CHECK(horizon_gpu_succeeded(horizon_gpu_blob_cache_put_key(
+                        c, k10)), "mark a third key into the vacated slot");
+
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            H_CHECK(st.entries == 1 && st.keys == 1,
+                    "one entry (q) and one mark (the third key), not two "
+                    "entries");
+            {
+                void *data = NULL;
+                size_t got = 0;
+                H_CHECK(horizon_gpu_blob_cache_get(c, k10, &data, &got)
+                                .status == HORIZON_GPU_ERR_NOT_FOUND,
+                        "the marked-only key has no entry");
+                free(data);
+            }
+            horizon_gpu_blob_cache_close(c);
         }
     }
 
@@ -967,6 +1101,126 @@ int main(void)
                         "and the newest entry survived the rewrite");
                 H_CHECK((long)st.file_size == file_size_of(BC_PATH),
                         "the reported size is the size on disk");
+                horizon_gpu_blob_cache_close(c);
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * A compaction that moves more than one staging buffer. The rewrite
+     * reads the source forward, stages survivors in a 64 KiB buffer and
+     * seeks to the destination once per full buffer — so the switch from
+     * reading to writing and back, with a record still half-copied
+     * across it, only happens once the survivors exceed the buffer. The
+     * ceiling cases above compact 16 and 32 KiB caches and never reach
+     * it. This one has to: more than 128 KiB of survivors, all of them
+     * displaced by a dead prefix, one record of 100 KiB that spans a
+     * buffer boundary on its own, and holes from removed entries in the
+     * middle. Every survivor is read back after the rewrite and again
+     * after a reopen, against the payload put_n wrote.
+     * --------------------------------------------------------------- */
+    remove(BC_PATH);
+    {
+        const uint64_t cap = 768u * 1024u;
+        const size_t sizes[] = { 20u * 1024u, 100u * 1024u, 3000, 50u * 1024u,
+                                 8u * 1024u };
+        const uint32_t n_sizes = (uint32_t)(sizeof(sizes) / sizeof(sizes[0]));
+        horizon_gpu_blob_cache *c =
+            open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+        horizon_gpu_blob_cache_stats st;
+        uint32_t n = 0;
+        bool removed[512] = { false };
+        bool all = true;
+
+        H_CHECK(c != NULL, "open with a 768 KiB ceiling");
+        if (c != NULL) {
+            /* Put until the first compaction, removing every fourth
+             * earlier entry along the way so the file has holes. */
+            horizon_gpu_blob_cache_get_stats(c, &st);
+            while (st.compactions == 0 && n < 512) {
+                all = put_n(c, n, sizes[n % n_sizes]) && all;
+                if (n >= 4 && n % 4 == 0) {
+                    uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                    key_for(n - 3, k);
+                    all = horizon_gpu_succeeded(
+                              horizon_gpu_blob_cache_remove(c, k)) && all;
+                    removed[n - 3] = true;
+                }
+                n++;
+                horizon_gpu_blob_cache_get_stats(c, &st);
+            }
+            H_CHECK(all, "every put and remove before the compaction");
+            H_CHECK(st.compactions == 1, "exactly one compaction happened");
+            H_CHECK(st.file_size <= cap, "and the file is inside the ceiling");
+
+            /* What survived is the store's choice (newest first, within
+             * the watermark); what it must be is exactly the payload
+             * that was put, for every key that is still a hit. */
+            uint64_t survivor_bytes = 0;
+            uint32_t survivors = 0;
+            bool intact = true;
+            for (uint32_t i = 0; i < n; i++) {
+                if (removed[i]) {
+                    intact = is_miss(c, i) && intact;
+                    continue;
+                }
+                uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                void *data = NULL;
+                size_t got = 0;
+                key_for(i, k);
+                if (horizon_gpu_failed(horizon_gpu_blob_cache_get(
+                        c, k, &data, &got)))
+                    continue;
+                free(data);
+                intact = get_is(c, i, sizes[i % n_sizes]) && intact;
+                survivor_bytes += got;
+                survivors++;
+            }
+            H_CHECK(intact, "every surviving entry reads back its payload"
+                            " and every removed one is a miss");
+            H_CHECK(survivor_bytes > 128u * 1024u,
+                    "more than two staging buffers of survivors");
+            H_CHECK(get_is(c, n - 1, sizes[(n - 1) % n_sizes]),
+                    "the newest entry survived");
+            H_CHECK(st.entries == survivors,
+                    "the index counts exactly the survivors");
+            /* live_bytes against the payloads just read back through
+             * the index, which is what the field claims to be. The
+             * rewrite drops records and the counters are maintained
+             * per index operation, so a compaction that forgot to
+             * subtract a dropped entry would show here and nowhere
+             * else. */
+            H_CHECK(st.live_bytes == survivor_bytes,
+                    "and live_bytes is the payload those survivors hold");
+            horizon_gpu_blob_cache_close(c);
+
+            c = open_at(BC_PATH, drv_a, sizeof(drv_a), cap, false);
+            H_CHECK(c != NULL, "the compacted file reopens");
+            if (c != NULL) {
+                horizon_gpu_blob_cache_stats st2;
+                horizon_gpu_blob_cache_get_stats(c, &st2);
+                H_CHECK(!st2.was_reset && !st2.was_truncated,
+                        "with no repair");
+                H_CHECK(st2.entries == survivors &&
+                            st2.file_size == st.file_size,
+                        "with the same survivors and the same size");
+                H_CHECK(st2.live_bytes == survivor_bytes,
+                        "and the same live payload after the reopen");
+                bool same = true;
+                for (uint32_t i = 0; i < n; i++) {
+                    if (removed[i])
+                        continue;
+                    uint8_t k[HORIZON_GPU_BLOB_CACHE_KEY_SIZE];
+                    void *data = NULL;
+                    size_t got = 0;
+                    key_for(i, k);
+                    if (horizon_gpu_failed(horizon_gpu_blob_cache_get(
+                            c, k, &data, &got)))
+                        continue;
+                    free(data);
+                    same = get_is(c, i, sizes[i % n_sizes]) && same;
+                }
+                H_CHECK(same, "and every survivor reads back after it");
                 horizon_gpu_blob_cache_close(c);
             }
         }

@@ -50,6 +50,19 @@ extern "C" {
 #define HORIZON_SEMAPHORED_RELEASE_WFI_EN  UINT32_C(0)
 #define HORIZON_SEMAPHORED_RELEASE_SIZE_4B (UINT32_C(1) << 24)
 
+/* GPU virtual addresses are this wide. SEMAPHOREA carries OFFSET_UPPER in
+ * bits 7:0 and SEMAPHOREB carries OFFSET_LOWER in bits 31:2, so the pair
+ * encodes exactly 40 bits and an address above that cannot be expressed —
+ * it would be truncated into a different, valid address.
+ *
+ * This file is libnx-free and cannot query anything, so the width is a
+ * constant here. It is not left as an assumption: the device layer reads
+ * gpu_va_bit_count from the GPU's characteristics and refuses to create a
+ * device whose address space is a different width (device.c), so a chip
+ * that reported something else would fail loudly at init rather than
+ * silently truncate addresses at submit time. */
+#define HORIZON_CMDS_GPU_VA_BITS 40u
+
 /* MEM_OP_C/D — memory-barrier and L2 operations, also host methods, so
  * they need no engine object either. MEM_OP_A/B were removed for gm20x
  * and C/D carry their functionality (clb06f.h:112-136). OPERATION is
@@ -78,6 +91,7 @@ extern "C" {
 
 /* Emitted dword counts. */
 #define HORIZON_CMDS_FENCE_INCR_DWORDS   9u
+#define HORIZON_CMDS_FENCE_INCR_BARE_DWORDS 4u
 #define HORIZON_CMDS_SET_OBJECTS_DWORDS  (2u * HORIZON_CMDS_NUM_SUBCHANNELS)
 #define HORIZON_CMDS_SYNCPT_WAIT_DWORDS  4u
 #define HORIZON_CMDS_SEM_RELEASE_DWORDS  5u
@@ -117,6 +131,37 @@ static inline uint32_t horizon_cmd_hdr_incr(uint32_t subch, uint32_t method,
 uint32_t horizon_cmds_fence_incr(uint32_t buf[HORIZON_CMDS_FENCE_INCR_DWORDS],
                                  uint32_t syncpt_id);
 
+/* The same increment WITHOUT the wait-for-idle and the L2 writeback:
+ * SYNCPOINTA payload + SYNCPOINTB incr, and nothing else.
+ *
+ * WHEN THIS IS THE RIGHT BLOCK, AND IT IS A NARROW WHEN. The two methods
+ * horizon_cmds_fence_incr puts in front of the increment answer two
+ * questions, and a submit that touches no memory asks neither:
+ *
+ *   WFI SCOPE_ALL   makes the increment mean "the engines are done".
+ *                   A command list built only from HOST methods has no
+ *                   engine work to be done with: the host executes
+ *                   SYNCPOINTA/B in pushbuffer order, so an increment
+ *                   emitted after them is already after them.
+ *   L2_FLUSH_DIRTY  makes the increment mean "the writes are visible".
+ *                   A submit that wrote nothing has nothing to flush,
+ *                   and the writes it may be *waiting on* were flushed
+ *                   by the fence block of the channel that made them
+ *                   before it signalled the fence being waited for.
+ *
+ * So this is for a submit whose whole command list is host methods with
+ * no memory effect — horizon_gpu_submit_waits is the one caller, and it
+ * builds its list itself out of horizon_cmds_syncpt_wait. It is NOT for
+ * anything the caller supplied: this layer cannot know what a caller's
+ * command list touched, and a wrong answer here is a fence that reports
+ * work as complete and visible when it is neither.
+ *
+ * Returns the dword count, or 0 when syncpt_id exceeds the 12-bit index
+ * field. */
+uint32_t
+horizon_cmds_fence_incr_bare(uint32_t buf[HORIZON_CMDS_FENCE_INCR_BARE_DWORDS],
+                             uint32_t syncpt_id);
+
 /* GPU-side syncpoint wait: SYNCPOINTA payload=threshold + SYNCPOINTB
  * wait|switch (known-risks R10 — to be validated on hardware in Phase 1).
  * Returns the dword count, or 0 on invalid syncpt_id. */
@@ -145,7 +190,7 @@ horizon_cmds_set_objects(uint32_t buf[HORIZON_CMDS_SET_OBJECTS_DWORDS],
  * Returns the dword count, or 0 without writing anything if `gpu_va` is
  * not 4-byte aligned (OFFSET_LOWER is bits 31:2, so a misaligned address
  * would be silently truncated into a different, valid-looking one) or
- * does not fit the 40 GPU VA bits this address space has. */
+ * does not fit HORIZON_CMDS_GPU_VA_BITS. */
 uint32_t
 horizon_cmds_semaphore_release(uint32_t buf[HORIZON_CMDS_SEM_RELEASE_DWORDS],
                                uint64_t gpu_va, uint32_t payload);

@@ -1,7 +1,7 @@
-From 856feeed75fe60a3d3a6daf0fea6ef1375b7ea34 Mon Sep 17 00:00:00 2001
+From 1fba5f5106618d597a3fbfc4107968360ebff627 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:38:12 +0000
-Subject: [PATCH 08/49] util/os_time: sleep with usleep on any POSIX-lite
+Subject: [PATCH 08/56] util/os_time: sleep with usleep on any POSIX-lite
  platform
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ terms; the branch above still gives Linux, Managarm and Fuchsia
 clock_nanosleep.
 
 mesa-nvk-horizon: Phase 3 item 5 (timers / clocks) — a DEVIATION from
-  this session's item 3 scope, recorded in STATUS.md. It is one line
+  this session's item 3 scope, recorded as such. It is one line
   and it is what stops src/util compiling.
 Why: newlib has usleep and the headers the file wants, but Horizon is
   POSIX-lite, not POSIX (no syslog, no shm, no loader), so the existing
@@ -38,7 +38,7 @@ Upstream: yes — POSIX implies POSIX_LITE, so no platform's behaviour
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/util/os_time.c b/src/util/os_time.c
-index 71fc7e3..4660145 100644
+index 71fc7e3032b..46601456b6b 100644
 --- a/src/util/os_time.c
 +++ b/src/util/os_time.c
 @@ -86,7 +86,7 @@ os_time_sleep(int64_t usecs)
@@ -51,5 +51,5 @@ index 71fc7e3..4660145 100644
  
  #elif DETECT_OS_WINDOWS
 -- 
-2.43.0
+2.53.0.windows.2
 

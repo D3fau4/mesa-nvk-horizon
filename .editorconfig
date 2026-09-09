@@ -35,11 +35,3 @@ trim_trailing_whitespace = false
 [*.patch]
 trim_trailing_whitespace = false
 insert_final_newline = false
-
-[docs/hw-logs/**]
-trim_trailing_whitespace = false
-insert_final_newline = false
-
-[docs/history/**]
-trim_trailing_whitespace = false
-insert_final_newline = false

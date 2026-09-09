@@ -6,9 +6,8 @@ series applied on top of `MESA_COMMIT` (`toolchain/versions.env`).
 **`mesa/` is a pinned checkout, never our source.** No Mesa file is ever copied
 into this repository and edited — that is rejected design 7 in `CLAUDE.md`, and
 it is the specific failure mode of the reference ports, which carry whole edited
-Mesa files *and* an overlapping patch, so the real delta cannot be read
-(`docs/reference-analysis.md` § Inconsistencies). A patch series is reviewable,
-rebasable onto a newer Mesa, and can be sent upstream.
+Mesa files *and* an overlapping patch, so the real delta cannot be read. A patch
+series is reviewable, rebasable onto a newer Mesa, and can be sent upstream.
 
 ## Layout
 
@@ -32,7 +31,7 @@ Everything below the `Subject:` line, before the diff, is the commit message.
 It must carry these four fields, in this order:
 
 ```
-mesa-nvk-horizon: Phase <N> item <M> (<item name from docs/milestones.md>)
+mesa-nvk-horizon: Phase <N> item <M> (<item name from the milestones list>)
 Why: <the assumption Mesa makes that does not hold on newlib/libnx>
 Evidence: <the exact measurement — configure line, compiler error, command>
 Upstream: <yes|no> — <why>
@@ -50,10 +49,10 @@ makes the patch defensible upstream and what keeps this series small.
 ## Rules a patch must obey
 
 - **No mixed changes.** A patch is one functional change. No reformatting, no
-  renaming, no drive-by cleanups (`docs/milestones.md` Phase 3 exit criteria).
+  renaming, no drive-by cleanups (Phase 3 exit criterion).
 - **No copied text from the Phase 0 reference ports.** They are GPL-2.0 /
   AGPL-3.0; Mesa is MIT. Derive facts and hardware knowledge, never source text.
-  Any literal reuse needs an explicit decision recorded in `STATUS.md`
+  Any literal reuse needs an explicit recorded decision
   (`CLAUDE.md` § Licence hazard).
 - **Bisectable.** Each patch must leave the tree consistent on its own, so a
   series is split where the intermediate state still builds — not merged to
@@ -85,7 +84,45 @@ git -C mesa format-patch -o ../mesa-patches "$MESA_COMMIT"
 
 That rewrites the whole series, so re-read the diff before committing: the
 numbering, the subjects and the headers above are the contract the applier
-relies on.
+relies on. To add patches to the end without renumbering the ones already
+there, give the range and where it starts:
+
+```sh
+git -C mesa format-patch --start-number 59 -o ../mesa-patches HEAD~2..HEAD
+```
+
+**Never `git add -A` inside `mesa/`.** The enclosing repository *tracks*
+`mesa/.gitkeep` — `.gitignore` has `/mesa/*` with `!/mesa/.gitkeep`, so the
+directory survives a clone — and from inside `mesa/`, which `fetch-mesa.sh`
+creates with its own `git init`, that file is just another untracked one.
+`git add -A` sweeps it into the commit, `format-patch` writes a
+`create mode 100644 .gitkeep` into the patch, and `git am` on a fresh
+checkout then refuses the whole series with
+
+```
+error: .gitkeep: already exists in working directory
+```
+
+Stage the paths you edited by name, and read the patch's own diffstat before
+believing it:
+
+```sh
+sed -n '/^---$/,/^diff /p' mesa-patches/00NN-*.patch
+```
+
+**Verifying a new patch means applying the FILE, not trusting the history.**
+`apply-mesa-patches.sh --list` matches each patch's subject and diff against
+what `mesa/`'s history already records, so a patch you just committed there
+reports `applied` whether or not the file it was generated into would apply to
+anything. The check worth running is the one CI runs:
+
+```sh
+scripts/fetch-mesa.sh --force        # back to MESA_COMMIT, history dropped
+scripts/apply-mesa-patches.sh        # the whole series through git am
+```
+
+That is what found the `.gitkeep` above, three hours after `--list` had said
+everything was fine.
 
 ## The 2026-08-23 compaction (84 → 49)
 
@@ -101,9 +138,9 @@ evidence that supports its final state, and lists what it absorbed under
 `Absorbs:`; the full pre-compaction narrative is in this directory's own git
 history.
 
-Documents that are *records* — `docs/history/`, `docs/hw-logs/README.md`, and
-dated `STATUS.md` entries — keep the old numbers, because they describe the
-series as it was when those runs happened. The map, old → new:
+Dated hardware-run entries and other point-in-time records keep the old numbers,
+because they describe the series as it was when those runs happened. The map,
+old → new:
 
 | old | new | old | new |
 |---|---|---|---|

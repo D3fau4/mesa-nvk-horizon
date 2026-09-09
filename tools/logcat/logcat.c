@@ -2,11 +2,11 @@
  * logcat — print a file from the console's SD card over nxlink.
  *
  * WHY THIS EXISTS. Every test in tests/ writes its record to
- * sdmc:/horizon_gpu_tests/<name>.log, and the tests that matter most in
- * Phase 6 set `test_uses_display`, which means no console: the log file
+ * sdmc:/horizon_gpu_tests/<suite>.log, and the suites that matter most
+ * in Phase 6 set `test_uses_display`, which means no console: the log file
  * IS the whole record and nothing of it reaches a screen. testfw used to
  * stream itself over nxlink and that was removed at the user's direction
- * (STATUS.md, 2026-08-08) — the socket driver was the one variable that
+ * (2026-08-08) — the socket driver was the one variable that
  * correlated with run 14's MMU fault, and streaming per line also puts
  * network I/O inside the very loops whose pacing the swapchain tests
  * measure.
@@ -19,8 +19,9 @@
  * It links libnx and nothing else — no horizon_gpu, no Mesa, no testfw.
  *
  *   nxlink -s -a <ip> logcat.nro                    # list the directory
- *   nxlink -s -a <ip> logcat.nro t_vk_immediate     # one log, by stem
+ *   nxlink -s -a <ip> logcat.nro vk_present          # one log, by stem
  *   nxlink -s -a <ip> logcat.nro sdmc:/some/file    # any path
+ *   nxlink -s -a <ip> logcat.nro sdmc:/some/dir     # list any directory
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -41,7 +42,7 @@
  * the heap is about 400 MiB and a log is a few tens of kilobytes. */
 #define LOGCAT_CHUNK 4096
 
-/* A bare stem — "t_vk_immediate" — is resolved against LOGCAT_DIR and
+/* A bare stem — "vk_present" — is resolved against LOGCAT_DIR and
  * given the .log suffix. Anything containing ':' is taken as a whole
  * path, because that is what a Horizon device-qualified path looks like
  * and there is no other way to name a file outside the log directory.
@@ -93,15 +94,26 @@ static bool logcat_dump(const char *path)
     return ok;
 }
 
-static void logcat_list(void)
+/* Lists `dir`: LOGCAT_DIR when run without arguments, or any argument
+ * that names a directory rather than a file — Atmosphere's crash reports
+ * (sdmc:/atmosphere/crash_reports/) carry a timestamp in their name, so
+ * they cannot be fetched without listing the directory first.
+ *
+ * FALSE WHEN THE LISTING DID NOT HAPPEN, and that answer has to reach
+ * the exit status. This tool is driven from a script over nxlink with
+ * nobody at the console, so a zero exit is read as "the log came back";
+ * a directory that is unreadable, that hits an I/O error, or that is
+ * gone between the stat() and the opendir() would otherwise print one
+ * line into a stream nobody is watching and still let this say `done`. */
+static bool logcat_list(const char *dir)
 {
-    DIR *d = opendir(LOGCAT_DIR);
+    DIR *d = opendir(dir);
     if (d == NULL) {
-        printf("logcat: cannot open %s\n", LOGCAT_DIR);
-        return;
+        printf("logcat: cannot open %s\n", dir);
+        return false;
     }
 
-    printf("===== %s =====\n", LOGCAT_DIR);
+    printf("===== %s =====\n", dir);
     for (;;) {
         const struct dirent *e = readdir(d);
         if (e == NULL)
@@ -110,7 +122,7 @@ static void logcat_list(void)
             continue;
 
         char path[320];
-        snprintf(path, sizeof(path), "%s/%s", LOGCAT_DIR, e->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
 
         struct stat st;
         if (stat(path, &st) == 0)
@@ -120,6 +132,7 @@ static void logcat_list(void)
     }
     closedir(d);
     fflush(stdout);
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -148,11 +161,16 @@ int main(int argc, char **argv)
         for (int i = 1; i < argc; i++) {
             char path[320];
             logcat_resolve(argv[i], path, sizeof(path));
-            if (!logcat_dump(path))
+            struct stat st;
+            if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                if (!logcat_list(path))
+                    ok = false;
+            } else if (!logcat_dump(path)) {
                 ok = false;
+            }
         }
-    } else {
-        logcat_list();
+    } else if (!logcat_list(LOGCAT_DIR)) {
+        ok = false;
     }
 
     printf("logcat: %s\n", ok ? "done" : "done, with errors above");

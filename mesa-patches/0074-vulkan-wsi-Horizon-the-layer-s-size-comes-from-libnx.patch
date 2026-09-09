@@ -1,0 +1,164 @@
+From 47be3e0c6c3d5ad03f9c5b85569c3920ac56e897 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 19:00:00 +0000
+Subject: [PATCH 74/74] vulkan/wsi: Horizon, the layer's size comes from libnx,
+ not the queue
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 5 (present modes and scaling)
+Why: patch 0070 stopped re-reading NWindow::default_* on every surface
+ query and latched it once instead, on the argument that the first ask
+ always happens before this backend has registered anything. That is
+ true of the first SURFACE in a process and of nothing else. A second
+ surface over the same window latches after the first one's swapchains
+ have been and gone, and `default_*` is then the queue's default buffer
+ size, which is this process's previous registration arriving one
+ connect late — the very lag 0070 exists to stop reporting.
+Evidence: measured on a console 2026-09-07, sdmc:/horizon_gpu_tests/
+ vk_wsi.log, with 0070 applied. vk_wsi/swapchain latched 1280x720 and
+ passed 227/227. vk_wsi/suboptimal, which opens a surface of its own
+ after it, logged
+     wsi_horizon: the window already had dimensions 1280x720 set on it
+     when the layer's size was first asked for; taking 640x360 as the
+     layer
+ — 0070's own warning, firing on exactly the case it was written to
+ report. The case still passed 273/273, because everything downstream
+ agreed with the wrong number; an application would have been told its
+ layer had halved.
+Upstream: no — libnx and NWindow exist nowhere else.
+
+nwindowGetDimensions is the answer, and 0070 said it was not. What
+changed between the two is 0070 itself: it made
+wsi_horizon_release_window put NWindow::width back to the layer's size
+every time this backend gives the window up. libnx returns `width` when
+a producer has set it and `default_width` otherwise, so both of its
+branches now mean the layer —
+
+  - in a fresh process nothing has set the window, `width` is zero, and
+    the answer is `default_*` from the first connect, which is the
+    consumer's own with no producer echo in it yet;
+  - afterwards `width` is what the last producer asked for, and the
+    last producer to have this window was this backend, putting it
+    back.
+
+One field, written by us to the layer on release and read by us on
+latch, instead of a field with two authors read at whatever moment a
+surface happens to be created.
+
+The warning goes with it, because the condition it fired on is now the
+normal case. What replaces it is an INFO line, said only when the two
+sources disagree, naming both — so a log still shows the lag when it is
+there, and shows which of the two numbers this backend went with.
+
+The case it cannot get right is a window somebody OUTSIDE this backend
+configured: `width` is then that party's request and not the layer's,
+and nothing available here tells them apart. An application that sets
+its own window dimensions and then asks Vulkan what its surface is has
+asked a question with two answers.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YajZtX9CeYzC35x2t1QJJh
+---
+ src/vulkan/wsi/wsi_horizon.c | 70 +++++++++++++++++++++---------------
+ 1 file changed, 42 insertions(+), 28 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index c195fdb..a272f5f 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -354,15 +354,32 @@ wsi_horizon_platform(const struct wsi_device *wsi_device)
+  * registration behind it happen — so the value latched here is the
+  * consumer's own.
+  *
+- * `NWindow::width` is the tell. libnx leaves it zero until somebody
+- * calls `nwindowSetDimensions`, so a non-zero width at latch time means
+- * the window was already configured by something outside this backend,
+- * and `default_*` may be that party's echo rather than the layer's.
+- * That is worth one line in the log and is not worth failing over:
+- * there is no other source. `nwindowGetDimensions` is not one —
+- * it returns `nw->width` when it is set and `nw->default_width`
+- * otherwise, so it is this field with a preference for the producer's
+- * request in front of it.
++ * IT ASKS libnx, WHICH IS NOT WHAT THE OLD `wsi_horizon_get_extent`
++ * DID. `nwindowGetDimensions` returns `NWindow::width` when a producer
++ * has set it and `NWindow::default_width` otherwise, and in this
++ * backend both of those now mean the layer:
++ *
++ *   - in a fresh process nothing has set the window, so `width` is zero
++ *     and the answer is `default_*` from the first connect, which is
++ *     the consumer's own and has no producer echo in it yet;
++ *   - afterwards `width` is whatever the last producer asked for, and
++ *     `wsi_horizon_release_window` sets it back to the LAYER's size
++ *     every time this backend gives the window up. One field, written
++ *     by us to the layer on release and read by us on latch.
++ *
++ * `default_*` alone would be wrong for the second surface in a process,
++ * and MEASURED WRONG on 2026-09-07: `vk_wsi/suboptimal` opened after
++ * `vk_wsi/swapchain` had presented a 640x360 swapchain and read
++ * `default_*` as 640x360 while `NWindow::width` was the 1280x720 this
++ * backend had just put back — the queue's default buffer size lags a
++ * connect behind, and that lag is the whole defect this patch is about.
++ *
++ * The one case left is a window somebody OUTSIDE this backend
++ * configured, where `width` is that party's request and not the
++ * layer's. Nothing available here can tell that apart, so it is one
++ * line in the log rather than a failure: an application that sets its
++ * own window dimensions and then asks Vulkan what its surface is has
++ * asked a question with two answers.
+  */
+ static VkResult
+ wsi_horizon_layer_extent(const struct wsi_device *wsi_device,
+@@ -380,19 +397,13 @@ wsi_horizon_layer_extent(const struct wsi_device *wsi_device,
+       return VK_SUCCESS;
+    }
+ 
+-   u32 width = win->default_width;
+-   u32 height = win->default_height;
+-
+-   if (width == 0 || height == 0) {
+-      /* Nothing has connected yet, so the consumer has said nothing.
+-       * libnx's own accessor is the fallback, and on a window this
+-       * backend has not touched it reads the same two fields. */
+-      Result rc = nwindowGetDimensions(win, &width, &height);
+-      if (R_FAILED(rc)) {
+-         simple_mtx_unlock(&wsi->lock);
+-         mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
+-         return VK_ERROR_SURFACE_LOST_KHR;
+-      }
++   u32 width = 0;
++   u32 height = 0;
++   Result rc = nwindowGetDimensions(win, &width, &height);
++   if (R_FAILED(rc)) {
++      simple_mtx_unlock(&wsi->lock);
++      mesa_loge("wsi_horizon: nwindowGetDimensions failed: 0x%08x", rc);
++      return VK_ERROR_SURFACE_LOST_KHR;
+    }
+ 
+    if (width == 0 || height == 0) {
+@@ -400,12 +411,15 @@ wsi_horizon_layer_extent(const struct wsi_device *wsi_device,
+       return VK_ERROR_SURFACE_LOST_KHR;
+    }
+ 
+-   if (win->width != 0 || win->height != 0) {
+-      mesa_logw("wsi_horizon: the window already had dimensions %ux%u set on "
+-                "it when the layer's size was first asked for; taking %ux%u "
+-                "as the layer, which is the consumer's last word and may be "
+-                "a previous producer's request",
+-                win->width, win->height, width, height);
++   /* Said once, and only when the two sources disagree — which is when
++    * the queue's lag is visible and the reader might otherwise wonder
++    * which of the two numbers in the log this backend went with. */
++   if ((win->default_width != 0 || win->default_height != 0) &&
++       (win->default_width != width || win->default_height != height)) {
++      mesa_logi("wsi_horizon: taking %ux%u as the layer; the queue's default "
++                "buffer size says %ux%u, which is this process's previous "
++                "registration arriving a connect late",
++                width, height, win->default_width, win->default_height);
+    }
+ 
+    wsi->layer_window = win;
+-- 
+2.53.0.windows.2
+

@@ -33,7 +33,7 @@
 # expects.
 #
 # The compiler flags instead match this project's Makefile, which is the
-# build that was verified on real hardware (STATUS.md, ten .nro, 10/10
+# build that was verified on real hardware (ten .nro, 10/10
 # PASS) — not devkitPro's switchvars.sh defaults. The one deliberate
 # divergence: switchvars.sh uses `-fPIC -ftls-model=local-exec`, the
 # Makefile uses `-fPIE`. Keeping -fPIE means the Meson output is
@@ -68,7 +68,7 @@ nacptool  = 'nacptool'
 # pinned Mesa tree, not by reading.
 #
 # The target is the one rustc already ships (tier 3, os = "horizon");
-# docs/rust-toolchain.md explains why no custom target is defined.
+# no custom target is defined.
 #
 # --sysroot is what makes that target usable at all. It is tier 3, so
 # rustup has no prebuilt core for it, and Meson drives rustc directly
@@ -191,8 +191,8 @@ cpp_link_args = [
 [properties]
 # aarch64 Horizon binaries cannot run on the build machine, and there is
 # no emulator wired up: Meson must not try to run compiled test
-# programs. Anything needing a runtime answer is a hardware test
-# (docs/milestones.md HW class), not a configure-time check.
+# programs. Anything needing a runtime answer is a hardware test (HW
+# class), not a configure-time check.
 needs_exe_wrapper = true
 
 # For the Phase 3 Mesa build: where the cross toolchain's sysroot and

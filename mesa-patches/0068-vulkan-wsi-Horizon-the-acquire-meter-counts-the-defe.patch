@@ -1,0 +1,100 @@
+From 8bf8b9fb1df696ebfd93c4d8677bbc56fb14d362 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 07:11:36 +0000
+Subject: [PATCH 68/68] vulkan/wsi: Horizon, the acquire meter counts the
+ deferral, not the GPU
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 4 (Horizon WSI backend)
+Why: the counter 0066 added said "handed that fence to the GPU instead
+ of waiting for it". It is incremented in the acquire, at the moment the
+ WSI decides not to wait — which is before anything is known about how
+ the dependency will be consumed.
+ .
+ What consumes it is whatever the application does with the semaphore
+ and the fence it was just given. An application that takes the fence
+ and calls vkWaitForFences on it has waited on the CPU, and this counter
+ reads exactly the same as for one that put the semaphore in a submit's
+ wait list. That is not a corner case: it is what t_vk_present_draw,
+ t_vk_swapchain and t_vk_wsi_mt all do, so the first console run would
+ have produced a full count of "handed to the GPU" on three tests where
+ no GPU wait was emitted at all. Raised in review of the branch.
+ .
+ So the line says what it measures — the fence was left for the acquire
+ semaphore or fence to carry — and names the counter that says the other
+ thing: nvkmd_horizon's "wait(s) handed to the host engine", which 0049
+ increments after horizon_gpu_submit_waits() has taken the batch. The
+ two read together are the claim; either alone is not.
+ .
+ Only the wording and the comment change; the arithmetic is the same
+ counter in the same place, because the place is right for what it now
+ says it counts.
+Evidence: CROSS BUILD, scripts/ci-build-archives.sh over
+ ghcr.io/d3fau4/nx-dev:latest (aarch64-none-elf-gcc 15.2.0, meson
+ 1.11.2, -Wall -Wextra -Werror): wsi_horizon.c compiles with no warning
+ and libvulkan_wsi.a links. The line itself has never been printed by a
+ console. NO CONSOLE HAS RUN THIS.
+Upstream: no — it is a Horizon-only backend's own instrumentation.
+---
+ src/vulkan/wsi/wsi_horizon.c | 36 ++++++++++++++++++++++++++++--------
+ 1 file changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index c46fbc6..c49b351 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -752,12 +752,31 @@ struct wsi_horizon_acquire_meter {
+ 
+    uint32_t acquires;
+    uint32_t rounds;          /* dequeues that answered "come back later" */
+-   /* Of the acquires, the ones that handed the release fence on instead
+-    * of waiting for it. Counted separately and not folded into a mean,
+-    * because the two are not the same measurement: a deferred acquire's
+-    * total says nothing about when the buffer became usable, only about
+-    * when its index did. A window with a mix in it would report a mean
+-    * that is neither. */
++   /* Of the acquires, the ones that left the release fence for somebody
++    * else to wait on.
++    *
++    * IT COUNTS THE DEFERRAL AND NOT THE GPU, and the difference is the
++    * whole reason it is named this way. It is incremented here, where
++    * the WSI decides not to wait — before anything is known about how
++    * the dependency will be consumed. Whether it becomes a host-engine
++    * SYNCPOINT acquire depends on what the application does with the
++    * semaphore and fence it was given afterwards, and an application
++    * that takes the fence and calls vkWaitForFences on it has waited on
++    * the CPU with this counter reading the same as an application that
++    * did not. An earlier wording said "handed that fence to the GPU",
++    * which claimed the second thing while measuring the first.
++    *
++    * The counter that says the GPU did the waiting is nvkmd_horizon's,
++    * "wait(s) handed to the host engine"
++    * (MESA_VK_NVKMD_HORIZON_SUBMIT_STATS=1): it is incremented after
++    * horizon_gpu_submit_waits() has actually taken the batch. Read the
++    * two together — this one says the acquire stopped waiting, that one
++    * says the GPU started.
++    *
++    * Counted separately and not folded into a mean, because a deferred
++    * acquire's total says nothing about when the buffer became usable,
++    * only about when its index did. A window with a mix in it would
++    * report a mean that is neither. */
+    uint32_t deferred;
+    uint64_t total_ns;
+    uint64_t fence_ns;        /* of the total, inside nvMultiFenceWait  */
+@@ -1527,8 +1546,9 @@ wsi_horizon_meter_acquire(struct wsi_horizon_swapchain *chain,
+              " acquire(s), mean %" PRIu64 " us (max %" PRIu64 "), of which "
+              "%" PRIu64 " us waiting for a free buffer over %" PRIu32
+              " dequeue round(s) and %" PRIu64 " us on the compositor's "
+-             "release fence; %" PRIu32 " handed that fence to the GPU "
+-             "instead of waiting for it",
++             "release fence; %" PRIu32 " left that fence for the acquire "
++             "semaphore or fence to carry (whether the GPU then waited on "
++             "it is nvkmd_horizon's counter, not this one)",
+              (now_ns - m->window_start_ns) / 1000000u, m->acquires,
+              m->total_ns / m->acquires / 1000u, m->max_total_ns / 1000u,
+              (m->total_ns - m->fence_ns) / m->acquires / 1000u, m->rounds,
+-- 
+2.43.0
+

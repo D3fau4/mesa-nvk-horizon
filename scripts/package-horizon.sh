@@ -16,12 +16,13 @@
 #
 # libhorizon_gpu.a and libhorizon_compat.a are on every build this
 # script will accept at all (both build paths produce them before a
-# single test); the NVK archives are not (docs/BUILDING.md §4) and are
-# included only when $MESA_NVK_BUILD_DIR actually holds them.
+# single test); the NVK archives are not — a Makefile-only build never
+# produces them — and are included only when $MESA_NVK_BUILD_DIR
+# actually holds them.
 #
 # The point of the manifest is the Phase 2 goal itself: when a .nro is
-# copied to an SD card and run on console, the result recorded in
-# STATUS.md has to be attributable to an exact toolchain. A sha256 next
+# copied to an SD card and run on console, the result that gets
+# recorded has to be attributable to an exact toolchain. A sha256 next
 # to the pinned devkitA64/libnx/image versions is what makes "the ten
 # tests passed" a statement about a specific build — and the same
 # attribution is what tells a consuming project which commit's ABI a
@@ -54,8 +55,8 @@ elif [ -n "$(find build -maxdepth 1 -name '*.nro' 2>/dev/null)" ]; then
     echo "package-horizon: no .nro in $HORIZON_BUILD_DIR;" >&2
     echo "                 falling back to the Makefile output in build/" >&2
 else
-    echo "error: no .nro found; run scripts/build-horizon.sh or" >&2
-    echo "       scripts/build-switch.sh first." >&2
+    echo "error: no .nro found; run scripts/build-horizon.sh test or" >&2
+    echo "       scripts/build-switch.sh test first." >&2
     exit 1
 fi
 
@@ -71,19 +72,22 @@ fi
 # build behind and the manifest said nothing about it.
 #
 # Compared by modification time against the NVK archives, and only for
-# the tests that link them — meson.build's own nvk_tests list, read
-# here rather than guessed from a name prefix, so a test added there is
-# covered without anyone remembering this file. The horizon_gpu tests
-# link none of it and are legitimately older.
+# the suites that link them — meson.build's own nvk_suites dictionary,
+# read here rather than guessed from a name prefix, so a suite added
+# there is covered without anyone remembering this file. The
+# horizon_gpu suites link none of it and are legitimately older.
+#
+# The keys only: a suite is one .nro, and its cases are inside it. A key
+# is at a two-space indent in that dictionary and a case name never is.
 #
 # A tree with no NVK build has nothing to compare against and this says
 # so rather than passing quietly.
-_nvk_tests=$(sed -n '/^nvk_tests = \[/,/^]/p' meson.build |
-             grep -o "'t_[a-z_0-9]*'" | tr -d "'")
+_nvk_tests=$(sed -n '/^nvk_suites = {/,/^}/p' meson.build | sed 's/#.*//' |
+             grep -o "^  '[a-z_0-9]*' *:" | tr -d " ':")
 if [ -z "$_nvk_tests" ]; then
-    echo "error: no nvk_tests list found in meson.build; the staleness" \
-         "gate cannot tell which artefacts link the driver, and a gate" \
-         "that checks nothing must not report success" >&2
+    echo "error: no nvk_suites dictionary found in meson.build; the" \
+         "staleness gate cannot tell which artefacts link the driver," \
+         "and a gate that checks nothing must not report success" >&2
     exit 1
 fi
 # AND THE OTHER DIRECTION, WHICH COST A HARDWARE RUN: the build's own
@@ -151,7 +155,7 @@ else
         fi
     done
     # ITS OWN RULE, APPLIED TO ITS OWN COUNTER. This refuses outright
-    # when the nvk_tests list is empty, on the stated principle that a
+    # when the nvk_suites dictionary is empty, on the stated principle that a
     # gate which checks nothing must not report success — and then
     # printed "0 driver-linked artefact(s) checked" and exited 0, which
     # is what happens whenever it falls back to the Makefile output in
@@ -274,11 +278,11 @@ dropped=0
 # previous packaging run would be listed under this run's toolchain and
 # image digest.
 #
-# It is not hypothetical: tests 12 and 13 exist only while Mesa's
-# archives do. Package 13, remove the archives, build again (the
-# Makefile now prunes the two stale .nro from build/), package again —
-# without this, $OUT keeps the previous run's t_threads.nro and
-# t_ostime.nro and the new manifest claims them.
+# It is not hypothetical: the mesa_runtime suite exists only while
+# Mesa's archives do. Package it, remove the archives, build again (the
+# Makefile now prunes the stale .nro from build/), package again —
+# without this, $OUT keeps the previous run's mesa_runtime.nro and the
+# new manifest claims it.
 for old in "$OUT"/*.nro; do
     [ -e "$old" ] || continue
     name=$(basename "$old")
@@ -332,10 +336,10 @@ mkdir -p "$OUT/lib"
 # libhorizon_gpu.a.p/, resolved against the archive's own directory. A
 # plain cp into $OUT therefore staged an archive naming members that are
 # not beside it, and every package this project has ever published
-# carried one — while docs/BUILDING.md §5 called it "what a project
-# consuming horizon_gpu actually links against". STATUS.md records the
-# workaround: the object directory copied in by hand, once, and the
-# script left alone. The same was true of all seventeen NVK archives
+# carried one — even though it is exactly what a project consuming
+# horizon_gpu actually links against. The workaround on record: the
+# object directory copied in by hand, once, and the script left
+# alone. The same was true of all seventeen NVK archives
 # below.
 #
 # scripts/fatten-archives.sh converts them, and the whole set goes
@@ -392,7 +396,7 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 #
 # Unlike libhorizon_gpu.a, this is not on every build: the Makefile-only
 # path never configures Mesa at all, and even the Meson path can be
-# configured without NVK (docs/BUILDING.md §4). $_newest_lib, set by the
+# configured without NVK. $_newest_lib, set by the
 # staleness gate above, is already this script's own answer to "does
 # $MESA_NVK_BUILD_DIR hold a real build" — asked again here would be a
 # second place that question could drift from the first.
@@ -400,7 +404,7 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # $HORIZON_NVK_TEST_LIBS is the same list scripts/ci-build-archives.sh
 # and scripts/check-mesa-test-parity.sh already read out of
 # scripts/toolchain-env.sh — the seventeen archives meson.build's own
-# nvk_whole_libs/nvk_test_libs link the t_vk_* tests against. Copied
+# nvk_whole_libs/nvk_test_libs link the vk_* suites against. Copied
 # under their own relative path, not flattened to a bare basename:
 # src/util/libmesa_util.a exists in BOTH $MESA_BUILD_DIR (the minimal
 # probe build tests 12/13 link) and here — a different file built by a
@@ -419,8 +423,8 @@ cp -a horizon/include/horizon_gpu "$OUT/include/horizon_gpu"
 # scripts/toolchain-env.sh, shared with scripts/package-portlibs.sh. The
 # `if [ -n "$_newest_lib" ]` around it stays HERE and was deliberately
 # not moved with it: this script's answer to "no NVK build at all" is to
-# omit lib/nvk/ and still succeed, which docs/BUILDING.md §5 documents,
-# while an install with no driver in it is not an install and refuses.
+# omit lib/nvk/ and still succeed, while an install with no driver in
+# it is not an install and refuses.
 # That difference is the caller's, so the condition is the caller's.
 if [ -n "$_newest_lib" ]; then
     horizon_nvk_archive_gate || exit 1
@@ -598,7 +602,7 @@ _pkg_img=$(horizon_image_digest)
     if [ -d "$OUT/lib/nvk" ]; then
         echo "# NVK driver archives (sha256) — Mesa's own build products, linked"
         echo "# exactly as meson.build's nvk_whole_libs/nvk_test_libs and the"
-        echo "# t_vk_* tests already do; see those for the link order and group"
+        echo "# vk_* suites already do; see those for the link order and group"
         echo "# semantics (--start-group/--end-group is load-bearing here)."
         (cd "$OUT" && find lib/nvk -name '*.a' -exec sha256sum {} + | sort -k2)
         echo

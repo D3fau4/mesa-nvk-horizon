@@ -1,7 +1,7 @@
-From 2bbf0a098eb200d71265f78398581b2b3bee9aec Mon Sep 17 00:00:00 2001
+From 3c4c857d5e70b0bce84df635099d164670e4151c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 27 Jul 2026 20:26:52 +0000
-Subject: [PATCH 12/49] util/u_cpu_detect: count the CPUs on POSIX-lite
+Subject: [PATCH 12/56] util/u_cpu_detect: count the CPUs on POSIX-lite
  platforms too
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -26,7 +26,7 @@ paths enabled. The <unistd.h> include above moves for the same reason
 and in the same way.
 
 mesa-nvk-horizon: Phase 3 item 1 (OS detection) — the CPU-count half of
-  it, and the quality defect recorded in STATUS.md at the end of item 6
+  it, and the quality defect recorded at the end of item 6
 Why: Horizon is POSIX-lite (patch 0007: no <syslog.h>, no <sys/shm.h>,
   no dynamic loader), so it matched neither arm of the DETECT_OS_WINDOWS
   / DETECT_OS_POSIX pair and set no CPU count at all. newlib does define
@@ -52,7 +52,7 @@ Upstream: yes — POSIX-lite is an existing macro of Mesa's own, it
  1 file changed, 13 insertions(+), 3 deletions(-)
 
 diff --git a/src/util/u_cpu_detect.c b/src/util/u_cpu_detect.c
-index 451881d..1f6bf34 100644
+index 451881d1f7a..1f6bf34e35a 100644
 --- a/src/util/u_cpu_detect.c
 +++ b/src/util/u_cpu_detect.c
 @@ -73,7 +73,10 @@
@@ -93,5 +93,5 @@ index 451881d..1f6bf34 100644
     util_cpu_caps.nr_cpus = MAX2(1, available_cpus);
     total_cpus = MAX2(total_cpus, util_cpu_caps.nr_cpus);
 -- 
-2.43.0
+2.53.0.windows.2
 

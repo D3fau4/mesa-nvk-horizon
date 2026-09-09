@@ -100,6 +100,7 @@
    X(vkGetFenceStatus)                                                   \
    X(vkWaitForFences)                                                    \
    X(vkQueueSubmit)                                                      \
+   X(vkQueueBindSparse)                                                  \
    /* transfer and clear commands */                                     \
    X(vkCmdFillBuffer)                                                    \
    X(vkCmdUpdateBuffer)                                                  \
@@ -110,6 +111,12 @@
    X(vkCmdClearColorImage)                                               \
    X(vkCmdClearDepthStencilImage)                                        \
    X(vkCmdPipelineBarrier)                                               \
+   /* Core Vulkan 1.0, and here rather than in VKFW_WSI_PROCS where they
+    * used to be: a binary semaphore is not a window-system object, and
+    * putting them there meant a test that wanted one had to resolve
+    * VK_KHR_swapchain's entry points as well. */                        \
+   X(vkCreateSemaphore)                                                  \
+   X(vkDestroySemaphore)                                                 \
    /* pipelines, descriptors and the commands that use them */           \
    X(vkCreateShaderModule)                                               \
    X(vkDestroyShaderModule)                                              \
@@ -135,7 +142,12 @@
    X(vkCmdBeginRendering)                                                \
    X(vkCmdEndRendering)                                                  \
    X(vkCmdSetViewport)                                                   \
-   X(vkCmdSetScissor)
+   X(vkCmdSetScissor)                                                    \
+   X(vkCreateQueryPool)                                                  \
+   X(vkDestroyQueryPool)                                                 \
+   X(vkCmdResetQueryPool)                                                \
+   X(vkCmdWriteTimestamp)                                                \
+   X(vkGetQueryPoolResults)
 
 /* The window-system entry points, kept apart from the list above and
  * loaded on request.
@@ -157,9 +169,7 @@
    X(vkDestroySwapchainKHR)                                              \
    X(vkGetSwapchainImagesKHR)                                            \
    X(vkAcquireNextImageKHR)                                              \
-   X(vkQueuePresentKHR)                                                  \
-   X(vkCreateSemaphore)                                                  \
-   X(vkDestroySemaphore)
+   X(vkQueuePresentKHR)
 
 struct vkfw_dispatch {
 #define VKFW_DECL(name) PFN_##name name;
@@ -411,7 +421,9 @@ bool vkfw_submit_and_wait(vkfw *fw, VkCommandBuffer cb, const char *what);
  *                       part of any item here
  *   1 sample            multisampling is not in Phase 5
  *   blending off        every item compares written values; a blend
- *                       would make the destination part of the answer
+ *                       would make the destination part of the answer.
+ *                       The DEFAULT, not a rule: a test that is
+ *                       measuring blending sets `blend` below
  *   one colour att.     items 5 to 8 each render to exactly one
  *
  * Dynamic rendering only: there is no VkRenderPass anywhere in this
@@ -424,11 +436,26 @@ typedef struct vkfw_gfx_desc {
    size_t fs_B;
 
    VkFormat colour_format;
+   /* Colour attachments 1..colour_extra_count, when the pass declares
+    * more targets than attachment 0. Zero for every test that renders to
+    * one image, which is all of them except t_vk_mrt.
+    *
+    * VK_FORMAT_UNDEFINED is a legal entry and is the point: a subpass
+    * that declares a colour attachment it does not write reaches the
+    * hardware as SET_CT_SELECT.TARGET_COUNT counting it and
+    * SET_COLOR_TARGET_FORMAT saying DISABLED, which is the shape Godot's
+    * Forward+ colour pass has and its Mobile one does not.
+    */
+   uint32_t colour_extra_count;
+   VkFormat colour_extra_formats[7];
    /* VK_FORMAT_UNDEFINED when the pass has no depth attachment. */
    VkFormat depth_format;
 
-   /* VK_NULL_HANDLE when the shaders declare no descriptors. */
-   VkDescriptorSetLayout set_layout;
+   /* The descriptor set layouts, set 0 first, so a pipeline whose
+    * shaders read set 1 can say so. Count zero when the shaders declare
+    * no descriptors. */
+   uint32_t set_layout_count;
+   const VkDescriptorSetLayout *set_layouts;
 
    /* One push constant range at offset 0, or zero bytes for none. The
     * stages must be exactly the ones whose SPIR-V declares the block:
@@ -453,6 +480,20 @@ typedef struct vkfw_gfx_desc {
    bool depth_test;
    bool depth_write;
    VkCompareOp depth_compare;    /* only read when depth_test */
+
+   /* The colour blend state for the single attachment, or NULL for the
+    * "blending off, all four components written" default the list above
+    * describes.
+    *
+    * WHY THE WHOLE STRUCT AND NOT A FLAG. There is no one blend a test
+    * would mean by "on": the factors, the op and the write mask are the
+    * thing being measured whenever blending is being measured at all.
+    * Passing the state through keeps the fixture from having an opinion
+    * about which blend is the interesting one.
+    *
+    * Copied by value into the pipeline, so it need not outlive the
+    * vkfw_gfx_create call. */
+   const VkPipelineColorBlendAttachmentState *blend;
 } vkfw_gfx_desc;
 
 typedef struct vkfw_gfx {

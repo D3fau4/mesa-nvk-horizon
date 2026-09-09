@@ -3,12 +3,11 @@
  * reverse-order teardown with leak accounting.
  *
  * Bring-up order (verified against the reference port's hardware-tested
- * sequence, docs/reference-analysis.md § 4, re-expressed on the public
- * libnx API):
+ * sequence, re-expressed on the public libnx API):
  *
  *   nvInitialize -> nvFenceInit -> nvMapInit -> nvGpuInit
  *     -> nvGpuGetCharacteristics (REQUIRED; failure is an error, never a
- *        fallback to a hardcoded big-page size — memory-model § 3.1)
+ *        fallback to a hardcoded big-page size)
  *     -> nvAddressSpaceCreate(big_page_size)
  *     -> GetVARegions
  *
@@ -20,6 +19,8 @@
 
 #include "device_priv.h"
 #include "../memory/align.h"
+#include "horizon_gpu/cmds.h"
+#include "horizon_gpu/memory.h"
 
 /* result.h mirrors libnx Result as uint32_t; hold that to be true. */
 _Static_assert(sizeof(horizon_gpu_nv_result) == sizeof(Result),
@@ -77,6 +78,61 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
     const char *sync_env = getenv("HORIZON_GPU_SYNC");
     dev->debug_synchronous = create_info->debug_synchronous ||
                              (sync_env && sync_env[0] == '1');
+
+    const char *hang_env = getenv("HORIZON_GPU_HANG_SNAPSHOT");
+    dev->hang_snapshot = hang_env && hang_env[0] == '1';
+    if (dev->hang_snapshot) {
+        horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                     "GM20B hang snapshots enabled: WFI-ordered GPU "
+                     "breadcrumbs will bracket every submitted span");
+    }
+
+    /* Read once, at device creation, so a submit path never calls
+     * getenv: it walks environ, and the submit path is the hot one. */
+    const char *barrier_env = getenv("HORIZON_GPU_FULL_BARRIER_WAITS");
+    dev->full_barrier_waits = barrier_env && barrier_env[0] == '1';
+    const char *reap_env = getenv("HORIZON_GPU_EAGER_REAP");
+    dev->eager_reap = reap_env && reap_env[0] == '1';
+
+    /* Default ON, because the failure it prevents is a process death
+     * with no return path — see horizon_gpu_heap_range_is_ours. The
+     * variable exists so a case can measure what it costs and so the
+     * crash can be reproduced deliberately. */
+    /* Exactly "0" turns it off. It used to be heap_env[0] == '0', so
+     * any value beginning with a zero disabled the guard against a
+     * process-fatal Data Abort — the one knob here whose typo should
+     * fail safe. */
+    const char *heap_env = getenv("HORIZON_GPU_HEAP_CHECK");
+    dev->heap_page_check = !(heap_env && strcmp(heap_env, "0") == 0);
+
+    /* Said here, once, because it is the fact that explains a crash
+     * nobody else can explain: this process was handed a heap with a
+     * hole in it, by whatever ran in it before. Silent when there is
+     * none, which is every healthy launch. */
+    {
+        uint64_t borrowed_B = 0;
+        horizon_gpu_heap_region first = { 0 };
+        const uint32_t borrowed =
+            horizon_gpu_heap_borrowed_regions(&borrowed_B, &first);
+        if (borrowed != 0) {
+            horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                         "this process holds %u region(s) lent to another "
+                         "process, %llu bytes, first 0x%llx+0x%llx "
+                         "type=%u attr=0x%x perm=0x%x. malloc does not "
+                         "know, so every GPU object's payload is proved "
+                         "writable before it is touched — its descriptor "
+                         "and this layer's other allocations are not%s",
+                         (unsigned)borrowed,
+                         (unsigned long long)borrowed_B,
+                         (unsigned long long)first.addr,
+                         (unsigned long long)first.size,
+                         (unsigned)first.type, (unsigned)first.attr,
+                         (unsigned)first.perm,
+                         dev->heap_page_check
+                            ? "" : " — EXCEPT IT IS NOT, because "
+                                   "HORIZON_GPU_HEAP_CHECK=0");
+        }
+    }
 
     const char *untrusted_env = getenv("HORIZON_GPU_UNTRUSTED_SYNCPT_BASELINE");
     dev->allow_untrusted_syncpt_baseline =
@@ -146,6 +202,27 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
         goto fail_gpu;
     }
     device_fill_info(dev, ch);
+
+    /* The command builder encodes a GPU address in SEMAPHOREA/B, which
+     * together hold exactly HORIZON_CMDS_GPU_VA_BITS bits, and it rejects
+     * anything wider rather than truncating it. That builder is libnx-free
+     * and cannot query the width, so the two have to agree — and until now
+     * nothing checked that they did. An address space wider than the
+     * builder can encode would submit truncated addresses; a narrower one
+     * would let the builder accept addresses the hardware cannot reach.
+     * Either way the failure belongs here, at init, not at submit time. */
+    if (ch->gpu_va_bit_count != HORIZON_CMDS_GPU_VA_BITS) {
+        horizon_logf(&dev->log, HORIZON_LOG_ERROR,
+                     "gpu_va_bit_count is %u; the command builder encodes "
+                     "%u", ch->gpu_va_bit_count,
+                     (unsigned)HORIZON_CMDS_GPU_VA_BITS);
+        /* UNSUPPORTED, not ERR_NV: no nv call failed, so ERR_NV would
+         * print nv=0x00000000 beside a status that says a service call
+         * did. result.h reads "valid request this phase does not
+         * implement", which is this chip exactly. */
+        res = horizon_gpu_err(HORIZON_GPU_ERR_UNSUPPORTED);
+        goto fail_gpu;
+    }
 
     uint32_t as_big_page = create_info->as_big_page_size;
     if (as_big_page == 0) {
@@ -242,6 +319,17 @@ horizon_gpu_device_get_counters(const horizon_gpu_device *dev,
     out_counters->live_va_ranges = atomic_load(&dev->live_va_ranges);
     out_counters->live_mappings = atomic_load(&dev->live_mappings);
     out_counters->live_channels = atomic_load(&dev->live_channels);
+    return horizon_gpu_ok();
+}
+
+horizon_gpu_result
+horizon_gpu_device_get_wait_stats(const horizon_gpu_device *dev,
+                                  horizon_gpu_device_wait_stats *out_stats)
+{
+    if (!dev || !out_stats)
+        return horizon_gpu_err(HORIZON_GPU_ERR_INVALID_ARG);
+    out_stats->wait_chunks = atomic_load(&dev->nv_wait_chunks);
+    out_stats->paced_chunks = atomic_load(&dev->nv_wait_paced);
     return horizon_gpu_ok();
 }
 

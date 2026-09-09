@@ -284,7 +284,7 @@ horizon_nvk_missing_libs() {
     unset _hz_nvk_lib
 }
 
-# True when the archives t_vulkan links are present. Separate from
+# True when the archives the vk_* suites link are present. Separate from
 # horizon_mesa_libs_present because they live in a different build
 # directory, produced by a different script, at a different time.
 horizon_nvk_libs_present() {
@@ -369,9 +369,9 @@ horizon_nvk_build_stamp_gate() {
 #
 # The caller decides whether "no NVK build at all" is an error:
 # package-horizon.sh calls this only when it has already established
-# there is one, because a Makefile-only package legitimately has none
-# (docs/BUILDING.md §5), while package-portlibs.sh refuses outright
-# because an install with no driver in it is not an install.
+# there is one, because a Makefile-only package legitimately has none,
+# while package-portlibs.sh refuses outright because an install with no
+# driver in it is not an install.
 horizon_nvk_archive_gate() {
     _hz_nvk_missing=$(horizon_nvk_missing_libs | tr '\n' ' ')
     if [ -n "$_hz_nvk_missing" ]; then

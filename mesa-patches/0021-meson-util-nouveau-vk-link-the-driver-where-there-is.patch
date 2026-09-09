@@ -1,7 +1,7 @@
-From 37b17eda68f1b6a15e60d8730bea96fef97d1107 Mon Sep 17 00:00:00 2001
+From b864a8e303e86ad0d54411c011584f99787fd6dd Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Tue, 28 Jul 2026 13:50:49 +0000
-Subject: [PATCH 21/49] meson,util,nouveau/vk: link the driver where there is
+Subject: [PATCH 21/56] meson,util,nouveau/vk: link the driver where there is
  no DRM and no regex
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -33,7 +33,7 @@ Why: meson gates regex on the operating system and NVK installs a DRM
   left NULL.
 Evidence: t_vulkan.nro links at 14 000 184 bytes with zero undefined
   symbols and zero multiple definitions. That last number also answers
-  the question docs/rust-toolchain.md left open since step 3: linking
+  the question left open since step 3: linking
   compiler_builtins beside newlib does NOT collide on the memcpy family.
 Upstream: yes, both.
 ---
@@ -42,7 +42,7 @@ Upstream: yes, both.
  2 files changed, 18 insertions(+), 4 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index e790b55..e5d2efd 100644
+index e790b558322..e5d2efd5c9d 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1861,13 +1861,20 @@ endif
@@ -71,7 +71,7 @@ index e790b55..e5d2efd 100644
  
  if with_platform_haiku
 diff --git a/src/nouveau/vulkan/nvk_device.c b/src/nouveau/vulkan/nvk_device.c
-index 0514113..6dc93fd 100644
+index 0514113d136..6dc93fd9696 100644
 --- a/src/nouveau/vulkan/nvk_device.c
 +++ b/src/nouveau/vulkan/nvk_device.c
 @@ -261,7 +261,14 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
@@ -90,5 +90,5 @@ index 0514113..6dc93fd 100644
        result = nvk_upload_queue_init(dev, &dev->upload);
        if (result != VK_SUCCESS)
 -- 
-2.43.0
+2.53.0.windows.2
 

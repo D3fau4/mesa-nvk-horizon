@@ -39,7 +39,11 @@ fi
 #   error: 'HORIZON_GPU_MEM_UNCACHED' undeclared ... did you mean
 #          'HORIZON_GPU_MEM_CACHED'?
 # with the enumerator sitting in the header the whole time.
-scripts/build-horizon.sh
+#
+# `lib` only: this runs before the NVK build exists, so no test here has
+# anything valid of NVK's to link against yet. The full set is rebuilt
+# below, after NVK's own archives are current.
+scripts/build-horizon.sh lib
 rm -rf "$HORIZON_GPU_PREFIX"
 mkdir -p "$HORIZON_GPU_PREFIX/include" "$HORIZON_GPU_PREFIX/lib"
 cp -a horizon/include/horizon_gpu "$HORIZON_GPU_PREFIX/include/"
@@ -83,7 +87,8 @@ fi
 
 # The same property scripts/build-mesa.sh checks on the C objects, on
 # the artefacts this build produces. -mtp=soft -fPIC miscompiles
-# thread-local storage on this toolchain (STATUS.md), and a Rust
+# thread-local storage on this toolchain — measured, see
+# scripts/check-tls-relocs.sh — and a Rust
 # staticlib is one more place TLS could appear.
 #
 # This has to be the gate, not a count. The miscompile's signature is a
@@ -137,7 +142,7 @@ done
 #
 # So the tests are built again here, after the archives they link exist
 # in their new form. The second run is a no-op when nothing changed.
-scripts/build-horizon.sh
+scripts/build-horizon.sh test
 
 # THE SUCCESS STAMP, and it is the only honest answer to "are these
 # archives current?".

@@ -46,6 +46,35 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
                                           uint64_t align,
                                           horizon_gpu_va_range **out_range);
 
+/* Like horizon_gpu_vm_reserve, but asks the kernel for a SPARSE
+ * reservation: the whole interval gets page-table entries that resolve
+ * to nothing, rather than being left unmapped, so an access to a part of
+ * it that no memory object is bound to is defined instead of being a
+ * fault.
+ *
+ * That is the primitive Vulkan sparse residency is built on, and both
+ * halves of it have been measured: an unbound page swallows a write,
+ * and unbinding a bound block puts the sparse state back.
+ * gpu_fault/sparse asks it of this layer, vk_core/sparse_binding asks
+ * it through vkQueueBindSparse, and docs/MEASURED-ON-HARDWARE.md
+ * carries both.
+ *
+ * SO THIS IS REACHABLE AND PROVEN. mesa-patches/0055 calls it for
+ * NVKMD_VA_SPARSE, 0056 sets nvkmd_info::has_sparse, and sparseBinding
+ * and sparseResidencyBuffer are advertised. This paragraph said the
+ * opposite — "nothing in nvkmd_horizon calls it, has_sparse is still
+ * false, and no Vulkan sparse feature is advertised" — until
+ * 2026-09-09, having been wrong since those two patches landed, and
+ * it named the case t_sparse, which the suite refactor renamed.
+ *
+ * Sparse exists only in big pages: a reservation with
+ * NvAllocSpaceFlags_Sparse and a 0x1000 page size is refused, which is
+ * why 0055 forces the big-page size before it calls this. */
+horizon_gpu_result
+horizon_gpu_vm_reserve_sparse(horizon_gpu_device *dev, uint64_t size,
+                              uint32_t page_size, uint64_t align,
+                              horizon_gpu_va_range **out_range);
+
 /* Reserves exactly [base, base+size) — the caller chooses the address,
  * the kernel does not. `base` must be page_size-aligned; `size` is
  * rounded up to page_size. Fails if the range is taken.
@@ -71,7 +100,7 @@ uint32_t horizon_gpu_va_range_page_size(const horizon_gpu_va_range *range);
 /* Fails with HORIZON_GPU_ERR_BUSY while mappings inside it are alive.
  * Note that Phase 1 offers no deferred recycling: the caller must also
  * ensure every submit that referenced the range has retired before
- * releasing it (memory-model § 3.2, docs/synchronization.md § 3). */
+ * releasing it. */
 horizon_gpu_result horizon_gpu_vm_release(horizon_gpu_va_range *range);
 
 /* FIXED-maps mem[mem_offset, mem_offset+size) at

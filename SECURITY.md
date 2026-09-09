@@ -11,14 +11,15 @@ So the realistic failure mode is not a remote attacker. It is **a bug that takes
 console down**, because this code drives the GPU and talks to the `nv` system services
 directly. That has already happened once here:
 `vkDestroySwapchainKHR` on a superseded swapchain disconnected the window from the
-swapchain that had replaced it and killed `qlaunch` with fatal `0x290` — recorded in
-[`docs/hw-logs/t_vk_wsi_mt-run18-qlaunch-fatal-0x290.txt`](docs/hw-logs/t_vk_wsi_mt-run18-qlaunch-fatal-0x290.txt),
-kept deliberately, and fixed by patch `0070`.
+swapchain that had replaced it and killed `qlaunch` with fatal `0x290` — the hardware
+log was kept deliberately, and the bug was fixed by patch `0070`.
 
 ## Supported versions
 
-There is no released version yet, so only the current `main` branch is supported. See
-[`STATUS.md`](STATUS.md) for what is verified on hardware and what is not.
+There is no released version yet, so only the current `main` branch is supported. This
+project keeps *host build*, *cross build* and *verified on real hardware* strictly
+apart: a claim about console behaviour needs a log behind it, and a successful compile
+is never one.
 
 ## Reporting a vulnerability
 
@@ -61,8 +62,7 @@ disclosure deadline.
   Report those to their own projects; if the bug is in how *we* use them, that is in
   scope and we want it.
 - "The driver crashes on a console" as a general statement: that is an ordinary bug and
-  belongs in a public issue with its log. This project is pre-1.0 and says so; see the
-  known failures in `STATUS.md`.
+  belongs in a public issue with its log. This project is pre-1.0 and says so.
 
 ## Legal
 

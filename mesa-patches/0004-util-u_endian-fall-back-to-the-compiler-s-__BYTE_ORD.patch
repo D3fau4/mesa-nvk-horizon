@@ -1,7 +1,7 @@
-From 6857838d7849cba2310ca27a95eb14d6823d5d52 Mon Sep 17 00:00:00 2001
+From 8999b3042c0a84134b3c3674512398b22a722e32 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 22:31:41 +0000
-Subject: [PATCH 04/49] util/u_endian: fall back to the compiler's
+Subject: [PATCH 04/56] util/u_endian: fall back to the compiler's
  __BYTE_ORDER__
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -22,7 +22,7 @@ change an existing answer. Nothing is removed: the libc branches stay
 first, so a C library that disagrees with the compiler still wins.
 
 mesa-nvk-horizon: Phase 3 item 7 (endianness) — a DEVIATION from this
-  session's item 3 scope, recorded as such in STATUS.md. It is not a
+  session's item 3 scope, recorded as such. It is not a
   newlib gap, it is an OS-detection gap, and it was the last thing
   stopping the non-driver core from compiling, so leaving it would have
   ended the item 3 loop with no result.
@@ -41,7 +41,7 @@ Upstream: yes — it is additive, unreachable on every platform that
  1 file changed, 19 insertions(+)
 
 diff --git a/src/util/u_endian.h b/src/util/u_endian.h
-index fd78642..8f6158f 100644
+index fd786423d1f..8f6158fd15b 100644
 --- a/src/util/u_endian.h
 +++ b/src/util/u_endian.h
 @@ -94,6 +94,25 @@
@@ -71,5 +71,5 @@ index fd78642..8f6158f 100644
  # error "UTIL_ARCH_LITTLE_ENDIAN and/or UTIL_ARCH_BIG_ENDIAN were unset."
  #elif UTIL_ARCH_LITTLE_ENDIAN == UTIL_ARCH_BIG_ENDIAN
 -- 
-2.43.0
+2.53.0.windows.2
 

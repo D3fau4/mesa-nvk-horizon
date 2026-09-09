@@ -1,0 +1,104 @@
+From f4df5543fd14a5189c1b33941cb13a6c1c09163d Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 07:11:00 +0000
+Subject: [PATCH 67/68] vulkan/wsi: Horizon, a deferred dependency the driver
+ refuses is an error
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 8 (Correct fence-based synchronisation at
+ acquire and present)
+Why: wsi_horizon_create_acquire_sync returned create_wait_sync's result
+ unchanged, and one of that result's values means the opposite thing on
+ the two sides of the call.
+ .
+ Out of create_wait_sync, VK_ERROR_FEATURE_NOT_PRESENT means "these
+ fences are not something I can express": the importer answers it for a
+ count it cannot carry and for a set that is entirely blank. Out of this
+ function it means "there is nothing outstanding", and 0064's caller
+ acts on that by signalling the application's semaphore immediately.
+ .
+ So passing it through converts a dependency the driver DECLINED into a
+ dependency that was never there — on the one path that deliberately did
+ not wait for it. The application renders into a buffer the compositor
+ is still reading. Nothing reports it; it is a torn frame and no error
+ anywhere.
+ .
+ The function's own comment already promised this ("A FAILURE IS NOT
+ DOWNGRADED TO THAT"); the code did not keep the promise for this
+ particular failure. Raised in review of the branch.
+ .
+ No path reaches it today with the Horizon importer: the count is
+ bounded above by ARRAY_SIZE(mf->fences) = 4 = NVKMD_MAX_SYNCPT_FENCES
+ four lines up, every entry is marked valid there, and a NULL op cannot
+ be reached because gpu_acquire_wait is what tests for one. Caught
+ anyway — "no caller does that yet" is not the contract, and a second
+ importer or a fifth fence would arrive as silence.
+Evidence: CROSS BUILD, scripts/ci-build-archives.sh over
+ ghcr.io/d3fau4/nx-dev:latest (aarch64-none-elf-gcc 15.2.0, meson
+ 1.11.2, -Wall -Wextra -Werror): wsi_horizon.c compiles with no warning
+ and libvulkan_wsi.a links.
+ The new branch is not reachable from any test, by construction — it is
+ the case the four bounds above exclude — so nothing exercises it and
+ that is stated rather than implied. NO CONSOLE HAS RUN THIS.
+Upstream: no — it is a Horizon-only backend answering a Horizon-only
+ driver hook.
+---
+ src/vulkan/wsi/wsi_horizon.c | 40 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index 5c86692..c46fbc6 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -1958,8 +1958,44 @@ wsi_horizon_create_acquire_sync(const struct wsi_swapchain *wsi_chain,
+       fences[i].valid = true;
+    }
+ 
+-   return chain->base.wsi->horizon.create_wait_sync(chain->base.device,
+-                                                    fences, count, sync_out);
++   const VkResult result =
++      chain->base.wsi->horizon.create_wait_sync(chain->base.device,
++                                                fences, count, sync_out);
++
++   /* THE ONE RESULT THAT MUST NOT BE PASSED ON, and the reason it is
++    * caught here rather than trusted not to happen.
++    *
++    * VK_ERROR_FEATURE_NOT_PRESENT means two different things on the two
++    * sides of this call. Coming out of create_wait_sync it means "these
++    * fences are not something I can express" — the importer answers it
++    * for a count it cannot carry, and for a set that is entirely blank.
++    * Going out of THIS function it means "there is nothing outstanding",
++    * and wsi_common.c acts on it by signalling the application's
++    * semaphore immediately.
++    *
++    * Returning it unchanged would turn the first into the second: a
++    * dependency the driver declined to take, reported as a dependency
++    * that was never there, on an acquire that deliberately did not wait
++    * for it. The application would then render into a buffer the
++    * compositor is still reading — which is not an error anywhere, just
++    * a torn frame.
++    *
++    * No path through nvk_wsi_create_wait_sync reaches it today: the
++    * count is bounded above by ARRAY_SIZE(mf->fences) = 4 =
++    * NVKMD_MAX_SYNCPT_FENCES, every entry is marked valid four lines up,
++    * and a NULL op cannot be reached because gpu_acquire_wait is what
++    * checks for one. It is caught anyway, because the whole of this
++    * function's contract is that a deferred dependency is never
++    * downgraded, and "no caller does that yet" is not that contract.
++    */
++   if (result == VK_ERROR_FEATURE_NOT_PRESENT) {
++      mesa_loge("wsi_horizon: the driver declined a deferred release fence "
++                "(%" PRIu32 " fence(s)); nothing has waited for it",
++                count);
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++
++   return result;
+ }
+ 
+ static VkResult
+-- 
+2.43.0
+

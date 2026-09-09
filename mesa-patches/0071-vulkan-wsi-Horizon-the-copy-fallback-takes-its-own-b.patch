@@ -1,0 +1,206 @@
+From 289b2aec9993c8a25d24e6c90fd07cf84cf6b0f1 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 19:00:00 +0000
+Subject: [PATCH 71/74] vulkan/wsi: Horizon, the copy fallback takes its own
+ buffer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 6 item 3 (zero-copy scanout)
+Why: wsi_horizon_present_fallback called libnx's framebufferBegin, which
+ is
+     Result rc = nwindowDequeueBuffer(fb->win, &slot, NULL);
+     if (R_FAILED(rc))
+         diagAbortWithResult(MAKERESULT(Module_Libnx,
+                                        LibnxError_BadGfxDequeueBuffer));
+ so every dequeue failure ends the process. Two of those failures are
+ not failures. wsi_horizon_dequeue_would_block already names them and
+ its comment already records where they came from: a two-image
+ swapchain whose two buffers are both queued answers
+ LibnxBinderError_NoInit — Android's NO_INIT arriving through
+ binderConvertErrorCode — and that means "the compositor has not
+ released one yet", which is what the zero-copy acquire loop sleeps on
+ and retries. libnx's own nwindowDequeueBuffer waits out
+ LibnxBinderError_WouldBlock and returns the other two, so the copy
+ fallback had no way to survive a busy queue.
+Evidence: measured on a console 2026-09-07, three times, and the crash
+ report is identical every time:
+     Result: 0x2B59 (2345-0021)   LibnxError_BadGfxDequeueBuffer
+     Type:   User Break
+     PC:     svcBreak <- diagAbortWithResult <- framebufferBegin
+                     <- wsi_horizon_present_fallback (wsi_horizon.c:2311)
+                     <- wsi_common_queue_present
+                     <- mt_present (tests/vk_wsi/concurrency.c:673)
+ vk_wsi/concurrency stops after "D: the first generation -> VK_SUCCESS",
+ 52 checks in, taking the suite's remaining cases with it. It also
+ reproduces on the series truncated to 0062, which is the whole of what
+ docs/PENDING-HARDWARE-RUNS.md section 1 had established.
+Upstream: no — libnx's Framebuffer exists nowhere else.
+
+IT IS NOT A RACE, WHICH IS WHAT THE LEDGER SUPPOSED. Section D is the
+only place in tests/vk_wsi that asks for TWO images — every other
+mt_sc_create in that file asks for three — and it alternates the image
+count 2/3 with the present path on (gen % 4) >= 2, so its generation 2
+is the first swapchain in the process that is both two images and on
+this path. Two buffers, a producer holding none between frames, and a
+consumer that has not caught up: the third frame of that generation
+finds both queued. Deterministic, and nothing to do with the reaper
+thread destroying the previous generation beside it — which is why it
+also reproduces at 0062, on a path unchanged since 0037.
+
+WHAT IS REPRODUCED HERE AND WHAT IS NOT. The dequeue is the only
+per-frame work framebufferBegin does; the rest is two reads of public
+Framebuffer fields. This backend always calls framebufferMakeLinear, so
+the pointer is fb->buf_linear and does not depend on the slot at all —
+the slot arithmetic is kept so the function is framebufferBegin and not
+a special case of it. framebufferEnd is left alone: it reads
+fb->win->cur_slot, which nwindowDequeueBuffer has just set, and it owns
+the block-linear swizzle. It aborts too, on a failed nwindowQueueBuffer,
+and that one is not reached by the same route — it queues a slot this
+thread holds, which has no "come back later" answer — so getting at it
+would mean a second implementation of _convertToBlocklinear in a
+project that has one.
+
+The retry is the acquire loop's, deliberately: the same
+WSI_HORIZON_STUCK_WARN_NS budget, the same eighth-of-a-refresh sleep,
+and the same measured reason for sleeping at all — the release event on
+this window is permanently signalled, so a loop without an idle in it
+is binder transactions as fast as the CPU can issue them, into the
+service that has to free the buffer. A dequeue that fails for any other
+reason returns NULL and the caller answers VK_ERROR_OUT_OF_DATE_KHR,
+which is what this path already gives for its other failures and what
+an application can act on.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YajZtX9CeYzC35x2t1QJJh
+---
+ src/vulkan/wsi/wsi_horizon.c | 104 +++++++++++++++++++++++++++++++++--
+ 1 file changed, 100 insertions(+), 4 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_horizon.c b/src/vulkan/wsi/wsi_horizon.c
+index e8a3c73..c195fdb 100644
+--- a/src/vulkan/wsi/wsi_horizon.c
++++ b/src/vulkan/wsi/wsi_horizon.c
+@@ -2452,6 +2452,104 @@ wsi_horizon_present_zero_copy(struct wsi_horizon_swapchain *chain,
+    return VK_SUCCESS;
+ }
+ 
++/* framebufferBegin, with the abort taken out of it.
++ *
++ * WHY THIS FUNCTION EXISTS. libnx's framebufferBegin is
++ *
++ *     Result rc = nwindowDequeueBuffer(fb->win, &slot, NULL);
++ *     if (R_FAILED(rc))
++ *         diagAbortWithResult(MAKERESULT(Module_Libnx,
++ *                                        LibnxError_BadGfxDequeueBuffer));
++ *
++ * so every dequeue failure ENDS THE PROCESS. Two of them are not
++ * failures at all. wsi_horizon_dequeue_would_block names them, and its
++ * comment records where they came from: a two-image swapchain whose two
++ * buffers are both queued gets LibnxBinderError_NoInit — Android's
++ * NO_INIT arriving through binderConvertErrorCode — and that is
++ * "the compositor has not released one yet", which is what the
++ * zero-copy acquire loop sleeps on and retries.
++ *
++ * MEASURED ON A CONSOLE 2026-09-07, three times, and the log is
++ * identical every time:
++ *
++ *     Result: 0x2B59 (2345-0021)   LibnxError_BadGfxDequeueBuffer
++ *     PC:     svcBreak <- diagAbortWithResult <- framebufferBegin
++ *                     <- wsi_horizon_present_fallback
++ *                     <- wsi_common_queue_present
++ *                     <- mt_present (tests/vk_wsi/concurrency.c:673)
++ *
++ * `vk_wsi/concurrency` section D is where it happens because section D
++ * is the only place in the suite that asks for TWO images — every other
++ * mt_sc_create in the file asks for three — and its generation 2 is the
++ * first that is both two images and on this path (`want` alternates
++ * 2/3, `want_copy` is `(gen % 4) >= 2`). Not a race with the reaper
++ * thread destroying the previous generation, which is what
++ * docs/PENDING-HARDWARE-RUNS.md section 1 supposed: it is deterministic,
++ * it is the third frame of that generation, and it reproduces on the
++ * series truncated to 0062 because this path has been here since 0037.
++ *
++ * WHAT IS SAFE TO REPRODUCE HERE AND WHAT IS NOT. The dequeue is the
++ * only per-frame work framebufferBegin does; the rest is two field
++ * reads on a public structure. In particular this backend always calls
++ * framebufferMakeLinear, so the pointer is fb->buf_linear and does not
++ * depend on the slot at all — the slot arithmetic below is the
++ * single-buffered case, kept so the function is framebufferBegin and
++ * not a special case of it. framebufferEnd is left alone: it reads
++ * fb->win->cur_slot, which nwindowDequeueBuffer has just set, and it
++ * owns the block-linear swizzle. It aborts too, on a failed
++ * nwindowQueueBuffer — that one is queueing a slot this thread holds,
++ * which does not have a "come back later" answer, and reimplementing
++ * _convertToBlocklinear to get at it would be a second layout
++ * implementation in a project that has one.
++ *
++ * Returns NULL when the buffer is not coming, and the caller turns that
++ * into VK_ERROR_OUT_OF_DATE_KHR — the answer an application can act on,
++ * and the one this path already gives for its other failures.
++ */
++static void *
++wsi_horizon_fb_begin(struct wsi_horizon_swapchain *chain, u32 *out_stride)
++{
++   Framebuffer *fb = &chain->fb;
++   const uint64_t start_ns = os_time_get_nano();
++   bool said_stuck = false;
++   s32 slot = -1;
++
++   for (;;) {
++      Result rc = nwindowDequeueBuffer(chain->window, &slot, NULL);
++      if (R_SUCCEEDED(rc))
++         break;
++
++      if (!wsi_horizon_dequeue_would_block(rc)) {
++         mesa_loge("wsi_horizon: the copy fallback could not take a buffer "
++                   "from the window: 0x%08x", rc);
++         return NULL;
++      }
++
++      /* The same budget and the same idle as the zero-copy acquire, for
++       * the same measured reason: the release event on this window is
++       * permanently signalled, so a loop with no sleep in it is binder
++       * transactions as fast as the CPU can issue them, into the very
++       * service that has to free the buffer. An eighth of a refresh. */
++      if (!said_stuck &&
++          os_time_get_nano() - start_ns > WSI_HORIZON_STUCK_WARN_NS) {
++         mesa_logw("wsi_horizon: the copy fallback has waited %u ms for one "
++                   "of its %" PRIu32 " buffers; last dequeue said 0x%08x",
++                   WSI_HORIZON_STUCK_WARN_NS / 1000000u, chain->fb.num_fbs,
++                   rc);
++         said_stuck = true;
++      }
++
++      svcSleepThread(WSI_HORIZON_REFRESH_NS / 8);
++   }
++
++   if (out_stride)
++      *out_stride = fb->stride;
++
++   return fb->buf_linear != NULL
++             ? fb->buf_linear
++             : (void *)((uint8_t *)fb->buf + (size_t)slot * fb->fb_size);
++}
++
+ static VkResult
+ wsi_horizon_present_fallback(struct wsi_horizon_swapchain *chain,
+                              uint32_t image_index)
+@@ -2488,11 +2586,9 @@ wsi_horizon_present_fallback(struct wsi_horizon_swapchain *chain,
+    }
+ 
+    u32 fb_stride = 0;
+-   void *dst = framebufferBegin(&chain->fb, &fb_stride);
+-   if (dst == NULL) {
+-      mesa_loge("wsi_horizon: framebufferBegin returned no buffer");
++   void *dst = wsi_horizon_fb_begin(chain, &fb_stride);
++   if (dst == NULL)
+       return VK_ERROR_OUT_OF_DATE_KHR;
+-   }
+ 
+    const uint32_t bpp = chain->format->bytes_per_pixel;
+    const uint32_t src_stride = image->base.row_pitches[0];
+-- 
+2.53.0.windows.2
+

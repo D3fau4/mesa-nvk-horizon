@@ -1,0 +1,121 @@
+From fda375c25beba7483b8b5c4cb28b918a87107937 Mon Sep 17 00:00:00 2001
+From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
+Date: Mon, 7 Sep 2026 22:40:00 +0000
+Subject: [PATCH 77/77] nak: report what a shader compiled to, for a process
+ that cannot set NAK_DEBUG
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mesa-nvk-horizon: Phase 4 — diagnostics for the MMU-fault class of failure
+Why: the GM20B hang investigation keeps confusing three numbers that
+ nothing in a shader's source shows: the convergence-stack DEPTH
+ from_nir reached, the RESERVATION sm50's crs_size() makes of that depth
+ — zero at or below sixteen, 1024 above it — and the registers the
+ allocator ended with. NAK can print all three; what it could not do was
+ print them for a test that asks mid-process. NAK_DEBUG is read once
+ through DebugFlagsCache and latched, so a case in the middle of a suite
+ sets it and gets nothing: an earlier case has already compiled a shader
+ and the word is zero. Homebrew is launched with no environment at all,
+ which makes "the case sets it on itself" the only way any option
+ reaches a driver here.
+Evidence: measured on a console 2026-09-07 the moment this existed.
+ vk_shaders/nested_control_flow_frag, whose source is twelve nested ifs
+ around a loop, reports
+     NAK crs: stage=fragment crs=0 depth=15 gprs=24 slm=0 spills=0
+              instrs=188
+ — depth 15, not the twelve a reader counts and not the thirteen the
+ previous measurement recorded, and a reservation of zero where the
+ working tree those older numbers came from would have reserved 1024.
+ That tree doubles the depth before reserving, so every crsinfo number
+ on record before this was another compiler's.
+Upstream: no — the flag itself would be welcome anywhere, but reading it
+ per compilation instead of once per process is a concession to a
+ platform where a process cannot be launched with an environment, and
+ upstream has no reason to pay a getenv per shader.
+
+NOT A NAK_DEBUG FLAG, deliberately. Adding "crsinfo" to that word would
+have inherited the latch that makes it useless here. NAK_CRS_INFO is its
+own variable, read where the reservation is computed, and its cost is
+one getenv beside compiling a shader.
+
+The line puts the stage and the reservation next to each other and in
+that order, because a test can only scan its log for a substring:
+"stage=fragment crs=0" has to be one string, or a vertex shader's zero
+answers a fragment shader's question.
+---
+ src/nouveau/compiler/nak/api.rs | 51 +++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/src/nouveau/compiler/nak/api.rs b/src/nouveau/compiler/nak/api.rs
+index 50327f5..75938c5 100644
+--- a/src/nouveau/compiler/nak/api.rs
++++ b/src/nouveau/compiler/nak/api.rs
+@@ -103,6 +103,26 @@ pub trait GetDebugFlags {
+     }
+ }
+ 
++/// Whether to report what each shader compiled to. See the report in
++/// ShaderBin::new.
++///
++/// NOT A NAK_DEBUG FLAG, AND THE REASON IS THE TEST FRAMEWORK.
++/// NAK_DEBUG is read once per process and cached in DebugFlagsCache, so
++/// a case that sets it on itself gets nothing: by the time it runs, an
++/// earlier case in the same .nro has compiled a shader and the word is
++/// latched at zero. Homebrew is launched with no environment at all,
++/// which makes "the case sets it on itself" the only way any option
++/// reaches a driver here — the same reason nvkmd_horizon reads
++/// NVK_HORIZON_ZERO_ALL_MEM per allocation. So this one is read per
++/// compilation, and one getenv beside compiling a shader is not a cost
++/// anybody can measure.
++fn nak_crs_info_wanted() -> bool {
++    unsafe {
++        let s = os_get_option(c"NAK_CRS_INFO".as_ptr());
++        !s.is_null() && *s != b'0' as core::ffi::c_char
++    }
++}
++
+ /// A one-shot cache for the NAK_DEBUG flags.
+ ///
+ /// This replaces a `std::sync::OnceLock<Debug>`. `Debug` is a single u32
+@@ -276,6 +296,37 @@ impl ShaderBin {
+         let asm = CString::new(asm)
+             .expect("NAK assembly has unexpected null characters");
+ 
++        if nak_crs_info_wanted() {
++            /* One line per shader, on stderr, in the order NAK compiles
++             * them. `depth` is what from_nir counted; `crs` is what this
++             * shader model reserves for that depth and is the number the
++             * queue programs per warp; `slm` is separate from it.
++             *
++             * STAGE AND RESERVATION ADJACENT, and in that order: a test
++             * can only scan its log for a substring, so
++             * "stage=fragment crs=0" has to be one string. With the
++             * fields in source order a vertex shader's zero answers
++             * a fragment shader's question. */
++            eprintln!(
++                "NAK crs: stage={} crs={} depth={} gprs={} slm={} \
++                 spills={} instrs={}",
++                match info.stage {
++                    ShaderStageInfo::Compute(_) => "compute",
++                    ShaderStageInfo::Vertex(_) => "vertex",
++                    ShaderStageInfo::Fragment(_) => "fragment",
++                    ShaderStageInfo::Geometry(_) => "geometry",
++                    ShaderStageInfo::TessellationInit(_) => "tess_init",
++                    ShaderStageInfo::Tessellation(_) => "tess",
++                },
++                sm.crs_size(info.max_crs_depth),
++                info.max_crs_depth,
++                info.num_gprs,
++                info.slm_size,
++                info.num_spills_to_mem,
++                info.num_instrs,
++            );
++        }
++
+         let c_info = nak_shader_info {
+             stage: match info.stage {
+                 ShaderStageInfo::Compute(_) => MESA_SHADER_COMPUTE,
+-- 
+2.53.0.windows.2
+

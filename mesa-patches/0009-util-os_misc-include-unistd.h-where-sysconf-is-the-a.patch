@@ -1,7 +1,7 @@
-From 06d22a190dcd9096c179a8b5cd3b176c1d1c5646 Mon Sep 17 00:00:00 2001
+From 7b47768bc36723b7b622930c7cb761dcc8a89256 Mon Sep 17 00:00:00 2001
 From: mesa-nvk-horizon <mesa-nvk-horizon@localhost>
 Date: Sun, 26 Jul 2026 23:12:53 +0000
-Subject: [PATCH 09/49] util/os_misc: include <unistd.h> where sysconf is the
+Subject: [PATCH 09/56] util/os_misc: include <unistd.h> where sysconf is the
  answer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -41,7 +41,7 @@ Upstream: yes — it is additive and cannot change any platform that
  1 file changed, 5 insertions(+)
 
 diff --git a/src/util/os_misc.c b/src/util/os_misc.c
-index cde1a35..cc2248f 100644
+index cde1a353b17..cc2248f1ca8 100644
 --- a/src/util/os_misc.c
 +++ b/src/util/os_misc.c
 @@ -79,6 +79,11 @@
@@ -57,5 +57,5 @@ index cde1a35..cc2248f 100644
  #error unexpected platform in os_sysinfo.c
  #endif
 -- 
-2.43.0
+2.53.0.windows.2
 
