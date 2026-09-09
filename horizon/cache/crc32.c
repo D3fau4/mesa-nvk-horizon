@@ -2,10 +2,13 @@
  * horizon_gpu — CRC-32 (IEEE 802.3 / zlib polynomial). See crc32.h for
  * why this layer carries its own.
  *
- * Table-driven, one byte at a time. The table is built once on first
- * use rather than written out as 256 constants: a generated table in a
- * source file is 256 numbers nobody can check by reading, while the
- * four lines that build it are the definition itself.
+ * TWO IMPLEMENTATIONS OF ONE FUNCTION, and which one a build gets is
+ * decided by __ARM_FEATURE_CRC32. Where the target has the CRC32B and
+ * CRC32X instructions — every cross build here does — they are what
+ * runs, and the table below is compiled out entirely. Everywhere else,
+ * the host suites included, it is the table: 256 constants written out,
+ * one byte at a time. Each of the two says at its own site why it is
+ * the shape it is, and which test reaches it.
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -136,15 +139,21 @@ uint32_t horizon_crc32_update(uint32_t crc, const void *data, size_t len)
      * of the loop below and __crc32d(crc, word) is eight of them. The
      * table stays for every other target, the host tests among them.
      *
-     * IT IS NOT WHAT THIS PATH IS CHECKED AGAINST. This said it was —
-     * "with an aarch64 build of the host suite run under user-mode
-     * emulation, byte for byte over the same inputs" — until
-     * 2026-09-09, and no such build exists anywhere in the tree:
-     * run-host-tests.sh compiles with $CC and no -march, so
+     * WHAT CHECKS THIS PATH IS A CONSOLE, AND ONLY A CONSOLE. This
+     * comment said the check was "an aarch64 build of the host suite
+     * run under user-mode emulation, byte for byte over the same
+     * inputs" until 2026-09-09, and no such build has ever existed in
+     * this tree: run-host-tests.sh compiles with $CC and no -march, so
      * h_blob_cache's published vectors and its regeneration of the
-     * table only ever run the table, while every .nro runs only this
-     * branch. Class X, not H; deferred-work.md carries what closes
-     * it.
+     * table only ever run the table below, while every .nro runs only
+     * this branch.
+     *
+     * tests/platform/crc32 is what asks the question where the answer
+     * counts. It runs the published vectors here, regenerates the same
+     * 256 polynomial steps through the byte loop, and then compares the
+     * whole-buffer answer with the byte-at-a-time one at every
+     * alignment and length — which is the only way the word loop below
+     * is separable from the two byte loops around it.
      *
      * Bytes to an 8-byte boundary one at a time, then whole words, then
      * the tail. The word is read through memcpy: AArch64 allows the

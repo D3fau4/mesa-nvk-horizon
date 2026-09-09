@@ -67,7 +67,7 @@ COMPAT_LIB  := $(COMPAT_LIBDIR)/libhorizon_compat.a
 # result back through machinery the case before it established.
 SUITES := platform gpu_memory gpu_submit gpu_fault display dock
 
-CASES_platform     := nv_bringup teardown sysconf
+CASES_platform     := nv_bringup teardown sysconf crc32
 CASES_gpu_memory   := alloc nvmap va_reserve va_map uncached \
                       shader_window borrowed_pages
 CASES_gpu_submit   := channel submit syncpt_per_submit syncpt_cpu_incr \

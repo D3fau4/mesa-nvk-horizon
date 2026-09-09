@@ -170,7 +170,7 @@ tests_inc = include_directories('tests')
 # exactly these and scripts/check-mesa-test-parity.sh fails if the two
 # lists ever disagree.
 horizon_suites = {
-  'platform' : ['nv_bringup', 'teardown', 'sysconf'],
+  'platform' : ['nv_bringup', 'teardown', 'sysconf', 'crc32'],
   'gpu_memory' : ['alloc', 'nvmap', 'va_reserve', 'va_map', 'uncached',
                   'shader_window', 'borrowed_pages'],
   'gpu_submit' : ['channel', 'submit', 'syncpt_per_submit',
