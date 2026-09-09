@@ -418,7 +418,8 @@ channel_hang_trace_init(horizon_gpu_channel *chan)
     horizon_logf(&dev->log, HORIZON_LOG_INFO,
                  "channel %p: hang recorder status VA=0x%llx, marker "
                  "VA=[0x%llx,0x%llx), slots=%u", (void *)chan,
-                 (unsigned long long)base_va,
+                 (unsigned long long)(base_va +
+                     HORIZON_CHANNEL_HANG_STATUS_OFFSET),
                  (unsigned long long)chan->hang_cmds_va,
                  (unsigned long long)(chan->hang_cmds_va +
                      (uint64_t)HORIZON_CHANNEL_HANG_MARKER_SLOTS *
@@ -473,7 +474,11 @@ channel_dump_hang_snapshot(horizon_gpu_channel *chan, uint32_t notifier,
                  "USERD: unavailable (Switch 1 ALLOC_GPFIFO_EX2 does not "
                  "return a USERD mapping); GP_GET=n/a GP_PUT=n/a PB_GET=n/a");
 
-    if (!chan->hang_status) {
+    /* BOTH, because both are dereferenced below: the status word for
+     * the breadcrumb and the record table for what it names. They are
+     * set and cleared together, and testing only one is how a teardown
+     * that clears one first would reach the other. */
+    if (!chan->hang_status || !chan->hang_records) {
         horizon_logf(&chan->dev->log, HORIZON_LOG_ERROR,
                      "frontend: unavailable (set "
                      "HORIZON_GPU_HANG_SNAPSHOT=1 before device creation)");
@@ -907,6 +912,13 @@ fail_hang_trace:
         channel_create_unwind_step(dev, "mem_destroy(hang_mem)",
                                    horizon_gpu_mem_destroy(chan->hang_mem));
         chan->hang_mem = NULL;
+        /* Both of these point INTO what was just freed, and the reader
+         * that dereferences them (channel_dump_hang_snapshot) gates on
+         * hang_status rather than on hang_mem. Cleared here for the
+         * same reason channel_hang_trace_init's own failure path
+         * clears them. */
+        chan->hang_status = NULL;
+        chan->hang_cmds_va = 0;
     }
     free(chan->hang_records);
     chan->hang_records = NULL;
@@ -1477,6 +1489,14 @@ skip_inflight_check:
         if (horizon_gpu_failed(res))
             return res;
         chan->hang_mem = NULL;
+        /* AND THE POINTERS INTO IT, because this function returns
+         * early on a failure below and leaves `chan` alive: an unmap
+         * or a release that fails after this point hands the caller
+         * back a channel whose hang_status still addresses freed
+         * memory and whose hang_records is already NULL. The next
+         * check_fault would read the first and index the second. */
+        chan->hang_status = NULL;
+        chan->hang_cmds_va = 0;
     }
     free(chan->hang_records);
     chan->hang_records = NULL;

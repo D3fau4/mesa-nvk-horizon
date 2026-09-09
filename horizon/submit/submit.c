@@ -70,6 +70,24 @@ submit_hang_marker(horizon_gpu_channel *chan, uint64_t submit_id,
  * HORIZON_GPU_FULL_BARRIER_WAITS=1 makes a wait submit take the full
  * barrier, and a caller's submit is never a wait.
  */
+/* Undo what submit_hang_marker consumed, beside the GPFIFO unwind.
+ *
+ * Every failure path below restores chan->gc.num_entries and, where it
+ * had been requested, chan->gc.fence_incr — but the recorder's cursor
+ * was advancing too, and it was not restored. The slots leaked, so the
+ * recorder exhausted early; worse, hang_next_slot then named markers
+ * that never reached the GPFIFO, which is exactly the "recorder data
+ * is invalid" condition channel_dump_hang_snapshot's breadcrumb bound
+ * exists to catch and the one shape of it that bound cannot see. */
+static void submit_unwind_hang(horizon_gpu_channel *chan, bool hang_trace,
+                               uint32_t first_marker_slot)
+{
+    if (!hang_trace)
+        return;
+    chan->hang_next_slot = first_marker_slot;
+    chan->hang_submit_id--;
+}
+
 static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                                       const horizon_gpu_cmd_span *spans,
                                       uint32_t num_spans,
@@ -198,6 +216,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                                      0);
         if (R_FAILED(rc)) {
             chan->gc.num_entries = entries_before;
+            submit_unwind_hang(chan, hang_trace, first_marker_slot);
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "AppendEntry(L2 invalidate prologue) failed: 0x%08x",
                          rc);
@@ -215,6 +234,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                 entry_flags, 0);
             if (R_FAILED(rc)) {
                 chan->gc.num_entries = entries_before;
+                submit_unwind_hang(chan, hang_trace, first_marker_slot);
                 horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                              "AppendEntry(hang marker before span %u) "
                              "failed: 0x%08x", i, rc);
@@ -226,6 +246,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                                      spans[i].num_dwords, entry_flags, 0);
         if (R_FAILED(rc)) {
             chan->gc.num_entries = entries_before; /* drop partial append */
+            submit_unwind_hang(chan, hang_trace, first_marker_slot);
             horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                          "AppendEntry(va=0x%llx n=%u) failed: 0x%08x",
                          (unsigned long long)spans[i].gpu_va,
@@ -242,6 +263,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
                 entry_flags, 0);
             if (R_FAILED(rc)) {
                 chan->gc.num_entries = entries_before;
+                submit_unwind_hang(chan, hang_trace, first_marker_slot);
                 horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                              "AppendEntry(hang marker after span %u) "
                              "failed: 0x%08x", i, rc);
@@ -262,6 +284,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
     if (R_FAILED(rc)) {
         chan->gc.fence_incr--; /* undo the request: keep the two in step */
         chan->gc.num_entries = entries_before;
+        submit_unwind_hang(chan, hang_trace, first_marker_slot);
         horizon_logf(&dev->log, HORIZON_LOG_ERROR,
                      "AppendEntry(fence cmdlist) failed: 0x%08x", rc);
         return horizon_gpu_err_nv(rc);
@@ -276,6 +299,7 @@ static horizon_gpu_result submit_impl(horizon_gpu_channel *chan,
          * code exists is measured on hardware by t_submit. */
         chan->gc.fence_incr--;
         chan->gc.num_entries = entries_before;
+        submit_unwind_hang(chan, hang_trace, first_marker_slot);
         /* A rejected kickoff can be the first userland observation of a
          * notifier.  Take the same coherent snapshot as reap/wait before
          * doing any other channel operation; get_error below then reads the
