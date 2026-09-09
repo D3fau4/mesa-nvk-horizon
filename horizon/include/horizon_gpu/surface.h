@@ -43,23 +43,41 @@ extern "C" {
 
 /* GOB geometry. A GOB is 64 bytes wide by 8 rows, so 512 bytes; a block
  * of `1 << block_height_log2` GOBs is 512 << block_height_log2 bytes and
- * covers 8 << block_height_log2 rows. */
+ * covers 8 << block_height_log2 rows.
+ *
+ * Source: mesa/src/nouveau/nil/tiling.rs, GOBType::extent_B() — every
+ * block-linear GOB type this family has answers Extent4D::new(64, 8,
+ * 1, 1), TegraColor (the one this console's display block reads)
+ * among them, and the doc comment on each of them says "512 bytes,
+ * arranged in a 64x8 layout and split into Sectors". The same 64x8 is
+ * what makes a GOB 512 bytes, which is the number the arithmetic
+ * below is built on. */
 #define HORIZON_GPU_GOB_WIDTH_B     UINT32_C(64)
 #define HORIZON_GPU_GOB_HEIGHT_ROWS UINT32_C(8)
 
 /* The largest block height a buffer description can express: 5, which is
  * 32 GOBs and 256 rows.
  *
- * THE REASON THIS CARRIED WAS NOT A REASON. It read "the field that
- * carries it is a log2 and the display block's is 3 bits wide, so 5 (32
- * GOBs) is the ceiling" — three bits hold 0 to 7, so the width of the
- * field cannot be what stops this at 5. The cap is a property of the
- * block-linear layout and not of the encoding, and the citation for it
- * (envytools or deko3d, whichever the value came from) is owed; see
- * deferred-work.md. The same is true of the two GOB constants above.
- * Written down as owed rather than left reading like a derivation,
- * because a constant whose stated reason is wrong invites the next
- * person to widen it. */
+ * Source: mesa/src/nouveau/headers/nvidia/classes/clb197.h, the class
+ * header for MAXWELL_B (0xB197) — this chip's 3D class.
+ * NVB197_SET_COLOR_TARGET_MEMORY_BLOCK_HEIGHT is bits 7:4 and its
+ * enumeration runs ONE_GOB (0), TWO_GOBS, FOUR_GOBS, EIGHT_GOBS,
+ * SIXTEEN_GOBS, THIRTYTWO_GOBS (5) and stops there; every other
+ * block-size field in that header (SET_DST_BLOCK_SIZE_HEIGHT,
+ * SET_SURFACE_CLIP_ID_BLOCK_SIZE_HEIGHT) stops at the same value.
+ * mesa/src/nouveau/nil/tiling.rs reads the same way from the software
+ * side: Tiling::choose starts at y_log2: 5 and only ever clamps down.
+ *
+ * SO THE CEILING IS THE ENUMERATION AND NOT THE WIDTH OF A FIELD, and
+ * that is the correction this constant needed. It used to read "the
+ * field that carries it is a log2 and the display block's is 3 bits
+ * wide, so 5 (32 GOBs) is the ceiling", which was wrong twice: three
+ * bits hold 0 to 7, and the field a buffer description actually
+ * carries this in is a whole u32 (NvSurface::block_height_log2,
+ * switch/nvidia/graphic_buffer.h). Neither width stops anything at 5.
+ * A block of 64 GOBs is unrepresentable because the hardware has no
+ * encoding for one, which is the reason a wider field cannot be used
+ * to argue this open. */
 #define HORIZON_GPU_MAX_BLOCK_HEIGHT_LOG2 UINT32_C(5)
 
 /* What the allocation actually is — facts about memory the driver has
