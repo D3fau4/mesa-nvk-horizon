@@ -203,15 +203,29 @@ horizon_gpu_channel_get_error(horizon_gpu_channel *chan, uint32_t *out_type,
 /* Checks the notifier; marks the channel lost when it reports an error.
  * A notifier query failure is not the same as an empty notifier: callers
  * must not retire work or report a successful wait when channel health
- * could not be established. */
+ * could not be established.
+ *
+ * THE MEASUREMENT THAT PUT THIS ON THE SUCCESS PATH is written out at
+ * channel_reached_or_lost below, which is the caller that names the
+ * intent — "the fence says reached, and that is not sufficient". */
 horizon_gpu_result horizon_channel_check_fault(horizon_gpu_channel *chan)
 {
     uint32_t type = 0;
     const char *desc = NULL;
     horizon_gpu_result res = horizon_gpu_channel_get_error(chan, &type,
                                                            &desc);
-    if (horizon_gpu_failed(res))
+    if (horizon_gpu_failed(res)) {
+        /* A NOTIFIER QUERY THAT FAILS IS NOT A HEALTHY CHANNEL, which
+         * is why this is propagated at all — but on a channel already
+         * marked lost the caller has a better answer than the ioctl's.
+         * horizon_gpu_channel_reap has no chan->lost short-circuit of
+         * its own, so without this it reported HORIZON_GPU_ERR_NV for
+         * a channel this layer had already given up on, and a caller
+         * watching for CHANNEL_LOST saw something else. */
+        if (chan->lost)
+            return horizon_gpu_err(HORIZON_GPU_ERR_CHANNEL_LOST);
         return res;
+    }
 
     if (type != 0) {
         if (!chan->lost) {
@@ -283,6 +297,11 @@ horizon_gpu_result horizon_channel_check_fault(horizon_gpu_channel *chan)
 
 /* "The fence says reached" is the answer a waiter wants, and on this
  * platform it is not sufficient on its own.
+ *
+ * THIS IS A NAME, NOT A STEP. It forwards to horizon_channel_check_fault
+ * and adds nothing; what it adds is at its three call sites, where
+ * "reached or lost" says what the wait concluded and a bare fault check
+ * would not. The rationale stays here, with the name it explains.
  *
  * MEASURED ON HARDWARE, 2026-08-04 (t_vk_image run 1). A render pass
  * MMU-faulted, nothing it was supposed to write was written, and
@@ -1172,6 +1191,7 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
                     w_us = rem;
             }
 
+            uint64_t chunk_start = armGetSystemTick();
             Result rc = nvFenceWait(&nvf, w_us);
             if (R_SUCCEEDED(rc))
                 return channel_reached_or_lost(chan);
@@ -1181,6 +1201,41 @@ horizon_gpu_channel_wait_fence(horizon_gpu_channel *chan,
             res = horizon_channel_check_fault(chan);
             if (horizon_gpu_failed(res))
                 return res;
+
+            /* THIS BRANCH SPINS TOO, and it did not use to say so. The
+             * pacing below was added for the counter path only, and a
+             * chunk that expires without blocking turns this loop into
+             * two ioctls back to back for the caller's whole deadline
+             * — the 2026-08-24 measurement, unchanged here. There is no
+             * counter to re-read on this path, so the nap is taken in
+             * place rather than at the top of the next iteration; the
+             * notifier is re-checked above it either way. */
+            uint64_t spent_ns =
+                armTicksToNs(armGetSystemTick() - chunk_start);
+            uint64_t asked_ns = (uint64_t)(uint32_t)w_us * 1000u;
+            if (spent_ns < asked_ns) {
+                uint64_t nap_ns = asked_ns - spent_ns;
+                if (nap_ns > HORIZON_NV_WAIT_PACE_MAX_NS)
+                    nap_ns = HORIZON_NV_WAIT_PACE_MAX_NS;
+                uint64_t now = armTicksToNs(armGetSystemTick() - start);
+                if (timeout_ns != HORIZON_GPU_NO_TIMEOUT) {
+                    if (now >= timeout_ns)
+                        return horizon_gpu_err(HORIZON_GPU_ERR_TIMEOUT);
+                    if (nap_ns > timeout_ns - now)
+                        nap_ns = timeout_ns - now;
+                }
+                if (!reported_spin) {
+                    reported_spin = true;
+                    last_rc = rc;
+                    horizon_logf(&chan->dev->log, HORIZON_LOG_WARN,
+                                 "channel wait: syncpt %u chunk returned "
+                                 "0x%08x without blocking on the untrusted-"
+                                 "baseline path — pacing the rest of the "
+                                 "deadline instead of re-asking",
+                                 fence.syncpt_id, last_rc);
+                }
+                svcSleepThread((s64)nap_ns);
+            }
             /* Round the loop rather than returning: one expired chunk is
              * not the caller's deadline. Returning TIMEOUT here made
              * every finite wait on this path last CHANNEL_WAIT_CHUNK_US
