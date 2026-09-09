@@ -67,9 +67,13 @@ horizon_gpu_result horizon_gpu_syncpt_read(horizon_gpu_device *dev,
  * cannot check that; nothing in the ioctl distinguishes the two.
  *
  * Whether an increment from the CPU is honoured at all, and whether it
- * disturbs the channel that owns the syncpoint, is what t_syncpt_incr
- * measures. Until that has run on a console this is cross-compiled
- * code, not a working mechanism. */
+ * disturbs the channel that owns the syncpoint, is what
+ * gpu_submit/syncpt_cpu_incr measures — it advances a channel's own
+ * syncpoint on purpose. IT HAS RUN: gpu_submit 324/324 on a console,
+ * 2026-09-07. This said "until that has run on a console this is
+ * cross-compiled code, not a working mechanism" until 2026-09-09, and
+ * it named the case t_syncpt_incr, which the suite refactor
+ * renamed. */
 horizon_gpu_result horizon_gpu_syncpt_incr(horizon_gpu_device *dev,
                                            uint32_t syncpt_id);
 

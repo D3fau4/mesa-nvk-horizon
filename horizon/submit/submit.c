@@ -505,6 +505,19 @@ horizon_gpu_result horizon_gpu_submit_waits(horizon_gpu_channel *chan,
      * fence block flushed dirty L2 *before* it signalled the fence being
      * waited on here. The guarantee is made where the writes were made.
      *
+     * THE LIST ITSELF IS THE ONE THING IT DOES TOUCH, and the premise
+     * that covers it belongs here rather than implied: the acquires
+     * live in chan->cmdbuf_mem, in a wait-ring slot taken round-robin
+     * from HORIZON_CHANNEL_WAIT_SLOTS, so the host engine has fetched
+     * these very bytes before. The CPU half is handled a few lines up
+     * by horizon_gpu_mem_flush, for the reason stated there — the page
+     * is CPU-cached and the host engine does not snoop. The GPU half
+     * is an assumption and is written down as one: that a host-method
+     * fetch leaves no line in L2 for that address which the dropped
+     * prologue would have invalidated. Nothing in this tree
+     * establishes it; HORIZON_GPU_FULL_BARRIER_WAITS=1 is the A/B that
+     * would.
+     *
      * HORIZON_GPU_FULL_BARRIER_WAITS=1 puts both back, so one console
      * run can measure the two shapes against each other. */
     const bool memory_barrier = chan->dev->full_barrier_waits;

@@ -360,6 +360,16 @@ horizon_gpu_result horizon_gpu_vm_map(horizon_gpu_va_range *range,
         }
         horizon_va_set_remove(&range->live, offset_in_range);
         free(mapping);
+        /* VA_EXHAUSTED AND NOT ERR_NV, and the change is written down
+         * because these numbers appear in hardware logs kept as
+         * evidence: a run from 2026-08 and a later one must mean the
+         * same thing by the same number. No nv call failed here —
+         * MapBufferEx returned success — so ERR_NV reported .nv = 0
+         * and sent a reader looking for a service error that was not
+         * there. result.h reads "no space in the requested VA
+         * interval", which is the kernel's likeliest reason for
+         * honouring a FixedOffset request somewhere else, and not its
+         * only possible one. */
         return horizon_gpu_err(HORIZON_GPU_ERR_VA_EXHAUSTED);
     }
 

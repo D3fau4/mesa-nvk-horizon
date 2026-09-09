@@ -42,8 +42,10 @@
  *
  * The readability objection is answered where it belongs: the host suite
  * regenerates all 256 entries from HORIZON_CRC32_POLY and compares them
- * one by one, so these numbers are checked by code on every run rather
- * than by eye. */
+ * one by one, so these numbers are checked by code on every run of that
+ * suite rather than by eye. Of that suite and no other: the #if below
+ * compiles this table out wherever __ARM_FEATURE_CRC32 is defined, and
+ * every cross build defines it. */
 #if !defined(__ARM_FEATURE_CRC32)
 static const uint32_t horizon_crc32_table[256] = {
     0x00000000U, 0x77073096U, 0xEE0E612CU, 0x990951BAU,
@@ -131,11 +133,18 @@ uint32_t horizon_crc32_update(uint32_t crc, const void *data, size_t len)
      * enables compute exactly this polynomial in exactly this
      * convention: the running value is the table loop's `crc`, with no
      * inversion at either end, so __crc32b(crc, byte) is one iteration
-     * of the loop below and __crc32x(crc, word) is eight of them. The
-     * table stays for every other target, the host tests among them,
-     * and is what this path is checked against — with an aarch64
-     * build of the host suite run under user-mode emulation, byte for
-     * byte over the same inputs — rather than trusted by construction.
+     * of the loop below and __crc32d(crc, word) is eight of them. The
+     * table stays for every other target, the host tests among them.
+     *
+     * IT IS NOT WHAT THIS PATH IS CHECKED AGAINST. This said it was —
+     * "with an aarch64 build of the host suite run under user-mode
+     * emulation, byte for byte over the same inputs" — until
+     * 2026-09-09, and no such build exists anywhere in the tree:
+     * run-host-tests.sh compiles with $CC and no -march, so
+     * h_blob_cache's published vectors and its regeneration of the
+     * table only ever run the table, while every .nro runs only this
+     * branch. Class X, not H; deferred-work.md carries what closes
+     * it.
      *
      * Bytes to an 8-byte boundary one at a time, then whole words, then
      * the tail. The word is read through memcpy: AArch64 allows the

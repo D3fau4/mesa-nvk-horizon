@@ -214,23 +214,25 @@ void horizon_gpu_heap_quarantine_stats(uint64_t *bytes, uint32_t *blocks)
  *     it first" is not the promise this path takes.
  *
  *   nvkmd_horizon_mem.c, every Vulkan allocation
- *     NOT PROVABLE AS A WHOLE, and it is the only one where the saving
- *     would show. It is one entry point for VkDeviceMemory the
- *     application maps, for NVK's descriptor tables, query pools and
- *     shader heap, and for the command-buffer and mem-stream chunks.
- *     The last of those DOES qualify — nv_push writes the dwords and
- *     the submit names exactly [addr, addr+range), so nothing unwritten
- *     is ever fetched — but nvkmd has no flag that distinguishes it
- *     from the rest, so routing it needs an NVKMD_MEM_* bit through
- *     nvkmd.h and both backends. Vulkan does not promise zeroed device
- *     memory, but NVK is entitled to rely on its own allocations, and
- *     auditing that is a separate piece of work with a failure mode
- *     that is a wrong pixel rather than an error.
+ *     ROUTED, ONE CALLER AT A TIME. It is one entry point for
+ *     VkDeviceMemory the application maps, for NVK's descriptor
+ *     tables, query pools and shader heap, and for the command-buffer
+ *     and mem-stream chunks — so it is not provable as a whole, and
+ *     the flag that separates them is the work this entry used to ask
+ *     for: "an NVKMD_MEM_* bit through nvkmd.h and both backends".
+ *     mesa-patches/0072 adds it (NVKMD_MEM_NO_ZERO_INIT) and gives it
+ *     to vkAllocateMemory, which is where the saving shows —
+ *     vk_core/device_memory measured 1346 us of an 8 MiB allocation,
+ *     47%. The command pool took the flag, broke vkCmdUpdateBuffer on
+ *     a console and gave it back. NVK's own allocations do NOT take
+ *     it: Vulkan does not promise zeroed device memory, but NVK is
+ *     entitled to rely on its own, and auditing that is a separate
+ *     piece of work whose failure mode is a wrong pixel rather than an
+ *     error.
  *
- * So nothing in this tree uses this path today. It is here because the
- * measurement that decides whether routing the command-buffer case is
- * worth doing needs both halves to exist — gpu_memory/alloc times them
- * against each other on a console.
+ * So a fifth caller has one worked example to follow rather than none.
+ * This said "nothing in this tree uses this path today" until
+ * 2026-09-09, which stopped being true when 0072 landed.
  */
 static horizon_gpu_result mem_create(horizon_gpu_device *dev,
                                      uint64_t size, uint64_t align,
@@ -260,6 +262,14 @@ static horizon_gpu_result mem_create(horizon_gpu_device *dev,
     if (rounded > UINT32_MAX || align > UINT32_MAX)
         return horizon_gpu_err(HORIZON_GPU_ERR_OVERFLOW);
 
+    /* NOT COVERED BY THE WALK BELOW, and nothing here can cover it:
+     * calloc zeroes, so a descriptor that lands in a borrowed block
+     * faults inside calloc itself, before there is an object to check.
+     * The same is true of every other allocation this layer makes —
+     * hang_records, mapping structs, the retirement array. What the
+     * loop below protects is the payload the GPU is given, which is
+     * the largest allocation and the one whose fault was measured; the
+     * rest is a smaller target and an open one. */
     horizon_gpu_mem *mem = calloc(1, sizeof(*mem));
     if (!mem)
         return horizon_gpu_err(HORIZON_GPU_ERR_OUT_OF_MEMORY);

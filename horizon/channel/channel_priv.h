@@ -17,8 +17,11 @@
 #include "horizon_gpu/vm.h"
 
 /* Slots in the channel's GPU-side wait ring, and the dwords each holds.
- * Both are fixed by what is left of the command page after the three
- * write-once blocks; channel.c asserts the arithmetic against the page.
+ * Both are fixed by what is left of the command page after the four
+ * write-once blocks — fence, SET_OBJECT, L2 prologue and bare fence, at
+ * 0x000, 0x100, 0x200 and 0x300; channel.c asserts the arithmetic
+ * against the page. It said "three" until 2026-09-09, one block after
+ * the bare fence list was added.
  */
 #define HORIZON_CHANNEL_WAIT_SLOT_DWORDS     (HORIZON_CMDS_SYNCPT_WAIT_DWORDS * HORIZON_GPU_MAX_WAIT_FENCES)
 #define HORIZON_CHANNEL_WAIT_SLOTS 24u
@@ -34,7 +37,12 @@
  * lands in the uncached status word at offset zero.  The commands are never
  * rewritten while the channel exists, so no CPU/GPU fetch race is possible.
  *
- * 4096 slots cost 80 KiB and cover 2048 caller spans.  Exhaustion disables
+ * 4096 slots cover 2048 caller spans and cost 212 KiB per channel: 84
+ * KiB of uncached GPU-visible memory (a 4 KiB status page plus 80 KiB of
+ * marker commands, which is HORIZON_CHANNEL_HANG_BUFFER_SIZE) and 128
+ * KiB of host heap for the record table channel_hang_trace_init
+ * allocates beside it. This said "80 KiB", the command bytes alone, and
+ * named none of the rest.  Exhaustion disables
  * further marking instead of wrapping onto metadata which may still identify
  * an in-flight command. */
 #define HORIZON_CHANNEL_HANG_MARKER_SLOTS 4096u

@@ -47,10 +47,19 @@ extern "C" {
 #define HORIZON_GPU_GOB_WIDTH_B     UINT32_C(64)
 #define HORIZON_GPU_GOB_HEIGHT_ROWS UINT32_C(8)
 
-/* The largest block height a buffer description can express: the field
- * that carries it is a log2 and the display block's is 3 bits wide, so
- * 5 (32 GOBs) is the ceiling any taller block would be silently
- * truncated past. */
+/* The largest block height a buffer description can express: 5, which is
+ * 32 GOBs and 256 rows.
+ *
+ * THE REASON THIS CARRIED WAS NOT A REASON. It read "the field that
+ * carries it is a log2 and the display block's is 3 bits wide, so 5 (32
+ * GOBs) is the ceiling" — three bits hold 0 to 7, so the width of the
+ * field cannot be what stops this at 5. The cap is a property of the
+ * block-linear layout and not of the encoding, and the citation for it
+ * (envytools or deko3d, whichever the value came from) is owed; see
+ * deferred-work.md. The same is true of the two GOB constants above.
+ * Written down as owed rather than left reading like a derivation,
+ * because a constant whose stated reason is wrong invites the next
+ * person to widen it. */
 #define HORIZON_GPU_MAX_BLOCK_HEIGHT_LOG2 UINT32_C(5)
 
 /* What the allocation actually is — facts about memory the driver has

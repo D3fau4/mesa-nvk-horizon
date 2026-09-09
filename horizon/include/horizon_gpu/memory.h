@@ -190,9 +190,16 @@ typedef struct horizon_gpu_heap_region {
  * when the fill was skipped, because the flush runs on both paths.
  *
  * `bad` is filled in with the offending region when the answer is
- * false, and left alone when it is true. A range the kernel refuses to
- * describe is false as well: not being able to prove a page is ours is
- * the same as knowing it is not.
+ * false *because a page was rejected*, and left alone when the answer
+ * is true. A range the kernel refuses to describe is false as well:
+ * not being able to prove a page is ours is the same as knowing it is
+ * not, and `bad` then names the address the query failed at.
+ *
+ * THE TWO TRIVIAL REFUSALS LEAVE `bad` ALONE, and they are false
+ * rather than true on purpose: a null pointer, a zero size, and a
+ * range whose end wraps are all "this is not a range we made", and
+ * there is no offending region to name. No caller in this tree reaches
+ * them; said here so the next one does not read `bad` after them.
  */
 bool horizon_gpu_heap_range_is_ours(const void *p, uint64_t size,
                                     horizon_gpu_heap_region *bad);

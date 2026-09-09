@@ -3,8 +3,10 @@
  *
  * Creation order (torn down in reverse on every error path):
  *   nvGpuChannelCreate -> syncpoint identity + shadow init -> internal
- *   command buffer (mem, reservation, mapping, fence-increment list) ->
- *   optional Zcull (mem, mapping, bind).
+ *   command buffer (mem, reservation, mapping, the four write-once
+ *   command blocks) -> optional hang recorder (mem, reservation,
+ *   mapping, marker lists, record table) -> optional Zcull (mem,
+ *   mapping, bind).
  *
  * Copyright (c) mesa-nvk-horizon contributors
  * SPDX-License-Identifier: MIT
@@ -704,7 +706,10 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
     /* And the per-submit PROLOGUE, which runs before the caller's work:
      * one MEM_OP, L2_SYSMEM_INVALIDATE.
      *
-     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04. The fence block above
+     * WHY IT EXISTS, MEASURED ON HARDWARE 2026-08-04, on the run this
+     * tree used to carry as docs/hw-logs/t_vk_transfer-run3-FAIL.log.
+     * The name is kept although the file is not: a date with nothing
+     * to look up is not evidence. The fence block above
      * writes dirty L2 back after the work, so a GPU write reaches memory.
      * Nothing did the other direction: a line the GPU has touched stays
      * resident in L2 after that writeback, *clean*, and a later CPU write
@@ -771,8 +776,11 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         goto fail_cmdbuf_map;
     }
 
-    /* One flush covering both blocks: they share the page, and the
-     * cmdbuf is CPU-cached like everything else here.
+    /* One flush covering all four write-once blocks — fence, SET_OBJECT,
+     * L2 prologue, bare fence: they share the page, and the cmdbuf is
+     * CPU-cached like everything else here. This said "both blocks"
+     * until 2026-09-09; the length below has spanned four since the
+     * bare fence list was added.
      *
      * The third argument is a LENGTH. It was written as
      * CHANNEL_PROLOGUE_CMDS_OFFSET + n*4, which is a length only

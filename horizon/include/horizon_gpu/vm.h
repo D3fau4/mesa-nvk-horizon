@@ -52,18 +52,24 @@ horizon_gpu_result horizon_gpu_vm_reserve(horizon_gpu_device *dev,
  * it that no memory object is bound to is defined instead of being a
  * fault.
  *
- * That is the primitive Vulkan sparse residency is built on, and it is
- * the half of it that was missing. The other half — unbinding one buffer
- * out of the middle of such a reservation and getting the sparse state
- * back rather than a hole — is not established, and neither is what a
- * read of an unbacked page actually returns on this chip. Both are what
- * t_sparse measures.
+ * That is the primitive Vulkan sparse residency is built on, and both
+ * halves of it have been measured: an unbound page swallows a write,
+ * and unbinding a bound block puts the sparse state back.
+ * gpu_fault/sparse asks it of this layer, vk_core/sparse_binding asks
+ * it through vkQueueBindSparse, and docs/MEASURED-ON-HARDWARE.md
+ * carries both.
  *
- * SO THIS IS REACHABLE AND UNPROVEN, deliberately. Nothing in
- * nvkmd_horizon calls it, has_sparse is still false, and no Vulkan
- * sparse feature is advertised. Wiring any of that up before the
- * measurement would be building on an assumption, which is the thing
- * decision D12 was recorded to avoid. */
+ * SO THIS IS REACHABLE AND PROVEN. mesa-patches/0055 calls it for
+ * NVKMD_VA_SPARSE, 0056 sets nvkmd_info::has_sparse, and sparseBinding
+ * and sparseResidencyBuffer are advertised. This paragraph said the
+ * opposite — "nothing in nvkmd_horizon calls it, has_sparse is still
+ * false, and no Vulkan sparse feature is advertised" — until
+ * 2026-09-09, having been wrong since those two patches landed, and
+ * it named the case t_sparse, which the suite refactor renamed.
+ *
+ * Sparse exists only in big pages: a reservation with
+ * NvAllocSpaceFlags_Sparse and a 0x1000 page size is refused, which is
+ * why 0055 forces the big-page size before it calls this. */
 horizon_gpu_result
 horizon_gpu_vm_reserve_sparse(horizon_gpu_device *dev, uint64_t size,
                               uint32_t page_size, uint64_t align,

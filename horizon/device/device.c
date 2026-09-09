@@ -115,8 +115,9 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
                          "this process holds %u region(s) lent to another "
                          "process, %llu bytes, first 0x%llx+0x%llx "
                          "type=%u attr=0x%x perm=0x%x. malloc does not "
-                         "know, so every allocation here is checked "
-                         "before it is touched%s",
+                         "know, so every GPU object's payload is proved "
+                         "writable before it is touched — its descriptor "
+                         "and this layer's other allocations are not%s",
                          (unsigned)borrowed,
                          (unsigned long long)borrowed_B,
                          (unsigned long long)first.addr,
