@@ -172,7 +172,7 @@ tests_inc = include_directories('tests')
 horizon_suites = {
   'platform' : ['nv_bringup', 'teardown', 'sysconf', 'crc32'],
   'gpu_memory' : ['alloc', 'nvmap', 'va_reserve', 'va_map', 'uncached',
-                  'shader_window', 'borrowed_pages'],
+                  'shader_window', 'borrowed_pages', 'borrowed_retry'],
   'gpu_submit' : ['channel', 'submit', 'syncpt_per_submit',
                   'syncpt_cpu_incr', 'fence_wait', 'fence_wait_many',
                   'gpu_write', 'pushbuf_size'],

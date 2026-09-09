@@ -204,7 +204,7 @@ thread doing path work corrupts the first one's path.
 | `disk_cache_horizon` (in `mesa-patches/`) | Mesa's `util/`, `horizon/`'s blob cache | Vulkan, NVK, WSI, libnx directly |
 | `compat/` | newlib, libnx | Mesa, NVK, `horizon/` |
 
-### `tests/` — fourteen suites, fifty-seven cases
+### `tests/` — fourteen suites, sixty-one cases
 
 **One `.nro` per suite, several cases per suite.** A suite is a directory:
 `tests/<suite>/suite.c` is the table of cases and `tests/<suite>/<case>.c` is one case.

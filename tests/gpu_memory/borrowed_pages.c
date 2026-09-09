@@ -41,10 +41,22 @@
  *   E  what THIS launch's address space actually holds — every region
  *      with an attribute, and every heap region that is not writable.
  *      This is the diagnostic the crash needs: it says whether the
- *      process was handed a borrowed hole at all, and where
+ *      process was handed a borrowed hole at all, and where. Run twice:
+ *      once inside section B's lend, where there is a borrowed region
+ *      by construction, and once at the end for the launch itself
  *   F  how much heap horizon_gpu has had to set aside so far, which is
  *      0 on a healthy launch and is the only number that says the guard
  *      did something
+ *
+ * AND E IS ALSO WHAT CHECKS horizon_gpu_heap_borrowed_regions. That
+ * function is called once per device creation to emit the warning that
+ * explains the crash, and until this case compared them it had no test
+ * of any class: the walk here and the walk there are twins that have
+ * always been written out twice, and the one in horizon/ used to be
+ * missing the address-space ceiling the one here has always had. The
+ * comparison is made inside section B's lend on purpose — with no lend
+ * open, a healthy launch makes both answers 0, and 0 == 0 would agree
+ * whatever either function did.
  *
  * NOTHING HERE WRITES A BORROWED PAGE. The whole point is that doing so
  * ends the process, so the case reads the kernel's description of the
@@ -78,12 +90,23 @@ static void bp_report(test_ctx *t, const char *what,
 }
 
 /* Every region of this process's address space that is not plainly
- * ours, reported. Costs one syscall per region and changes nothing. */
-static void bp_scan_process(test_ctx *t)
+ * ours, reported. Costs one syscall per region and changes nothing.
+ *
+ * The borrowed ones are also counted and handed back, because they are
+ * what horizon_gpu_heap_borrowed_regions answers and this is the walk
+ * it is compared against. `label` names the section in the log; the
+ * three out-parameters may not be NULL. */
+static void bp_scan_process(test_ctx *t, const char *label,
+                            uint32_t *out_n, uint64_t *out_B,
+                            horizon_gpu_heap_region *out_first)
 {
     uint64_t addr = 0;
-    uint32_t regions = 0, flagged = 0;
+    uint32_t regions = 0, flagged = 0, borrowed_n = 0;
     uint64_t borrowed_B = 0;
+
+    *out_n = 0;
+    *out_B = 0;
+    memset(out_first, 0, sizeof(*out_first));
 
     for (;;) {
         MemoryInfo info = { 0 };
@@ -100,12 +123,22 @@ static void bp_scan_process(test_ctx *t)
             info.type == MemType_Heap &&
             (info.perm & Perm_Rw) != Perm_Rw;
 
+        if (borrowed) {
+            if (borrowed_n == 0) {
+                *out_first = (horizon_gpu_heap_region){
+                    .addr = info.addr, .size = info.size,
+                    .type = info.type, .attr = info.attr,
+                    .perm = info.perm,
+                };
+            }
+            borrowed_n++;
+            borrowed_B += info.size;
+        }
+
         if (borrowed || unwritable_heap || (info.attr != 0)) {
             flagged++;
-            if (borrowed)
-                borrowed_B += info.size;
-            t_note(t, "E: 0x%" PRIx64 "+0x%" PRIx64 " type=%u attr=0x%x "
-                      "perm=0x%x%s%s", info.addr, info.size,
+            t_note(t, "%s: 0x%" PRIx64 "+0x%" PRIx64 " type=%u attr=0x%x "
+                      "perm=0x%x%s%s", label, info.addr, info.size,
                    (unsigned)info.type, (unsigned)info.attr,
                    (unsigned)info.perm,
                    borrowed ? " BORROWED" : "",
@@ -120,10 +153,45 @@ static void bp_scan_process(test_ctx *t)
             break;
     }
 
-    t_note(t, "E: %u region(s) walked, %u with an attribute or an "
-              "unwritable heap page, %" PRIu64 " bytes borrowed",
-           regions, flagged, borrowed_B);
-    t_check(t, regions > 0, "E: the address space could be walked");
+    t_note(t, "%s: %u region(s) walked, %u with an attribute or an "
+              "unwritable heap page, %u borrowed, %" PRIu64 " bytes "
+              "borrowed", label, regions, flagged, borrowed_n, borrowed_B);
+    t_check(t, regions > 0, "%s: the address space could be walked", label);
+
+    *out_n = borrowed_n;
+    *out_B = borrowed_B;
+}
+
+/* The walk above against horizon_gpu's own, which is the one a device
+ * creation runs. Same address space, same instant, no allocation in
+ * between: the two must agree on all three answers. */
+static void bp_compare_walks(test_ctx *t, const char *label)
+{
+    uint32_t mine_n = 0;
+    uint64_t mine_B = 0;
+    horizon_gpu_heap_region mine_first = { 0 };
+    uint64_t theirs_B = 0;
+    horizon_gpu_heap_region theirs_first = { 0 };
+
+    bp_scan_process(t, label, &mine_n, &mine_B, &mine_first);
+
+    const uint32_t theirs_n =
+        horizon_gpu_heap_borrowed_regions(&theirs_B, &theirs_first);
+
+    t_note(t, "%s: horizon_gpu_heap_borrowed_regions says %u region(s), "
+              "%" PRIu64 " bytes; this case's own walk says %u, %" PRIu64,
+           label, theirs_n, theirs_B, mine_n, mine_B);
+
+    t_check(t, theirs_n == mine_n,
+            "%s: horizon_gpu_heap_borrowed_regions counts the regions this "
+            "case's own walk counts (%u)", label, mine_n);
+    t_check(t, theirs_B == mine_B,
+            "%s: and the same number of bytes (%" PRIu64 ")", label, mine_B);
+    t_check(t, theirs_first.addr == mine_first.addr &&
+               theirs_first.size == mine_first.size &&
+               theirs_first.attr == mine_first.attr &&
+               theirs_first.perm == mine_first.perm,
+            "%s: and reports the same first region", label);
 }
 
 TEST_CASE_DECL(gpu_memory, borrowed_pages)
@@ -171,6 +239,12 @@ TEST_CASE_DECL(gpu_memory, borrowed_pages)
                 "B: and it is refused for the reason claimed: borrowed, "
                 "or not readable and writable");
 
+        /* THE ONE MOMENT THIS CASE KNOWS A BORROWED REGION EXISTS: it
+         * made one. Everything horizon_gpu_heap_borrowed_regions has to
+         * get right — finding it, sizing it, describing it — is
+         * answerable here and nowhere else in a healthy launch. */
+        bp_compare_walks(t, "B/E");
+
         rc = tmemClose(&tmem);
         t_check(t, R_SUCCEEDED(rc), "B: the lend closes (rc=0x%08x)", rc);
     }
@@ -209,8 +283,15 @@ TEST_CASE_DECL(gpu_memory, borrowed_pages)
 
     free(buf);
 
-    /* --- E: what this launch was actually handed ------------------- */
-    bp_scan_process(t);
+    /* --- E: what this launch was actually handed ------------------- *
+     *
+     * The same comparison again, on the address space as the launcher
+     * left it. On a healthy launch both answers are 0 and it proves
+     * nothing on its own — B/E above is where the comparison has
+     * something to compare — but on a netloaded launch this is the
+     * hole itself, and then the two walks are being checked against
+     * each other over regions neither of them made. */
+    bp_compare_walks(t, "E");
 
     /* --- F: what the allocator has had to set aside ---------------- */
     uint64_t q_bytes = 0;

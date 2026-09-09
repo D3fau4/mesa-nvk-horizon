@@ -2,7 +2,7 @@
 
 **Fourteen** standalone `.nro` homebrew apps, one per **suite**. A suite is a
 subsystem; inside it, each **case** is one of the tests this project used to ship as
-a `.nro` of its own. Fifty-three cases in fourteen binaries.
+a `.nro` of its own. Sixty-one cases in fourteen binaries.
 
 Each suite prints one line per check, one verdict per case, and one
 machine-checkable verdict for the whole run — to the console **and** to
