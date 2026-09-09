@@ -152,6 +152,47 @@ TEST_CASE_DECL(gpu_memory, va_map)
             t_check(t,
                     horizon_gpu_succeeded(horizon_gpu_vm_unmap(big_map)),
                     "unmap big-page mapping");
+
+        /* AND AN OBJECT WHOSE OWN ALIGNMENT DOES NOT COVER THE PAGE IS
+         * REFUSED. MapBufferEx does not check this and does not fail:
+         * t_sparse's run on 2026-08-24 handed it a 4 KiB-aligned NvMap
+         * and page=0x20000, got Result 0 and the requested VA back, and
+         * the GPU's write to that VA went nowhere — no fault, no error,
+         * no data.
+         *
+         * A SEPARATE OBJECT, ONE BIG PAGE LONG, so that the alignment is
+         * the only thing wrong with the call: the offset is aligned to
+         * the reservation's page, the range fits inside the object, and
+         * the object fits inside the reservation. Reusing the 16 KiB
+         * `mem` above would have been refused for its size too, and a
+         * test that would still fail with the guard removed says
+         * nothing about the guard. */
+        horizon_gpu_mem *small_align = NULL;
+        res = horizon_gpu_mem_create(dev, info.big_page_size,
+                                     HORIZON_GPU_SMALL_PAGE_SIZE,
+                                     HORIZON_GPU_MEM_CACHED, &small_align);
+        if (t_check(t, horizon_gpu_succeeded(res),
+                    "mem_create one big page of 4 KiB-aligned memory")) {
+            horizon_gpu_mapping *bad_align = NULL;
+            res = horizon_gpu_vm_map(big_range, 0, small_align, 0,
+                                     info.big_page_size,
+                                     HORIZON_GPU_PTE_KIND_PITCH, true,
+                                     &bad_align);
+            t_check(t, res.status == HORIZON_GPU_ERR_INVALID_ARG,
+                    "a 0x%x-aligned object mapped in 0x%x pages is refused "
+                    "here rather than resolving to nothing (%s)",
+                    (unsigned)HORIZON_GPU_SMALL_PAGE_SIZE,
+                    info.big_page_size,
+                    horizon_gpu_status_str(res.status));
+            t_check(t, bad_align == NULL,
+                    "and the refused map produced no mapping");
+            if (bad_align)
+                horizon_gpu_vm_unmap(bad_align);
+            t_check(t,
+                    horizon_gpu_succeeded(
+                        horizon_gpu_mem_destroy(small_align)),
+                    "destroy the 4 KiB-aligned object");
+        }
     }
     if (big_range)
         t_check(t, horizon_gpu_succeeded(horizon_gpu_vm_release(big_range)),
