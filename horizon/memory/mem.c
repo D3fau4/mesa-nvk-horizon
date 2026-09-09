@@ -148,9 +148,24 @@ uint32_t horizon_gpu_heap_borrowed_regions(uint64_t *bytes,
     uint64_t addr = 0, total = 0;
     uint32_t found = 0;
 
+    /* THE WALK HAS A CEILING. The address space is 39 bits on this
+     * platform, and svcQueryMemory answering for an address past it is
+     * the loop's only other terminator — which makes an unbounded walk
+     * a walk whose end depends on the kernel's answer for addresses
+     * that do not exist. The hand-written twin of this loop in
+     * gpu_memory/borrowed_pages has always stopped here; this did not.
+     *
+     * A FAILED QUERY ENDS THE WALK AND THE COUNT IS THEN A FLOOR, not a
+     * census. Every terminator below is "no more regions to see", and a
+     * query that fails part-way is indistinguishable from that here —
+     * so a caller reading zero learns that nothing was found before the
+     * walk stopped, not that nothing is lent. device.c only warns when
+     * the answer is non-zero, which is the direction that is safe. */
     for (;;) {
         MemoryInfo info = { 0 };
         u32 pageinfo = 0;
+        if (addr >= (UINT64_C(1) << 39))
+            break;
         if (R_FAILED(svcQueryMemory(&info, &pageinfo, addr)))
             break;
         if (info.size == 0)

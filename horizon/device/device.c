@@ -98,8 +98,12 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
      * with no return path — see horizon_gpu_heap_range_is_ours. The
      * variable exists so a case can measure what it costs and so the
      * crash can be reproduced deliberately. */
+    /* Exactly "0" turns it off. It used to be heap_env[0] == '0', so
+     * any value beginning with a zero disabled the guard against a
+     * process-fatal Data Abort — the one knob here whose typo should
+     * fail safe. */
     const char *heap_env = getenv("HORIZON_GPU_HEAP_CHECK");
-    dev->heap_page_check = !(heap_env && heap_env[0] == '0');
+    dev->heap_page_check = !(heap_env && strcmp(heap_env, "0") == 0);
 
     /* Said here, once, because it is the fact that explains a crash
      * nobody else can explain: this process was handed a heap with a
@@ -212,7 +216,11 @@ horizon_gpu_device_create(const horizon_gpu_device_create_info *create_info,
                      "gpu_va_bit_count is %u; the command builder encodes "
                      "%u", ch->gpu_va_bit_count,
                      (unsigned)HORIZON_CMDS_GPU_VA_BITS);
-        res = horizon_gpu_err(HORIZON_GPU_ERR_NV);
+        /* UNSUPPORTED, not ERR_NV: no nv call failed, so ERR_NV would
+         * print nv=0x00000000 beside a status that says a service call
+         * did. result.h reads "valid request this phase does not
+         * implement", which is this chip exactly. */
+        res = horizon_gpu_err(HORIZON_GPU_ERR_UNSUPPORTED);
         goto fail_gpu;
     }
 

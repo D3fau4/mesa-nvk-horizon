@@ -299,6 +299,8 @@ static bool bc_index_grow(horizon_gpu_blob_cache *c, uint32_t new_cap)
     for (uint32_t i = 0; i < old_cap; i++) {
         if (!old[i].used)
             continue;
+        /* Cannot be NULL: the fresh table is twice the old capacity
+         * and takes at most old_cap entries, so it is never full. */
         bc_slot *dst = bc_index_probe(c, old[i].key);
         *dst = old[i];
         c->slot_used++;
@@ -314,6 +316,14 @@ static bool bc_index_set(horizon_gpu_blob_cache *c, const uint8_t *key,
                          uint64_t offset, uint32_t size, uint32_t seq,
                          uint32_t flags)
 {
+    /* bc_index_probe answers NULL only at 100% load, and the check
+     * below keeps the table under HORIZON_BC_INDEX_MAX_LOAD — so the
+     * refusal here is unreachable, not a grow this reorder skipped.
+     * The two facts sit a page apart in this file; the assertion ties
+     * them, so raising the load factor to 100 fails the build instead
+     * of turning a full table into a silent put failure. */
+    _Static_assert(HORIZON_BC_INDEX_MAX_LOAD < 100u,
+                   "bc_index_probe returns NULL only at 100% load");
     bc_slot *s = bc_index_probe(c, key);
     if (s == NULL)
         return false;
@@ -587,6 +597,29 @@ bc_write_header_and_key(horizon_gpu_blob_cache *c, uint32_t state)
     return horizon_gpu_ok();
 }
 
+/* The 64-byte header on its own. The driver key behind it is written
+ * once, by bc_write_header_and_key, and a truncate to header_size keeps
+ * it — so changing the state word does not have to put the key down
+ * again. bc_write_fresh_header did: it called the full writer twice and
+ * wrote key_span bytes a second time for a 64-byte change. */
+static horizon_gpu_result
+bc_write_header_only(horizon_gpu_blob_cache *c, uint32_t state)
+{
+    uint8_t hdr[HORIZON_BC_FILE_HDR_SIZE];
+
+    bc_build_file_header(hdr, c->header_size, c->driver_key,
+                         c->driver_key_size, state);
+
+    if (!bc_seek(c->file, 0))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    if (fwrite(hdr, 1, sizeof(hdr), c->file) != sizeof(hdr))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+    if (!bc_sync(c->file))
+        return horizon_gpu_err(HORIZON_GPU_ERR_IO);
+
+    return horizon_gpu_ok();
+}
+
 static horizon_gpu_result bc_write_fresh_header(horizon_gpu_blob_cache *c)
 {
     /* Mark the rewrite incomplete before discarding an old record tail.
@@ -603,7 +636,7 @@ static horizon_gpu_result bc_write_fresh_header(horizon_gpu_blob_cache *c)
     if (!bc_sync(c->file))
         return horizon_gpu_err(HORIZON_GPU_ERR_IO);
 
-    r = bc_write_header_and_key(c, HORIZON_BC_STATE_CLEAN);
+    r = bc_write_header_only(c, HORIZON_BC_STATE_CLEAN);
     if (horizon_gpu_failed(r))
         return r;
 
