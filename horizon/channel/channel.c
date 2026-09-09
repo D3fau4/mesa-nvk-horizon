@@ -598,32 +598,71 @@ horizon_gpu_channel_create(horizon_gpu_device *dev,
         goto fail_free;
     }
 
-    /* DIAGNOSTIC (uncommitted): scheduling knobs from the environment.
-     * The Godot Forward+ draw stalls in quanta of ~165 ms, the period
-     * of the host scheduler's ctxsw-timeout check; the working
-     * hypothesis is a preemption request that cannot complete. Priority
-     * maps to the channel timeslice in nvgpu (low/medium/high =
-     * 1300/2600/5200 us); NVGPU_IOCTL_CHANNEL_SET_TIMESLICE (0xC004481D,
-     * switchbrew NV_services) sets it directly. */
+    /* DIAGNOSTIC SCHEDULING KNOBS, AND THEY SHIP. This block said
+     * "(uncommitted)" while being committed, which is worse than
+     * either. The Godot Forward+ draw stalls in quanta of ~165 ms, the
+     * period of the host scheduler's ctxsw-timeout check; the working
+     * hypothesis is a preemption request that cannot complete.
+     * Priority maps to the channel timeslice in nvgpu (low/medium/high
+     * = 1300/2600/5200 us), and the ioctl named at the top of this
+     * file sets the timeslice directly.
+     *
+     * Both are opt-in and nothing in this tree sets either, so a
+     * healthy launch reads two absent variables and does nothing. An
+     * unusable value is refused and said so, never substituted: the
+     * caller's create_info->prio is the answer when the environment
+     * has no better one, and a typo is not a better one. It used to
+     * be — any string that was neither "low" nor "high" reset the
+     * channel to Medium behind the caller's back. */
     {
         const char *p = getenv("HORIZON_GPU_CHANNEL_PRIO");
         if (p) {
             NvChannelPriority np = NvChannelPriority_Medium;
-            if (!strcmp(p, "low")) np = NvChannelPriority_Low;
-            else if (!strcmp(p, "high")) np = NvChannelPriority_High;
-            Result prc = nvChannelSetPriority(&chan->gc.base, np);
-            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                         "diag: channel %p SetPriority(%s=%u) -> 0x%08x",
-                         (void *)chan, p, (unsigned)np, prc);
+            bool known = true;
+            if (!strcmp(p, "low"))         np = NvChannelPriority_Low;
+            else if (!strcmp(p, "medium")) np = NvChannelPriority_Medium;
+            else if (!strcmp(p, "high"))   np = NvChannelPriority_High;
+            else                           known = false;
+            if (!known) {
+                horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                             "diag: HORIZON_GPU_CHANNEL_PRIO='%s' is not "
+                             "low, medium or high — ignored; the channel "
+                             "keeps the priority it was created with", p);
+            } else {
+                Result prc = nvChannelSetPriority(&chan->gc.base, np);
+                horizon_logf(&dev->log,
+                             R_FAILED(prc) ? HORIZON_LOG_ERROR
+                                           : HORIZON_LOG_INFO,
+                             "diag: channel %p SetPriority(%s=%u) -> "
+                             "0x%08x", (void *)chan, p, (unsigned)np, prc);
+            }
         }
         const char *t = getenv("HORIZON_GPU_CHANNEL_TIMESLICE_US");
         if (t) {
-            u32 us = (u32)strtoul(t, NULL, 0);
-            Result trc = nvIoctl(chan->gc.base.fd, 0xC004481D, &us);
-            horizon_logf(&dev->log, HORIZON_LOG_ERROR,
-                         "diag: channel %p SetTimeslice(%u us) -> 0x%08x "
-                         "(returned %u)", (void *)chan,
-                         (unsigned)strtoul(t, NULL, 0), trc, (unsigned)us);
+            /* Parsed once, and checked: a zero or a truncated value
+             * went to the scheduler unexamined, and the log line
+             * re-parsed the string instead of printing what was
+             * sent. */
+            char *end = NULL;
+            const unsigned long v = strtoul(t, &end, 0);
+            if (end == t || *end != '\0' || v == 0 || v > UINT32_MAX) {
+                horizon_logf(&dev->log, HORIZON_LOG_WARN,
+                             "diag: HORIZON_GPU_CHANNEL_TIMESLICE_US='%s' "
+                             "is not a microsecond count in 1..%u — "
+                             "ignored", t, (unsigned)UINT32_MAX);
+            } else {
+                const u32 asked = (u32)v;
+                u32 us = asked;
+                Result trc = nvIoctl(
+                    chan->gc.base.fd,
+                    HORIZON_NVGPU_IOCTL_CHANNEL_SET_TIMESLICE, &us);
+                horizon_logf(&dev->log,
+                             R_FAILED(trc) ? HORIZON_LOG_ERROR
+                                           : HORIZON_LOG_INFO,
+                             "diag: channel %p SetTimeslice(%u us) -> "
+                             "0x%08x (returned %u)", (void *)chan,
+                             (unsigned)asked, trc, (unsigned)us);
+            }
         }
     }
 

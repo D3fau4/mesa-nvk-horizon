@@ -36,6 +36,11 @@ typedef enum horizon_gpu_channel_prio {
 } horizon_gpu_channel_prio;
 
 typedef struct horizon_gpu_channel_create_info {
+    /* HORIZON_GPU_CHANNEL_PRIO (low|medium|high) overrides this after
+     * the channel exists, and HORIZON_GPU_CHANNEL_TIMESLICE_US sets the
+     * timeslice the priority would have chosen. Both are diagnostic,
+     * both are ignored when unset or unparseable, and nothing in this
+     * tree sets either. */
     horizon_gpu_channel_prio prio;
     /* Bind a Zcull context (queried size, 128 KiB-aligned VA). Not needed
      * until real 3D work; t_channel exercises both settings. */
