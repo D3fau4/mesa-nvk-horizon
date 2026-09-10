@@ -351,9 +351,13 @@ nvk_suites = {
                   'fragment_kill', 'descriptor_set1', 'priv_reg'],
   'vk_render' : ['triangle', 'texture', 'depth', 'formats', 'multi_target',
                  'zcull', 'draw_volume'],
-  # Alone, because what it reports is a compile time and a measurement
-  # that runs behind other work is a different measurement.
-  'vk_pipelines' : ['pipeline_volume'],
+  # Apart from the rest, because what it reports is a compile time and a
+  # measurement that runs behind other work is a different measurement.
+  # pipeline_volume is first and stays first: it is the one whose
+  # numbers describe a fresh process, and compile_identity's are a
+  # paired comparison between two builds of this suite rather than an
+  # absolute.
+  'vk_pipelines' : ['pipeline_volume', 'compile_identity'],
   # Alone, because a cold run deletes the driver's shader cache and it
   # needs two launches of one build to mean anything.
   'vk_cache' : ['shader_reuse'],
@@ -455,6 +459,11 @@ nvk_case_shaders = {
   # is four instructions and identical every time, so a hundred
   # pipelines built from it are one compile and one heap allocation.
   'vk_pipelines/pipeline_volume' : ['comp_chain'],
+
+  # The same shader, specialized out of a disjoint range: a compile long
+  # enough to be a real compile, and one whose output pipeline_volume
+  # has already made familiar.
+  'vk_pipelines/compile_identity' : ['comp_chain'],
 
   # The same shader vk_shaders/compute_dispatch uses, on purpose: a
   # failure here should be about the cache and not about a shader
