@@ -117,6 +117,62 @@ echo "configure-mesa-nvk: driver id $HORIZON_DRIVER_ID"
 
 MESA_NVK_BUILD_DIR="${MESA_NVK_BUILD_DIR:-build/mesa-nvk}"
 
+# --buildtype=plain ALREADY DISABLES ASSERTIONS, AND NOTHING HERE SHOULD
+# "FIX" THAT BY ADDING -Db_ndebug. Written down because the chain is
+# three files long and reading any one of them alone gives the opposite
+# answer:
+#
+#   - Mesa asks for 'b_ndebug=if-release' in its project() default
+#     options (mesa/meson.build:10-12), so the choice is delegated to
+#     the buildtype;
+#   - Meson 1.11.2 treats `if-release` as release for BOTH `release` and
+#     `plain` (mesonbuild/compilers/compilers.py:270-280, applied at
+#     :337), which is the step that is easy to miss;
+#   - that reaches C as -DNDEBUG (compilers/mixins/clike.py) and Rust as
+#     `-C debug-assertions=no -C overflow-checks=no`
+#     (compilers/rust.py:524-526).
+#
+# CHECKED ON A CONFIGURED DIRECTORY, not inferred: on 2026-09-10 the
+# compile command for src/compiler/nir/nir_validate.c in build/mesa-nvk
+# carried -DNDEBUG (with -g -O2, which come from the cross file and not
+# from the buildtype). So nir_validate_shader is the empty stub and the
+# assert()s are not compiled. Grepping this repository for NDEBUG finds
+# nothing and means nothing; the question actually being asked is
+#
+#   ninja -C build/mesa-nvk -t commands src/compiler/nir/libnir.a |
+#     grep -m1 nir_validate
+#
+# and the archive has to be NAMED. A bare `ninja -t commands` lists the
+# default target's commands, which is not everything the build has
+# rules for — nir_validate.c is not in it, and reading that as "no such
+# command" is the wrong answer. `-t compdb` is the other way round: it
+# lists every compile rule, so it answers the same question with a
+# filter over its JSON.
+#
+# WHAT IS NOT SET, AND HOW TO SET IT FOR AN A/B. Meson emits no
+# `-C opt-level` at all for `plain` (compilers/rust.py:36-44 maps it to
+# an empty list), so rustc uses its own default of 0 — confirmed the
+# same day on the same directory: none of the thirteen cross-targeted
+# rustc invocations carried one. NAK and NIL are therefore unoptimised
+# Rust. The variant to compare against is one option, passed through to
+# meson by the "$@" below:
+#
+#   MESA_NVK_BUILD_DIR=build/mesa-nvk-o2 \
+#     scripts/configure-mesa-nvk.sh -Drust_args=-Copt-level=2
+#
+# which was verified to reach exactly the thirteen cross crates —
+# nak_rs, nil, compiler, bitview, nv_push_rs, nvidia_headers,
+# nouveau_rust_runtime and the rest — and none of the eight
+# build-machine proc-macro crates, which are build tools and not the
+# driver.
+#
+# A SEPARATE BUILD DIRECTORY IS PART OF THE PROCEDURE, and so is
+# MESA_SHADER_CACHE_DISABLE=true in the run: scripts/gen-driver-id.sh
+# digests sources and cross files and NOT meson options, so the two
+# builds share a driver id, a pipelineCacheUUID and a cache file. The
+# second one would otherwise be served the first one's compiled shaders.
+# tests/vk_pipelines/compile_identity is the case that measures the pair.
+
 set -- \
     --buildtype=plain \
     -Db_staticpic=false \
