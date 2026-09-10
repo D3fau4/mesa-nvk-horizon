@@ -399,6 +399,58 @@ is wrong and not the loop.
 
 ---
 
+## 12 The Rust half of the driver is compiled unoptimised, and the A/B has never been run
+
+**Class X.** What is not in doubt is the configuration, because it was
+read off a configured build directory on 2026-09-10 rather than off the
+source: `build/mesa-nvk`, configured by `scripts/configure-mesa-nvk.sh`
+with nothing added, has `buildtype=plain`, `b_ndebug=if-release`,
+`optimization=plain` and an empty `rust_args`, and
+
+- the compile command for `src/compiler/nir/nir_validate.c` carries
+  `-DNDEBUG`. Assertions and NIR validation are already off; the P1
+  proposal to add `-Db_ndebug` is answered and closed, and nothing in
+  the tree changed for it.
+- none of the thirteen cross-targeted `rustc` invocations carries
+  `-C opt-level`. `nak_rs`, `nil`, `compiler`, `bitview`, `nv_push_rs`,
+  `nvidia_headers` and `nouveau_rust_runtime` are compiled at rustc's
+  default, which is 0. All thirteen do carry `-C debug-assertions=no
+  -C overflow-checks=no`.
+
+What that costs is unmeasured. NAK's optimisation level changes how long
+it takes to compile a shader, not the shader it emits — that is the
+claim, and it is a claim, not a result.
+
+The pair to compare is one option, and a second build directory so the
+two survive each other:
+
+```sh
+scripts/configure-mesa-nvk.sh && scripts/build-mesa-nvk.sh
+MESA_NVK_BUILD_DIR=build/mesa-nvk-o2 \
+  scripts/configure-mesa-nvk.sh -Drust_args=-Copt-level=2
+MESA_NVK_BUILD_DIR=build/mesa-nvk-o2 scripts/build-mesa-nvk.sh
+```
+
+`vk_pipelines/compile_identity` is the case that measures it, and it
+sets `MESA_SHADER_CACHE_DISABLE=true` on itself because it has to:
+`scripts/gen-driver-id.sh` digests sources and cross files and not meson
+options, so the two builds share a driver id and a cache file, and the
+second would be handed the first's compiled shaders. It also sets
+`NAK_CRS_INFO=1`, so each compile says what it produced.
+
+**Done when** one console has run `vk_pipelines` from each of the two
+builds and the logs have been compared on both halves: section C's
+compile times, and every `NAK crs:` line. If the times do not separate
+by more than the spread between two runs of the same build, say so and
+the option is not worth taking. **If the `NAK crs:` lines differ at
+all**, the premise is wrong — the optimisation level is changing the
+generated code — and no compile-time number from that pair means
+anything until that is explained. Both builds must also pass
+`vk_pipelines` in full; a faster compiler that computes a different
+region is the failure this case's section B exists to catch.
+
+---
+
 ## Closed on 2026-09-08
 
 - **The Forward+ reproducer does not reproduce it at 1280x720 either.**
